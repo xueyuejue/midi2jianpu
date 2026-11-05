@@ -37,23 +37,29 @@ KeyEstimate estimateKey(const MidiData& data) {
         return r;
     }
 
-    // 2) 猜测：强拍加权 + 结尾音加权
+    // 2) 猜测：只用旋律轨（音符最多的轨），避免伴奏和弦干扰
+    std::map<int, size_t> trackCount;
+    for (const auto& note : data.notes) trackCount[note.track]++;
+    int mainTrack = -1; size_t maxN = 0;
+    for (auto& [t, c] : trackCount) if (c > maxN) { maxN = c; mainTrack = t; }
+
     std::map<int, double> weight;
     double barLen = data.timeSig.barLengthTicks(data.division);
-    size_t n = data.notes.size();
+    size_t n = 0;
+    for (const auto& note : data.notes) if (note.track == mainTrack) n++;
 
-    for (size_t i = 0; i < n; i++) {
-        const auto& note = data.notes[i];
+    size_t idx = 0;
+    for (const auto& note : data.notes) {
+        if (note.track != mainTrack) continue;
         double w = note.durationSeconds;
-        // 强拍加权：落在小节第1拍或第3拍(4/4)位置
         long posInBar = (long)(note.startTicks) % (long)barLen;
         if (posInBar < data.division / 4 ||
             posInBar >= barLen / 2.0 - data.division / 4) {
             w *= 1.5;
         }
-        // 结尾音加权：最后4个音符更可能是主音
-        if (i + 4 >= n) w *= 2.0;
+        if (idx + 6 >= n) w *= 3.0;  // 结尾6个音符权重x3
         weight[note.pitch % 12] += w;
+        idx++;
     }
     if (weight.empty()) return KeyEstimate{};
 

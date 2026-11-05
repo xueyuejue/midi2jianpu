@@ -13,18 +13,37 @@ static void printHelp() {
         "用法:\n"
         "  midi2jianpu <input.mid>                 打印文本简谱\n"
         "  midi2jianpu <input.mid> --html out.html 导出 HTML 谱面\n"
+        "  midi2jianpu <input.mid> --key Am         手动指定调性(如 Am=小调, C=大调)\n"
         "  midi2jianpu --help\n";
+}
+
+// 解析 --key 参数: "C"=C大调, "Am"=a小调, "F#"=F#大调
+static bool parseKey(const std::string& s, m2j::KeyEstimate& out) {
+    static const char* names[] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
+    size_t i = 0;
+    std::string name;
+    if (s.size() >= 2 && (s[1] == '#' || s[1] == 'b')) {
+        name = s.substr(0, 2); i = 2;
+    } else {
+        name = s.substr(0, 1); i = 1;
+    }
+    int pc = -1;
+    for (int k = 0; k < 12; k++) if (names[k] == name) { pc = k; break; }
+    if (pc < 0) return false;
+    out.tonicPitchClass = pc;
+    out.isMajor = !(i < s.size() && (s[i] == 'm' || s[i] == 'M'));
+    return true;
 }
 
 int main(int argc, char** argv) {
     if (argc < 2) { printHelp(); return 1; }
 
-    std::string input;
-    std::string htmlOut;
+    std::string input, htmlOut, keyArg;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--help" || a == "-h") { printHelp(); return 0; }
         else if (a == "--html" && i + 1 < argc) { htmlOut = argv[++i]; }
+        else if (a == "--key" && i + 1 < argc) { keyArg = argv[++i]; }
         else if (a.substr(0, 2) != "--") input = a;
     }
     if (input.empty()) { printHelp(); return 1; }
@@ -36,8 +55,15 @@ int main(int argc, char** argv) {
     }
     if (data.notes.empty()) { std::cerr << "未提取到音符。\n"; return 3; }
 
-    m2j::KeyEstimate key = m2j::estimateKey(data);
-    std::string keySource = data.keySig.valid ? "(MIDI调号)" : "(自动猜测)";
+    m2j::KeyEstimate key;
+    std::string keySource;
+    if (!keyArg.empty() && parseKey(keyArg, key)) {
+        keySource = "(手动指定 " + keyArg + ")";
+    } else {
+        key = m2j::estimateKey(data);
+        keySource = data.keySig.valid ? "(MIDI调号)" : "(自动猜测)";
+    }
+
     std::cout << "\n共提取 " << data.notes.size()
               << " 个音符 (division=" << data.division
               << ", 拍号=" << data.timeSig.toString() << ") " << keySource << "\n\n";
