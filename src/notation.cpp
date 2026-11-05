@@ -135,21 +135,30 @@ static std::string formatTrack(
     std::ostringstream os;
     double barLen = data.timeSig.barLengthTicks(data.division);
     int currentBar = -1;
-    long prevEnd = 0;  // 上一个音符结束tick
+    long prevEnd = 0;
+    int lastPitch = -1;  // 上一个输出的音高，用于同音延音合并
 
     for (const auto& n : notes) {
         int bar = (int)(n.startTicks / barLen);
         if (bar != currentBar) {
             if (currentBar >= 0) os << " |\n";
             currentBar = bar;
+            lastPitch = -1;  // 跨小节重置延音
         }
-        // 休止符：与上一个音符之间有超过半拍的空隙
         long gap = n.startTicks - prevEnd;
-        if (gap >= data.division / 2 && prevEnd > 0) {
+        bool hasRest = (gap >= data.division / 2 && prevEnd > 0);
+        if (hasRest) {
             os << "0" << durationSuffix(gap, data.division) << " ";
+            lastPitch = -1;
         }
-        os << pitchToJianpu(n.pitch, key)
-           << durationSuffix(n.durationTicks, data.division) << " ";
+        // 同音连续（无间隙且音高相同）→ 延音线，不重复数字
+        if (n.pitch == lastPitch && !hasRest && gap < data.division / 4) {
+            os << "-" << durationSuffix(n.durationTicks, data.division) << " ";
+        } else {
+            os << pitchToJianpu(n.pitch, key)
+               << durationSuffix(n.durationTicks, data.division) << " ";
+            lastPitch = n.pitch;
+        }
         prevEnd = n.startTicks + n.durationTicks;
     }
     os << " |\n";

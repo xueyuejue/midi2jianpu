@@ -89,18 +89,27 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key) {
 
         int curBar = -1;
         long prevEnd = 0;
+        int lastPitch = -1;
         for (const auto& n : ns) {
             int bar = (int)(n.startTicks / barLen);
             if (bar != curBar) {
                 if (curBar >= 0) body << "<span class='bar'>|</span>";
                 curBar = bar;
+                lastPitch = -1;
             }
-            // 休止符
             long gap = n.startTicks - prevEnd;
-            if (gap >= data.division / 2 && prevEnd > 0) {
+            bool hasRest = (gap >= data.division / 2 && prevEnd > 0);
+            if (hasRest) {
                 body << "<span class='note quarter'><span class='num'>0</span></span>";
+                lastPitch = -1;
             }
-            body << noteToHtml(n.pitch, n.durationTicks, key, data.division);
+            // 同音连续 → 延音线，不重复数字
+            if (n.pitch == lastPitch && !hasRest && gap < data.division / 4) {
+                body << "<span class='ext'>-</span>";
+            } else {
+                body << noteToHtml(n.pitch, n.durationTicks, key, data.division);
+                lastPitch = n.pitch;
+            }
             prevEnd = n.startTicks + n.durationTicks;
         }
         body << "<span class='bar'>|</span></div></div>";
