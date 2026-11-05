@@ -133,6 +133,14 @@ bool loadMidiFile(const std::string& path, MidiData& out) {
                 if (ctrl == 0x0Bu) {  // Expression
                     out.dynamics.push_back({absTick, (int)val});
                 }
+                // RPN跟踪: 0x65=RPN MSB, 0x64=RPN LSB, 0x06=Data Entry MSB
+                static int rpnMSB = -1, rpnLSB = -1;
+                if (ctrl == 0x65u) rpnMSB = val;
+                else if (ctrl == 0x64u) rpnLSB = val;
+                else if (ctrl == 0x06u && rpnMSB == 0 && rpnLSB == 0) {
+                    // RPN 0x00 0x00 = 弯音范围(半音数)
+                    out.bendRange = (double)val;
+                }
             } else if (type == 0xE0u) {
                 uint8_t lsb = d[pos++];
                 uint8_t msb = d[pos++];

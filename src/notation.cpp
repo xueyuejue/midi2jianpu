@@ -228,7 +228,7 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
         double sum = 0; int count = 0;
         for (const auto& pb : data.pitchBends) {
             if (pb.tick >= start && pb.tick <= end) {
-                sum += (pb.value - 8192) / 8192.0 * 2.0;  // ±2半音范围
+                sum += (pb.value - 8192) / 8192.0 * data.bendRange;  // ±2半音范围
                 count++;
             }
         }

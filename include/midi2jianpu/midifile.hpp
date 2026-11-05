@@ -71,6 +71,7 @@ struct MidiData {
     std::vector<DynPoint> dynamics;
     std::vector<TempoPoint> tempoChanges;
     std::vector<PitchBendPoint> pitchBends;
+    double bendRange = 2.0;  // 弯音范围(半音), 默认±2, 可被RPN 0x00改变
     std::map<int, std::string> trackNames;  // 轨道名称(0x03 meta)
 };
 
