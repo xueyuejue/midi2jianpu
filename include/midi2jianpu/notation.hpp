@@ -11,8 +11,8 @@ struct KeyEstimate {
     bool isMajor = true;
 };
 
-// 根据音符序列估计主音与大小调
-KeyEstimate estimateKey(const std::vector<NoteEvent>& notes);
+// 根据 MIDI 数据估计调性（优先用内置调号，否则强拍加权猜测）
+KeyEstimate estimateKey(const MidiData& data);
 
 // 单个音高 -> 简谱片段（只含数字/升降/八度，不含时值）
 std::string pitchToJianpu(int pitch, const KeyEstimate& key);

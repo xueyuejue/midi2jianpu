@@ -24,10 +24,36 @@ std::string midiNoteName(int pitch) {
     return os.str();
 }
 
-KeyEstimate estimateKey(const std::vector<NoteEvent>& notes) {
+KeyEstimate estimateKey(const MidiData& data) {
+    // 1) 优先用 MIDI 内置调号事件
+    if (data.keySig.valid) {
+        int sf = data.keySig.sharpsFlats;
+        // 大调主音: C=0, 每升一个调号主音上移纯五度(+7半音)
+        int majorTonic = ((7 * sf) % 12 + 12) % 12;
+        KeyEstimate r;
+        r.isMajor = !data.keySig.isMinor;
+        r.tonicPitchClass = r.isMajor ? majorTonic
+                                       : (majorTonic - 3 + 12) % 12;
+        return r;
+    }
+
+    // 2) 猜测：强拍加权 + 结尾音加权
     std::map<int, double> weight;
-    for (const auto& n : notes) {
-        weight[n.pitch % 12] += n.durationSeconds;
+    double barLen = data.timeSig.barLengthTicks(data.division);
+    size_t n = data.notes.size();
+
+    for (size_t i = 0; i < n; i++) {
+        const auto& note = data.notes[i];
+        double w = note.durationSeconds;
+        // 强拍加权：落在小节第1拍或第3拍(4/4)位置
+        long posInBar = (long)(note.startTicks) % (long)barLen;
+        if (posInBar < data.division / 4 ||
+            posInBar >= barLen / 2.0 - data.division / 4) {
+            w *= 1.5;
+        }
+        // 结尾音加权：最后4个音符更可能是主音
+        if (i + 4 >= n) w *= 2.0;
+        weight[note.pitch % 12] += w;
     }
     if (weight.empty()) return KeyEstimate{};
 
@@ -36,7 +62,6 @@ KeyEstimate estimateKey(const std::vector<NoteEvent>& notes) {
     for (auto& [k, v] : weight) {
         if (v > best) { best = v; pc = k; }
     }
-
     double maj3 = weight.count((pc + 4) % 12) ? weight[(pc + 4) % 12] : 0;
     double min3 = weight.count((pc + 3) % 12) ? weight[(pc + 3) % 12] : 0;
 

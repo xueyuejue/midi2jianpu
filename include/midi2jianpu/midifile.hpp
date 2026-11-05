@@ -35,12 +35,20 @@ struct TimeSignature {
     }
 };
 
+// 调号（从 MIDI 0x59 meta 事件解析）
+struct KeySignature {
+    int sharpsFlats = 0;   // 升号数(正)或降号数(负), -7..+7
+    bool isMinor = false;
+    bool valid = false;
+};
+
 // 解析结果
 struct MidiData {
     int division = 480;            // ticks per quarter note
     std::vector<NoteEvent> notes;
     double tempo = 500000.0;
     TimeSignature timeSig;
+    KeySignature keySig;
 };
 
 bool loadMidiFile(const std::string& path, MidiData& out);

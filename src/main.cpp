@@ -34,10 +34,11 @@ int main(int argc, char** argv) {
         return 3;
     }
 
-    m2j::KeyEstimate key = m2j::estimateKey(data.notes);
+    m2j::KeyEstimate key = m2j::estimateKey(data);
+    std::string keySource = data.keySig.valid ? "(MIDI调号)" : "(自动猜测)";
     std::cout << "\n共提取 " << data.notes.size()
               << " 个音符 (division=" << data.division
-              << ", 拍号=" << data.timeSig.toString() << ")\n\n";
+              << ", 拍号=" << data.timeSig.toString() << ") " << keySource << "\n\n";
     std::cout << m2j::formatJianpu(data, key);
     return 0;
 }

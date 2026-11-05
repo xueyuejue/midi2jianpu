@@ -116,6 +116,10 @@ bool loadMidiFile(const std::string& path, MidiData& out) {
                     out.timeSig.numerator = d[pos];
                     out.timeSig.denomPow = d[pos+1];
                     out.timeSig.valid = true;
+                } else if (metaType == 0x59u && metaLen >= 2) {  // key signature
+                    out.keySig.sharpsFlats = (int8_t)d[pos];
+                    out.keySig.isMinor = d[pos+1] != 0;
+                    out.keySig.valid = true;
                 }
                 pos += metaLen;
             } else if (type == 0xB0u || type == 0xE0u) {
