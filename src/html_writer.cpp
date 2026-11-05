@@ -78,6 +78,8 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                         const std::string& title,
                         const std::vector<LyricLine>* lyricLines) {
     std::string displayTitle = title.empty() ? "简谱" : title;
+    // 加版本号, 方便确认是否加载了最新版
+    displayTitle += " v1.3.0";
     std::ostringstream body;
     double barLen = data.timeSig.barLengthTicks(data.division);
 
