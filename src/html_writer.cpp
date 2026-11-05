@@ -79,7 +79,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                         const std::vector<LyricLine>* lyricLines) {
     std::string displayTitle = title.empty() ? "简谱" : title;
     // 加版本号, 方便确认是否加载了最新版
-    displayTitle += " v1.4.0";
+    displayTitle += " v1.4.1";
     std::ostringstream body;
     double barLen = data.timeSig.barLengthTicks(data.division);
 
@@ -202,7 +202,19 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             long gap = n.startTicks - prevEnd;
             bool hasRest = (gap >= data.division / 2 && prevEnd > 0);
             if (hasRest) {
-                body << "<span class='note quarter'><span class='num'>0</span></span>";
+                // 根据休止符时长选择合适的时值类
+                double restBeats = (double)gap / data.division;
+                std::string restClass = "quarter";
+                int restExtLines = 0;
+                if (restBeats >= 3.5) { restClass = "whole"; restExtLines = 3; }
+                else if (restBeats >= 2.5) { restClass = "half"; restExtLines = 1; }
+                else if (restBeats >= 1.5) { restClass = "half"; }
+                else if (restBeats >= 0.75) { restClass = "eighth"; }
+                else if (restBeats >= 0.375) { restClass = "sixteenth"; }
+                body << "<span class='note " << restClass << "'>";
+                body << "<span class='num'>0</span>";
+                for (int i = 0; i < restExtLines; i++) body << "<span class='ext'>-</span>";
+                body << "</span>";
                 lastPitch = -1;
             }
             // 歌词显示在音符下方 (休止符和延音线不分配歌词)
