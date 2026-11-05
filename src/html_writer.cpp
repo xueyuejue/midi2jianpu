@@ -79,9 +79,16 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                         const std::vector<LyricLine>* lyricLines) {
     std::string displayTitle = title.empty() ? "简谱" : title;
     // 加版本号, 方便确认是否加载了最新版
-    displayTitle += " v1.4.1";
+    displayTitle += " v1.5.0";
     std::ostringstream body;
     double barLen = data.timeSig.barLengthTicks(data.division);
+
+    // 检测和弦
+    auto chords = detectChords(data, key);
+    std::map<long, std::string> chordByBar;
+    for (const auto& c : chords) {
+        chordByBar[c.startTick] = c.name;
+    }
 
     // 歌词对齐: 把行文本按字拆分, 对齐到该行内的音符
     // 预处理: 每行歌词的字列表
@@ -178,6 +185,12 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 curBar = bar;
                 lastPitch = -1;
                 body << "<span class='measure'>";
+                // 显示和弦标记
+                long barStart = bar * (long)barLen;
+                auto chordIt = chordByBar.find(barStart);
+                if (chordIt != chordByBar.end()) {
+                    body << "<span class='chord'>" << chordIt->second << "</span>";
+                }
                 if (!data.dynamics.empty()) {
                     int val = 80;
                     for (const auto& dp : data.dynamics) {
@@ -252,6 +265,7 @@ h1{font-size:28px;border-bottom:none;padding-bottom:4px;text-align:center;color:
 .bar{color:#999;margin:0 12px;font-weight:300}
 .dyn{font-size:16px;font-style:italic;color:#888;margin-right:8px}
 .trip{font-size:14px;color:#666;margin-right:2px}
+.chord{font-size:16px;font-weight:600;color:#b03030;margin-right:8px;margin-bottom:4px;display:block}
 .lyric{display:block;font-size:15px;color:#666;text-align:center;margin-top:6px;min-height:20px}
 .final-bar{display:inline-block;width:3px;height:36px;background:#333;margin-left:8px;vertical-align:middle}
 .final-bar::after{content:"";display:block;width:5px;height:36px;background:#333;margin-left:5px;margin-top:-36px}

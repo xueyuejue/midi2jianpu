@@ -17,6 +17,8 @@ static void printHelp() {
         "  midi2jianpu <input.mid> --key Am         手动指定调性(如 Am=小调, C=大调)\n"
         "  midi2jianpu <input.mid> --output out.txt  文本简谱输出到文件\n"
         "  midi2jianpu <input.mid> --track 0         只输出指定轨道\n"
+        "  midi2jianpu <input.mid> --transpose +2     移调(半音, 正负都可)\n"
+        "  midi2jianpu <input.mid> --lyrics lyrics.lrc  加载歌词\n"
         "  midi2jianpu --help\n";
 }
 
@@ -43,6 +45,7 @@ int main(int argc, char** argv) {
 
     std::string input, htmlOut, keyArg, txtOut, xmlOut, lyricsPath;
     int trackFilter = -1;
+    int transpose = 0;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--help" || a == "-h") { printHelp(); return 0; }
@@ -52,6 +55,7 @@ int main(int argc, char** argv) {
         else if (a == "--musicxml" && i + 1 < argc) { xmlOut = argv[++i]; }
         else if (a == "--lyrics" && i + 1 < argc) { lyricsPath = argv[++i]; }
         else if (a == "--track" && i + 1 < argc) { trackFilter = std::stoi(argv[++i]); }
+        else if (a == "--transpose" && i + 1 < argc) { transpose = std::stoi(argv[++i]); }
         else if (a.substr(0, 2) != "--") input = a;
     }
     if (input.empty()) { printHelp(); return 1; }
@@ -69,6 +73,12 @@ int main(int argc, char** argv) {
         for (auto& n : data.notes) if (n.track == trackFilter) filtered.push_back(n);
         data.notes = filtered;
         if (data.notes.empty()) { std::cerr << "轨道 " << trackFilter << " 无音符。\n"; return 4; }
+    }
+
+    // --transpose 移调
+    if (transpose != 0) {
+        for (auto& n : data.notes) n.pitch += transpose;
+        std::cout << "移调: " << (transpose > 0 ? "+" : "") << transpose << " 半音\n";
     }
 
     m2j::KeyEstimate key;
