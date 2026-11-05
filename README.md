@@ -27,8 +27,12 @@
 - [x] 休止符 `0`
 - [x] 高低八度点、升降号 `#`/`b`
 - [x] 强弱记号（从 MIDI Expression 解析：pp/p/mp/mf/f/ff）
+- [x] 三连音自动识别（连续3个等长音符，组内不做同音合并）
+- [x] 弯音轮修正（Pitch Bend 平均偏移 ±0.5 半音以上修正音高）
 - [x] **HTML 谱面导出**：自包含网页，浏览器打开即可打印 PDF
+- [x] **MusicXML 导出**：`--musicxml out.xml`，可被 MuseScore 打开继续编辑
 - [x] 文本输出到文件：`--output out.txt`
+- [x] 多轨选择：`--track 0`
 - [x] 22 项单元测试
 
 ## 使用
@@ -90,10 +94,11 @@ python python/midi2jianpu.py 你的歌.mid
 ## 路线图
 
 - [x] 在线网页版（[GitHub Pages](https://xueyuejue.github.io/midi2jianpu/)，纯 JS 解析）
-- [ ] 三连音/连音组自动识别
-- [ ] 弯音轮（Pitch Bend）音高修正
-- [ ] MusicXML 导出（兼容 MuseScore）
-- [ ] PNG 谱面导出
+- [x] MusicXML 导出（可被 MuseScore 打开）
+- [ ] 三连音 MusicXML `<time-modification>` 元素
+- [ ] RPN/NRPN 解析弯音范围（当前默认 ±2 半音）
+- [ ] PNG 谱面导出（浏览器 canvas 截图）
+- [ ] WASM 编译（浏览器内 C++ 核心）
 
 ## 为什么开源
 
