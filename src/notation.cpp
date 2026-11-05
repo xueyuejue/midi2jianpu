@@ -143,6 +143,27 @@ static std::string dynAt(long tick, const MidiData& data) {
     return "ff";
 }
 
+// 检测三连音: 连续3个等长音符(误差10%), 每个约0.5-0.8拍
+static std::vector<bool> detectTriplets(const std::vector<NoteEvent>& notes, int division) {
+    std::vector<bool> isTriplet(notes.size(), false);
+    double beat = division;  // 1拍 = division ticks
+    for (size_t i = 0; i + 2 < notes.size(); i++) {
+        double d1 = notes[i].durationTicks / beat;
+        double d2 = notes[i+1].durationTicks / beat;
+        double d3 = notes[i+2].durationTicks / beat;
+        // 三个时值相近
+        double avg = (d1 + d2 + d3) / 3;
+        if (avg < 0.25 || avg > 0.9) continue;
+        if (std::abs(d1 - d2) / avg > 0.15) continue;
+        if (std::abs(d2 - d3) / avg > 0.15) continue;
+        // 三个连续无间隙
+        if (notes[i+1].startTicks - notes[i].startTicks > notes[i].durationTicks * 1.1) continue;
+        if (notes[i+2].startTicks - notes[i+1].startTicks > notes[i+1].durationTicks * 1.1) continue;
+        isTriplet[i] = isTriplet[i+1] = isTriplet[i+2] = true;
+    }
+    return isTriplet;
+}
+
 // 输出单个轨的简谱，返回该轨输出文本
 static std::string formatTrack(
     const std::vector<NoteEvent>& notes,
@@ -154,36 +175,39 @@ static std::string formatTrack(
     long prevEnd = 0;
     int lastPitch = -1;
     std::string lastDyn;
+    auto triplets = detectTriplets(notes, data.division);
+    bool inTriplet = false;
 
-    for (const auto& n : notes) {
+    for (size_t idx = 0; idx < notes.size(); idx++) {
+        const auto& n = notes[idx];
         int bar = (int)(n.startTicks / barLen);
         if (bar != currentBar) {
             if (currentBar >= 0) os << " |\n";
             currentBar = bar;
             lastPitch = -1;
-            // 小节开头：力度变化时插入动态标记
             std::string d = dynAt(n.startTicks, data);
             if (!d.empty() && d != lastDyn) {
                 os << "[" << d << "] ";
                 lastDyn = d;
             }
         }
+        // 三连音边界
+        if (triplets[idx] && !inTriplet) { os << "3("; inTriplet = true; }
+        if (!triplets[idx] && inTriplet) { os << ") "; inTriplet = false; }
+
         long gap = n.startTicks - prevEnd;
         bool hasRest = (gap >= data.division / 2 && prevEnd > 0);
-        if (hasRest) {
-            os << "0" << durationSuffix(gap, data.division) << " ";
-            lastPitch = -1;
-        }
-        // 同音连续（无间隙且音高相同）→ 延音线，不重复数字
-        if (n.pitch == lastPitch && !hasRest && gap < data.division / 4) {
-            os << "-" << durationSuffix(n.durationTicks, data.division) << " ";
+        if (hasRest) { os << "0 "; lastPitch = -1; }
+        // 三连音组内不做同音合并
+        if (!triplets[idx] && n.pitch == lastPitch && !hasRest && gap < data.division / 4) {
+            os << "- ";
         } else {
-            os << pitchToJianpu(n.pitch, key)
-               << durationSuffix(n.durationTicks, data.division) << " ";
+            os << pitchToJianpu(n.pitch, key) << " ";
             lastPitch = n.pitch;
         }
         prevEnd = n.startTicks + n.durationTicks;
     }
+    if (inTriplet) os << ")";
     os << " |\n";
     return os.str();
 }
