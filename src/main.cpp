@@ -14,6 +14,7 @@ static void printHelp() {
         "  midi2jianpu <input.mid>                 打印文本简谱\n"
         "  midi2jianpu <input.mid> --html out.html 导出 HTML 谱面\n"
         "  midi2jianpu <input.mid> --key Am         手动指定调性(如 Am=小调, C=大调)\n"
+        "  midi2jianpu <input.mid> --output out.txt  文本简谱输出到文件\n"
         "  midi2jianpu --help\n";
 }
 
@@ -38,12 +39,13 @@ static bool parseKey(const std::string& s, m2j::KeyEstimate& out) {
 int main(int argc, char** argv) {
     if (argc < 2) { printHelp(); return 1; }
 
-    std::string input, htmlOut, keyArg;
+    std::string input, htmlOut, keyArg, txtOut;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--help" || a == "-h") { printHelp(); return 0; }
         else if (a == "--html" && i + 1 < argc) { htmlOut = argv[++i]; }
         else if (a == "--key" && i + 1 < argc) { keyArg = argv[++i]; }
+        else if (a == "--output" && i + 1 < argc) { txtOut = argv[++i]; }
         else if (a.substr(0, 2) != "--") input = a;
     }
     if (input.empty()) { printHelp(); return 1; }
@@ -64,15 +66,21 @@ int main(int argc, char** argv) {
         keySource = data.keySig.valid ? "(MIDI调号)" : "(自动猜测)";
     }
 
-    std::cout << "\n共提取 " << data.notes.size()
-              << " 个音符 (division=" << data.division
-              << ", 拍号=" << data.timeSig.toString() << ") " << keySource << "\n\n";
-    std::cout << m2j::formatJianpu(data, key);
+    std::string jianpu = m2j::formatJianpu(data, key);
+    std::string header = "\n共提取 " + std::to_string(data.notes.size())
+              + " 个音符 (division=" + std::to_string(data.division)
+              + ", 拍号=" + data.timeSig.toString() + ") " + keySource + "\n\n";
+    std::cout << header << jianpu;
 
+    if (!txtOut.empty()) {
+        std::ofstream f(txtOut);
+        f << header << jianpu;
+        std::cout << "文本简谱已写入: " << txtOut << "\n";
+    }
     if (!htmlOut.empty()) {
         std::ofstream f(htmlOut);
         f << m2j::renderHtml(data, key);
-        std::cout << "\nHTML 谱面已写入: " << htmlOut << "\n";
+        std::cout << "HTML 谱面已写入: " << htmlOut << "\n";
     }
     return 0;
 }
