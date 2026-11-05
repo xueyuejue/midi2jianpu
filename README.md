@@ -67,16 +67,21 @@ cmake --build build
 
 打开 `简谱.html` 即可在浏览器查看、打印为 PDF。示例见 [example.html](example.html)。
 
-### Python 参考实现
+## 输出示例
 
-`python/` 目录下保留了等价的 Python 原型，用于算法对照：
-
-```bash
-pip install -r python/requirements.txt
-python python/midi2jianpu.py 你的歌.mid
+```
+1 = C 大调    4/4
+----------------------------------------
+[旋律轨] (7 音符)
+1 0 3 4  |
+5 6 7 1'  |
+[伴奏轨1] (2 音符)
+1,- 5-  |
 ```
 
-## 输出示例
+记谱约定：数字为唱名（1=do），`'` 高八度，`,` 低八度，`#`/`b` 升降半音，`0` 休止，`-` 延长一拍。
+
+## 技术选型
 
 ```
 1 = C 大调    4/4
