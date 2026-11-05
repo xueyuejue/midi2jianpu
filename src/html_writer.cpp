@@ -112,11 +112,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             else break;
         }
         if (bestLine < 0) return "";
-        // 如果上一行还有剩余字，继续分配（不换行）
-        if (curLineIdx >= 0 && curCharIdx < (int)lineSyls[curLineIdx].second.size() && bestLine != curLineIdx) {
-            return lineSyls[curLineIdx].second[curCharIdx++];
-        }
-        // 只有真正换行了才重置字索引
+        // 换行了就重置字索引
         if (bestLine != curLineIdx) {
             curLineIdx = bestLine;
             curCharIdx = 0;
