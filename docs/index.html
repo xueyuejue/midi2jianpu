@@ -50,6 +50,7 @@ h1{font-size:24px;border-bottom:3px solid #333;padding-bottom:10px;margin-bottom
   </select>
   <button id="lyricsBtn">上传歌词 (.lrc)</button>
   <input type="file" id="lyricsFile" accept=".lrc,.json" style="display:none">
+  <button id="copyText" style="display:none">复制简谱文本</button>
   <button id="downloadPng" style="display:none">下载 PNG 谱面</button>
 </div>
 <div class="meta" id="meta"></div>
@@ -151,6 +152,7 @@ function convert() {
     document.getElementById('score').innerHTML = html;
     document.getElementById('score').style.display = 'block';
     document.getElementById('downloadPng').style.display = 'inline-block';
+    document.getElementById('copyText').style.display = 'inline-block';
     document.getElementById('err').style.display = 'none';
 
     // 提取元信息
@@ -181,6 +183,50 @@ document.getElementById('downloadPng').onclick = function() {
     a.download = 'jianpu.png';
     a.href = canvas.toDataURL('image/png');
     a.click();
+  });
+};
+
+// 复制简谱文本
+document.getElementById('copyText').onclick = function() {
+  const el = document.getElementById('score');
+  // 从HTML中提取文本简谱
+  const measures = el.querySelectorAll('.measure');
+  let text = '';
+  // 提取标题和元信息
+  const h1 = el.querySelector('h1');
+  const meta = el.querySelector('.meta');
+  if (h1) text += h1.textContent + '\n';
+  if (meta) text += meta.textContent + '\n';
+  text += '-'.repeat(40) + '\n';
+  // 提取每个小节的音符
+  measures.forEach(m => {
+    let line = '';
+    const notes = m.querySelectorAll('.note');
+    notes.forEach(n => {
+      const num = n.querySelector('.num');
+      const lyric = n.querySelector('.lyric');
+      if (num) {
+        let s = num.textContent;
+        // 检查高音点/低音点
+        if (n.classList.contains('dot-above')) s += "'";
+        if (n.classList.contains('dot-below')) s += ',';
+        line += s + ' ';
+      }
+      const exts = n.querySelectorAll('.ext');
+      exts.forEach(e => { line += e.textContent + ' '; });
+    });
+    const exts = m.querySelectorAll('.ext');
+    exts.forEach(e => { line += e.textContent + ' '; });
+    if (line.trim()) text += line.trim() + '  |\n';
+  });
+  // 复制到剪贴板
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.getElementById('copyText');
+    const old = btn.textContent;
+    btn.textContent = '已复制!';
+    setTimeout(() => btn.textContent = old, 1500);
+  }).catch(() => {
+    alert('复制失败，请手动选择文本复制');
   });
 };
 </script>
