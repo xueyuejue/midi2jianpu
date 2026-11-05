@@ -50,6 +50,7 @@ h1{font-size:24px;border-bottom:3px solid #333;padding-bottom:10px;margin-bottom
   </select>
   <button id="lyricsBtn">上传歌词 (.lrc)</button>
   <input type="file" id="lyricsFile" accept=".lrc,.json" style="display:none">
+  <button id="playBtn" style="display:none">播放</button>
   <button id="copyText" style="display:none">复制简谱文本</button>
   <button id="downloadPng" style="display:none">下载 PNG 谱面</button>
 </div>
@@ -153,6 +154,7 @@ function convert() {
     document.getElementById('score').style.display = 'block';
     document.getElementById('downloadPng').style.display = 'inline-block';
     document.getElementById('copyText').style.display = 'inline-block';
+    document.getElementById('playBtn').style.display = 'inline-block';
     document.getElementById('err').style.display = 'none';
 
     // 提取元信息
@@ -229,6 +231,91 @@ document.getElementById('copyText').onclick = function() {
     alert('复制失败，请手动选择文本复制');
   });
 };
+
+// 播放功能
+let audioCtx = null;
+let isPlaying = false;
+let playTimeout = null;
+
+document.getElementById('playBtn').onclick = function() {
+  if (!wasmMod || !midiBytes) return;
+  if (isPlaying) {
+    stopPlayback();
+    return;
+  }
+  startPlayback();
+};
+
+function startPlayback() {
+  try {
+    // 从WASM获取音符JSON
+    const ptr = wasmMod._malloc(midiBytes.length);
+    wasmMod.HEAPU8.set(midiBytes, ptr);
+    wasmMod._midi2jianpu_get_notes_json(ptr, midiBytes.length);
+    const len = wasmMod._midi2jianpu_result_len();
+    const buf = wasmMod._malloc(len + 1);
+    wasmMod._midi2jianpu_copy_result(buf, len + 1);
+    const jsonStr = wasmMod.UTF8ToString(buf);
+    wasmMod._free(ptr);
+    wasmMod._free(buf);
+
+    const notes = JSON.parse(jsonStr);
+    if (notes.length === 0) return;
+
+    // 创建AudioContext
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+
+    const now = audioCtx.currentTime;
+    let maxEnd = 0;
+
+    // 播放每个音符
+    notes.forEach(note => {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      // MIDI音高转频率: 440 * 2^((pitch-69)/12)
+      const freq = 440 * Math.pow(2, (note.pitch - 69) / 12);
+      osc.frequency.value = freq;
+      osc.type = 'triangle';
+      // 包络: 快速起音, 缓慢衰减
+      const start = now + note.time;
+      const dur = Math.max(note.duration, 0.1);
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(0.3, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.01, start + dur);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(start);
+      osc.stop(start + dur);
+      maxEnd = Math.max(maxEnd, start + dur);
+    });
+
+    isPlaying = true;
+    const btn = document.getElementById('playBtn');
+    btn.textContent = '停止';
+    // 播放结束后恢复按钮
+    playTimeout = setTimeout(() => {
+      stopPlayback();
+    }, (maxEnd - now) * 1000 + 500);
+  } catch (e) {
+    alert('播放失败: ' + e.message);
+  }
+}
+
+function stopPlayback() {
+  isPlaying = false;
+  if (playTimeout) {
+    clearTimeout(playTimeout);
+    playTimeout = null;
+  }
+  // 停止所有正在播放的音符
+  if (audioCtx) {
+    audioCtx.close();
+    audioCtx = null;
+  }
+  const btn = document.getElementById('playBtn');
+  btn.textContent = '播放';
+}
 </script>
 <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 </body>
