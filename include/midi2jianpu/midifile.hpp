@@ -61,6 +61,24 @@ struct PitchBendPoint {
     int value;  // 0-16383, 8192=无弯音
 };
 
+// 歌词事件（从 MIDI 0x05 lyric 解析）
+struct LyricEvent {
+    long tick;
+    std::string text;
+};
+
+// 文本事件（从 MIDI 0x01 text 解析）
+struct TextEvent {
+    long tick;
+    std::string text;
+};
+
+// 标记事件（从 MIDI 0x06 marker 解析）
+struct MarkerEvent {
+    long tick;
+    std::string text;
+};
+
 // 解析结果
 struct MidiData {
     int division = 480;
@@ -73,8 +91,14 @@ struct MidiData {
     std::vector<PitchBendPoint> pitchBends;
     double bendRange = 2.0;  // 弯音范围(半音), 默认±2, 可被RPN 0x00改变
     std::map<int, std::string> trackNames;  // 轨道名称(0x03 meta)
+    std::vector<LyricEvent> midiLyrics;     // MIDI内置歌词(0x05 meta)
+    std::vector<TextEvent> textEvents;      // 文本事件(0x01 meta)
+    std::vector<MarkerEvent> markers;       // 标记事件(0x06 meta)
 };
 
 bool loadMidiFile(const std::string& path, MidiData& out);
+
+// 从内存加载MIDI
+bool loadMidiFromMemory(const uint8_t* data, size_t size, MidiData& out);
 
 } // namespace m2j

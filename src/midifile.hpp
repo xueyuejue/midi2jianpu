@@ -1,0 +1,104 @@
+#pragma once
+// midifile.hpp - 标准 MIDI 文件(SMF)解析
+// 手写二进制解析，不依赖第三方库。提取音符事件、拍号、速度。
+#include <cstdint>
+#include <string>
+#include <vector>
+#include <map>
+
+namespace m2j {
+
+// 单个音符事件
+struct NoteEvent {
+    double startSeconds;
+    double durationSeconds;
+    long startTicks = 0;      // 起始 tick（用于划分小节）
+    long durationTicks = 0;    // 持续 tick
+    int pitch;
+    int channel;
+    int track;
+};
+
+// 拍号（从 MIDI 0x58 meta 事件解析）
+struct TimeSignature {
+    int numerator = 4;     // 分子
+    int denomPow = 2;      // 分母 = 2^denomPow（2=四分音符为一拍, 3=八分, 1=二分）
+    bool valid = false;
+
+    int beatsPerBar() const { return numerator; }
+    double barLengthTicks(long division) const {
+        double oneBeat = division * 4.0 / (1 << denomPow);
+        return oneBeat * numerator;
+    }
+    std::string toString() const {
+        return std::to_string(numerator) + "/" +
+               std::to_string(1 << denomPow);
+    }
+};
+
+// 调号（从 MIDI 0x59 meta 事件解析）
+struct KeySignature {
+    int sharpsFlats = 0;   // 升号数(正)或降号数(负), -7..+7
+    bool isMinor = false;
+    bool valid = false;
+};
+
+// 力度变化点（从 CC 0x0B Expression 解析）
+struct DynPoint {
+    long tick;
+    int value;
+};
+
+// 速度变化点（从 0x51 set_tempo 解析）
+struct TempoPoint {
+    long tick;
+    double bpm;  // 每分钟拍数
+};
+
+// 弯音轮事件（从 0xE0 解析，14位值，中心8192）
+struct PitchBendPoint {
+    long tick;
+    int value;  // 0-16383, 8192=无弯音
+};
+
+// 歌词事件（从 MIDI 0x05 lyric 解析）
+struct LyricEvent {
+    long tick;
+    std::string text;
+};
+
+// 文本事件（从 MIDI 0x01 text 解析）
+struct TextEvent {
+    long tick;
+    std::string text;
+};
+
+// 标记事件（从 MIDI 0x06 marker 解析）
+struct MarkerEvent {
+    long tick;
+    std::string text;
+};
+
+// 解析结果
+struct MidiData {
+    int division = 480;
+    std::vector<NoteEvent> notes;
+    double tempo = 500000.0;
+    TimeSignature timeSig;
+    KeySignature keySig;
+    std::vector<DynPoint> dynamics;
+    std::vector<TempoPoint> tempoChanges;
+    std::vector<PitchBendPoint> pitchBends;
+    double bendRange = 2.0;  // 弯音范围(半音), 默认±2, 可被RPN 0x00改变
+    std::map<int, std::string> trackNames;  // 轨道名称(0x03 meta)
+    std::vector<LyricEvent> midiLyrics;     // MIDI内置歌词(0x05 meta)
+    std::vector<TextEvent> textEvents;      // 文本事件(0x01 meta)
+    std::vector<MarkerEvent> markers;       // 标记事件(0x06 meta)
+};
+
+bool loadMidiFile(const std::string& path, MidiData& out);
+
+// 从内存加载MIDI
+bool loadMidiFromMemory(const uint8_t* data, size_t size, MidiData& out);
+
+} // namespace m2j

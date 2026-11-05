@@ -27,19 +27,13 @@ static uint32_t readVarLen(const uint8_t* data, size_t size, size_t& pos) {
     return value;
 }
 
-bool loadMidiFile(const std::string& path, MidiData& out) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) return false;
-    std::string buf((std::istreambuf_iterator<char>(f)),
-                    std::istreambuf_iterator<char>());
-    if (buf.size() < 14) return false;
-
-    const uint8_t* d = reinterpret_cast<const uint8_t*>(buf.data());
-    size_t size = buf.size();
+// 核心解析：从内存buffer解析MIDI
+static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
+    if (size < 14) return false;
     size_t pos = 0;
 
     // ---- Header MThd ----
-    if (std::memcmp(buf.data(), "MThd", 4) != 0) return false;
+    if (std::memcmp(d, "MThd", 4) != 0) return false;
     pos = 4;
     uint32_t hdrLen = rd32(d + pos); pos += 4;
     pos += 2;                       // format
@@ -56,7 +50,7 @@ bool loadMidiFile(const std::string& path, MidiData& out) {
     };
 
     // ---- 逐轨 ----
-    while (pos + 8 <= size && std::memcmp(buf.data() + pos, "MTrk", 4) == 0) {
+    while (pos + 8 <= size && std::memcmp(d + pos, "MTrk", 4) == 0) {
         pos += 4;
         uint32_t trkLen = rd32(d + pos); pos += 4;
         size_t trkEnd = pos + trkLen;
@@ -125,6 +119,26 @@ bool loadMidiFile(const std::string& path, MidiData& out) {
                 } else if (metaType == 0x03u) {  // track name
                     std::string name((const char*)&d[pos], metaLen);
                     out.trackNames[trackIdx] = name;
+                } else if (metaType == 0x04u) {  // instrument name
+                    std::string name((const char*)&d[pos], metaLen);
+                    // 存到轨道名称中，如果轨道名为空
+                    if (out.trackNames[trackIdx].empty()) {
+                        out.trackNames[trackIdx] = name;
+                    }
+                } else if (metaType == 0x05u) {  // lyric event
+                    std::string lyric((const char*)&d[pos], metaLen);
+                    out.midiLyrics.push_back({absTick, lyric});
+                } else if (metaType == 0x01u) {  // text event
+                    std::string text((const char*)&d[pos], metaLen);
+                    // 只存非空的文本
+                    if (!text.empty() && text.length() < 100) {
+                        out.textEvents.push_back({absTick, text});
+                    }
+                } else if (metaType == 0x06u) {  // marker
+                    std::string marker((const char*)&d[pos], metaLen);
+                    if (!marker.empty()) {
+                        out.markers.push_back({absTick, marker});
+                    }
                 }
                 pos += metaLen;
             } else if (type == 0xB0u) {
@@ -162,6 +176,18 @@ bool loadMidiFile(const std::string& path, MidiData& out) {
               });
     out.tempo = tempo;
     return true;
+}
+
+bool loadMidiFile(const std::string& path, MidiData& out) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    std::string buf((std::istreambuf_iterator<char>(f)),
+                    std::istreambuf_iterator<char>());
+    return parseBuffer(reinterpret_cast<const uint8_t*>(buf.data()), buf.size(), out);
+}
+
+bool loadMidiFromMemory(const uint8_t* data, size_t size, MidiData& out) {
+    return parseBuffer(data, size, out);
 }
 
 } // namespace m2j
