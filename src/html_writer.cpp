@@ -191,19 +191,20 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
          << "<title>" << displayTitle << "</title>"
          << R"(<link rel='icon' href='data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>1</text></svg>'><style>
 body{font-family:"Noto Serif SC","SimSun",serif;max-width:900px;margin:40px auto;background:#fafafa;color:#222}
-h1{font-size:22px;border-bottom:2px solid #333;padding-bottom:8px}
-.meta{color:#666;margin-bottom:20px;font-size:14px}
-.track{background:#fff;border:1px solid #ddd;border-radius:8px;padding:16px 24px;margin-bottom:16px}
-.track h3{margin:0 0 12px;font-size:15px;color:#444}
+h1{font-size:24px;border-bottom:none;padding-bottom:8px;text-align:center;color:#b03030;margin-bottom:4px}
+.meta{color:#666;margin-bottom:24px;font-size:14px;text-align:center}
+.track{background:#fff;border:1px solid #ddd;border-radius:8px;padding:20px 32px;margin-bottom:16px}
+.track h3{margin:0 0 12px;font-size:15px;color:#444;text-align:center}
 .track h3 small{color:#999;font-weight:normal}
-.staff{font-size:24px;line-height:2.2;padding:10px 0}
-.measure{display:inline-block;margin:0 4px 8px 0;padding:0 2px;white-space:nowrap}
-.note{display:inline-block;position:relative;margin:0 3px;text-align:center;min-width:18px}
+.staff{font-size:24px;line-height:2.4;padding:10px 0}
+.measure{display:inline-block;margin:0 2px 8px 0;padding:0 4px 0 6px;white-space:nowrap;border-left:1px solid #ccc}
+.measure:first-child{border-left:none}
+.note{display:inline-block;position:relative;margin:0 4px;text-align:center;min-width:20px}
 .num{font-weight:600}
 .bar{color:#999;margin:0 12px;font-weight:300}
 .dyn{font-size:16px;font-style:italic;color:#888;margin-right:8px}
 .trip{font-size:14px;color:#666;margin-right:2px}
-.lyric{display:block;font-size:14px;color:#555;text-align:center;margin-top:2px;min-height:18px}
+.lyric{display:block;font-size:14px;color:#555;text-align:center;margin-top:2px;min-height:20px}
 .footer{color:#999;font-size:12px;text-align:center;margin-top:20px}
 @media print{
   body{background:#fff;padding:0}
