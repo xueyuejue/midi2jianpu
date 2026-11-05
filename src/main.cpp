@@ -100,7 +100,15 @@ int main(int argc, char** argv) {
         if (dot != std::string::npos) title = title.substr(0, dot);
         std::vector<m2j::LyricSyllable> lyrics;
         if (!lyricsPath.empty()) {
-            lyrics = m2j::parseLyrics(lyricsPath, data.division);
+            // 自动识别格式: .json 或 .lrc
+            size_t dot = lyricsPath.find_last_of(".");
+            std::string ext = (dot != std::string::npos) ? lyricsPath.substr(dot) : "";
+            if (ext == ".lrc" || ext == ".LRC") {
+                int bpm = (int)(60000000.0 / data.tempo);
+                lyrics = m2j::parseLrc(lyricsPath, data.division, bpm);
+            } else {
+                lyrics = m2j::parseLyrics(lyricsPath, data.division);
+            }
             std::cout << "歌词已加载: " << lyrics.size() << " 字\n";
         }
         f << m2j::renderHtml(data, key, title, lyrics.empty() ? nullptr : &lyrics);

@@ -38,4 +38,7 @@ struct LyricSyllable {
 // 解析歌词JSON文件，返回按tick排序的歌词字列表
 std::vector<LyricSyllable> parseLyrics(const std::string& jsonPath, int division);
 
+// 解析LRC歌词文件（[mm:ss.xx]歌词），返回按tick排序的歌词字列表
+std::vector<LyricSyllable> parseLrc(const std::string& lrcPath, int division, int bpm);
+
 } // namespace m2j
