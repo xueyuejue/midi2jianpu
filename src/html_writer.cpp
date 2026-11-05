@@ -153,6 +153,12 @@ h1{font-size:22px;border-bottom:2px solid #333;padding-bottom:8px}
 .num{font-weight:600}
 .bar{color:#999;margin:0 12px;font-weight:300}
 .dyn{font-size:16px;font-style:italic;color:#888;margin-right:8px}
+.footer{color:#999;font-size:12px;text-align:center;margin-top:20px}
+@media print{
+  body{background:#fff;padding:0}
+  .track-card{border:none;page-break-inside:avoid}
+  .measure{page-break-inside:avoid}
+}
 .dot-above::before{content:"";position:absolute;top:-4px;left:50%;transform:translateX(-50%);width:7px;height:7px;border-radius:50%;background:#222}
 .dot-above2::before{top:-16px}
 .dot-below::after{content:"";position:absolute;bottom:-4px;left:50%;transform:translateX(-50%);width:7px;height:7px;border-radius:50%;background:#222}
