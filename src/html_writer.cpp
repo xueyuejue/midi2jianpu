@@ -90,12 +90,29 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key) {
         int curBar = -1;
         long prevEnd = 0;
         int lastPitch = -1;
+        std::string lastDyn;
         for (const auto& n : ns) {
             int bar = (int)(n.startTicks / barLen);
             if (bar != curBar) {
                 if (curBar >= 0) body << "<span class='bar'>|</span>";
                 curBar = bar;
                 lastPitch = -1;
+                // 小节开头动态标记
+                if (!data.dynamics.empty()) {
+                    int val = 80;
+                    for (const auto& dp : data.dynamics) {
+                        if (dp.tick <= n.startTicks) val = dp.value; else break;
+                    }
+                    const char* dyn = "mf";
+                    if (val < 20) dyn = "pp"; else if (val < 40) dyn = "p";
+                    else if (val < 60) dyn = "mp"; else if (val < 80) dyn = "mf";
+                    else if (val < 100) dyn = "f"; else dyn = "ff";
+                    std::string ds = dyn;
+                    if (ds != lastDyn) {
+                        body << "<span class='dyn'>" << dyn << "</span>";
+                        lastDyn = ds;
+                    }
+                }
             }
             long gap = n.startTicks - prevEnd;
             bool hasRest = (gap >= data.division / 2 && prevEnd > 0);
@@ -128,6 +145,7 @@ h1{font-size:22px;border-bottom:2px solid #333;padding-bottom:8px}
 .note{display:inline-block;position:relative;margin:0 10px;text-align:center;min-width:28px}
 .num{font-weight:600}
 .bar{color:#999;margin:0 12px;font-weight:300}
+.dyn{font-size:16px;font-style:italic;color:#888;margin-right:8px}
 .dot-above::before{content:"";position:absolute;top:-4px;left:50%;transform:translateX(-50%);width:7px;height:7px;border-radius:50%;background:#222}
 .dot-above2::before{top:-16px}
 .dot-below::after{content:"";position:absolute;bottom:-4px;left:50%;transform:translateX(-50%);width:7px;height:7px;border-radius:50%;background:#222}

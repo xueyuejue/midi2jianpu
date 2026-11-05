@@ -42,13 +42,20 @@ struct KeySignature {
     bool valid = false;
 };
 
+// 力度变化点（从 CC 0x0B Expression 解析）
+struct DynPoint {
+    long tick;         // 时间位置
+    int value;         // 0-127
+};
+
 // 解析结果
 struct MidiData {
-    int division = 480;            // ticks per quarter note
+    int division = 480;
     std::vector<NoteEvent> notes;
     double tempo = 500000.0;
     TimeSignature timeSig;
     KeySignature keySig;
+    std::vector<DynPoint> dynamics;  // 力度变化曲线
 };
 
 bool loadMidiFile(const std::string& path, MidiData& out);

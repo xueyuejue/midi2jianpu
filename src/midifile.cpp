@@ -122,12 +122,18 @@ bool loadMidiFile(const std::string& path, MidiData& out) {
                     out.keySig.valid = true;
                 }
                 pos += metaLen;
-            } else if (type == 0xB0u || type == 0xE0u) {
+            } else if (type == 0xB0u) {
+                uint8_t ctrl = d[pos++];
+                uint8_t val = d[pos++];
+                if (ctrl == 0x0Bu) {  // Expression
+                    out.dynamics.push_back({absTick, (int)val});
+                }
+            } else if (type == 0xE0u) {
                 pos += 2;
             } else if (type == 0xC0u || type == 0xDu) {
                 pos += 1;
             } else {
-                pos += 1;  // 兜底跳过一字节
+                pos += 1;
             }
         }
         pos = trkEnd;

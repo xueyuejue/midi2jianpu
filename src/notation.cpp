@@ -127,6 +127,22 @@ std::string durationSuffix(long durationTicks, int division) {
     return best;
 }
 
+// 查询某 tick 位置的当前力度（从 dynamics 曲线），映射为简谱动态标记
+static std::string dynAt(long tick, const MidiData& data) {
+    if (data.dynamics.empty()) return "";
+    int val = 80;  // 默认 mf
+    for (const auto& dp : data.dynamics) {
+        if (dp.tick <= tick) val = dp.value;
+        else break;
+    }
+    if (val < 20) return "pp";
+    if (val < 40) return "p";
+    if (val < 60) return "mp";
+    if (val < 80) return "mf";
+    if (val < 100) return "f";
+    return "ff";
+}
+
 // 输出单个轨的简谱，返回该轨输出文本
 static std::string formatTrack(
     const std::vector<NoteEvent>& notes,
@@ -136,14 +152,21 @@ static std::string formatTrack(
     double barLen = data.timeSig.barLengthTicks(data.division);
     int currentBar = -1;
     long prevEnd = 0;
-    int lastPitch = -1;  // 上一个输出的音高，用于同音延音合并
+    int lastPitch = -1;
+    std::string lastDyn;
 
     for (const auto& n : notes) {
         int bar = (int)(n.startTicks / barLen);
         if (bar != currentBar) {
             if (currentBar >= 0) os << " |\n";
             currentBar = bar;
-            lastPitch = -1;  // 跨小节重置延音
+            lastPitch = -1;
+            // 小节开头：力度变化时插入动态标记
+            std::string d = dynAt(n.startTicks, data);
+            if (!d.empty() && d != lastDyn) {
+                os << "[" << d << "] ";
+                lastDyn = d;
+            }
         }
         long gap = n.startTicks - prevEnd;
         bool hasRest = (gap >= data.division / 2 && prevEnd > 0);
