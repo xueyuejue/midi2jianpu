@@ -32,6 +32,7 @@
 - [x] **HTML 谱面导出**：自包含网页，浏览器打开即可打印 PDF
 - [x] **MusicXML 导出**：`--musicxml out.xml`，含调号/拍号/附点/三连音/休止符，可被 MuseScore 打开
 - [x] 弯音轮修正（Pitch Bend + RPN 弯音范围解析）
+- [x] **歌词写入**：`--lyrics lyrics.lrc` 支持 LRC/JSON 格式，按音符精确对齐
 - [x] 文本输出到文件：`--output out.txt`
 - [x] 多轨选择：`--track 0`
 - [x] 26 项单元测试
@@ -59,6 +60,9 @@ cmake --build build
 
 # 文本和HTML同时输出到文件
 ./build/midi2jianpu 你的歌.mid --key Em --output 简谱.txt --html 简谱.html
+
+# 带歌词（LRC格式，用户普遍有）
+./build/midi2jianpu 人声.mid --key Em --html 带歌词简谱.html --lyrics lyrics.lrc
 ```
 
 打开 `简谱.html` 即可在浏览器查看、打印为 PDF。示例见 [example.html](example.html)。

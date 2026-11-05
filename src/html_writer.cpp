@@ -209,7 +209,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             }
             prevEnd = n.startTicks + n.durationTicks;
         }
-        body << "</span></div></div>";
+        body << "</span><span class='final-bar'></span></div></div>";
     }
 
     std::ostringstream html;
@@ -231,6 +231,8 @@ h1{font-size:24px;border-bottom:none;padding-bottom:8px;text-align:center;color:
 .dyn{font-size:16px;font-style:italic;color:#888;margin-right:8px}
 .trip{font-size:14px;color:#666;margin-right:2px}
 .lyric{display:block;font-size:14px;color:#555;text-align:center;margin-top:2px;min-height:20px}
+.final-bar{display:inline-block;width:2px;height:32px;background:#333;margin-left:8px;vertical-align:middle}
+.final-bar::after{content:"";display:block;width:4px;height:32px;background:#333;margin-left:4px;margin-top:-32px}
 .footer{color:#999;font-size:12px;text-align:center;margin-top:20px}
 @media print{
   body{background:#fff;padding:0}
