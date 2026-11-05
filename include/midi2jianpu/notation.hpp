@@ -35,10 +35,19 @@ struct LyricSyllable {
     std::string text;  // 单字
 };
 
+// 歌词行（起始tick + 整行文本）
+struct LyricLine {
+    long startTick;
+    std::string text;
+};
+
 // 解析歌词JSON文件，返回按tick排序的歌词字列表
 std::vector<LyricSyllable> parseLyrics(const std::string& jsonPath, int division);
 
 // 解析LRC歌词文件（[mm:ss.xx]歌词），返回按tick排序的歌词字列表
 std::vector<LyricSyllable> parseLrc(const std::string& lrcPath, int division, int bpm);
+
+// 解析LRC为行列表（用于按音符对齐）
+std::vector<LyricLine> parseLrcLines(const std::string& lrcPath, int division, int bpm);
 
 } // namespace m2j

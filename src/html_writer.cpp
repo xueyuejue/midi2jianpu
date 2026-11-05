@@ -74,22 +74,48 @@ static std::string noteToHtml(int pitch, long durTicks,
 
 std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                         const std::string& title,
-                        const std::vector<LyricSyllable>* lyrics) {
+                        const std::vector<LyricLine>* lyricLines) {
     std::string displayTitle = title.empty() ? "简谱" : title;
     std::ostringstream body;
     double barLen = data.timeSig.barLengthTicks(data.division);
 
-    // 歌词对齐: 找到最接近tick的歌词字
-    auto lyricAt = [&](long tick) -> std::string {
-        if (!lyrics || lyrics->empty()) return "";
-        std::string best;
-        long bestDist = 999999;
-        for (const auto& syl : *lyrics) {
-            long dist = std::abs(syl.tick - tick);
-            if (dist < bestDist) { bestDist = dist; best = syl.text; }
+    // 歌词对齐: 把行文本按字拆分, 对齐到该行内的音符
+    // 预处理: 每行歌词的字列表
+    std::vector<std::pair<long, std::vector<std::string>>> lineSyls;
+    if (lyricLines) {
+        for (const auto& ll : *lyricLines) {
+            std::vector<std::string> syls;
+            for (size_t i = 0; i < ll.text.size(); ) {
+                unsigned char c = ll.text[i];
+                int charLen = 1;
+                if ((c & 0xE0) == 0xC0) charLen = 2;
+                else if ((c & 0xF0) == 0xE0) charLen = 3;
+                else if ((c & 0xF8) == 0xF0) charLen = 4;
+                if (i + charLen > ll.text.size()) break;
+                syls.push_back(ll.text.substr(i, charLen));
+                i += charLen;
+            }
+            lineSyls.push_back({ll.startTick, syls});
         }
-        // 只在距离小于半拍时显示
-        return bestDist < data.division / 2 ? best : "";
+    }
+    // 当前行索引 + 已分配的字索引
+    int curLineIdx = -1;
+    int curCharIdx = 0;
+    auto lyricForNote = [&](long tick) -> std::string {
+        if (lineSyls.empty()) return "";
+        // 找当前tick属于哪一行
+        int bestLine = -1;
+        for (int i = 0; i < (int)lineSyls.size(); i++) {
+            if (lineSyls[i].first <= tick) bestLine = i;
+            else break;
+        }
+        if (bestLine < 0) return "";
+        if (bestLine != curLineIdx) {
+            curLineIdx = bestLine;
+            curCharIdx = 0;
+        }
+        if (curCharIdx >= (int)lineSyls[bestLine].second.size()) return "";
+        return lineSyls[bestLine].second[curCharIdx++];
     };
 
     // 弯音修正
@@ -175,8 +201,8 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 lastPitch = n.pitch;
             }
             // 歌词显示在音符下方
-            if (lyrics) {
-                std::string syl = lyricAt(n.startTicks);
+            if (lyricLines) {
+                std::string syl = lyricForNote(n.startTicks);
                 if (!syl.empty()) {
                     body << "<span class='lyric'>" << htmlEscape(syl) << "</span>";
                 }

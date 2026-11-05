@@ -9,6 +9,6 @@ namespace m2j {
 // 生成完整的自包含 HTML 文档（含内联CSS）
 std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                        const std::string& title = "",
-                       const std::vector<LyricSyllable>* lyrics = nullptr);
+                       const std::vector<LyricLine>* lyricLines = nullptr);
 
 } // namespace m2j

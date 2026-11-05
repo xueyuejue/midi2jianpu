@@ -98,20 +98,22 @@ int main(int argc, char** argv) {
         if (slash != std::string::npos) title = title.substr(slash + 1);
         size_t dot = title.find_last_of(".");
         if (dot != std::string::npos) title = title.substr(0, dot);
-        std::vector<m2j::LyricSyllable> lyrics;
+        std::vector<m2j::LyricLine> lyricLines;
         if (!lyricsPath.empty()) {
-            // 自动识别格式: .json 或 .lrc
             size_t dot = lyricsPath.find_last_of(".");
             std::string ext = (dot != std::string::npos) ? lyricsPath.substr(dot) : "";
             if (ext == ".lrc" || ext == ".LRC") {
                 int bpm = (int)(60000000.0 / data.tempo);
-                lyrics = m2j::parseLrc(lyricsPath, data.division, bpm);
+                lyricLines = m2j::parseLrcLines(lyricsPath, data.division, bpm);
             } else {
-                lyrics = m2j::parseLyrics(lyricsPath, data.division);
+                // JSON格式: 转成行列表
+                auto syls = m2j::parseLyrics(lyricsPath, data.division);
+                // 简单处理: 每个字一行(实际应该按行合并)
+                for (const auto& s : syls) lyricLines.push_back({s.tick, s.text});
             }
-            std::cout << "歌词已加载: " << lyrics.size() << " 字\n";
+            std::cout << "歌词已加载: " << lyricLines.size() << " 行\n";
         }
-        f << m2j::renderHtml(data, key, title, lyrics.empty() ? nullptr : &lyrics);
+        f << m2j::renderHtml(data, key, title, lyricLines.empty() ? nullptr : &lyricLines);
         std::cout << "HTML 谱面已写入: " << htmlOut << "\n";
     }
     if (!xmlOut.empty()) {

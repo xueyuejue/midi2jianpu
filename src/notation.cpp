@@ -380,4 +380,29 @@ std::vector<LyricSyllable> parseLrc(const std::string& lrcPath, int division, in
     return result;
 }
 
+// 解析LRC为行列表
+std::vector<LyricLine> parseLrcLines(const std::string& lrcPath, int division, int bpm) {
+    std::vector<LyricLine> lines;
+    std::ifstream f(lrcPath);
+    if (!f.is_open()) return lines;
+    std::string line;
+    double secPerBeat = 60.0 / bpm;
+    while (std::getline(f, line)) {
+        if (line.size() < 10 || line[0] != '[') continue;
+        size_t close = line.find(']');
+        if (close == std::string::npos) continue;
+        std::string ts = line.substr(1, close - 1);
+        if (ts.find(':') == std::string::npos || !isdigit(ts[0])) continue;
+        size_t colon = ts.find(':');
+        if (colon == std::string::npos) continue;
+        int mm = std::stoi(ts.substr(0, colon));
+        double ss = std::stod(ts.substr(colon + 1));
+        double totalSec = mm * 60.0 + ss;
+        long startTick = (long)(totalSec / secPerBeat * division);
+        std::string text = line.substr(close + 1);
+        if (!text.empty()) lines.push_back({startTick, text});
+    }
+    return lines;
+}
+
 } // namespace m2j
