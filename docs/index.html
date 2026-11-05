@@ -20,7 +20,8 @@ h1{font-size:24px;border-bottom:3px solid #333;padding-bottom:10px;margin-bottom
 #score{display:none}
 .track-card{background:#fff;border:1px solid #ddd;border-radius:8px;padding:20px 28px;margin-top:16px}
 .track-card h3{font-size:14px;color:#666;margin-bottom:10px}
-.staff{font-size:34px;line-height:2.4;white-space:nowrap;overflow-x:auto;padding:10px 0}
+.staff{font-size:34px;line-height:2.4;padding:10px 0}
+.measure{display:inline-block;margin:0 18px 10px 0;white-space:nowrap}
 .note{display:inline-block;position:relative;margin:0 8px;text-align:center;min-width:24px}
 .num{position:relative;z-index:1}
 .dot-above{position:absolute;top:-0.5em;left:50%;transform:translateX(-50%);font-size:0.5em;line-height:1}
@@ -197,8 +198,9 @@ function convert(){
       for(const n of tr.pairs){
         const bar=Math.floor(n.start/barLen);
         if(bar!==curBar){
-          if(curBar>=0) html+='<span class="bar">|</span>';
+          if(curBar>=0) html+='</span>';
           curBar=bar; lastPitch=-1;
+          html+='<span class="measure">';
         }
         const gap=n.start-prevEnd;
         const hasRest=(gap>=div/2 && prevEnd>0);
@@ -211,7 +213,7 @@ function convert(){
         }
         prevEnd=n.start+n.dur;
       }
-      html+='<span class="bar">|</span></div></div>';
+      html+='</span></div></div>';
     });
     document.getElementById("meta").textContent=
       `共 ${totalNotes} 音符 · ${data.timeSig.num}/${data.timeSig.den} 拍 · division=${div}`;
