@@ -124,7 +124,9 @@ KeyEstimate estimateKey(const MidiData& data) {
 std::string pitchToJianpu(int pitch, const KeyEstimate& key) {
     const auto& scale = key.isMajor ? MAJOR : MINOR;
     int semi = ((pitch - key.tonicPitchClass) % 12 + 12) % 12;
-    int octave = (pitch - 60) / 12;  // C4=60 为简谱中音
+    // C4=60 为简谱中音, 负方向需要向下取整
+    int octave = (pitch - 60) / 12;
+    if (pitch < 60 && (pitch - 60) % 12 != 0) octave--;  // 向下取整修正
 
     int degree = -1;
     std::string accidental;
