@@ -48,6 +48,34 @@ int main() {
     check(midiNoteName(60) == "C4", "60 -> C4");
     check(midiNoteName(72) == "C5", "72 -> C5");
 
+    std::cout << "\n测试 a 小调 (主音A=9)\n";
+    KeyEstimate aMinor{9, false};
+    check(pitchToJianpu(69, aMinor) == "1",
+          "A4(69) -> 1 (a小调主音)");
+    check(pitchToJianpu(72, aMinor) == "3'",
+          "C5(72) -> 3' (a小调3级高八度)");
+    check(pitchToJianpu(76, aMinor) == "5'",
+          "E5(76) -> 5' (a小调5级高八度)");
+
+    std::cout << "\n测试 G 大调 (主音G=7)\n";
+    KeyEstimate gMajor{7, true};
+    check(pitchToJianpu(67, gMajor) == "1",
+          "G4(67) -> 1 (G大调主音)");
+    check(pitchToJianpu(71, gMajor) == "3",
+          "B4(71) -> 3 (G大调3级)");
+
+    std::cout << "\n测试 F 大调 (主音F=5)\n";
+    KeyEstimate fMajor{5, true};
+    check(pitchToJianpu(65, fMajor) == "1",
+          "F4(65) -> 1 (F大调主音)");
+    check(pitchToJianpu(70, fMajor) == "4",
+          "A#4(70) -> 4 (F大调4级), 实际: " + pitchToJianpu(70, fMajor));
+
+    std::cout << "\n测试八度边界\n";
+    check(pitchToJianpu(60, cMajor) == "1", "C4中音基准");
+    check(pitchToJianpu(84, cMajor) == "1''", "C6双高音");
+    check(pitchToJianpu(36, cMajor) == "1,,", "C2双低音");
+
     std::cout << (failures == 0 ? "\n全部通过\n" : "\n有失败\n");
     return failures == 0 ? 0 : 1;
 }
