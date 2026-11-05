@@ -17,8 +17,9 @@ h1{font-size:24px;border-bottom:3px solid #333;padding-bottom:10px;margin-bottom
 .controls label{font-size:14px;color:#555}
 .controls select,.controls button{padding:6px 12px;border:1px solid #ccc;border-radius:6px;font-size:14px;background:#fff}
 .controls button{background:#333;color:#fff;border-color:#333;cursor:pointer}
-.score{background:#fff;border:1px solid #ddd;border-radius:8px;padding:20px 28px;margin-top:16px;display:none}
-.score h3{font-size:14px;color:#666;margin-bottom:10px}
+#score{display:none}
+.track-card{background:#fff;border:1px solid #ddd;border-radius:8px;padding:20px 28px;margin-top:16px}
+.track-card h3{font-size:14px;color:#666;margin-bottom:10px}
 .staff{font-size:34px;line-height:2.4;white-space:nowrap;overflow-x:auto;padding:10px 0}
 .note{display:inline-block;position:relative;margin:0 8px;text-align:center;min-width:24px}
 .num{position:relative;z-index:1}
@@ -191,7 +192,7 @@ function convert(){
       if(!tr.pairs.length) return;
       tr.pairs.sort((a,b)=>a.start-b.start);
       totalNotes+=tr.pairs.length;
-      html+=`<div class="score"><h3>轨 ${ti+1} · ${tr.pairs.length} 音符</h3><div class="staff">`;
+      html+=`<div class="track-card"><h3>轨 ${ti+1} · ${tr.pairs.length} 音符</h3><div class="staff">`;
       let curBar=-1, prevEnd=0, lastPitch=-1;
       for(const n of tr.pairs){
         const bar=Math.floor(n.start/barLen);
@@ -215,6 +216,7 @@ function convert(){
     document.getElementById("meta").textContent=
       `共 ${totalNotes} 音符 · ${data.timeSig.num}/${data.timeSig.den} 拍 · division=${div}`;
     document.getElementById("score").innerHTML=html;
+    document.getElementById("score").style.display="block";
     document.getElementById("err").style.display="none";
   }catch(e){
     document.getElementById("err").textContent="解析失败: "+e.message;
