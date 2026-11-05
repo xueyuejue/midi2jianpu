@@ -1,27 +1,35 @@
 <!DOCTYPE html>
 <html lang="zh">
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
 <meta charset="utf-8">
 <title>midi2jianpu - MIDI转简谱 在线版</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>1</text></svg>">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:"Noto Serif SC","SimSun",serif;background:#f5f5f0;color:#222;min-height:100vh;padding:20px}
+body{font-family:"Noto Serif SC","SimSun",serif;background:#f5f5f0;color:#222;padding:20px}
 .wrap{max-width:900px;margin:0 auto}
 h1{font-size:24px;border-bottom:3px solid #333;padding-bottom:10px;margin-bottom:16px}
-.drop{border:2px dashed #bbb;border-radius:12px;padding:48px 20px;text-align:center;background:#fff;cursor:transition:background .2s}
+.drop{border:2px dashed #bbb;border-radius:12px;padding:40px 20px;text-align:center;background:#fff;cursor:pointer;transition:background .2s}
 .drop:hover,.drop.over{background:#eef;border-color:#66c}
-.drop p{color:#888;font-size:15px;margin-top:8px}
-.drop strong{color:#333;font-size:18px}
+.drop p{color:#888;font-size:14px;margin-top:6px}
+.drop strong{color:#333;font-size:17px}
 .controls{margin:16px 0;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 .controls label{font-size:14px;color:#555}
 .controls select,.controls button{padding:6px 12px;border:1px solid #ccc;border-radius:6px;font-size:14px;background:#fff}
 .controls button{background:#333;color:#fff;border-color:#333;cursor:pointer}
-.controls button:hover{background:#555}
 .score{background:#fff;border:1px solid #ddd;border-radius:8px;padding:20px 28px;margin-top:16px;display:none}
 .score h3{font-size:14px;color:#666;margin-bottom:10px}
-.staff{font-size:32px;line-height:2;white-space:pre-wrap;word-break:break-all}
+.staff{font-size:34px;line-height:2.4;white-space:nowrap;overflow-x:auto;padding:10px 0}
+.note{display:inline-block;position:relative;margin:0 8px;text-align:center;min-width:24px}
+.num{position:relative;z-index:1}
+.dot-above{position:absolute;top:-0.5em;left:50%;transform:translateX(-50%);font-size:0.5em;line-height:1}
+.dot-below{position:absolute;bottom:-0.55em;left:50%;transform:translateX(-50%);font-size:0.5em;line-height:1}
+.eighth .num{border-bottom:2px solid #222}
+.sixteenth .num{border-bottom:2px solid #222;box-shadow:0 5px 0 #222}
+.dotted .num::after{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;background:#222;margin-left:3px}
+.ext{margin:0 4px;color:#222}
+.bar{margin:0 10px;color:#999;font-weight:300}
+.rest{color:#444;margin:0 8px}
 .meta{color:#888;font-size:13px;margin:8px 0}
 .error{color:#c00;padding:16px;display:none}
 .footer{margin-top:24px;color:#999;font-size:12px;text-align:center}
@@ -32,33 +40,31 @@ h1{font-size:24px;border-bottom:3px solid #333;padding-bottom:10px;margin-bottom
 <h1>MIDI → 简谱 在线转换</h1>
 <div class="drop" id="drop">
   <strong>拖入 .mid 文件到这里</strong>
-  <p>或点击选择文件 · 纯浏览器解析，不上传服务器</p>
+  <p>或点击选择 · 纯浏览器解析，不上传服务器</p>
   <input type="file" id="file" accept=".mid,.midi" style="display:none">
 </div>
 <div class="controls">
   <label>调性：</label>
   <select id="key">
-    <option value="0:1">1 = C 大调</option>
-    <option value="2:1">1 = D 大调</option>
-    <option value="4:1">1 = E 大调</option>
-    <option value="5:1">1 = F 大调</option>
-    <option value="7:1">1 = G 大调</option>
-    <option value="9:1">1 = A 大调</option>
-    <option value="9:0" selected>6 = A 小调 (1=C)</option>
-    <option value="0:0">6 = C 小调 (1=C)</option>
-    <option value="4:0">6 = E 小调 (1=E)</option>
-    <option value="7:0">6 = G 小调 (1=G)</option>
+    <option value="0:1">1=C 大调</option>
+    <option value="2:1">1=D 大调</option>
+    <option value="4:1">1=E 大调</option>
+    <option value="5:1">1=F 大调</option>
+    <option value="7:1">1=G 大调</option>
+    <option value="9:1">1=A 大调</option>
+    <option value="0:0" selected>6=C 小调</option>
+    <option value="9:0">6=A 小调</option>
+    <option value="4:0">6=E 小调</option>
+    <option value="7:0">6=G 小调</option>
   </select>
-  <button onclick="convert()">转换</button>
 </div>
 <div class="meta" id="meta"></div>
-<div class="score" id="score"><div class="staff" id="staff"></div></div>
+<div class="score" id="score"></div>
 <div class="error" id="err"></div>
 <div class="footer">midi2jianpu · 在线 demo · C++ 核心见 GitHub</div>
 </div>
 <script>
-// ===== MIDI SMF 解析器（纯JS） =====
-let midiBytes=null, midiData=null;
+let midiBytes=null;
 
 function readVarLen(dv, off){
   let val=0, b;
@@ -68,116 +74,147 @@ function readVarLen(dv, off){
 
 function parseMIDI(buf){
   const dv=new DataView(buf);
-  if(dv.getUint32(0)!==0x4d546864) throw new Error("不是标准MIDI (MThd缺失)"); // MThd
+  if(dv.getUint32(0)!==0x4d546864) throw new Error("不是标准MIDI");
   const hlen=dv.getUint32(4);
-  const fmt=dv.getUint16(8), ntracks=dv.getUint16(10), div=dv.getUint16(12);
+  const ntracks=dv.getUint16(10), div=dv.getUint16(12);
   let off=8+hlen;
   const tracks=[];
+  let timeSig={num:4,den:4};
   for(let t=0;t<ntracks;t++){
-    if(dv.getUint32(off)!==0x4d54726b) break; // MTrk
+    if(dv.getUint32(off)!==0x4d54726b) break;
     const tlen=dv.getUint32(off+4);
-    let p=off+8;
-    const end=p+tlen;
+    let p=off+8, end=p+tlen;
     let running=0;
-    const notes=[];
+    const evs=[];
     while(p<end){
       let r=readVarLen(dv,p); const delta=r.val; p=r.off;
-      let status=dv.getUint8(p);
-      if(status<0x80){ status=running; } else { p++; running=status; }
-      const type=status&0xf0, ch=status&0x0f;
+      let st=dv.getUint8(p);
+      if(st<0x80){st=running;}else{p++;running=st;}
+      const type=st&0xf0, ch=st&0x0f;
       if(type===0x90){
-        const note=dv.getUint8(p++), vel=dv.getUint8(p++);
-        notes.push({start:0, note, vel, ch, on:true});
-        // 用delta累积绝对时间
-      } else if(type===0x80||type===0xB0||type===0xE0){
-        if(type===0x80){
-          const note=dv.getUint8(p++), vel=dv.getUint8(p++);
-          notes.push({note, vel, ch, on:false});
-        } else p+=2;
-      } else if(type===0xA0||type===0xC0||type===0xD0){
-        p += (type===0xC0||type===0xD0)?1:2;
-      } else if(status===0xFF){
+        evs.push({delta, st, note:dv.getUint8(p++), vel:dv.getUint8(p++), ch, on:true});
+      } else if(type===0x80){
+        evs.push({delta, st, note:dv.getUint8(p++), vel:dv.getUint8(p++), ch, on:false});
+        p+=1;
+      } else if(type===0xB0||type===0xE0){ p+=2; evs.push({delta,st,ch}); }
+      else if(type===0xC0||type===0xD0){ p+=1; evs.push({delta,st,ch}); }
+      else if(st===0xFF){
         const mtype=dv.getUint8(p++), r2=readVarLen(dv,p); p=r2.off;
+        if(mtype===0x58 && r2.val>=4){
+          timeSig={num:dv.getUint8(p), den:Math.pow(2,dv.getUint8(p+1))};
+        }
         p+=r2.val;
-      } else p++;
-      // 记录delta用于时间累积
-      if(notes.length>0) notes[notes.length-1].delta=delta;
+        evs.push({delta,st});
+      } else { p+=1; evs.push({delta,st,ch}); }
     }
-    // 累积绝对时间并配对Note On/Off
-    let abs=0;
-    for(const n of notes){ abs+=n.delta||0; n.tick=abs; }
-    // 配对
-    const active={};
-    const pairs=[];
-    for(const n of notes){
-      if(n.on && n.vel>0){
-        if(!active[n.note]) active[n.note]=[];
-        active[n.note].push(n);
-      } else {
-        const arr=active[n.note];
+    let abs=0; for(const e of evs){abs+=e.delta; e.tick=abs;}
+    const active={}; const pairs=[];
+    for(const e of evs){
+      if(e.on && e.vel>0){
+        if(!active[e.note]) active[e.note]=[];
+        active[e.note].push(e);
+      } else if(!e.on){
+        const arr=active[e.note];
         if(arr && arr.length){
           const on=arr.shift();
-          pairs.push({pitch:n.note, start:on.tick, dur:n.tick-on.tick, ch:on.ch});
+          pairs.push({pitch:e.note, start:on.tick, dur:e.tick-on.tick});
         }
       }
     }
     tracks.push({pairs});
     off=end;
   }
-  return {div, tracks, fmt};
+  return {div, tracks, timeSig};
 }
 
-// ===== 简谱转换 =====
 const MAJOR=[0,2,4,5,7,9,11], MINOR=[0,2,3,5,7,8,10];
 function pitchToNum(pitch, tonic, isMajor){
   const scale=isMajor?MAJOR:MINOR;
   const semi=((pitch-tonic)%12+12)%12;
   for(let i=0;i<7;i++){
-    if(scale[i]===semi) return i+1;
-    if((scale[i]+1)%12===semi) return "#"+(i+1);
+    if(scale[i]===semi) return {num:String(i+1), sharp:false};
+    if((scale[i]+1)%12===semi) return {num:String(i+1), sharp:true};
   }
-  // 升降音
   for(let i=0;i<7;i++){
-    if((scale[i]-1+12)%12===semi) return "b"+(i+1);
+    if((scale[i]-1+12)%12===semi) return {num:String(i+1), flat:true};
   }
-  return "?";
+  return {num:"?"};
+}
+
+function durClass(dur, div){
+  const beats=dur/div;
+  const table=[[0.25,"sixteenth",false],[0.5,"eighth",false],[0.75,"eighth",true],
+               [1.0,"quarter",false],[1.5,"quarter",true],[2.0,"half",false],
+               [3.0,"half",true],[4.0,"whole",false]];
+  let best="quarter", dotted=false;
+  let bd=1e9;
+  for(const [b,c,d] of table){
+    const dist=Math.abs(beats-b);
+    if(dist<bd){bd=dist;best=c;dotted=d;}
+  }
+  return {cls:best, dotted};
+}
+
+function noteHtml(pitch, dur, tonic, isMajor, div){
+  const {num, sharp, flat}=pitchToNum(pitch, tonic, isMajor);
+  const oct=Math.round((pitch-tonic)/12);
+  const {cls, dotted}=durClass(dur, div);
+  let html=`<span class="note ${cls}`;
+  if(oct>0) html+=" dot-above"+(oct>1?"2":"");
+  if(oct<0) html+=" dot-below"+(-oct>1?"2":"");
+  if(dotted) html+=" dotted";
+  html+='"><span class="num">';
+  if(sharp) html+="#";
+  if(flat) html+="b";
+  html+=num;
+  if(oct>0) html+='<span class="dot-above">'+(oct>1?"··":"·")+'</span>';
+  if(oct<0) html+='<span class="dot-below">'+(-oct>1?"··":"·")+'</span>';
+  html+="</span>";
+  if(cls==="half"||cls==="whole"){
+    const lines=cls==="whole"?3:1;
+    for(let i=0;i<lines;i++) html+='<span class="ext">-</span>';
+  }
+  html+="</span>";
+  return html;
 }
 
 function convert(){
   if(!midiBytes){ alert("请先选择MIDI文件"); return; }
   try{
-    midiData=parseMIDI(midiBytes);
+    const data=parseMIDI(midiBytes);
     const [tonic, isMajor]=document.getElementById("key").value.split(":").map(Number);
-    const div=midiData.div;
-    let out="", totalNotes=0;
-    midiData.tracks.forEach((tr,ti)=>{
+    const div=data.div;
+    const barLen=div*(data.timeSig.num)/(data.timeSig.den/4);
+    let totalNotes=0;
+    let html="";
+    data.tracks.forEach((tr,ti)=>{
       if(!tr.pairs.length) return;
       tr.pairs.sort((a,b)=>a.start-b.start);
       totalNotes+=tr.pairs.length;
-      out+=`[轨${ti+1}] (${tr.pairs.length}音符)\n`;
-      let lastPitch=-1, prevEnd=0;
+      html+=`<div class="score"><h3>轨 ${ti+1} · ${tr.pairs.length} 音符</h3><div class="staff">`;
+      let curBar=-1, prevEnd=0, lastPitch=-1;
       for(const n of tr.pairs){
+        const bar=Math.floor(n.start/barLen);
+        if(bar!==curBar){
+          if(curBar>=0) html+='<span class="bar">|</span>';
+          curBar=bar; lastPitch=-1;
+        }
         const gap=n.start-prevEnd;
-        if(gap>=div/2 && prevEnd>0) out+="0 ";
-        if(n.pitch===lastPitch && gap<div/4){
-          out+="- ";
+        const hasRest=(gap>=div/2 && prevEnd>0);
+        if(hasRest){ html+='<span class="rest">0</span>'; lastPitch=-1; }
+        if(n.pitch===lastPitch && !hasRest && gap<div/4){
+          html+='<span class="ext">-</span>';
         } else {
-          const num=pitchToNum(n.pitch, tonic, isMajor);
-          const oct=Math.floor((n.pitch-tonic)/12);
-          let dots="";
-          if(oct>0) dots="'".repeat(oct);
-          if(oct<0) dots=".".repeat(-oct);
-          out+=num+dots+" ";
+          html+=noteHtml(n.pitch, n.dur, tonic, isMajor, div);
           lastPitch=n.pitch;
         }
         prevEnd=n.start+n.dur;
       }
-      out+="\n\n";
+      html+='<span class="bar">|</span></div></div>';
     });
     document.getElementById("meta").textContent=
-      `共 ${totalNotes} 音符 · division=${div} · 选择调性: ${document.getElementById("key").selectedOptions[0].text}`;
-    document.getElementById("staff").textContent=out;
-    document.getElementById("score").style.display="block";
+      `共 ${totalNotes} 音符 · ${data.timeSig.num}/${data.timeSig.den} 拍 · division=${div}`;
+    document.getElementById("score").innerHTML=html;
     document.getElementById("err").style.display="none";
   }catch(e){
     document.getElementById("err").textContent="解析失败: "+e.message;
@@ -185,21 +222,16 @@ function convert(){
   }
 }
 
-// ===== 文件上传 =====
 const drop=document.getElementById("drop"), fileInput=document.getElementById("file");
 drop.onclick=()=>fileInput.click();
 drop.ondragover=e=>{e.preventDefault();drop.classList.add("over")};
 drop.ondragleave=()=>drop.classList.remove("over");
-drop.ondrop=e=>{
-  e.preventDefault();drop.classList.remove("over");
-  const f=e.dataTransfer.files[0]||fileInput.files[0];
-  loadFile(f);
-};
+drop.ondrop=e=>{e.preventDefault();drop.classList.remove("over");loadFile(e.dataTransfer.files[0])};
 fileInput.onchange=()=>loadFile(fileInput.files[0]);
 function loadFile(f){
   if(!f) return;
   const fr=new FileReader();
-  fr.onload=()=>{ midiBytes=fr.result; convert(); };
+  fr.onload=()=>{midiBytes=fr.result;convert();};
   fr.readAsArrayBuffer(f);
 }
 </script>
