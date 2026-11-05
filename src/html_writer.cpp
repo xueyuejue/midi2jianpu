@@ -84,10 +84,11 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
     double barLen = data.timeSig.barLengthTicks(data.division);
 
     // 歌词对齐: 把行文本按字拆分, 对齐到该行内的音符
-    // 预处理: 所有歌词字按顺序展开成一个列表
-    std::vector<std::string> allSyls;
+    // 预处理: 每行歌词的字列表
+    std::vector<std::pair<long, std::vector<std::string>>> lineSyls;
     if (lyricLines) {
         for (const auto& ll : *lyricLines) {
+            std::vector<std::string> syls;
             for (size_t i = 0; i < ll.text.size(); ) {
                 unsigned char c = ll.text[i];
                 int charLen = 1;
@@ -95,17 +96,38 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 else if ((c & 0xF0) == 0xE0) charLen = 3;
                 else if ((c & 0xF8) == 0xF0) charLen = 4;
                 if (i + charLen > ll.text.size()) break;
-                allSyls.push_back(ll.text.substr(i, charLen));
+                syls.push_back(ll.text.substr(i, charLen));
                 i += charLen;
             }
+            lineSyls.push_back({ll.startTick, syls});
         }
     }
-    // 歌词字索引: 按非休止符音符顺序分配
-    int sylIdx = 0;
-    auto lyricForNote = [&](long /*tick*/) -> std::string {
-        if (allSyls.empty()) return "";
-        if (sylIdx >= (int)allSyls.size()) return "";
-        return allSyls[sylIdx++];
+    // 当前行索引 + 已分配的字索引
+    int curLineIdx = -1;
+    int curCharIdx = 0;
+    auto lyricForNote = [&](long tick) -> std::string {
+        if (lineSyls.empty()) return "";
+        // 找当前tick属于哪一行
+        int bestLine = -1;
+        for (int i = 0; i < (int)lineSyls.size(); i++) {
+            if (lineSyls[i].first <= tick) bestLine = i;
+            else break;
+        }
+        if (bestLine < 0) return "";
+        // 换行了: 如果上一行剩余字≤2, 继续分配; 否则丢弃
+        if (bestLine != curLineIdx) {
+            if (curLineIdx >= 0 && curCharIdx < (int)lineSyls[curLineIdx].second.size()) {
+                int remaining = (int)lineSyls[curLineIdx].second.size() - curCharIdx;
+                if (remaining <= 2) {
+                    // 继续分配剩余字
+                    return lineSyls[curLineIdx].second[curCharIdx++];
+                }
+            }
+            curLineIdx = bestLine;
+            curCharIdx = 0;
+        }
+        if (curCharIdx >= (int)lineSyls[curLineIdx].second.size()) return "";
+        return lineSyls[curLineIdx].second[curCharIdx++];
     };
 
     // 弯音修正
