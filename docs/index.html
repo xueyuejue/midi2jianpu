@@ -129,6 +129,10 @@ function convert() {
     wasmMod.HEAPU8.set(midiBytes, ptr);
 
     // 调用WASM生成HTML
+    // 先设置歌词
+    if (lyricsText && wasmMod._midi2jianpu_set_lyrics) {
+      wasmMod._midi2jianpu_set_lyrics(lyricsText);
+    }
     wasmMod._midi2jianpu_html(ptr, midiBytes.length, keyPitch, isMajor);
     const len = wasmMod._midi2jianpu_result_len();
     const buf = wasmMod._malloc(len + 1);
