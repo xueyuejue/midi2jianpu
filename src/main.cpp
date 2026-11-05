@@ -15,6 +15,7 @@ static void printHelp() {
         "  midi2jianpu <input.mid> --html out.html 导出 HTML 谱面\n"
         "  midi2jianpu <input.mid> --key Am         手动指定调性(如 Am=小调, C=大调)\n"
         "  midi2jianpu <input.mid> --output out.txt  文本简谱输出到文件\n"
+        "  midi2jianpu <input.mid> --track 0         只输出指定轨道\n"
         "  midi2jianpu --help\n";
 }
 
@@ -40,12 +41,14 @@ int main(int argc, char** argv) {
     if (argc < 2) { printHelp(); return 1; }
 
     std::string input, htmlOut, keyArg, txtOut;
+    int trackFilter = -1;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--help" || a == "-h") { printHelp(); return 0; }
         else if (a == "--html" && i + 1 < argc) { htmlOut = argv[++i]; }
         else if (a == "--key" && i + 1 < argc) { keyArg = argv[++i]; }
         else if (a == "--output" && i + 1 < argc) { txtOut = argv[++i]; }
+        else if (a == "--track" && i + 1 < argc) { trackFilter = std::stoi(argv[++i]); }
         else if (a.substr(0, 2) != "--") input = a;
     }
     if (input.empty()) { printHelp(); return 1; }
@@ -56,6 +59,14 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (data.notes.empty()) { std::cerr << "未提取到音符。\n"; return 3; }
+
+    // --track 过滤指定轨道
+    if (trackFilter >= 0) {
+        std::vector<m2j::NoteEvent> filtered;
+        for (auto& n : data.notes) if (n.track == trackFilter) filtered.push_back(n);
+        data.notes = filtered;
+        if (data.notes.empty()) { std::cerr << "轨道 " << trackFilter << " 无音符。\n"; return 4; }
+    }
 
     m2j::KeyEstimate key;
     std::string keySource;
