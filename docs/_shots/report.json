@@ -11,7 +11,7 @@
     "desktop": {
       "revealed": 0,
       "screenshot": "/home/user/Doubao/chats/38445872096164610/repo_clone/docs/_shots/index_desktop.jpg",
-      "screenshotBytes": 15706,
+      "screenshotBytes": 20766,
       "truncated": false,
       "structure": {
         "title": "midi2jianpu - MIDI转简谱 在线版",
@@ -35,17 +35,45 @@
           "buttons": 2
         }
       },
-      "consoleErrors": [],
+      "consoleErrors": [
+        {
+          "type": "error",
+          "text": "Access to XMLHttpRequest at 'file:///home/user/Doubao/chats/38445872096164610/repo_clone/docs/wasm/midi2jianpu.wasm' from origin 'null' has been blocked by CORS policy: Cross origin requests are only supported for protocol schemes: chrome, chrome-extension, chrome-untrusted, data, http, https, isola",
+          "location": "file:///home/user/Doubao/chats/38445872096164610/repo_clone/docs/index.html"
+        },
+        {
+          "type": "error",
+          "text": "failed to asynchronously prepare wasm: both async and sync fetching of the wasm failed",
+          "location": "file:///home/user/Doubao/chats/38445872096164610/repo_clone/docs/wasm/midi2jianpu.js"
+        },
+        {
+          "type": "error",
+          "text": "Aborted(both async and sync fetching of the wasm failed)",
+          "location": "file:///home/user/Doubao/chats/38445872096164610/repo_clone/docs/wasm/midi2jianpu.js"
+        },
+        {
+          "type": "error",
+          "text": "Failed to load resource: net::ERR_FAILED",
+          "location": "file:///home/user/Doubao/chats/38445872096164610/repo_clone/docs/wasm/midi2jianpu.wasm"
+        }
+      ],
       "consoleWarnings": [],
       "horizontalOverflow": [],
-      "resourceErrors": []
+      "resourceErrors": [
+        {
+          "url": "file:///home/user/Doubao/chats/38445872096164610/repo_clone/docs/wasm/midi2jianpu.wasm",
+          "resourceType": "xhr",
+          "status": null,
+          "reason": "network_error"
+        }
+      ]
     }
   },
   "engine": "playwright",
   "chromiumExec": "/opt/vm/preinstall/ms-playwright/chromium-1169/chrome-linux/chrome",
-  "elapsedSec": 3.17,
+  "elapsedSec": 3.23,
   "schemaVersion": 2,
-  "status": "pass",
+  "status": "fail",
   "engineInfo": {
     "name": "playwright",
     "degraded": false,
@@ -66,7 +94,7 @@
       {
         "viewport": "desktop",
         "path": "/home/user/Doubao/chats/38445872096164610/repo_clone/docs/_shots/index_desktop.jpg",
-        "size": 15706,
+        "size": 20766,
         "visualCoverage": {
           "complete": true,
           "reason": null
@@ -76,11 +104,91 @@
   },
   "summary": {
     "blocker": 0,
-    "error": 0,
+    "error": 5,
     "warning": 0,
     "info": 0
   },
-  "findings": [],
-  "prioritizedActions": [],
+  "findings": [
+    {
+      "ruleId": "consoleErrors",
+      "severity": "error",
+      "kind": "console",
+      "viewport": "desktop",
+      "selector": null,
+      "evidence": {
+        "type": "error",
+        "text": "Access to XMLHttpRequest at 'file:///home/user/Doubao/chats/38445872096164610/repo_clone/docs/wasm/midi2jianpu.wasm' from origin 'null' has been blocked by CORS policy: Cross origin requests are only supported for protocol schemes: chrome, chrome-extension, chrome-untrusted, data, http, https, isola",
+        "location": "file:///home/user/Doubao/chats/38445872096164610/repo_clone/docs/index.html"
+      },
+      "dedupeKey": "consoleErrors|desktop||0"
+    },
+    {
+      "ruleId": "consoleErrors",
+      "severity": "error",
+      "kind": "console",
+      "viewport": "desktop",
+      "selector": null,
+      "evidence": {
+        "type": "error",
+        "text": "failed to asynchronously prepare wasm: both async and sync fetching of the wasm failed",
+        "location": "file:///home/user/Doubao/chats/38445872096164610/repo_clone/docs/wasm/midi2jianpu.js"
+      },
+      "dedupeKey": "consoleErrors|desktop||1"
+    },
+    {
+      "ruleId": "consoleErrors",
+      "severity": "error",
+      "kind": "console",
+      "viewport": "desktop",
+      "selector": null,
+      "evidence": {
+        "type": "error",
+        "text": "Aborted(both async and sync fetching of the wasm failed)",
+        "location": "file:///home/user/Doubao/chats/38445872096164610/repo_clone/docs/wasm/midi2jianpu.js"
+      },
+      "dedupeKey": "consoleErrors|desktop||2"
+    },
+    {
+      "ruleId": "consoleErrors",
+      "severity": "error",
+      "kind": "console",
+      "viewport": "desktop",
+      "selector": null,
+      "evidence": {
+        "type": "error",
+        "text": "Failed to load resource: net::ERR_FAILED",
+        "location": "file:///home/user/Doubao/chats/38445872096164610/repo_clone/docs/wasm/midi2jianpu.wasm"
+      },
+      "dedupeKey": "consoleErrors|desktop||3"
+    },
+    {
+      "ruleId": "resourceErrors",
+      "severity": "error",
+      "kind": "network",
+      "viewport": "desktop",
+      "selector": null,
+      "evidence": {
+        "url": "file:///home/user/Doubao/chats/38445872096164610/repo_clone/docs/wasm/midi2jianpu.wasm",
+        "resourceType": "xhr",
+        "status": null,
+        "reason": "network_error"
+      },
+      "dedupeKey": "resourceErrors|desktop||0"
+    }
+  ],
+  "prioritizedActions": [
+    {
+      "ruleId": "consoleErrors",
+      "severity": "error",
+      "viewport": "desktop",
+      "selector": null
+    },
+    {
+      "ruleId": "resourceErrors",
+      "severity": "error",
+      "viewport": "desktop",
+      "selector": null
+    }
+  ],
   "reportPath": "/home/user/Doubao/chats/38445872096164610/repo_clone/docs/_shots/report.json"
 }

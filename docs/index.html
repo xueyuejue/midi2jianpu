@@ -13,366 +13,167 @@ h1{font-size:24px;border-bottom:3px solid #333;padding-bottom:10px;margin-bottom
 .drop{border:2px dashed #bbb;border-radius:12px;padding:40px 20px;text-align:center;background:#fff;cursor:pointer;transition:background .2s}
 .drop:hover,.drop.over{background:#eef;border-color:#66c}
 .drop p{color:#888;font-size:14px;margin-top:6px}
-.drop strong{color:#333;font-size:17px}
-.controls{margin:16px 0;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.controls{margin:16px 0;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .controls label{font-size:14px;color:#555}
-.controls select,.controls button{padding:6px 12px;border:1px solid #ccc;border-radius:6px;font-size:14px;background:#fff}
-.controls button{background:#333;color:#fff;border-color:#333;cursor:pointer}
-#score{display:none}
-.score-head{text-align:center;margin-bottom:14px;font-size:16px;color:#333}
-.score-head .key{font-weight:bold}
-.score-head .ts{margin-left:20px;color:#666}
-.track-card{background:#fff;border:1px solid #ddd;border-radius:8px;padding:24px 28px;margin-top:16px;overflow:hidden}
-.track-card h3{font-size:14px;color:#888;margin-bottom:14px;font-weight:normal;border-bottom:1px solid #eee;padding-bottom:8px}
-.staff{font-size:26px;line-height:2.4;padding:10px 2px;text-align:center}
-.measure{display:inline-block;margin:0 8px 8px 0;padding:0 4px;white-space:nowrap;border-right:1.5px solid #999;padding-right:8px}
-.note{display:inline-block;position:relative;margin:0 4px;text-align:center;min-width:18px;vertical-align:bottom}
-.num{position:relative;z-index:1;font-family:"Times New Roman",serif}
-/* 八度点: 正上方/正下方小圆点 */
-.note.dot-above .num::before{content:"";position:absolute;top:-0.65em;left:50%;transform:translateX(-50%);width:6px;height:6px;border-radius:50%;background:#222}
-.note.dot-above2 .num::before{content:"";position:absolute;top:-0.95em;left:50%;transform:translateX(-50%);width:6px;height:6px;border-radius:50%;background:#222;box-shadow:0 0.3em 0 #222}
-.note.dot-below .num::after{content:"";position:absolute;bottom:-0.65em;left:50%;transform:translateX(-50%);width:6px;height:6px;border-radius:50%;background:#222}
-.note.dot-below2 .num::after{content:"";position:absolute;bottom:-0.95em;left:50%;transform:translateX(-50%);width:6px;height:6px;border-radius:50%;background:#222;box-shadow:0 -0.3em 0 #222}
-/* 时值横线: 数字正下方 */
-.eighth .num{border-bottom:2.5px solid #222;padding-bottom:2px}
-.sixteenth .num{border-bottom:2.5px solid #222;padding-bottom:2px;box-shadow:0 -5px 0 #222}
-/* 附点: 数字右边小圆点 */
-.dotted .num::before{content:"";position:absolute;top:50%;right:-0.5em;transform:translateY(-50%);width:5px;height:5px;border-radius:50%;background:#222}
-.note.dotted.dot-above .num::before{top:20%;right:-0.5em}
-.ext{margin:0 3px;color:#222;font-family:"Times New Roman",serif}
-.lyric{display:block;font-size:13px;color:#555;text-align:center;margin-top:1px;min-height:16px}
-.rest{color:#444;margin:0 6px;font-family:"Times New Roman",serif}
+.controls select{padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:14px}
+.controls button{padding:4px 12px;background:#eee;border:1px solid #ccc;border-radius:4px;cursor:pointer;font-size:13px}
+.controls button:hover{background:#ddd}
 .meta{color:#888;font-size:13px;margin:8px 0;text-align:center}
-.error{color:#c00;padding:16px;display:none}
+.score{background:#fff;border:1px solid #ddd;border-radius:8px;padding:20px 32px;margin-top:16px;display:none}
+.error{color:#c00;font-size:14px;margin:12px 0;display:none}
 .footer{margin-top:24px;color:#999;font-size:12px;text-align:center}
+.loading{text-align:center;padding:40px;color:#888}
 </style>
 </head>
 <body>
 <div class="wrap">
 <h1>MIDI → 简谱 在线转换</h1>
 <div class="drop" id="drop">
-  <strong>拖入 .mid 文件到这里</strong>
+  <div style="font-size:18px;font-weight:500">拖入 .mid 文件到这里</div>
   <p>或点击选择 · 纯浏览器解析，不上传服务器</p>
-  <input type="file" id="file" accept=".mid,.midi" style="display:none">
 </div>
+<input type="file" id="file" accept=".mid,.midi" style="display:none">
 <div class="controls">
   <label>调性：</label>
   <select id="key">
+    <option value="-1:1">自动识别</option>
     <option value="0:1">1=C 大调</option>
     <option value="2:1">1=D 大调</option>
     <option value="4:1">1=E 大调</option>
     <option value="5:1">1=F 大调</option>
     <option value="7:1">1=G 大调</option>
     <option value="9:1">1=A 大调</option>
-    <option value="0:0" selected>6=C 小调</option>
+    <option value="0:0">6=C 小调</option>
     <option value="9:0">6=A 小调</option>
-    <option value="4:0">6=E 小调</option>
+    <option value="4:0" selected>6=E 小调</option>
     <option value="7:0">6=G 小调</option>
   </select>
-  <button id="lyricsBtn" style="margin-left:12px;padding:4px 12px;background:#eee;border:1px solid #ccc;border-radius:4px;cursor:pointer;font-size:13px">上传歌词 (.lrc)</button>
-  <input type="file" id="lyricsFile" accept=".lrc,.json,.txt" style="display:none">
+  <button id="lyricsBtn">上传歌词 (.lrc)</button>
+  <input type="file" id="lyricsFile" accept=".lrc,.json" style="display:none">
+  <button id="downloadPng" style="display:none">下载 PNG 谱面</button>
 </div>
 <div class="meta" id="meta"></div>
-<button id="downloadPng" style="display:none;margin:8px 0;padding:6px 16px;background:#333;color:#fff;border:none;border-radius:6px;cursor:pointer">下载 PNG 谱面</button>
 <div class="score" id="score"></div>
 <div class="error" id="err"></div>
-<div class="footer">midi2jianpu · 在线 demo · C++ 核心见 GitHub</div>
+<div class="footer">midi2jianpu · 在线 demo · WASM 核心 · C++ 见 GitHub</div>
 </div>
+
+<script src="wasm/midi2jianpu.js"></script>
 <script>
+let wasmMod=null;
 let midiBytes=null;
-let lyricLines=[];  // [{startTick, text}]
-let data=null, div=480;  // 全局, 供歌词上传后重新渲染
+let lyricsText=null;
 
-// 解析LRC歌词
-function parseLrc(text, division, bpm){
-  const lines=[];
-  const secPerBeat=60.0/bpm;
-  for(const line of text.split('\n')){
-    if(!line.startsWith('[')) continue;
-    const close=line.indexOf(']');
-    if(close<0) continue;
-    const ts=line.slice(1,close);
-    const m=ts.match(/^(\d+):(\d+\.?\d*)$/);
-    if(!m) continue;
-    const sec=parseInt(m[1])*60+parseFloat(m[2]);
-    const startTick=Math.round(sec/secPerBeat*division);
-    const txt=line.slice(close+1).trim();
-    if(txt) lines.push({startTick, text:txt});
-  }
-  return lines;
-}
+// 初始化WASM
+createMidi2Jianpu().then(mod => {
+  wasmMod = mod;
+  console.log('WASM模块加载完成');
+}).catch(e => {
+  document.getElementById('err').textContent = 'WASM加载失败: ' + e.message;
+  document.getElementById('err').style.display = 'block';
+});
 
-function readVarLen(dv, off){
-  let val=0, b;
-  do{ b=dv.getUint8(off++); val=(val<<7)|(b&0x7f); }while(b&0x80);
-  return {val, off};
-}
+// 上传MIDI文件
+const drop = document.getElementById('drop');
+const fileInput = document.getElementById('file');
+drop.onclick = () => fileInput.click();
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+drop.ondragleave = () => drop.classList.remove('over');
+drop.ondrop = e => {
+  e.preventDefault();
+  drop.classList.remove('over');
+  loadMidi(e.dataTransfer.files[0]);
+};
+fileInput.onchange = () => loadMidi(fileInput.files[0]);
 
-function parseMIDI(buf){
-  const dv=new DataView(buf);
-  if(dv.getUint32(0)!==0x4d546864) throw new Error("不是标准MIDI");
-  const hlen=dv.getUint32(4);
-  const ntracks=dv.getUint16(10), div=dv.getUint16(12);
-  let off=8+hlen;
-  const tracks=[];
-  let timeSig={num:4,den:4};
-  let bpm=120;
-  const pitchBends=[];
-  const dynamics=[];
-  for(let t=0;t<ntracks;t++){
-    if(dv.getUint32(off)!==0x4d54726b) break;
-    const tlen=dv.getUint32(off+4);
-    let p=off+8, end=p+tlen;
-    let running=0;
-    const evs=[];
-    let trackName="";
-    while(p<end){
-      let r=readVarLen(dv,p); const delta=r.val; p=r.off;
-      let st=dv.getUint8(p);
-      if(st<0x80){st=running;}else{p++;running=st;}
-      const type=st&0xf0, ch=st&0x0f;
-      if(type===0x90){
-        evs.push({delta, st, note:dv.getUint8(p++), vel:dv.getUint8(p++), ch, on:true});
-      } else if(type===0x80){
-        evs.push({delta, st, note:dv.getUint8(p++), vel:dv.getUint8(p++), ch, on:false});
-      } else if(type===0xB0){
-        const ctrl=dv.getUint8(p++), val=dv.getUint8(p++);
-        evs.push({delta,st,ch,ctrl,val});
-        if(ctrl===0x0B) dynamics.push({tick:0, value:val});
-      } else if(type===0xE0){
-        const lsb=dv.getUint8(p++), msb=dv.getUint8(p++);
-        evs.push({delta,st,ch,bend:(msb<<7)|lsb});
-      }
-      else if(type===0xC0||type===0xD0){ p+=1; evs.push({delta,st,ch}); }
-      else if(st===0xFF){
-        const mtype=dv.getUint8(p++), r2=readVarLen(dv,p); p=r2.off;
-        if(mtype===0x58 && r2.val>=4){
-          timeSig={num:dv.getUint8(p), den:Math.pow(2,dv.getUint8(p+1))};
-        } else if(mtype===0x51 && r2.val>=3){
-          const usprqn=(dv.getUint8(p)<<16)|(dv.getUint8(p+1)<<8)|dv.getUint8(p+2);
-          bpm=Math.round(60000000/usprqn);
-        } else if(mtype===0x03){
-          trackName=new TextDecoder().decode(new Uint8Array(buf.slice(p,p+r2.val)));
-        }
-        p+=r2.val;
-        evs.push({delta,st});
-      } else { p+=1; evs.push({delta,st,ch}); }
-    }
-    let abs=0; for(const e of evs){abs+=e.delta; e.tick=abs;}
-    for(const e of evs){
-      if(e.bend!==undefined) pitchBends.push({tick:e.tick, value:e.bend});
-      if(e.ctrl===0x0B) dynamics.push({tick:e.tick, value:e.val});
-    }
-    const active={}; const pairs=[];
-    for(const e of evs){
-      if(e.on && e.vel>0){
-        if(!active[e.note]) active[e.note]=[];
-        active[e.note].push(e);
-      } else {
-        const arr=active[e.note];
-        if(arr && arr.length){
-          const on=arr.shift();
-          pairs.push({pitch:e.note, start:on.tick, dur:e.tick-on.tick});
-        }
-      }
-    }
-    tracks.push({pairs, name:trackName});
-    off=end;
-  }
-  return {div, tracks, timeSig, bpm, pitchBends, dynamics};
-}
-
-const MAJOR=[0,2,4,5,7,9,11], MINOR=[0,2,3,5,7,8,10];
-function pitchToNum(pitch, tonic, isMajor){
-  const scale=isMajor?MAJOR:MINOR;
-  const semi=((pitch-tonic)%12+12)%12;
-  for(let i=0;i<7;i++){
-    if(scale[i]===semi) return {num:String(i+1), sharp:false};
-    if((scale[i]+1)%12===semi) return {num:String(i+1), sharp:true};
-  }
-  for(let i=0;i<7;i++){
-    if((scale[i]-1+12)%12===semi) return {num:String(i+1), flat:true};
-  }
-  return {num:"?"};
-}
-
-function durClass(dur, div){
-  const beats=dur/div;
-  const table=[[0.25,"sixteenth",false],[0.5,"eighth",false],[0.75,"eighth",true],
-               [1.0,"quarter",false],[1.5,"quarter",true],[2.0,"half",false],
-               [3.0,"half",true],[4.0,"whole",false]];
-  let best="quarter", dotted=false;
-  let bd=1e9;
-  for(const [b,c,d] of table){
-    const dist=Math.abs(beats-b);
-    if(dist<bd){bd=dist;best=c;dotted=d;}
-  }
-  return {cls:best, dotted};
-}
-
-function noteHtml(pitch, dur, tonic, isMajor, div){
-  const {num, sharp, flat}=pitchToNum(pitch, tonic, isMajor);
-  const oct=Math.round((pitch-tonic)/12);
-  const {cls, dotted}=durClass(dur, div);
-  let html=`<span class="note ${cls}`;
-  if(oct>0) html+= oct>1 ? " dot-above2" : " dot-above";
-  if(oct<0) html+= (-oct>1) ? " dot-below2" : " dot-below";
-  if(dotted) html+=" dotted";
-  html+='"><span class="num">';
-  if(sharp) html+="#";
-  if(flat) html+="b";
-  html+=num+"</span>";
-  if(cls==="half"||cls==="whole"){
-    const lines=cls==="whole"?3:1;
-    for(let i=0;i<lines;i++) html+='<span class="ext">-</span>';
-  }
-  html+="</span>";
-  return html;
-}
-
-function convert(){
-  if(!midiBytes){ alert("请先选择MIDI文件"); return; }
-  try{
-    data=parseMIDI(midiBytes);
-    const [tonic, isMajor]=document.getElementById("key").value.split(":").map(Number);
-    div=data.div;
-    const barLen=div*(data.timeSig.num)/(data.timeSig.den/4);
-    let totalNotes=0;
-    const NOTE_NAMES=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-    let html=`<div class="score-head">`;
-    html+=`<span class="key">1 = ${NOTE_NAMES[tonic]}${isMajor?"":" 小调"}</span>`;
-    html+=`<span class="ts">${data.timeSig.num}/${data.timeSig.den} 拍</span>`;
-    html+=`<span class="ts">♩=${data.bpm}</span></div>`;
-    data.tracks.forEach((tr,ti)=>{
-      if(!tr.pairs.length) return;
-      tr.pairs.sort((a,b)=>a.start-b.start);
-      totalNotes+=tr.pairs.length;
-      // 三连音检测: 连续3个等长音符(误差15%), 每个0.25-0.9拍
-      const trip=new Array(tr.pairs.length).fill(false);
-      for(let i=0;i+2<tr.pairs.length;i++){
-        const d1=tr.pairs[i].dur/div, d2=tr.pairs[i+1].dur/div, d3=tr.pairs[i+2].dur/div;
-        const avg=(d1+d2+d3)/3;
-        if(avg<0.25||avg>0.9) continue;
-        if(Math.abs(d1-d2)/avg>0.15||Math.abs(d2-d3)/avg>0.15) continue;
-        if(tr.pairs[i+1].start-tr.pairs[i].start>tr.pairs[i].dur*1.1) continue;
-        if(tr.pairs[i+2].start-tr.pairs[i+1].start>tr.pairs[i+1].dur*1.1) continue;
-        trip[i]=trip[i+1]=trip[i+2]=true;
-      }
-      html+=`<div class="track-card"><h3>${tr.name||("轨 "+(ti+1))} · ${tr.pairs.length} 音符</h3><div class="staff">`;
-      let curBar=-1, prevEnd=0, lastPitch=-1, inTrip=false, lastDyn="";
-      // 歌词状态
-      let lyLineIdx=-1, lyCharIdx=0;
-      const lyricForNote=(tick)=>{
-        if(!lyricLines.length) return "";
-        let best=-1;
-        for(let i=0;i<lyricLines.length;i++){
-          if(lyricLines[i].startTick<=tick) best=i; else break;
-        }
-        if(best<0) return "";
-        if(best!==lyLineIdx){ lyLineIdx=best; lyCharIdx=0; }
-        // 按字拆分
-        const text=lyricLines[best].text;
-        const chars=[];
-        for(let i=0;i<text.length;){
-          const code=text.charCodeAt(i);
-          if(code<128){ chars.push(text[i]); i++; }
-          else if(code<0x800){ chars.push(text.slice(i,i+2)); i+=2; }
-          else { chars.push(text.slice(i,i+3)); i+=3; }
-        }
-        if(lyCharIdx>=chars.length) return "";
-        return chars[lyCharIdx++];
-      };
-      tr.pairs.forEach((n,idx)=>{
-        // 弯音修正
-        if(data.pitchBends.length){
-          let sum=0, cnt=0;
-          for(const pb of data.pitchBends){
-            if(pb.tick>=n.start && pb.tick<=n.start+n.dur){
-              sum+=(pb.value-8192)/8192*2.0; cnt++;
-            }
-          }
-          if(cnt && Math.abs(sum/cnt)>=0.5) n.pitch+=Math.round(sum/cnt);
-        }
-        const bar=Math.floor(n.start/barLen);
-        if(bar!==curBar){
-          if(curBar>=0) html+='</span>';
-          curBar=bar; lastPitch=-1;
-          html+='<span class="measure">';
-          // 强弱记号
-          if(data.dynamics.length){
-            let val=80;
-            for(const dp of data.dynamics){ if(dp.tick<=n.start) val=dp.value; else break; }
-            const dyn=val<20?"pp":val<40?"p":val<60?"mp":val<80?"mf":val<100?"f":"ff";
-            if(dyn!==lastDyn){ html+=`<span style="font-size:12px;font-style:italic;color:#888;margin-right:4px">${dyn}</span>`; lastDyn=dyn; }
-          }
-        }
-        if(trip[idx]&&!inTrip){ html+='<sup style="font-size:12px;color:#666">3</sup>'; inTrip=true; }
-        if(!trip[idx]&&inTrip) inTrip=false;
-        const gap=n.start-prevEnd;
-        const hasRest=(gap>=div/2 && prevEnd>0);
-        if(hasRest){ html+='<span class="rest">0</span>'; lastPitch=-1; }
-        if(!trip[idx] && n.pitch===lastPitch && !hasRest && gap<div/4){
-          html+='<span class="ext">-</span>';
-        } else {
-          html+=noteHtml(n.pitch, n.dur, tonic, isMajor, div);
-          lastPitch=n.pitch;
-        }
-        // 歌词
-        const syl=lyricForNote(n.start);
-        if(syl) html+=`<span class="lyric">${syl}</span>`;
-        prevEnd=n.start+n.dur;
-      });
-      html+='</span></div></div>';
-    });
-    document.getElementById("meta").textContent=
-      `共 ${totalNotes} 音符 · ${data.timeSig.num}/${data.timeSig.den} 拍 · division=${div}`;
-    document.getElementById("score").innerHTML=html;
-    document.getElementById("score").style.display="block";
-    document.getElementById("err").style.display="none";
-    // 显示下载按钮
-    document.getElementById("downloadPng").style.display="inline-block";
-  }catch(e){
-    document.getElementById("err").textContent="解析失败: "+e.message;
-    document.getElementById("err").style.display="block";
-  }
-}
-
-const drop=document.getElementById("drop"), fileInput=document.getElementById("file");
-drop.onclick=()=>fileInput.click();
-drop.ondragover=e=>{e.preventDefault();drop.classList.add("over")};
-drop.ondragleave=()=>drop.classList.remove("over");
-drop.ondrop=e=>{e.preventDefault();drop.classList.remove("over");loadFile(e.dataTransfer.files[0])};
-fileInput.onchange=()=>loadFile(fileInput.files[0]);
-function loadFile(f){
-  if(!f) return;
-  const fr=new FileReader();
-  fr.onload=()=>{midiBytes=fr.result;convert();};
+function loadMidi(f) {
+  if (!f) return;
+  const fr = new FileReader();
+  fr.onload = () => {
+    midiBytes = new Uint8Array(fr.result);
+    convert();
+  };
   fr.readAsArrayBuffer(f);
 }
-document.getElementById("downloadPng").onclick=function(){
-  const el=document.getElementById("score");
-  html2canvas(el,{backgroundColor:"#fff",scale:2}).then(canvas=>{
-    const a=document.createElement("a");
-    a.download="jianpu.png";
-    a.href=canvas.toDataURL("image/png");
-    a.click();
-  });
-};
+
 // 歌词上传
-const lyricsBtn=document.getElementById("lyricsBtn");
-const lyricsFile=document.getElementById("lyricsFile");
-lyricsBtn.onclick=()=>lyricsFile.click();
-lyricsFile.onchange=()=>{
-  const f=lyricsFile.files[0];
-  if(!f) return;
-  const fr=new FileReader();
-  fr.onload=()=>{
-    const bpm=data?data.bpm:120;
-    lyricLines=parseLrc(fr.result, div, bpm);
-    lyricsBtn.textContent=`歌词已加载 (${lyricLines.length}行)`;
-    if(midiBytes) convert();  // 重新渲染
+const lyricsBtn = document.getElementById('lyricsBtn');
+const lyricsFile = document.getElementById('lyricsFile');
+lyricsBtn.onclick = () => lyricsFile.click();
+lyricsFile.onchange = () => {
+  const f = lyricsFile.files[0];
+  if (!f) return;
+  const fr = new FileReader();
+  fr.onload = () => {
+    lyricsText = fr.result;
+    lyricsBtn.textContent = `歌词已加载`;
+    if (midiBytes) convert();
   };
   fr.readAsText(f);
+};
+
+// 转换
+function convert() {
+  if (!wasmMod) {
+    document.getElementById('err').textContent = 'WASM模块尚未加载完成，请稍候';
+    document.getElementById('err').style.display = 'block';
+    return;
+  }
+  if (!midiBytes) return;
+
+  try {
+    const [keyPitch, isMajor] = document.getElementById('key').value.split(':').map(Number);
+
+    // 分配内存
+    const ptr = wasmMod._malloc(midiBytes.length);
+    wasmMod.HEAPU8.set(midiBytes, ptr);
+
+    // 调用WASM生成HTML
+    wasmMod._midi2jianpu_html(ptr, midiBytes.length, keyPitch, isMajor);
+    const len = wasmMod._midi2jianpu_result_len();
+    const buf = wasmMod._malloc(len + 1);
+    wasmMod._midi2jianpu_copy_result(buf, len + 1);
+    const html = wasmMod.UTF8ToString(buf);
+
+    // 释放内存
+    wasmMod._free(ptr);
+    wasmMod._free(buf);
+
+    // 显示结果
+    document.getElementById('score').innerHTML = html;
+    document.getElementById('score').style.display = 'block';
+    document.getElementById('downloadPng').style.display = 'inline-block';
+    document.getElementById('err').style.display = 'none';
+
+    // 提取元信息
+    const noteMatch = html.match(/(\d+)\s*音符/);
+    if (noteMatch) {
+      document.getElementById('meta').textContent = `共 ${noteMatch[1]} 音符 · WASM 核心`;
+    }
+  } catch (e) {
+    document.getElementById('err').textContent = '解析失败: ' + e.message;
+    document.getElementById('err').style.display = 'block';
+  }
+}
+
+// 调性选择变化时重新转换
+document.getElementById('key').onchange = () => {
+  if (midiBytes) convert();
+};
+
+// 下载PNG
+document.getElementById('downloadPng').onclick = function() {
+  const el = document.getElementById('score');
+  if (typeof html2canvas === 'undefined') {
+    alert('html2canvas未加载');
+    return;
+  }
+  html2canvas(el, { backgroundColor: '#fff', scale: 2 }).then(canvas => {
+    const a = document.createElement('a');
+    a.download = 'jianpu.png';
+    a.href = canvas.toDataURL('image/png');
+    a.click();
+  });
 };
 </script>
 <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
