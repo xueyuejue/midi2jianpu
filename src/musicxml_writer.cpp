@@ -73,6 +73,7 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key) {
         xml << "  <part id=\"P" << partIdx << "\">\n";
         int curBar = -1;
         long barStart = 0;
+        long prevEnd = 0;
         auto triplets = detectTriplets(ns, data.division);
 
         for (size_t idx = 0; idx < ns.size(); idx++) {
@@ -82,6 +83,7 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key) {
                 if (curBar >= 0) xml << "    </measure>\n";
                 curBar = bar;
                 barStart = n.startTicks;
+                prevEnd = n.startTicks;  // 小节开头重置
                 xml << "    <measure number=\"" << (bar + 1) << "\">\n";
                 if (bar == 0) {
                     int fifths = 0;
@@ -103,6 +105,15 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key) {
                 }
             }
 
+            // 间隙 → 休止符
+            long gap = n.startTicks - prevEnd;
+            if (gap >= data.division / 2) {
+                double restBeats = gap / (double)data.division;
+                xml << "      <note><rest/>"
+                    << "<duration>" << std::fixed << std::setprecision(2) << restBeats << "</duration>"
+                    << "<type>" << durType(restBeats) << "</type></note>\n";
+            }
+
             double beats = n.durationTicks / (double)data.division;
             int pc = n.pitch % 12;
             int octave = n.pitch / 12 - 1;
@@ -122,6 +133,7 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key) {
             }
             xml << "<type>" << durType(beats) << "</type>"
                 << "</note>\n";
+            prevEnd = n.startTicks + n.durationTicks;
         }
         if (curBar >= 0) xml << "    </measure>\n";
         xml << "  </part>\n";
