@@ -7,21 +7,21 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>1</text></svg>">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:"Noto Serif SC","SimSun",serif;background:#f5f5f0;color:#222;padding:20px}
+body{font-family:"Noto Serif SC","SimSun",serif;background:#f8f8f5;color:#222;padding:20px;min-height:100vh}
 .wrap{max-width:900px;margin:0 auto}
-h1{font-size:24px;border-bottom:3px solid #333;padding-bottom:10px;margin-bottom:16px}
-.drop{border:2px dashed #bbb;border-radius:12px;padding:40px 20px;text-align:center;background:#fff;cursor:pointer;transition:background .2s}
-.drop:hover,.drop.over{background:#eef;border-color:#66c}
-.drop p{color:#888;font-size:14px;margin-top:6px}
-.controls{margin:16px 0;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bottom:16px;color:#b03030;font-weight:700}
+.drop{border:2px dashed #ccc;border-radius:12px;padding:40px 20px;text-align:center;background:#fff;cursor:pointer;transition:all .2s}
+.drop:hover,.drop.over{background:#fef5f5;border-color:#b03030}
+.drop p{color:#999;font-size:14px;margin-top:6px}
+.controls{margin:16px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .controls label{font-size:14px;color:#555}
-.controls select{padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:14px}
-.controls button{padding:4px 12px;background:#eee;border:1px solid #ccc;border-radius:4px;cursor:pointer;font-size:13px}
-.controls button:hover{background:#ddd}
+.controls select{padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:14px;background:#fff}
+.controls button{padding:6px 14px;background:#fff;border:1px solid #ddd;border-radius:6px;cursor:pointer;font-size:13px;transition:all .2s}
+.controls button:hover{background:#f5f5f0;border-color:#bbb}
 .meta{color:#888;font-size:13px;margin:8px 0;text-align:center}
-.score{background:#fff;border:1px solid #ddd;border-radius:8px;padding:20px 32px;margin-top:16px;display:none}
+.score{background:#fff;border:none;border-radius:0;padding:20px 0;margin-top:16px;display:none}
 .error{color:#c00;font-size:14px;margin:12px 0;display:none}
-.footer{margin-top:24px;color:#999;font-size:12px;text-align:center}
+.footer{margin-top:24px;color:#aaa;font-size:12px;text-align:center}
 .loading{text-align:center;padding:40px;color:#888}
 </style>
 </head>
@@ -37,16 +37,34 @@ h1{font-size:24px;border-bottom:3px solid #333;padding-bottom:10px;margin-bottom
   <label>调性：</label>
   <select id="key">
     <option value="-1:1">自动识别</option>
-    <option value="0:1">1=C 大调</option>
-    <option value="2:1">1=D 大调</option>
-    <option value="4:1">1=E 大调</option>
-    <option value="5:1">1=F 大调</option>
-    <option value="7:1">1=G 大调</option>
-    <option value="9:1">1=A 大调</option>
-    <option value="0:0">6=C 小调</option>
-    <option value="9:0">6=A 小调</option>
-    <option value="4:0" selected>6=E 小调</option>
-    <option value="7:0">6=G 小调</option>
+    <optgroup label="大调">
+      <option value="0:1">1=C 大调</option>
+      <option value="7:1">1=G 大调</option>
+      <option value="2:1">1=D 大调</option>
+      <option value="9:1">1=A 大调</option>
+      <option value="4:1">1=E 大调</option>
+      <option value="11:1">1=B 大调</option>
+      <option value="6:1">1=F# 大调</option>
+      <option value="1:1">1=C# 大调</option>
+      <option value="5:1">1=F 大调</option>
+      <option value="10:1">1=Bb 大调</option>
+      <option value="3:1">1=Eb 大调</option>
+      <option value="8:1">1=Ab 大调</option>
+    </optgroup>
+    <optgroup label="小调">
+      <option value="9:0">6=A 小调</option>
+      <option value="4:0" selected>6=E 小调</option>
+      <option value="11:0">6=B 小调</option>
+      <option value="6:0">6=F# 小调</option>
+      <option value="1:0">6=C# 小调</option>
+      <option value="8:0">6=G# 小调</option>
+      <option value="3:0">6=Eb 小调</option>
+      <option value="10:0">6=Bb 小调</option>
+      <option value="2:0">6=D 小调</option>
+      <option value="7:0">6=G 小调</option>
+      <option value="0:0">6=C 小调</option>
+      <option value="5:0">6=F 小调</option>
+    </optgroup>
   </select>
   <button id="lyricsBtn">上传歌词 (.lrc)</button>
   <input type="file" id="lyricsFile" accept=".lrc,.json" style="display:none">
