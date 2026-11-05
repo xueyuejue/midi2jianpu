@@ -222,7 +222,7 @@ h1{font-size:24px;border-bottom:none;padding-bottom:8px;text-align:center;color:
 .track h3{margin:0 0 12px;font-size:15px;color:#444;text-align:center}
 .track h3 small{color:#999;font-weight:normal}
 .staff{font-size:24px;line-height:2.4;padding:10px 0}
-.measure{display:inline-block;margin:0 2px 8px 0;padding:0 4px 0 6px;white-space:nowrap;border-left:1px solid #ccc}
+.measure{display:inline-block;margin:0 2px 8px 0;padding:0 4px 0 6px;white-space:nowrap;border-left:1px solid #ccc;vertical-align:top;height:80px}
 .measure:first-child{border-left:none}
 .note{display:inline-block;position:relative;margin:0 4px;text-align:center;min-width:20px;min-height:48px;vertical-align:bottom}
 .num{font-weight:600}
