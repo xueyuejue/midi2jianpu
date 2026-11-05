@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <map>
 
 namespace m2j {
 
@@ -55,7 +56,8 @@ struct MidiData {
     double tempo = 500000.0;
     TimeSignature timeSig;
     KeySignature keySig;
-    std::vector<DynPoint> dynamics;  // 力度变化曲线
+    std::vector<DynPoint> dynamics;
+    std::map<int, std::string> trackNames;  // 轨道名称(0x03 meta)
 };
 
 bool loadMidiFile(const std::string& path, MidiData& out);

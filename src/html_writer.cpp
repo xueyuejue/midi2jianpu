@@ -83,9 +83,14 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key) {
         if (ns.size() > maxN) { maxN = ns.size(); mainTrack = t; }
 
     for (auto& [t, ns] : byTrack) {
-        body << "<div class='track'><h3>"
-             << (t == mainTrack ? "旋律轨" : "伴奏轨 " + std::to_string(t))
-             << " <small>(" << ns.size() << " 音符)</small></h3><div class='staff'>";
+        body << "<div class='track'><h3>";
+        auto it = data.trackNames.find(t);
+        if (it != data.trackNames.end() && !it->second.empty()) {
+            body << it->second;
+        } else {
+            body << (t == mainTrack ? "旋律轨" : "伴奏轨 " + std::to_string(t));
+        }
+        body << " <small>(" << ns.size() << " 音符)</small></h3><div class='staff'>";
 
         int curBar = -1;
         long prevEnd = 0;

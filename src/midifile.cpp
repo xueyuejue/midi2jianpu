@@ -120,6 +120,9 @@ bool loadMidiFile(const std::string& path, MidiData& out) {
                     out.keySig.sharpsFlats = (int8_t)d[pos];
                     out.keySig.isMinor = d[pos+1] != 0;
                     out.keySig.valid = true;
+                } else if (metaType == 0x03u) {  // track name
+                    std::string name((const char*)&d[pos], metaLen);
+                    out.trackNames[trackIdx] = name;
                 }
                 pos += metaLen;
             } else if (type == 0xB0u) {

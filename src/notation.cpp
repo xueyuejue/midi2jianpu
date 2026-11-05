@@ -208,8 +208,14 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
 
     for (auto& [t, ns] : byTrack) {
         bool isMain = (t == mainTrack);
-        os << (isMain ? "[旋律轨] " : "[伴奏轨" + std::to_string(t) + "] ")
-           << "(" << ns.size() << " 音符)\n";
+        std::string label;
+        auto it = data.trackNames.find(t);
+        if (it != data.trackNames.end() && !it->second.empty()) {
+            label = it->second;
+        } else {
+            label = isMain ? "旋律轨" : "伴奏轨" + std::to_string(t);
+        }
+        os << "[" << label << "] (" << ns.size() << " 音符)\n";
         os << formatTrack(ns, key, data, isMain);
     }
     return os.str();
