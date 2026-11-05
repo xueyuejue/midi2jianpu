@@ -35,25 +35,38 @@ static std::string noteToHtml(int pitch, long durTicks,
         else num += c;
     }
 
-    // 时值 class
+    // 时值：最近邻匹配标准时值
     double beats = (double)durTicks / division;
-    std::string durClass;
-    if (beats >= 3.5) durClass = "whole";
-    else if (beats >= 1.5) durClass = "half";
-    else if (beats >= 0.75) durClass = "quarter";
-    else if (beats >= 0.375) durClass = "eighth";
-    else durClass = "sixteenth";
+    struct DurT { double beats; const char* cls; bool dotted; int extLines; };
+    DurT table[] = {
+        {0.25, "sixteenth", false, 0},
+        {0.5,  "eighth",    false, 0},
+        {0.75, "eighth",    true,  0},
+        {1.0,  "quarter",   false, 0},
+        {1.5,  "quarter",   true,  0},
+        {2.0,  "half",      false, 1},
+        {3.0,  "half",      true,  1},
+        {4.0,  "whole",     false, 3},
+    };
+    const char* durClass = "quarter";
+    bool dotted = false;
+    int extLines = 0;
+    double bestDist = 1e9;
+    for (auto& d : table) {
+        double dist = std::abs(beats - d.beats);
+        if (dist < bestDist) {
+            bestDist = dist;
+            durClass = d.cls; dotted = d.dotted; extLines = d.extLines;
+        }
+    }
 
     std::ostringstream os;
     os << "<span class='note " << durClass;
     if (highDots > 0) os << " dot-above" << (highDots > 1 ? "2" : "");
     if (lowDots > 0) os << " dot-below" << (lowDots > 1 ? "2" : "");
+    if (dotted) os << " dotted";
     os << "'><span class='num'>" << htmlEscape(num) << "</span>";
-    // 延长线（二分/全音符）
-    if (beats >= 1.5) {
-        int lines = (beats >= 3.5) ? 3 : 1;
-        for (int i = 0; i < lines; i++) os << "<span class='ext'>-</span>";
-    }
+    for (int i = 0; i < extLines; i++) os << "<span class='ext'>-</span>";
     os << "</span>";
     return os.str();
 }
@@ -112,6 +125,7 @@ h1{font-size:22px;border-bottom:2px solid #333;padding-bottom:8px}
 .dot-below2::after{bottom:-16px}
 .eighth .num{border-bottom:2px solid #222}
 .sixteenth .num{border-bottom:2px solid #222;box-shadow:0 4px 0 #222}
+.dotted .num::after{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;background:#222;margin-left:4px}
 .ext{margin-left:2px;letter-spacing:3px;color:#222}
 </style></head><body>
 <h1>简谱</h1>

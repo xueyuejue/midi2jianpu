@@ -100,11 +100,25 @@ std::string pitchToJianpu(int pitch, const KeyEstimate& key) {
 
 std::string durationSuffix(long durationTicks, int division) {
     double beats = (double)durationTicks / division;
-    if (beats >= 3.5) return "---";
-    if (beats >= 1.5) return "-";
-    if (beats >= 0.75) return "";
-    if (beats >= 0.375) return ".";
-    return "..";
+    // 标准时值（四分音符=1）：找最近的
+    struct Dur { double beats; std::string suffix; };
+    Dur table[] = {
+        {0.25, ".."},   // 十六分
+        {0.5,  "."},    // 八分
+        {0.75, "."},    // 附点八分（文本简化）
+        {1.0,  ""},     // 四分
+        {1.5,  ".'"},   // 附点四分
+        {2.0,  "-"},    // 二分
+        {3.0,  "-.'"},  // 附点二分
+        {4.0,  "---"},  // 全音符
+    };
+    std::string best = "";
+    double bestDist = 1e9;
+    for (auto& d : table) {
+        double dist = std::abs(beats - d.beats);
+        if (dist < bestDist) { bestDist = dist; best = d.suffix; }
+    }
+    return best;
 }
 
 // 输出单个轨的简谱，返回该轨输出文本
