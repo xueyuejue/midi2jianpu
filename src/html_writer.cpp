@@ -105,6 +105,10 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
     int curCharIdx = 0;
     auto lyricForNote = [&](long tick) -> std::string {
         if (lineSyls.empty()) return "";
+        // 如果当前行还有剩余字，继续分配（不换行）
+        if (curLineIdx >= 0 && curCharIdx < (int)lineSyls[curLineIdx].second.size()) {
+            return lineSyls[curLineIdx].second[curCharIdx++];
+        }
         // 找当前tick属于哪一行
         int bestLine = -1;
         for (int i = 0; i < (int)lineSyls.size(); i++) {
@@ -112,6 +116,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             else break;
         }
         if (bestLine < 0) return "";
+        // 只有换行了才重置字索引
         if (bestLine != curLineIdx) {
             curLineIdx = bestLine;
             curCharIdx = 0;
@@ -195,12 +200,13 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 body << "<span class='note quarter'><span class='num'>0</span></span>";
                 lastPitch = -1;
             }
-            // 歌词显示在音符下方
+            // 歌词显示在音符下方 (休止符和延音线不分配歌词)
+            bool isExt = !triplets[idx] && n.pitch == lastPitch && !hasRest && gap < data.division / 4;
             std::string syl;
-            if (lyricLines) {
+            if (lyricLines && n.pitch != 0 && !isExt) {
                 syl = lyricForNote(n.startTicks);
             }
-            if (!triplets[idx] && n.pitch == lastPitch && !hasRest && gap < data.division / 4) {
+            if (isExt) {
                 body << "<span class='ext'>-</span>";
             } else {
                 body << noteToHtml(n.pitch, n.durationTicks, key, data.division, syl);
