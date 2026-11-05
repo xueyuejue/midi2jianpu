@@ -40,6 +40,7 @@ h1{font-size:24px;border-bottom:3px solid #333;padding-bottom:10px;margin-bottom
 .dotted .num::before{content:"";position:absolute;top:50%;right:-0.5em;transform:translateY(-50%);width:5px;height:5px;border-radius:50%;background:#222}
 .note.dotted.dot-above .num::before{top:20%;right:-0.5em}
 .ext{margin:0 3px;color:#222;font-family:"Times New Roman",serif}
+.lyric{display:block;font-size:13px;color:#555;text-align:center;margin-top:1px;min-height:16px}
 .rest{color:#444;margin:0 6px;font-family:"Times New Roman",serif}
 .meta{color:#888;font-size:13px;margin:8px 0;text-align:center}
 .error{color:#c00;padding:16px;display:none}
@@ -68,6 +69,8 @@ h1{font-size:24px;border-bottom:3px solid #333;padding-bottom:10px;margin-bottom
     <option value="4:0">6=E 小调</option>
     <option value="7:0">6=G 小调</option>
   </select>
+  <button id="lyricsBtn" style="margin-left:12px;padding:4px 12px;background:#eee;border:1px solid #ccc;border-radius:4px;cursor:pointer;font-size:13px">上传歌词 (.lrc)</button>
+  <input type="file" id="lyricsFile" accept=".lrc,.json,.txt" style="display:none">
 </div>
 <div class="meta" id="meta"></div>
 <button id="downloadPng" style="display:none;margin:8px 0;padding:6px 16px;background:#333;color:#fff;border:none;border-radius:6px;cursor:pointer">下载 PNG 谱面</button>
@@ -77,6 +80,27 @@ h1{font-size:24px;border-bottom:3px solid #333;padding-bottom:10px;margin-bottom
 </div>
 <script>
 let midiBytes=null;
+let lyricLines=[];  // [{startTick, text}]
+let data=null, div=480;  // 全局, 供歌词上传后重新渲染
+
+// 解析LRC歌词
+function parseLrc(text, division, bpm){
+  const lines=[];
+  const secPerBeat=60.0/bpm;
+  for(const line of text.split('\n')){
+    if(!line.startsWith('[')) continue;
+    const close=line.indexOf(']');
+    if(close<0) continue;
+    const ts=line.slice(1,close);
+    const m=ts.match(/^(\d+):(\d+\.?\d*)$/);
+    if(!m) continue;
+    const sec=parseInt(m[1])*60+parseFloat(m[2]);
+    const startTick=Math.round(sec/secPerBeat*division);
+    const txt=line.slice(close+1).trim();
+    if(txt) lines.push({startTick, text:txt});
+  }
+  return lines;
+}
 
 function readVarLen(dv, off){
   let val=0, b;
@@ -209,9 +233,9 @@ function noteHtml(pitch, dur, tonic, isMajor, div){
 function convert(){
   if(!midiBytes){ alert("请先选择MIDI文件"); return; }
   try{
-    const data=parseMIDI(midiBytes);
+    data=parseMIDI(midiBytes);
     const [tonic, isMajor]=document.getElementById("key").value.split(":").map(Number);
-    const div=data.div;
+    div=data.div;
     const barLen=div*(data.timeSig.num)/(data.timeSig.den/4);
     let totalNotes=0;
     const NOTE_NAMES=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
@@ -236,6 +260,28 @@ function convert(){
       }
       html+=`<div class="track-card"><h3>${tr.name||("轨 "+(ti+1))} · ${tr.pairs.length} 音符</h3><div class="staff">`;
       let curBar=-1, prevEnd=0, lastPitch=-1, inTrip=false, lastDyn="";
+      // 歌词状态
+      let lyLineIdx=-1, lyCharIdx=0;
+      const lyricForNote=(tick)=>{
+        if(!lyricLines.length) return "";
+        let best=-1;
+        for(let i=0;i<lyricLines.length;i++){
+          if(lyricLines[i].startTick<=tick) best=i; else break;
+        }
+        if(best<0) return "";
+        if(best!==lyLineIdx){ lyLineIdx=best; lyCharIdx=0; }
+        // 按字拆分
+        const text=lyricLines[best].text;
+        const chars=[];
+        for(let i=0;i<text.length;){
+          const code=text.charCodeAt(i);
+          if(code<128){ chars.push(text[i]); i++; }
+          else if(code<0x800){ chars.push(text.slice(i,i+2)); i+=2; }
+          else { chars.push(text.slice(i,i+3)); i+=3; }
+        }
+        if(lyCharIdx>=chars.length) return "";
+        return chars[lyCharIdx++];
+      };
       tr.pairs.forEach((n,idx)=>{
         // 弯音修正
         if(data.pitchBends.length){
@@ -271,6 +317,9 @@ function convert(){
           html+=noteHtml(n.pitch, n.dur, tonic, isMajor, div);
           lastPitch=n.pitch;
         }
+        // 歌词
+        const syl=lyricForNote(n.start);
+        if(syl) html+=`<span class="lyric">${syl}</span>`;
         prevEnd=n.start+n.dur;
       });
       html+='</span></div></div>';
@@ -308,6 +357,22 @@ document.getElementById("downloadPng").onclick=function(){
     a.href=canvas.toDataURL("image/png");
     a.click();
   });
+};
+// 歌词上传
+const lyricsBtn=document.getElementById("lyricsBtn");
+const lyricsFile=document.getElementById("lyricsFile");
+lyricsBtn.onclick=()=>lyricsFile.click();
+lyricsFile.onchange=()=>{
+  const f=lyricsFile.files[0];
+  if(!f) return;
+  const fr=new FileReader();
+  fr.onload=()=>{
+    const bpm=data?data.bpm:120;
+    lyricLines=parseLrc(fr.result, div, bpm);
+    lyricsBtn.textContent=`歌词已加载 (${lyricLines.length}行)`;
+    if(midiBytes) convert();  // 重新渲染
+  };
+  fr.readAsText(f);
 };
 </script>
 <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
