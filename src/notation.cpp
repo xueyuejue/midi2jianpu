@@ -450,4 +450,86 @@ std::vector<LyricLine> parseLrcLines(const std::string& lrcPath, int division, i
     return lines;
 }
 
+// 和弦检测：从伴奏轨中按小节提取音符，匹配和弦类型
+std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key) {
+    std::vector<ChordMark> chords;
+
+    // 找伴奏轨（音符数第二多的轨，或者非旋律轨）
+    std::map<int, size_t> trackCount;
+    for (const auto& note : data.notes) trackCount[note.track]++;
+    int mainTrack = -1; size_t maxN = 0;
+    for (auto& [t, c] : trackCount) if (c > maxN) { maxN = c; mainTrack = t; }
+
+    // 按小节分组音符
+    double barLen = data.timeSig.barLengthTicks(data.division);
+    std::map<long, std::vector<int>> barNotes;  // barStartTick -> pitchClasses
+    for (const auto& note : data.notes) {
+        if (note.track == mainTrack) continue;  // 跳过旋律轨
+        long bar = (long)(note.startTicks / barLen);
+        long barStart = bar * (long)barLen;
+        barNotes[barStart].push_back(note.pitch % 12);
+    }
+
+    // 和弦类型定义（音程间隔）
+    struct ChordType { const char* suffix; std::vector<int> intervals; };
+    std::vector<ChordType> chordTypes = {
+        {"",     {0, 4, 7}},      // 大三和弦
+        {"m",    {0, 3, 7}},      // 小三和弦
+        {"7",    {0, 4, 7, 10}},  // 属七和弦
+        {"m7",   {0, 3, 7, 10}},  // 小七和弦
+        {"maj7", {0, 4, 7, 11}},  // 大七和弦
+        {"dim",  {0, 3, 6}},      // 减三和弦
+        {"aug",  {0, 4, 8}},      // 增三和弦
+        {"sus4", {0, 5, 7}},      // 挂四和弦
+        {"sus2", {0, 2, 7}},      // 挂二和弦
+    };
+
+    static const char* NOTE_NAMES[12] = {
+        "C", "C#", "D", "D#", "E", "F",
+        "F#", "G", "G#", "A", "A#", "B"
+    };
+
+    // 对每个小节检测和弦
+    for (auto& [barStart, pitches] : barNotes) {
+        if (pitches.size() < 2) continue;  // 至少2个音符才可能是和弦
+
+        // 统计音级出现次数
+        std::map<int, int> pitchCount;
+        for (int p : pitches) pitchCount[p]++;
+
+        // 尝试每个音级作为根音
+        int bestRoot = -1;
+        std::string bestChord;
+        int bestScore = 0;
+
+        for (auto& [root, count] : pitchCount) {
+            for (auto& ct : chordTypes) {
+                // 检查这个和弦的所有音是否都在小节中出现
+                int score = 0;
+                bool allPresent = true;
+                for (int interval : ct.intervals) {
+                    int pitchClass = (root + interval) % 12;
+                    if (pitchCount.count(pitchClass)) {
+                        score += pitchCount[pitchClass];
+                    } else {
+                        allPresent = false;
+                    }
+                }
+                // 所有音都存在才得分
+                if (allPresent && score > bestScore) {
+                    bestScore = score;
+                    bestRoot = root;
+                    bestChord = NOTE_NAMES[root] + std::string(ct.suffix);
+                }
+            }
+        }
+
+        if (bestRoot >= 0 && bestScore >= 3) {
+            chords.push_back({barStart, bestChord});
+        }
+    }
+
+    return chords;
+}
+
 } // namespace m2j

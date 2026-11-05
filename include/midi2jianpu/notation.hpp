@@ -50,4 +50,13 @@ std::vector<LyricSyllable> parseLrc(const std::string& lrcPath, int division, in
 // 解析LRC为行列表（用于按音符对齐）
 std::vector<LyricLine> parseLrcLines(const std::string& lrcPath, int division, int bpm);
 
+// 和弦标记
+struct ChordMark {
+    long startTick;
+    std::string name;  // 如 "C", "Am", "G7"
+};
+
+// 从MIDI数据中检测和弦(按小节)
+std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key);
+
 } // namespace m2j
