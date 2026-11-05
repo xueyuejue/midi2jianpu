@@ -95,7 +95,6 @@ function parseMIDI(buf){
         evs.push({delta, st, note:dv.getUint8(p++), vel:dv.getUint8(p++), ch, on:true});
       } else if(type===0x80){
         evs.push({delta, st, note:dv.getUint8(p++), vel:dv.getUint8(p++), ch, on:false});
-        p+=1;
       } else if(type===0xB0||type===0xE0){ p+=2; evs.push({delta,st,ch}); }
       else if(type===0xC0||type===0xD0){ p+=1; evs.push({delta,st,ch}); }
       else if(st===0xFF){
