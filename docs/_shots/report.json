@@ -10,7 +10,7 @@
   "shots": {
     "desktop": {
       "revealed": 0,
-      "screenshot": "/home/user/Doubao/chats/38445872096164610/repo_clone/docs/_shots/autofix-verified/index_desktop.jpg",
+      "screenshot": "/home/user/Doubao/chats/38445872096164610/repo_clone/docs/_shots/index_desktop.jpg",
       "screenshotBytes": 15408,
       "truncated": false,
       "structure": {
@@ -43,18 +43,7 @@
   },
   "engine": "playwright",
   "chromiumExec": "/opt/vm/preinstall/ms-playwright/chromium-1169/chrome-linux/chrome",
-  "autoFixed": [
-    {
-      "rule": "viewportMetaWarning",
-      "count": 1
-    }
-  ],
-  "autoFixBackup": "/home/user/Doubao/chats/38445872096164610/repo_clone/docs/index.autofix-backup-pze2mmjz.html",
-  "autoFixVerification": {
-    "status": "checked",
-    "passes": 1
-  },
-  "elapsedSec": 5.68,
+  "elapsedSec": 2.29,
   "schemaVersion": 2,
   "status": "pass",
   "engineInfo": {
@@ -76,7 +65,7 @@
     "screenshots": [
       {
         "viewport": "desktop",
-        "path": "/home/user/Doubao/chats/38445872096164610/repo_clone/docs/_shots/autofix-verified/index_desktop.jpg",
+        "path": "/home/user/Doubao/chats/38445872096164610/repo_clone/docs/_shots/index_desktop.jpg",
         "size": 15408,
         "visualCoverage": {
           "complete": true,

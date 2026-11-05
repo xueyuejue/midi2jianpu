@@ -92,6 +92,7 @@ function parseMIDI(buf){
   const tracks=[];
   let timeSig={num:4,den:4};
   let bpm=120;
+  const pitchBends=[];
   for(let t=0;t<ntracks;t++){
     if(dv.getUint32(off)!==0x4d54726b) break;
     const tlen=dv.getUint32(off+4);
@@ -108,7 +109,13 @@ function parseMIDI(buf){
         evs.push({delta, st, note:dv.getUint8(p++), vel:dv.getUint8(p++), ch, on:true});
       } else if(type===0x80){
         evs.push({delta, st, note:dv.getUint8(p++), vel:dv.getUint8(p++), ch, on:false});
-      } else if(type===0xB0||type===0xE0){ p+=2; evs.push({delta,st,ch}); }
+      } else if(type===0xB0){
+        const ctrl=dv.getUint8(p++), val=dv.getUint8(p++);
+        evs.push({delta,st,ch,ctrl,val});
+      } else if(type===0xE0){
+        const lsb=dv.getUint8(p++), msb=dv.getUint8(p++);
+        evs.push({delta,st,ch,bend:(msb<<7)|lsb});
+      }
       else if(type===0xC0||type===0xD0){ p+=1; evs.push({delta,st,ch}); }
       else if(st===0xFF){
         const mtype=dv.getUint8(p++), r2=readVarLen(dv,p); p=r2.off;
@@ -125,6 +132,9 @@ function parseMIDI(buf){
       } else { p+=1; evs.push({delta,st,ch}); }
     }
     let abs=0; for(const e of evs){abs+=e.delta; e.tick=abs;}
+    for(const e of evs){
+      if(e.bend!==undefined) pitchBends.push({tick:e.tick, value:e.bend});
+    }
     const active={}; const pairs=[];
     for(const e of evs){
       if(e.on && e.vel>0){
@@ -141,7 +151,7 @@ function parseMIDI(buf){
     tracks.push({pairs, name:trackName});
     off=end;
   }
-  return {div, tracks, timeSig, bpm};
+  return {div, tracks, timeSig, bpm, pitchBends};
 }
 
 const MAJOR=[0,2,4,5,7,9,11], MINOR=[0,2,3,5,7,8,10];
@@ -223,6 +233,16 @@ function convert(){
       html+=`<div class="track-card"><h3>${tr.name||("轨 "+(ti+1))} · ${tr.pairs.length} 音符</h3><div class="staff">`;
       let curBar=-1, prevEnd=0, lastPitch=-1, inTrip=false;
       tr.pairs.forEach((n,idx)=>{
+        // 弯音修正
+        if(data.pitchBends.length){
+          let sum=0, cnt=0;
+          for(const pb of data.pitchBends){
+            if(pb.tick>=n.start && pb.tick<=n.start+n.dur){
+              sum+=(pb.value-8192)/8192*2.0; cnt++;
+            }
+          }
+          if(cnt && Math.abs(sum/cnt)>=0.5) n.pitch+=Math.round(sum/cnt);
+        }
         const bar=Math.floor(n.start/barLen);
         if(bar!==curBar){
           if(curBar>=0) html+='</span>';
