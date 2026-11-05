@@ -201,26 +201,39 @@ function convert(){
       if(!tr.pairs.length) return;
       tr.pairs.sort((a,b)=>a.start-b.start);
       totalNotes+=tr.pairs.length;
+      // 三连音检测: 连续3个等长音符(误差15%), 每个0.25-0.9拍
+      const trip=new Array(tr.pairs.length).fill(false);
+      for(let i=0;i+2<tr.pairs.length;i++){
+        const d1=tr.pairs[i].dur/div, d2=tr.pairs[i+1].dur/div, d3=tr.pairs[i+2].dur/div;
+        const avg=(d1+d2+d3)/3;
+        if(avg<0.25||avg>0.9) continue;
+        if(Math.abs(d1-d2)/avg>0.15||Math.abs(d2-d3)/avg>0.15) continue;
+        if(tr.pairs[i+1].start-tr.pairs[i].start>tr.pairs[i].dur*1.1) continue;
+        if(tr.pairs[i+2].start-tr.pairs[i+1].start>tr.pairs[i+1].dur*1.1) continue;
+        trip[i]=trip[i+1]=trip[i+2]=true;
+      }
       html+=`<div class="track-card"><h3>轨 ${ti+1} · ${tr.pairs.length} 音符</h3><div class="staff">`;
-      let curBar=-1, prevEnd=0, lastPitch=-1;
-      for(const n of tr.pairs){
+      let curBar=-1, prevEnd=0, lastPitch=-1, inTrip=false;
+      tr.pairs.forEach((n,idx)=>{
         const bar=Math.floor(n.start/barLen);
         if(bar!==curBar){
           if(curBar>=0) html+='</span>';
           curBar=bar; lastPitch=-1;
           html+='<span class="measure">';
         }
+        if(trip[idx]&&!inTrip){ html+='<sup style="font-size:12px;color:#666">3</sup>'; inTrip=true; }
+        if(!trip[idx]&&inTrip) inTrip=false;
         const gap=n.start-prevEnd;
         const hasRest=(gap>=div/2 && prevEnd>0);
         if(hasRest){ html+='<span class="rest">0</span>'; lastPitch=-1; }
-        if(n.pitch===lastPitch && !hasRest && gap<div/4){
+        if(!trip[idx] && n.pitch===lastPitch && !hasRest && gap<div/4){
           html+='<span class="ext">-</span>';
         } else {
           html+=noteHtml(n.pitch, n.dur, tonic, isMajor, div);
           lastPitch=n.pitch;
         }
         prevEnd=n.start+n.dur;
-      }
+      });
       html+='</span></div></div>';
     });
     document.getElementById("meta").textContent=
