@@ -96,14 +96,16 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key) {
         long prevEnd = 0;
         int lastPitch = -1;
         std::string lastDyn;
-        for (const auto& n : ns) {
+        auto triplets = detectTriplets(ns, data.division);
+        bool inTriplet = false;
+        for (size_t idx = 0; idx < ns.size(); idx++) {
+            const auto& n = ns[idx];
             int bar = (int)(n.startTicks / barLen);
             if (bar != curBar) {
                 if (curBar >= 0) body << "</span>";
                 curBar = bar;
                 lastPitch = -1;
                 body << "<span class='measure'>";
-                // 小节开头动态标记
                 if (!data.dynamics.empty()) {
                     int val = 80;
                     for (const auto& dp : data.dynamics) {
@@ -120,14 +122,19 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key) {
                     }
                 }
             }
+            if (triplets[idx] && !inTriplet) {
+                body << "<sup class='trip'>3</sup>";
+                inTriplet = true;
+            }
+            if (!triplets[idx] && inTriplet) inTriplet = false;
             long gap = n.startTicks - prevEnd;
             bool hasRest = (gap >= data.division / 2 && prevEnd > 0);
             if (hasRest) {
                 body << "<span class='note quarter'><span class='num'>0</span></span>";
                 lastPitch = -1;
             }
-            // 同音连续 → 延音线，不重复数字
-            if (n.pitch == lastPitch && !hasRest && gap < data.division / 4) {
+            // 同音连续 → 延音线，三连音组内不合并
+            if (!triplets[idx] && n.pitch == lastPitch && !hasRest && gap < data.division / 4) {
                 body << "<span class='ext'>-</span>";
             } else {
                 body << noteToHtml(n.pitch, n.durationTicks, key, data.division);
@@ -153,6 +160,7 @@ h1{font-size:22px;border-bottom:2px solid #333;padding-bottom:8px}
 .num{font-weight:600}
 .bar{color:#999;margin:0 12px;font-weight:300}
 .dyn{font-size:16px;font-style:italic;color:#888;margin-right:8px}
+.trip{font-size:14px;color:#666;margin-right:2px}
 .footer{color:#999;font-size:12px;text-align:center;margin-top:20px}
 @media print{
   body{background:#fff;padding:0}

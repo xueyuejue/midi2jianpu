@@ -26,4 +26,7 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key);
 // MIDI 音号 -> 音名字符串 (60 -> "C4")
 std::string midiNoteName(int pitch);
 
+// 检测三连音: 返回每个音符是否属于三连音组
+std::vector<bool> detectTriplets(const std::vector<NoteEvent>& notes, int division);
+
 } // namespace m2j

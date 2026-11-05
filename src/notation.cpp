@@ -144,7 +144,7 @@ static std::string dynAt(long tick, const MidiData& data) {
 }
 
 // 检测三连音: 连续3个等长音符(误差10%), 每个约0.5-0.8拍
-static std::vector<bool> detectTriplets(const std::vector<NoteEvent>& notes, int division) {
+std::vector<bool> detectTriplets(const std::vector<NoteEvent>& notes, int division) {
     std::vector<bool> isTriplet(notes.size(), false);
     double beat = division;  // 1拍 = division ticks
     for (size_t i = 0; i + 2 < notes.size(); i++) {
