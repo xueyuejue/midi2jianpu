@@ -94,9 +94,10 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key) {
         for (const auto& n : ns) {
             int bar = (int)(n.startTicks / barLen);
             if (bar != curBar) {
-                if (curBar >= 0) body << "<span class='bar'>|</span>";
+                if (curBar >= 0) body << "</span>";
                 curBar = bar;
                 lastPitch = -1;
+                body << "<span class='measure'>";
                 // 小节开头动态标记
                 if (!data.dynamics.empty()) {
                     int val = 80;
@@ -129,7 +130,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key) {
             }
             prevEnd = n.startTicks + n.durationTicks;
         }
-        body << "<span class='bar'>|</span></div></div>";
+        body << "</span></div></div>";
     }
 
     std::ostringstream html;
@@ -141,7 +142,8 @@ h1{font-size:22px;border-bottom:2px solid #333;padding-bottom:8px}
 .track{background:#fff;border:1px solid #ddd;border-radius:8px;padding:16px 24px;margin-bottom:16px}
 .track h3{margin:0 0 12px;font-size:15px;color:#444}
 .track h3 small{color:#999;font-weight:normal}
-.staff{font-size:36px;line-height:2.2;padding:10px 0;white-space:nowrap;overflow-x:auto}
+.staff{font-size:30px;line-height:2.4;padding:10px 0}
+.measure{display:inline-block;margin:0 10px 8px 0;padding:0 4px;white-space:nowrap}
 .note{display:inline-block;position:relative;margin:0 10px;text-align:center;min-width:28px}
 .num{font-weight:600}
 .bar{color:#999;margin:0 12px;font-weight:300}
