@@ -71,6 +71,7 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
   <button id="playBtn" style="display:none">播放</button>
   <button id="copyText" style="display:none">复制简谱文本</button>
   <button id="downloadPng" style="display:none">下载 PNG 谱面</button>
+  <button id="downloadXml" style="display:none">下载 MusicXML</button>
 </div>
 <div class="meta" id="meta"></div>
 <div class="score" id="score"></div>
@@ -171,6 +172,7 @@ function convert() {
     document.getElementById('score').innerHTML = html;
     document.getElementById('score').style.display = 'block';
     document.getElementById('downloadPng').style.display = 'inline-block';
+    document.getElementById('downloadXml').style.display = 'inline-block';
     document.getElementById('copyText').style.display = 'inline-block';
     document.getElementById('playBtn').style.display = 'inline-block';
     document.getElementById('err').style.display = 'none';
@@ -204,6 +206,31 @@ document.getElementById('downloadPng').onclick = function() {
     a.href = canvas.toDataURL('image/png');
     a.click();
   });
+};
+
+// 下载MusicXML
+document.getElementById('downloadXml').onclick = function() {
+  if (!wasmMod || !midiBytes) return;
+  try {
+    const [keyPitch, isMajor] = document.getElementById('key').value.split(':').map(Number);
+    const ptr = wasmMod._malloc(midiBytes.length);
+    wasmMod.HEAPU8.set(midiBytes, ptr);
+    wasmMod._midi2jianpu_musicxml(ptr, midiBytes.length, keyPitch, isMajor);
+    const len = wasmMod._midi2jianpu_result_len();
+    const buf = wasmMod._malloc(len + 1);
+    wasmMod._midi2jianpu_copy_result(buf, len + 1);
+    const xml = wasmMod.UTF8ToString(buf);
+    wasmMod._free(ptr);
+    wasmMod._free(buf);
+    // 下载
+    const blob = new Blob([xml], {type: 'application/xml'});
+    const a = document.createElement('a');
+    a.download = 'jianpu.xml';
+    a.href = URL.createObjectURL(blob);
+    a.click();
+  } catch (e) {
+    alert('导出MusicXML失败: ' + e.message);
+  }
 };
 
 // 复制简谱文本
@@ -254,8 +281,6 @@ document.getElementById('copyText').onclick = function() {
 let audioCtx = null;
 let isPlaying = false;
 let playTimeout = null;
-
-document.getElementById('playBtn').onclick = function() {
   if (!wasmMod || !midiBytes) return;
   if (isPlaying) {
     stopPlayback();
