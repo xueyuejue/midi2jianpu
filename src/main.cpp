@@ -90,7 +90,13 @@ int main(int argc, char** argv) {
     }
     if (!htmlOut.empty()) {
         std::ofstream f(htmlOut);
-        f << m2j::renderHtml(data, key);
+        // 从文件名提取标题
+        std::string title = input;
+        size_t slash = title.find_last_of("/\\");
+        if (slash != std::string::npos) title = title.substr(slash + 1);
+        size_t dot = title.find_last_of(".");
+        if (dot != std::string::npos) title = title.substr(0, dot);
+        f << m2j::renderHtml(data, key, title);
         std::cout << "HTML 谱面已写入: " << htmlOut << "\n";
     }
     return 0;

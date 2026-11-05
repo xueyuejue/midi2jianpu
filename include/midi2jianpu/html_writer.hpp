@@ -7,6 +7,6 @@
 namespace m2j {
 
 // 生成完整的自包含 HTML 文档（含内联CSS）
-std::string renderHtml(const MidiData& data, const KeyEstimate& key);
+std::string renderHtml(const MidiData& data, const KeyEstimate& key, const std::string& title = "");
 
 } // namespace m2j

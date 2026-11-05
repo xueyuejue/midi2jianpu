@@ -71,7 +71,8 @@ static std::string noteToHtml(int pitch, long durTicks,
     return os.str();
 }
 
-std::string renderHtml(const MidiData& data, const KeyEstimate& key) {
+std::string renderHtml(const MidiData& data, const KeyEstimate& key, const std::string& title) {
+    std::string displayTitle = title.empty() ? "简谱" : title;
     std::ostringstream body;
     double barLen = data.timeSig.barLengthTicks(data.division);
 
@@ -146,8 +147,9 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key) {
     }
 
     std::ostringstream html;
-    html << R"(<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">
-<title>midi2jianpu 简谱</title><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>1</text></svg>"><style>
+    html << "<!DOCTYPE html><html lang='zh'><head><meta charset='utf-8'>"
+         << "<title>" << displayTitle << "</title>"
+         << R"(<link rel='icon' href='data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>1</text></svg>'><style>
 body{font-family:"Noto Serif SC","SimSun",serif;max-width:900px;margin:40px auto;background:#fafafa;color:#222}
 h1{font-size:22px;border-bottom:2px solid #333;padding-bottom:8px}
 .meta{color:#666;margin-bottom:20px;font-size:14px}
@@ -176,7 +178,7 @@ h1{font-size:22px;border-bottom:2px solid #333;padding-bottom:8px}
 .dotted .num::after{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;background:#222;margin-left:4px}
 .ext{margin-left:2px;letter-spacing:3px;color:#222}
 </style></head><body>
-<h1>简谱</h1>
+<h1>)" << displayTitle << R"(</h1>
 <div class="meta">1 = )"
          << NOTE_NAMES[key.tonicPitchClass]
          << (key.isMajor ? " 大调" : " 小调")
