@@ -2,6 +2,8 @@
 
 > 直接将 MIDI 文件转换为排版美观、可打印的中文简谱（数字谱）。
 
+**在线试玩：[https://xueyuejue.github.io/midi2jianpu/](https://xueyuejue.github.io/midi2jianpu/)**（拖入 .mid 即转，零安装）
+
 ## 这是什么
 
 `midi2jianpu` 是一个面向中文音乐人的开源工具：你手里的 `.mid` 文件——FL Studio 导出、电子琴/合成器录制、扒谱工程——丢进来，就能得到一份排版干净、可以直接打印或在手机上看的**中文简谱（数字谱）**。
