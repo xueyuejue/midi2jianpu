@@ -1,6 +1,6 @@
 #pragma once
 // midifile.hpp - 标准 MIDI 文件(SMF)解析
-// 手写二进制解析，不依赖第三方库。提取音符事件供后续简谱转换。
+// 手写二进制解析，不依赖第三方库。提取音符事件、拍号、速度。
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -9,21 +9,40 @@ namespace m2j {
 
 // 单个音符事件
 struct NoteEvent {
-    double startSeconds;  // 起始时间（秒）
-    double durationSeconds; // 持续时间（秒）
-    int pitch;            // MIDI 音号 0-127 (60=C4)
+    double startSeconds;
+    double durationSeconds;
+    long startTicks = 0;      // 起始 tick（用于划分小节）
+    long durationTicks = 0;    // 持续 tick
+    int pitch;
     int channel;
     int track;
 };
 
-// 解析结果
-struct MidiData {
-    int division = 480;      // ticks per quarter note
-    std::vector<NoteEvent> notes;
-    double tempo = 500000.0; // microseconds per quarter note
+// 拍号（从 MIDI 0x58 meta 事件解析）
+struct TimeSignature {
+    int numerator = 4;     // 分子
+    int denomPow = 2;      // 分母 = 2^denomPow（2=四分音符为一拍, 3=八分, 1=二分）
+    bool valid = false;
+
+    int beatsPerBar() const { return numerator; }
+    double barLengthTicks(long division) const {
+        double oneBeat = division * 4.0 / (1 << denomPow);
+        return oneBeat * numerator;
+    }
+    std::string toString() const {
+        return std::to_string(numerator) + "/" +
+               std::to_string(1 << denomPow);
+    }
 };
 
-// 从文件路径解析 MIDI，成功返回 true
+// 解析结果
+struct MidiData {
+    int division = 480;            // ticks per quarter note
+    std::vector<NoteEvent> notes;
+    double tempo = 500000.0;
+    TimeSignature timeSig;
+};
+
 bool loadMidiFile(const std::string& path, MidiData& out);
 
 } // namespace m2j

@@ -36,7 +36,8 @@ int main(int argc, char** argv) {
 
     m2j::KeyEstimate key = m2j::estimateKey(data.notes);
     std::cout << "\n共提取 " << data.notes.size()
-              << " 个音符 (division=" << data.division << ")\n\n";
-    std::cout << m2j::formatJianpu(data.notes, key);
+              << " 个音符 (division=" << data.division
+              << ", 拍号=" << data.timeSig.toString() << ")\n\n";
+    std::cout << m2j::formatJianpu(data, key);
     return 0;
 }

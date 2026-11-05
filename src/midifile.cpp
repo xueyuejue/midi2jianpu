@@ -95,8 +95,15 @@ bool loadMidiFile(const std::string& path, MidiData& out) {
                         double end = tick2sec(absTick);
                         double dur = end - start;
                         if (dur < 0.02) dur = 0.02;
-                        out.notes.push_back({start, dur, (int)note,
-                                             (int)channel, trackIdx});
+                        NoteEvent ne;
+                        ne.startSeconds = start;
+                        ne.durationSeconds = dur;
+                        ne.startTicks = it->second;
+                        ne.durationTicks = absTick - it->second;
+                        ne.pitch = note;
+                        ne.channel = channel;
+                        ne.track = trackIdx;
+                        out.notes.push_back(ne);
                         active.erase(it);
                     }
                 }
@@ -105,6 +112,10 @@ bool loadMidiFile(const std::string& path, MidiData& out) {
                 uint32_t metaLen = readVarLen(d, size, pos);
                 if (metaType == 0x51u && metaLen >= 3) {  // set_tempo
                     tempo = (double)((d[pos] << 16) | (d[pos+1] << 8) | d[pos+2]);
+                } else if (metaType == 0x58u && metaLen >= 4) {  // time signature
+                    out.timeSig.numerator = d[pos];
+                    out.timeSig.denomPow = d[pos+1];
+                    out.timeSig.valid = true;
                 }
                 pos += metaLen;
             } else if (type == 0xB0u || type == 0xE0u) {

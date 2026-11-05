@@ -14,9 +14,9 @@ static const char* NOTE_NAMES[12] = {
     "F#", "G", "G#", "A", "A#", "B"
 };
 
-// 自然大调/小调各级相对主音的半音距离
+// 自然大调/小调各级相对主音的半音距离（7个音级）
 static const std::array<int, 7> MAJOR = {0, 2, 4, 5, 7, 9, 11};
-static const std::array<int, 7> MINOR = {0, 3, 5, 7, 8, 10};
+static const std::array<int, 7> MINOR = {0, 2, 3, 5, 7, 8, 10};
 
 std::string midiNoteName(int pitch) {
     std::ostringstream os;
@@ -73,18 +73,38 @@ std::string pitchToJianpu(int pitch, const KeyEstimate& key) {
     return s;
 }
 
-std::string formatJianpu(const std::vector<NoteEvent>& notes,
-                         const KeyEstimate& key) {
+std::string durationSuffix(long durationTicks, int division) {
+    // 以四分音符为一拍，换算音符类型
+    double beats = (double)durationTicks / division;
+    // 近似到标准时值（全/二分/四分/八分/十六分）
+    if (beats >= 3.5) return "---";       // 全音符
+    if (beats >= 1.5) return "-";         // 二分音符
+    if (beats >= 0.75) return "";         // 四分音符（基准）
+    if (beats >= 0.375) return ".";      // 八分音符（下划线，文本用.）
+    return "..";                          // 十六分
+}
+
+std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
     std::ostringstream os;
-    os << "主音(1=): " << NOTE_NAMES[key.tonicPitchClass]
-       << (key.isMajor ? " 大调" : " 小调") << "\n"
+    os << "1 = " << NOTE_NAMES[key.tonicPitchClass]
+       << (key.isMajor ? " 大调" : " 小调")
+       << "    " << data.timeSig.toString() << "\n"
        << "----------------------------------------\n";
-    for (const auto& n : notes) {
+
+    double barLen = data.timeSig.barLengthTicks(data.division);
+    int currentBar = 0;
+
+    for (const auto& n : data.notes) {
+        // 是否进入新小节
+        int bar = (int)(n.startTicks / barLen);
+        if (bar != currentBar) {
+            os << " |\n";
+            currentBar = bar;
+        }
         os << pitchToJianpu(n.pitch, key)
-           << "  (" << midiNoteName(n.pitch)
-           << ", " << std::fixed << std::setprecision(2)
-           << n.durationSeconds << "s)\n";
+           << durationSuffix(n.durationTicks, data.division) << " ";
     }
+    os << " |\n";
     return os.str();
 }
 
