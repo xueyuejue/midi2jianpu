@@ -76,6 +76,36 @@ int main() {
     check(pitchToJianpu(84, cMajor) == "1''", "C6双高音");
     check(pitchToJianpu(36, cMajor) == "1,,", "C2双低音");
 
+    std::cout << "\n测试三连音检测\n";
+    std::vector<NoteEvent> tripNotes;
+    for (int i = 0; i < 3; i++) {
+        NoteEvent n;
+        n.startTicks = i * 160;
+        n.durationTicks = 160;
+        n.pitch = 60 + i;
+        tripNotes.push_back(n);
+    }
+    auto triplets = detectTriplets(tripNotes, 480);
+    check(triplets.size() == 3 && triplets[0] && triplets[1] && triplets[2],
+          "3个等长160ticks音符检测为三连音");
+
+    std::vector<NoteEvent> normalNotes;
+    for (int i = 0; i < 3; i++) {
+        NoteEvent n;
+        n.startTicks = i * 480;
+        n.durationTicks = 480;
+        n.pitch = 60 + i;
+        normalNotes.push_back(n);
+    }
+    auto notTrip = detectTriplets(normalNotes, 480);
+    check(!notTrip[0], "四分音符不检测为三连音");
+
+    std::cout << "\n测试弯音轮数据结构\n";
+    MidiData testData;
+    testData.pitchBends = {{0, 8192}, {240, 12000}, {480, 8192}};
+    check(testData.pitchBends.size() == 3, "弯音事件存储");
+    check(testData.pitchBends[1].value == 12000, "弯音值解析");
+
     std::cout << (failures == 0 ? "\n全部通过\n" : "\n有失败\n");
     return failures == 0 ? 0 : 1;
 }
