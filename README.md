@@ -98,11 +98,13 @@ python python/midi2jianpu.py 你的歌.mid
 
 ## 路线图
 
-- [x] 在线网页版（[GitHub Pages](https://xueyuejue.github.io/midi2jianpu/)，纯 JS 解析）
+- [x] 在线网页版（[GitHub Pages](https://xueyuejue.github.io/midi2jianpu/)，WASM 核心，C++ 编译）
 - [x] MusicXML 导出（调号/拍号/附点/三连音/休止符，可被 MuseScore 打开）
 - [x] RPN 弯音范围解析
+- [x] 歌词写入（LRC 格式，按音符精确对齐）
+- [x] WASM 编译（浏览器内运行 C++ 核心，功能与命令行版完全同步）
+- [ ] 延音线弧线（当前用 `-` 符号，后续加弧线视觉）
 - [ ] PNG 谱面导出（浏览器 canvas 截图）
-- [ ] WASM 编译（浏览器内 C++ 核心）
 - [ ] 更多真实 MIDI 样本校验
 
 ## 为什么开源
