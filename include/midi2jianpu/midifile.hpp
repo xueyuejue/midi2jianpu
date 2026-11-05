@@ -45,8 +45,14 @@ struct KeySignature {
 
 // 力度变化点（从 CC 0x0B Expression 解析）
 struct DynPoint {
-    long tick;         // 时间位置
-    int value;         // 0-127
+    long tick;
+    int value;
+};
+
+// 速度变化点（从 0x51 set_tempo 解析）
+struct TempoPoint {
+    long tick;
+    double bpm;  // 每分钟拍数
 };
 
 // 解析结果
@@ -57,6 +63,7 @@ struct MidiData {
     TimeSignature timeSig;
     KeySignature keySig;
     std::vector<DynPoint> dynamics;
+    std::vector<TempoPoint> tempoChanges;
     std::map<int, std::string> trackNames;  // 轨道名称(0x03 meta)
 };
 

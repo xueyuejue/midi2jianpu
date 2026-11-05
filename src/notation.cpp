@@ -192,8 +192,11 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
     std::ostringstream os;
     os << "1 = " << NOTE_NAMES[key.tonicPitchClass]
        << (key.isMajor ? " 大调" : " 小调")
-       << "    " << data.timeSig.toString() << "\n"
-       << "----------------------------------------\n";
+       << "    " << data.timeSig.toString();
+    if (!data.tempoChanges.empty()) {
+        os << "    ♩=" << (int)data.tempoChanges[0].bpm;
+    }
+    os << "\n----------------------------------------\n";
 
     // 按 track 分组
     std::map<int, std::vector<NoteEvent>> byTrack;

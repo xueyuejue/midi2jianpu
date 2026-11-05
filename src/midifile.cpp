@@ -112,6 +112,8 @@ bool loadMidiFile(const std::string& path, MidiData& out) {
                 uint32_t metaLen = readVarLen(d, size, pos);
                 if (metaType == 0x51u && metaLen >= 3) {  // set_tempo
                     tempo = (double)((d[pos] << 16) | (d[pos+1] << 8) | d[pos+2]);
+                    double bpm = 60000000.0 / tempo;
+                    out.tempoChanges.push_back({absTick, bpm});
                 } else if (metaType == 0x58u && metaLen >= 4) {  // time signature
                     out.timeSig.numerator = d[pos];
                     out.timeSig.denomPow = d[pos+1];
