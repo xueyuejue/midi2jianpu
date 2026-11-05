@@ -2,6 +2,7 @@
 #include "midi2jianpu/midifile.hpp"
 #include "midi2jianpu/notation.hpp"
 #include "midi2jianpu/html_writer.hpp"
+#include "midi2jianpu/musicxml_writer.hpp"
 
 #include <cstring>
 #include <string>
