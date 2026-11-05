@@ -43,7 +43,7 @@
   },
   "engine": "playwright",
   "chromiumExec": "/opt/vm/preinstall/ms-playwright/chromium-1169/chrome-linux/chrome",
-  "elapsedSec": 2.29,
+  "elapsedSec": 2.36,
   "schemaVersion": 2,
   "status": "pass",
   "engineInfo": {

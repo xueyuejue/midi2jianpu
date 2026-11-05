@@ -93,6 +93,7 @@ function parseMIDI(buf){
   let timeSig={num:4,den:4};
   let bpm=120;
   const pitchBends=[];
+  const dynamics=[];
   for(let t=0;t<ntracks;t++){
     if(dv.getUint32(off)!==0x4d54726b) break;
     const tlen=dv.getUint32(off+4);
@@ -112,6 +113,7 @@ function parseMIDI(buf){
       } else if(type===0xB0){
         const ctrl=dv.getUint8(p++), val=dv.getUint8(p++);
         evs.push({delta,st,ch,ctrl,val});
+        if(ctrl===0x0B) dynamics.push({tick:0, value:val});
       } else if(type===0xE0){
         const lsb=dv.getUint8(p++), msb=dv.getUint8(p++);
         evs.push({delta,st,ch,bend:(msb<<7)|lsb});
@@ -134,6 +136,7 @@ function parseMIDI(buf){
     let abs=0; for(const e of evs){abs+=e.delta; e.tick=abs;}
     for(const e of evs){
       if(e.bend!==undefined) pitchBends.push({tick:e.tick, value:e.bend});
+      if(e.ctrl===0x0B) dynamics.push({tick:e.tick, value:e.val});
     }
     const active={}; const pairs=[];
     for(const e of evs){
@@ -151,7 +154,7 @@ function parseMIDI(buf){
     tracks.push({pairs, name:trackName});
     off=end;
   }
-  return {div, tracks, timeSig, bpm, pitchBends};
+  return {div, tracks, timeSig, bpm, pitchBends, dynamics};
 }
 
 const MAJOR=[0,2,4,5,7,9,11], MINOR=[0,2,3,5,7,8,10];
@@ -231,7 +234,7 @@ function convert(){
         trip[i]=trip[i+1]=trip[i+2]=true;
       }
       html+=`<div class="track-card"><h3>${tr.name||("轨 "+(ti+1))} · ${tr.pairs.length} 音符</h3><div class="staff">`;
-      let curBar=-1, prevEnd=0, lastPitch=-1, inTrip=false;
+      let curBar=-1, prevEnd=0, lastPitch=-1, inTrip=false, lastDyn="";
       tr.pairs.forEach((n,idx)=>{
         // 弯音修正
         if(data.pitchBends.length){
@@ -248,6 +251,13 @@ function convert(){
           if(curBar>=0) html+='</span>';
           curBar=bar; lastPitch=-1;
           html+='<span class="measure">';
+          // 强弱记号
+          if(data.dynamics.length){
+            let val=80;
+            for(const dp of data.dynamics){ if(dp.tick<=n.start) val=dp.value; else break; }
+            const dyn=val<20?"pp":val<40?"p":val<60?"mp":val<80?"mf":val<100?"f":"ff";
+            if(dyn!==lastDyn){ html+=`<span style="font-size:12px;font-style:italic;color:#888;margin-right:4px">${dyn}</span>`; lastDyn=dyn; }
+          }
         }
         if(trip[idx]&&!inTrip){ html+='<sup style="font-size:12px;color:#666">3</sup>'; inTrip=true; }
         if(!trip[idx]&&inTrip) inTrip=false;
