@@ -16,14 +16,18 @@ static const int ALTER[12] = {
     1, 0, 1, 0, 1, 0
 };
 
-// 时值 -> MusicXML type
-static std::string durType(double beats) {
-    if (beats >= 3.5) return "whole";
-    if (beats >= 1.75) return "half";
-    if (beats >= 0.875) return "quarter";
-    if (beats >= 0.4375) return "eighth";
-    if (beats >= 0.21875) return "16th";
-    return "32nd";
+// 时值 -> MusicXML type + 是否附点
+static std::pair<std::string, bool> durTypeDot(double beats) {
+    // 标准时值表
+    static const struct { double base; const char* type; } stds[] = {
+        {4.0, "whole"}, {2.0, "half"}, {1.0, "quarter"},
+        {0.5, "eighth"}, {0.25, "16th"}, {0.125, "32nd"}
+    };
+    for (auto& s : stds) {
+        if (std::abs(beats - s.base) / s.base < 0.15) return {s.type, false};
+        if (std::abs(beats - s.base * 1.5) / (s.base * 1.5) < 0.15) return {s.type, true};
+    }
+    return {"eighth", false};
 }
 
 std::string renderMusicXml(const MidiData& data, const KeyEstimate& key) {
@@ -109,9 +113,10 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key) {
             long gap = n.startTicks - prevEnd;
             if (gap >= data.division / 2) {
                 double restBeats = gap / (double)data.division;
+                auto [rtype, rdot] = durTypeDot(restBeats);
                 xml << "      <note><rest/>"
                     << "<duration>" << std::fixed << std::setprecision(2) << restBeats << "</duration>"
-                    << "<type>" << durType(restBeats) << "</type></note>\n";
+                    << "<type>" << rtype << "</type></note>\n";
             }
 
             double beats = n.durationTicks / (double)data.division;
@@ -131,8 +136,10 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key) {
                     << "<normal-notes>2</normal-notes>"
                     << "</time-modification>";
             }
-            xml << "<type>" << durType(beats) << "</type>"
-                << "</note>\n";
+            auto [ntype, ndot] = durTypeDot(beats);
+            xml << "<type>" << ntype << "</type>";
+            if (ndot) xml << "<dot/>";
+            xml << "</note>\n";
             prevEnd = n.startTicks + n.durationTicks;
         }
         if (curBar >= 0) xml << "    </measure>\n";
