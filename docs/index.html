@@ -117,11 +117,11 @@ function parseMIDI(buf){
         const arr=active[n.note];
         if(arr && arr.length){
           const on=arr.shift();
-          pairs.push({pitch:n.note, start:on.tick, dur:n.tick-on.tick, ch});
+          pairs.push({pitch:n.note, start:on.tick, dur:n.tick-on.tick, ch:on.ch});
         }
       }
     }
-    tracks.push({pairs, ch});
+    tracks.push({pairs});
     off=end;
   }
   return {div, tracks, fmt};
