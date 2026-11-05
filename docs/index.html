@@ -112,7 +112,8 @@ function parseMIDI(buf){
       if(e.on && e.vel>0){
         if(!active[e.note]) active[e.note]=[];
         active[e.note].push(e);
-      } else if(!e.on){
+      } else {
+        // Note Off: 包括0x80和velocity=0的0x90
         const arr=active[e.note];
         if(arr && arr.length){
           const on=arr.shift();
