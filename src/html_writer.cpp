@@ -226,37 +226,37 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
     html << "<!DOCTYPE html><html lang='zh'><head><meta charset='utf-8'>"
          << "<title>" << displayTitle << "</title>"
          << R"(<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>1</text></svg>"><style>
-body{font-family:"Noto Serif SC","SimSun",serif;max-width:900px;margin:40px auto;background:#fafafa;color:#222}
-h1{font-size:24px;border-bottom:none;padding-bottom:8px;text-align:center;color:#b03030;margin-bottom:4px}
-.meta{color:#666;margin-bottom:24px;font-size:14px;text-align:center}
-.track{background:#fff;border:1px solid #ddd;border-radius:8px;padding:20px 32px;margin-bottom:16px}
+body{font-family:"Noto Serif SC","SimSun",serif;max-width:900px;margin:40px auto;background:#fff;color:#222}
+h1{font-size:28px;border-bottom:none;padding-bottom:4px;text-align:center;color:#b03030;margin-bottom:4px;font-weight:700}
+.meta{color:#888;margin-bottom:24px;font-size:13px;text-align:center}
+.track{background:#fff;border:none;padding:20px 0;margin-bottom:16px}
 .track h3{margin:0 0 12px;font-size:15px;color:#444;text-align:center}
 .track h3 small{color:#999;font-weight:normal}
-.staff{font-size:24px;line-height:2.4;padding:10px 0}
-.measure{display:inline-block;margin:0 2px 8px 0;padding:0 4px 0 6px;white-space:nowrap;border-left:1px solid #ccc;vertical-align:bottom}
+.staff{font-size:26px;line-height:2.6;padding:10px 0}
+.measure{display:inline-block;margin:0 2px 10px 0;padding:0 4px 0 8px;white-space:nowrap;border-left:2px solid #999;vertical-align:bottom}
 .measure:first-child{border-left:none}
-.note{display:inline-flex;flex-direction:column;justify-content:flex-start;align-items:center;position:relative;margin:0 4px;min-width:20px;min-height:50px;vertical-align:bottom}
-.num{font-weight:600;line-height:1.2}
+.note{display:inline-flex;flex-direction:column;justify-content:flex-start;align-items:center;position:relative;margin:0 5px;min-width:22px;min-height:55px;vertical-align:bottom}
+.num{font-weight:600;line-height:1.2;font-size:26px}
 .bar{color:#999;margin:0 12px;font-weight:300}
 .dyn{font-size:16px;font-style:italic;color:#888;margin-right:8px}
 .trip{font-size:14px;color:#666;margin-right:2px}
-.lyric{display:block;font-size:14px;color:#555;text-align:center;margin-top:4px;min-height:20px}
-.final-bar{display:inline-block;width:2px;height:32px;background:#333;margin-left:8px;vertical-align:middle}
-.final-bar::after{content:"";display:block;width:4px;height:32px;background:#333;margin-left:4px;margin-top:-32px}
+.lyric{display:block;font-size:15px;color:#666;text-align:center;margin-top:6px;min-height:20px}
+.final-bar{display:inline-block;width:3px;height:36px;background:#333;margin-left:8px;vertical-align:middle}
+.final-bar::after{content:"";display:block;width:5px;height:36px;background:#333;margin-left:5px;margin-top:-36px}
 .footer{color:#999;font-size:12px;text-align:center;margin-top:20px}
 @media print{
   body{background:#fff;padding:0}
   .track-card{border:none;page-break-inside:avoid}
   .measure{page-break-inside:avoid}
 }
-.dot-above::before{content:"";position:absolute;top:-4px;left:50%;transform:translateX(-50%);width:7px;height:7px;border-radius:50%;background:#222}
-.dot-above2::before{top:-16px}
-.dot-below::after{content:"";position:absolute;bottom:-4px;left:50%;transform:translateX(-50%);width:7px;height:7px;border-radius:50%;background:#222}
-.dot-below2::after{bottom:-16px}
+.dot-above::before{content:"";position:absolute;top:-5px;left:50%;transform:translateX(-50%);width:6px;height:6px;border-radius:50%;background:#222}
+.dot-above2::before{top:-17px}
+.dot-below::after{content:"";position:absolute;bottom:-5px;left:50%;transform:translateX(-50%);width:6px;height:6px;border-radius:50%;background:#222}
+.dot-below2::after{bottom:-17px}
 .eighth .num{border-bottom:2px solid #222}
 .sixteenth .num{border-bottom:2px solid #222;box-shadow:0 4px 0 #222}
 .dotted .num::after{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;background:#222;margin-left:4px}
-.ext{margin-left:2px;letter-spacing:3px;color:#222}
+.ext{margin-left:2px;letter-spacing:4px;color:#222;font-size:24px}
 </style></head><body>
 <h1>)" << displayTitle << R"(</h1>
 <div class="meta">1 = )"
