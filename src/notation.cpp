@@ -39,43 +39,85 @@ KeyEstimate estimateKey(const MidiData& data) {
         return r;
     }
 
-    // 2) 猜测：只用旋律轨（音符最多的轨），避免伴奏和弦干扰
+    // 2) Krumhansl-Schmuckler 调性检测算法
+    // 只用旋律轨（音符最多的轨），避免伴奏和弦干扰
     std::map<int, size_t> trackCount;
     for (const auto& note : data.notes) trackCount[note.track]++;
     int mainTrack = -1; size_t maxN = 0;
     for (auto& [t, c] : trackCount) if (c > maxN) { maxN = c; mainTrack = t; }
 
-    std::map<int, double> weight;
-    double barLen = data.timeSig.barLengthTicks(data.division);
-    size_t n = 0;
-    for (const auto& note : data.notes) if (note.track == mainTrack) n++;
+    // Krumhansl-Schmuckler 特征轮廓 (C大调/C小调基准)
+    static const double MAJOR_PROFILE[12] = {
+        6.35, 2.23, 3.48, 2.33, 4.38, 4.09,
+        2.52, 5.19, 2.39, 3.66, 2.29, 2.88
+    };
+    static const double MINOR_PROFILE[12] = {
+        6.33, 2.68, 3.52, 5.38, 2.60, 3.53,
+        2.54, 4.75, 3.98, 2.69, 3.34, 3.17
+    };
 
-    size_t idx = 0;
+    // 统计每个音级的权重
+    std::array<double, 12> pitchWeights{};
+    double totalWeight = 0;
     for (const auto& note : data.notes) {
         if (note.track != mainTrack) continue;
         double w = note.durationSeconds;
-        long posInBar = (long)(note.startTicks) % (long)barLen;
-        if (posInBar < data.division / 4 ||
-            posInBar >= barLen / 2.0 - data.division / 4) {
-            w *= 1.5;
-        }
-        if (idx + 6 >= n) w *= 3.0;  // 结尾6个音符权重x3
-        weight[note.pitch % 12] += w;
-        idx++;
+        pitchWeights[note.pitch % 12] += w;
+        totalWeight += w;
     }
-    if (weight.empty()) return KeyEstimate{};
+    if (totalWeight <= 0) return KeyEstimate{};
 
-    int pc = 0;
-    double best = -1;
-    for (auto& [k, v] : weight) {
-        if (v > best) { best = v; pc = k; }
+    // 归一化
+    for (auto& w : pitchWeights) w /= totalWeight;
+
+    // 计算与每个调性的相关性
+    double bestCorr = -1e9;
+    int bestTonic = 0;
+    bool bestIsMajor = true;
+
+    for (int tonic = 0; tonic < 12; tonic++) {
+        // 计算与大调轮廓的相关性
+        double corrMajor = 0;
+        double corrMinor = 0;
+        double meanPitch = 0, meanMajor = 0, meanMinor = 0;
+        for (int i = 0; i < 12; i++) {
+            meanPitch += pitchWeights[i];
+            meanMajor += MAJOR_PROFILE[i];
+            meanMinor += MINOR_PROFILE[i];
+        }
+        meanPitch /= 12; meanMajor /= 12; meanMinor /= 12;
+
+        double covMajor = 0, covMinor = 0;
+        double varPitch = 0, varMajor = 0, varMinor = 0;
+        for (int i = 0; i < 12; i++) {
+            int shifted = ((i - tonic) + 12) % 12;
+            double dPitch = pitchWeights[i] - meanPitch;
+            double dMajor = MAJOR_PROFILE[shifted] - meanMajor;
+            double dMinor = MINOR_PROFILE[shifted] - meanMinor;
+            covMajor += dPitch * dMajor;
+            covMinor += dPitch * dMinor;
+            varPitch += dPitch * dPitch;
+            varMajor += dMajor * dMajor;
+            varMinor += dMinor * dMinor;
+        }
+        corrMajor = covMajor / (sqrt(varPitch * varMajor) + 1e-9);
+        corrMinor = covMinor / (sqrt(varPitch * varMinor) + 1e-9);
+
+        if (corrMajor > bestCorr) {
+            bestCorr = corrMajor;
+            bestTonic = tonic;
+            bestIsMajor = true;
+        }
+        if (corrMinor > bestCorr) {
+            bestCorr = corrMinor;
+            bestTonic = tonic;
+            bestIsMajor = false;
+        }
     }
-    double maj3 = weight.count((pc + 4) % 12) ? weight[(pc + 4) % 12] : 0;
-    double min3 = weight.count((pc + 3) % 12) ? weight[(pc + 3) % 12] : 0;
 
     KeyEstimate r;
-    r.tonicPitchClass = pc;
-    r.isMajor = maj3 >= min3;
+    r.tonicPitchClass = bestTonic;
+    r.isMajor = bestIsMajor;
     return r;
 }
 
@@ -108,22 +150,25 @@ std::string pitchToJianpu(int pitch, const KeyEstimate& key) {
 
 std::string durationSuffix(long durationTicks, int division) {
     double beats = (double)durationTicks / division;
-    // 标准时值（四分音符=1）：找最近的
-    struct Dur { double beats; std::string suffix; };
+    // 标准时值（四分音符=1）：精确匹配附点节奏
+    // 按从长到短排序，优先匹配长时值
+    struct Dur { double beats; std::string suffix; double weight; };
     Dur table[] = {
-        {0.25, ".."},   // 十六分
-        {0.5,  "."},    // 八分
-        {0.75, "."},    // 附点八分（文本简化）
-        {1.0,  ""},     // 四分
-        {1.5,  ".'"},   // 附点四分
-        {2.0,  "-"},    // 二分
-        {3.0,  "-.'"},  // 附点二分
-        {4.0,  "---"},  // 全音符
+        {4.0,    "---",   1.0},   // 全音符
+        {3.0,    "-.-",   0.5},   // 附点二分
+        {2.0,    "-",     1.0},   // 二分音符
+        {1.5,    ".-",    0.8},   // 附点四分 + 八分
+        {1.0,    "",      1.0},   // 四分音符
+        {0.75,   ".",     0.8},   // 附点八分
+        {0.5,    ".",     1.0},   // 八分音符
+        {0.375,  "..",    0.8},   // 附点十六分
+        {0.25,   "..",    1.0},   // 十六分
+        {0.125,  "...",   0.5},   // 三十二分
     };
     std::string best = "";
     double bestDist = 1e9;
     for (auto& d : table) {
-        double dist = std::abs(beats - d.beats);
+        double dist = std::abs(beats - d.beats) * d.weight;
         if (dist < bestDist) { bestDist = dist; best = d.suffix; }
     }
     return best;
