@@ -131,8 +131,9 @@ function convert() {
     // 调用WASM生成HTML
     // 先设置歌词
     if (lyricsText && wasmMod._midi2jianpu_set_lyrics) {
-      const lrcPtr = wasmMod._malloc(lyricsText.length + 1);
-      wasmMod.stringToUTF8(lyricsText, lrcPtr, lyricsText.length + 1);
+      const lrcLen = wasmMod.lengthBytesUTF8(lyricsText) + 1;
+      const lrcPtr = wasmMod._malloc(lrcLen);
+      wasmMod.stringToUTF8(lyricsText, lrcPtr, lrcLen);
       wasmMod._midi2jianpu_set_lyrics(lrcPtr);
       wasmMod._free(lrcPtr);
     }
