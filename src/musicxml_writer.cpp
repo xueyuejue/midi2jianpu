@@ -73,8 +73,10 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key) {
         xml << "  <part id=\"P" << partIdx << "\">\n";
         int curBar = -1;
         long barStart = 0;
+        auto triplets = detectTriplets(ns, data.division);
 
-        for (const auto& n : ns) {
+        for (size_t idx = 0; idx < ns.size(); idx++) {
+            const auto& n = ns[idx];
             int bar = (int)(n.startTicks / barLen);
             if (bar != curBar) {
                 if (curBar >= 0) xml << "    </measure>\n";
@@ -82,11 +84,9 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key) {
                 barStart = n.startTicks;
                 xml << "    <measure number=\"" << (bar + 1) << "\">\n";
                 if (bar == 0) {
-                    // 第一个小节：attributes
                     int fifths = 0;
                     if (data.keySig.valid) fifths = data.keySig.sharpsFlats;
                     else {
-                        // 从key估计推导
                         int pc = key.tonicPitchClass;
                         static const int majFifths[12] = {0,5,7,2,10,4,9,11,3,6,8,1};
                         fifths = majFifths[pc];
@@ -113,8 +113,14 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key) {
                 xml << "<alter>" << ALTER[pc] << "</alter>";
             }
             xml << "<octave>" << octave << "</octave></pitch>"
-                << "<duration>" << std::fixed << std::setprecision(2) << beats << "</duration>"
-                << "<type>" << durType(beats) << "</type>"
+                << "<duration>" << std::fixed << std::setprecision(2) << beats << "</duration>";
+            if (triplets[idx]) {
+                xml << "<time-modification>"
+                    << "<actual-notes>3</actual-notes>"
+                    << "<normal-notes>2</normal-notes>"
+                    << "</time-modification>";
+            }
+            xml << "<type>" << durType(beats) << "</type>"
                 << "</note>\n";
         }
         if (curBar >= 0) xml << "    </measure>\n";
