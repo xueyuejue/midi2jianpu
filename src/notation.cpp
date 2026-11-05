@@ -222,9 +222,28 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
     }
     os << "\n----------------------------------------\n";
 
-    // 按 track 分组
+    // 弯音修正：对每个音符，计算其持续期间的平均弯音偏移
+    auto bendOffset = [&](long start, long end) -> double {
+        if (data.pitchBends.empty()) return 0.0;
+        double sum = 0; int count = 0;
+        for (const auto& pb : data.pitchBends) {
+            if (pb.tick >= start && pb.tick <= end) {
+                sum += (pb.value - 8192) / 8192.0 * 2.0;  // ±2半音范围
+                count++;
+            }
+        }
+        return count > 0 ? sum / count : 0.0;
+    };
+
+    // 按 track 分组（应用弯音修正）
     std::map<int, std::vector<NoteEvent>> byTrack;
-    for (const auto& n : data.notes) byTrack[n.track].push_back(n);
+    for (auto n : data.notes) {
+        double off = bendOffset(n.startTicks, n.startTicks + n.durationTicks);
+        if (std::abs(off) >= 0.5) {
+            n.pitch += (int)std::round(off);
+        }
+        byTrack[n.track].push_back(n);
+    }
 
     // 找出音符最多的轨作为主旋律
     int mainTrack = -1;

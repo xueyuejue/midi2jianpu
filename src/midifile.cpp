@@ -134,7 +134,10 @@ bool loadMidiFile(const std::string& path, MidiData& out) {
                     out.dynamics.push_back({absTick, (int)val});
                 }
             } else if (type == 0xE0u) {
-                pos += 2;
+                uint8_t lsb = d[pos++];
+                uint8_t msb = d[pos++];
+                int bend = (msb << 7) | lsb;
+                out.pitchBends.push_back({absTick, bend});
             } else if (type == 0xC0u || type == 0xDu) {
                 pos += 1;
             } else {

@@ -2,6 +2,7 @@
 #include "midi2jianpu/midifile.hpp"
 #include "midi2jianpu/notation.hpp"
 #include "midi2jianpu/html_writer.hpp"
+#include "midi2jianpu/musicxml_writer.hpp"
 
 #include <fstream>
 #include <iostream>
@@ -40,7 +41,7 @@ static bool parseKey(const std::string& s, m2j::KeyEstimate& out) {
 int main(int argc, char** argv) {
     if (argc < 2) { printHelp(); return 1; }
 
-    std::string input, htmlOut, keyArg, txtOut;
+    std::string input, htmlOut, keyArg, txtOut, xmlOut;
     int trackFilter = -1;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -48,6 +49,7 @@ int main(int argc, char** argv) {
         else if (a == "--html" && i + 1 < argc) { htmlOut = argv[++i]; }
         else if (a == "--key" && i + 1 < argc) { keyArg = argv[++i]; }
         else if (a == "--output" && i + 1 < argc) { txtOut = argv[++i]; }
+        else if (a == "--musicxml" && i + 1 < argc) { xmlOut = argv[++i]; }
         else if (a == "--track" && i + 1 < argc) { trackFilter = std::stoi(argv[++i]); }
         else if (a.substr(0, 2) != "--") input = a;
     }
@@ -90,7 +92,6 @@ int main(int argc, char** argv) {
     }
     if (!htmlOut.empty()) {
         std::ofstream f(htmlOut);
-        // 从文件名提取标题
         std::string title = input;
         size_t slash = title.find_last_of("/\\");
         if (slash != std::string::npos) title = title.substr(slash + 1);
@@ -98,6 +99,11 @@ int main(int argc, char** argv) {
         if (dot != std::string::npos) title = title.substr(0, dot);
         f << m2j::renderHtml(data, key, title);
         std::cout << "HTML 谱面已写入: " << htmlOut << "\n";
+    }
+    if (!xmlOut.empty()) {
+        std::ofstream f(xmlOut);
+        f << m2j::renderMusicXml(data, key);
+        std::cout << "MusicXML 已写入: " << xmlOut << "\n";
     }
     return 0;
 }

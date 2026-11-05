@@ -16,6 +16,7 @@ add_executable(midi2jianpu
   src/midifile.cpp
   src/notation.cpp
   src/html_writer.cpp
+  src/musicxml_writer.cpp
 )
 
 # 单元测试

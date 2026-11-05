@@ -55,6 +55,12 @@ struct TempoPoint {
     double bpm;  // 每分钟拍数
 };
 
+// 弯音轮事件（从 0xE0 解析，14位值，中心8192）
+struct PitchBendPoint {
+    long tick;
+    int value;  // 0-16383, 8192=无弯音
+};
+
 // 解析结果
 struct MidiData {
     int division = 480;
@@ -64,6 +70,7 @@ struct MidiData {
     KeySignature keySig;
     std::vector<DynPoint> dynamics;
     std::vector<TempoPoint> tempoChanges;
+    std::vector<PitchBendPoint> pitchBends;
     std::map<int, std::string> trackNames;  // 轨道名称(0x03 meta)
 };
 
