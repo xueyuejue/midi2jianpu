@@ -72,10 +72,25 @@ static std::string noteToHtml(int pitch, long durTicks,
     return os.str();
 }
 
-std::string renderHtml(const MidiData& data, const KeyEstimate& key, const std::string& title) {
+std::string renderHtml(const MidiData& data, const KeyEstimate& key,
+                        const std::string& title,
+                        const std::vector<LyricSyllable>* lyrics) {
     std::string displayTitle = title.empty() ? "简谱" : title;
     std::ostringstream body;
     double barLen = data.timeSig.barLengthTicks(data.division);
+
+    // 歌词对齐: 找到最接近tick的歌词字
+    auto lyricAt = [&](long tick) -> std::string {
+        if (!lyrics || lyrics->empty()) return "";
+        std::string best;
+        long bestDist = 999999;
+        for (const auto& syl : *lyrics) {
+            long dist = std::abs(syl.tick - tick);
+            if (dist < bestDist) { bestDist = dist; best = syl.text; }
+        }
+        // 只在距离小于半拍时显示
+        return bestDist < data.division / 2 ? best : "";
+    };
 
     // 弯音修正
     auto bendOffset = [&](long start, long end) -> double {
@@ -159,6 +174,13 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key, const std::
                 body << noteToHtml(n.pitch, n.durationTicks, key, data.division);
                 lastPitch = n.pitch;
             }
+            // 歌词显示在音符下方
+            if (lyrics) {
+                std::string syl = lyricAt(n.startTicks);
+                if (!syl.empty()) {
+                    body << "<span class='lyric'>" << htmlEscape(syl) << "</span>";
+                }
+            }
             prevEnd = n.startTicks + n.durationTicks;
         }
         body << "</span></div></div>";
@@ -181,6 +203,7 @@ h1{font-size:22px;border-bottom:2px solid #333;padding-bottom:8px}
 .bar{color:#999;margin:0 12px;font-weight:300}
 .dyn{font-size:16px;font-style:italic;color:#888;margin-right:8px}
 .trip{font-size:14px;color:#666;margin-right:2px}
+.lyric{display:block;font-size:14px;color:#555;text-align:center;margin-top:2px;min-height:18px}
 .footer{color:#999;font-size:12px;text-align:center;margin-top:20px}
 @media print{
   body{background:#fff;padding:0}

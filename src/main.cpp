@@ -41,7 +41,7 @@ static bool parseKey(const std::string& s, m2j::KeyEstimate& out) {
 int main(int argc, char** argv) {
     if (argc < 2) { printHelp(); return 1; }
 
-    std::string input, htmlOut, keyArg, txtOut, xmlOut;
+    std::string input, htmlOut, keyArg, txtOut, xmlOut, lyricsPath;
     int trackFilter = -1;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -50,6 +50,7 @@ int main(int argc, char** argv) {
         else if (a == "--key" && i + 1 < argc) { keyArg = argv[++i]; }
         else if (a == "--output" && i + 1 < argc) { txtOut = argv[++i]; }
         else if (a == "--musicxml" && i + 1 < argc) { xmlOut = argv[++i]; }
+        else if (a == "--lyrics" && i + 1 < argc) { lyricsPath = argv[++i]; }
         else if (a == "--track" && i + 1 < argc) { trackFilter = std::stoi(argv[++i]); }
         else if (a.substr(0, 2) != "--") input = a;
     }
@@ -97,7 +98,12 @@ int main(int argc, char** argv) {
         if (slash != std::string::npos) title = title.substr(slash + 1);
         size_t dot = title.find_last_of(".");
         if (dot != std::string::npos) title = title.substr(0, dot);
-        f << m2j::renderHtml(data, key, title);
+        std::vector<m2j::LyricSyllable> lyrics;
+        if (!lyricsPath.empty()) {
+            lyrics = m2j::parseLyrics(lyricsPath, data.division);
+            std::cout << "歌词已加载: " << lyrics.size() << " 字\n";
+        }
+        f << m2j::renderHtml(data, key, title, lyrics.empty() ? nullptr : &lyrics);
         std::cout << "HTML 谱面已写入: " << htmlOut << "\n";
     }
     if (!xmlOut.empty()) {

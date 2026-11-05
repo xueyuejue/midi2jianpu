@@ -3,6 +3,8 @@
 
 #include <array>
 #include <cmath>
+#include <fstream>
+#include <iterator>
 #include <iomanip>
 #include <map>
 #include <sstream>
@@ -265,6 +267,58 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
         os << formatTrack(ns, key, data, isMain);
     }
     return os.str();
+}
+
+// 简单JSON歌词解析: 找"start_beat"和"text"字段
+std::vector<LyricSyllable> parseLyrics(const std::string& jsonPath, int division) {
+    std::vector<LyricSyllable> result;
+    std::ifstream f(jsonPath);
+    if (!f.is_open()) return result;
+    std::string content((std::istreambuf_iterator<char>(f)),
+                         std::istreambuf_iterator<char>());
+
+    // 简单解析: 找每个{"start_beat":N,"text":"..."}
+    size_t pos = 0;
+    while ((pos = content.find("\"start_beat\"", pos)) != std::string::npos) {
+        // 提取数字
+        size_t colon = content.find(":", pos);
+        size_t end = content.find_first_of(",}", colon);
+        int beat = std::stoi(content.substr(colon + 1, end - colon - 1));
+
+        // 找对应的text
+        size_t textPos = content.find("\"text\"", end);
+        if (textPos == std::string::npos) break;
+        size_t q1 = content.find("\"", textPos + 6);
+        size_t q2 = content.find("\"", q1 + 1);
+        std::string line = content.substr(q1 + 1, q2 - q1 - 1);
+
+        // 按字拆分, 每个字分配一个tick (均匀分布在该行的beat范围内)
+        long startTick = (long)beat * division;
+        // 找下一行的start_beat来确定该行长度
+        size_t nextStart = content.find("\"start_beat\"", q2);
+        long lineLenTicks = division * 4;  // 默认4拍
+        if (nextStart != std::string::npos) {
+            size_t nc = content.find(":", nextStart);
+            size_t ne = content.find_first_of(",}", nc);
+            int nextBeat = std::stoi(content.substr(nc + 1, ne - nc - 1));
+            lineLenTicks = (long)(nextBeat - beat) * division;
+        }
+        long perChar = lineLenTicks / std::max((int)line.size(), 1);
+        for (size_t i = 0; i < line.size(); i++) {
+            // UTF-8中文字符: 每个字3字节
+            size_t charLen = 1;
+            unsigned char c = line[i];
+            if ((c & 0xE0) == 0xC0) charLen = 2;
+            else if ((c & 0xF0) == 0xE0) charLen = 3;
+            else if ((c & 0xF8) == 0xF0) charLen = 4;
+            if (i + charLen > line.size()) break;
+            std::string ch = line.substr(i, charLen);
+            result.push_back({startTick + (long)i * perChar, ch});
+            i += charLen - 1;
+        }
+        pos = q2;
+    }
+    return result;
 }
 
 } // namespace m2j

@@ -29,4 +29,13 @@ std::string midiNoteName(int pitch);
 // 检测三连音: 返回每个音符是否属于三连音组
 std::vector<bool> detectTriplets(const std::vector<NoteEvent>& notes, int division);
 
+// 歌词字（对齐到音符）
+struct LyricSyllable {
+    long tick;      // 对齐的起始tick
+    std::string text;  // 单字
+};
+
+// 解析歌词JSON文件，返回按tick排序的歌词字列表
+std::vector<LyricSyllable> parseLyrics(const std::string& jsonPath, int division);
+
 } // namespace m2j
