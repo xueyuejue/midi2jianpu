@@ -214,7 +214,8 @@ std::vector<bool> detectTriplets(const std::vector<NoteEvent>& notes, int divisi
 // 输出单个轨的简谱，返回该轨输出文本
 static std::string formatTrack(
     const std::vector<NoteEvent>& notes,
-    const KeyEstimate& key, const MidiData& data, bool isMain) {
+    const KeyEstimate& key, const MidiData& data, bool isMain,
+    const std::map<long, std::string>* chords = nullptr) {
 
     std::ostringstream os;
     double barLen = data.timeSig.barLengthTicks(data.division);
@@ -232,6 +233,14 @@ static std::string formatTrack(
             if (currentBar >= 0) os << " |\n";
             currentBar = bar;
             lastPitch = -1;
+            // 显示和弦标记
+            if (chords) {
+                long barStart = bar * (long)barLen;
+                auto it = chords->find(barStart);
+                if (it != chords->end()) {
+                    os << "[" << it->second << "] ";
+                }
+            }
             std::string d = dynAt(n.startTicks, data);
             if (!d.empty() && d != lastDyn) {
                 os << "[" << d << "] ";
@@ -299,6 +308,13 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
         if (ns.size() > maxNotes) { maxNotes = ns.size(); mainTrack = t; }
     }
 
+    // 检测和弦(按小节)
+    auto chords = detectChords(data, key);
+    std::map<long, std::string> chordByBar;
+    for (const auto& c : chords) {
+        chordByBar[c.startTick] = c.name;
+    }
+
     for (auto& [t, ns] : byTrack) {
         bool isMain = (t == mainTrack);
         std::string label;
@@ -308,8 +324,12 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
         } else {
             label = isMain ? "旋律轨" : "伴奏轨" + std::to_string(t);
         }
-        os << "[" << label << "] (" << ns.size() << " 音符)\n";
-        os << formatTrack(ns, key, data, isMain);
+        os << "[" << label << "] (" << ns.size() << " 音符)";
+        if (t == mainTrack && !chordByBar.empty()) {
+            os << " · 和弦: " << chordByBar.size() << " 个";
+        }
+        os << "\n";
+        os << formatTrack(ns, key, data, isMain, &chordByBar);
     }
     return os.str();
 }
