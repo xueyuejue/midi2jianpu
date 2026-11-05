@@ -17,15 +17,19 @@
 ## 已实现
 
 - [x] 解析标准 MIDI 文件（手写二进制解析，多轨、多通道、可变速度）
-- [x] 自动识别调性（优先用 MIDI 内置调号，否则强拍加权猜测），换算首调唱名
-- [x] 识别拍号、速度、调号 meta 事件
-- [x] 按拍号划分小节、输出小节线
+- [x] 自动识别调性（优先用 MIDI 内置调号，否则旋律轨加权猜测），换算首调唱名
+- [x] 手动指定调性：`--key Em` / `--key C`
+- [x] 识别拍号、速度（BPM）、调号、轨道名称 meta 事件
+- [x] 按拍号划分小节、输出小节线、HTML 自动换行排版
 - [x] 时值标注：全/二分/四分/八分/十六分音符及附点，延长线 `-`
-- [x] 多轨分离（自动标注旋律轨 / 伴奏轨）
+- [x] 同音延音合并（`1 1 1` → `1 - -`）
+- [x] 多轨分离（优先用 MIDI 内置轨道名）
 - [x] 休止符 `0`
 - [x] 高低八度点、升降号 `#`/`b`
+- [x] 强弱记号（从 MIDI Expression 解析：pp/p/mp/mf/f/ff）
 - [x] **HTML 谱面导出**：自包含网页，浏览器打开即可打印 PDF
-- [x] 13 项单元测试
+- [x] 文本输出到文件：`--output out.txt`
+- [x] 22 项单元测试
 
 ## 使用
 
@@ -39,11 +43,17 @@ cmake --build build
 ### 转换
 
 ```bash
-# 打印文本简谱
+# 打印文本简谱（自动猜调性）
 ./build/midi2jianpu 你的歌.mid
 
+# 手动指定调性（更准）
+./build/midi2jianpu 你的歌.mid --key Em
+
 # 导出可打印的 HTML 谱面
-./build/midi2jianpu 你的歌.mid --html 简谱.html
+./build/midi2jianpu 你的歌.mid --key Em --html 简谱.html
+
+# 文本和HTML同时输出到文件
+./build/midi2jianpu 你的歌.mid --key Em --output 简谱.txt --html 简谱.html
 ```
 
 打开 `简谱.html` 即可在浏览器查看、打印为 PDF。示例见 [example.html](example.html)。
@@ -79,9 +89,10 @@ python python/midi2jianpu.py 你的歌.mid
 
 ## 路线图
 
-- [ ] 附点音符、连音线
-- [ ] 真实中文歌曲/民乐 MIDI 样本校验
-- [ ] WASM 网页版（浏览器拖文件直接转）
+- [x] 在线网页版（[GitHub Pages](https://xueyuejue.github.io/midi2jianpu/)，纯 JS 解析）
+- [ ] 三连音/连音组自动识别
+- [ ] 弯音轮（Pitch Bend）音高修正
+- [ ] MusicXML 导出（兼容 MuseScore）
 - [ ] PNG 谱面导出
 
 ## 为什么开源
