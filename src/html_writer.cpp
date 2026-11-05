@@ -222,14 +222,14 @@ h1{font-size:24px;border-bottom:none;padding-bottom:8px;text-align:center;color:
 .track h3{margin:0 0 12px;font-size:15px;color:#444;text-align:center}
 .track h3 small{color:#999;font-weight:normal}
 .staff{font-size:24px;line-height:2.4;padding:10px 0}
-.measure{display:inline-block;margin:0 2px 8px 0;padding:0 4px 0 6px;white-space:nowrap;border-left:1px solid #ccc;vertical-align:top;height:80px}
+.measure{display:inline-block;margin:0 2px 8px 0;padding:0 4px 0 6px;white-space:nowrap;border-left:1px solid #ccc;vertical-align:bottom}
 .measure:first-child{border-left:none}
-.note{display:inline-flex;flex-direction:column;justify-content:flex-start;align-items:center;position:relative;margin:0 4px;min-width:20px;height:60px;vertical-align:top}
-.num{font-weight:600}
+.note{display:inline-flex;flex-direction:column;justify-content:flex-start;align-items:center;position:relative;margin:0 4px;min-width:20px;vertical-align:bottom}
+.num{font-weight:600;line-height:1.2}
 .bar{color:#999;margin:0 12px;font-weight:300}
 .dyn{font-size:16px;font-style:italic;color:#888;margin-right:8px}
 .trip{font-size:14px;color:#666;margin-right:2px}
-.lyric{display:block;font-size:14px;color:#555;text-align:center;margin-top:auto;min-height:20px}
+.lyric{display:block;font-size:14px;color:#555;text-align:center;margin-top:4px;min-height:20px}
 .final-bar{display:inline-block;width:2px;height:32px;background:#333;margin-left:8px;vertical-align:middle}
 .final-bar::after{content:"";display:block;width:4px;height:32px;background:#333;margin-left:4px;margin-top:-32px}
 .footer{color:#999;font-size:12px;text-align:center;margin-top:20px}
