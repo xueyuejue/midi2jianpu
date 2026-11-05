@@ -32,7 +32,7 @@
           "canvas": 0,
           "svg": 0,
           "links": 0,
-          "buttons": 0
+          "buttons": 1
         }
       },
       "consoleErrors": [],
@@ -43,7 +43,7 @@
   },
   "engine": "playwright",
   "chromiumExec": "/opt/vm/preinstall/ms-playwright/chromium-1169/chrome-linux/chrome",
-  "elapsedSec": 2.36,
+  "elapsedSec": 3.19,
   "schemaVersion": 2,
   "status": "pass",
   "engineInfo": {

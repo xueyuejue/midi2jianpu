@@ -70,6 +70,7 @@ h1{font-size:24px;border-bottom:3px solid #333;padding-bottom:10px;margin-bottom
   </select>
 </div>
 <div class="meta" id="meta"></div>
+<button id="downloadPng" style="display:none;margin:8px 0;padding:6px 16px;background:#333;color:#fff;border:none;border-radius:6px;cursor:pointer">下载 PNG 谱面</button>
 <div class="score" id="score"></div>
 <div class="error" id="err"></div>
 <div class="footer">midi2jianpu · 在线 demo · C++ 核心见 GitHub</div>
@@ -279,6 +280,8 @@ function convert(){
     document.getElementById("score").innerHTML=html;
     document.getElementById("score").style.display="block";
     document.getElementById("err").style.display="none";
+    // 显示下载按钮
+    document.getElementById("downloadPng").style.display="inline-block";
   }catch(e){
     document.getElementById("err").textContent="解析失败: "+e.message;
     document.getElementById("err").style.display="block";
@@ -297,6 +300,16 @@ function loadFile(f){
   fr.onload=()=>{midiBytes=fr.result;convert();};
   fr.readAsArrayBuffer(f);
 }
+document.getElementById("downloadPng").onclick=function(){
+  const el=document.getElementById("score");
+  html2canvas(el,{backgroundColor:"#fff",scale:2}).then(canvas=>{
+    const a=document.createElement("a");
+    a.download="jianpu.png";
+    a.href=canvas.toDataURL("image/png");
+    a.click();
+  });
+};
 </script>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 </body>
 </html>
