@@ -18,21 +18,29 @@ h1{font-size:24px;border-bottom:3px solid #333;padding-bottom:10px;margin-bottom
 .controls select,.controls button{padding:6px 12px;border:1px solid #ccc;border-radius:6px;font-size:14px;background:#fff}
 .controls button{background:#333;color:#fff;border-color:#333;cursor:pointer}
 #score{display:none}
-.track-card{background:#fff;border:1px solid #ddd;border-radius:8px;padding:20px 24px;margin-top:16px;overflow:hidden}
-.track-card h3{font-size:14px;color:#666;margin-bottom:10px}
-.staff{font-size:30px;line-height:2.2;padding:10px 4px}
-.measure{display:inline-block;margin:0 10px 8px 0;padding:0 4px;white-space:nowrap;border-right:1px solid #ccc;padding-right:10px}
-.note{display:inline-block;position:relative;margin:0 5px;text-align:center;min-width:20px}
-.num{position:relative;z-index:1}
-.dot-above{position:absolute;top:-0.5em;left:50%;transform:translateX(-50%);font-size:0.5em;line-height:1}
-.dot-below{position:absolute;bottom:-0.55em;left:50%;transform:translateX(-50%);font-size:0.5em;line-height:1}
-.eighth .num{border-bottom:2px solid #222}
-.sixteenth .num{border-bottom:2px solid #222;box-shadow:0 5px 0 #222}
-.dotted .num::after{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;background:#222;margin-left:3px}
-.ext{margin:0 4px;color:#222}
-.bar{margin:0 10px;color:#999;font-weight:300}
-.rest{color:#444;margin:0 8px}
-.meta{color:#888;font-size:13px;margin:8px 0}
+.score-head{text-align:center;margin-bottom:14px;font-size:16px;color:#333}
+.score-head .key{font-weight:bold}
+.score-head .ts{margin-left:20px;color:#666}
+.track-card{background:#fff;border:1px solid #ddd;border-radius:8px;padding:24px 28px;margin-top:16px;overflow:hidden}
+.track-card h3{font-size:14px;color:#888;margin-bottom:14px;font-weight:normal;border-bottom:1px solid #eee;padding-bottom:8px}
+.staff{font-size:32px;line-height:2.6;padding:10px 4px;text-align:center}
+.measure{display:inline-block;margin:0 12px 10px 0;padding:0 6px;white-space:nowrap;border-right:1.5px solid #999;padding-right:12px}
+.note{display:inline-block;position:relative;margin:0 6px;text-align:center;min-width:22px;vertical-align:bottom}
+.num{position:relative;z-index:1;font-family:"Times New Roman",serif}
+/* 八度点: 正上方/正下方小圆点 */
+.note.dot-above .num::before{content:"";position:absolute;top:-0.65em;left:50%;transform:translateX(-50%);width:6px;height:6px;border-radius:50%;background:#222}
+.note.dot-above2 .num::before{content:"";position:absolute;top:-0.95em;left:50%;transform:translateX(-50%);width:6px;height:6px;border-radius:50%;background:#222;box-shadow:0 0.3em 0 #222}
+.note.dot-below .num::after{content:"";position:absolute;bottom:-0.65em;left:50%;transform:translateX(-50%);width:6px;height:6px;border-radius:50%;background:#222}
+.note.dot-below2 .num::after{content:"";position:absolute;bottom:-0.95em;left:50%;transform:translateX(-50%);width:6px;height:6px;border-radius:50%;background:#222;box-shadow:0 -0.3em 0 #222}
+/* 时值横线: 数字正下方 */
+.eighth .num{border-bottom:2.5px solid #222;padding-bottom:2px}
+.sixteenth .num{border-bottom:2.5px solid #222;padding-bottom:2px;box-shadow:0 -5px 0 #222}
+/* 附点: 数字右边小圆点 */
+.dotted .num::before{content:"";position:absolute;top:50%;right:-0.5em;transform:translateY(-50%);width:5px;height:5px;border-radius:50%;background:#222}
+.note.dotted.dot-above .num::before{top:20%;right:-0.5em}
+.ext{margin:0 3px;color:#222;font-family:"Times New Roman",serif}
+.rest{color:#444;margin:0 6px;font-family:"Times New Roman",serif}
+.meta{color:#888;font-size:13px;margin:8px 0;text-align:center}
 .error{color:#c00;padding:16px;display:none}
 .footer{margin-top:24px;color:#999;font-size:12px;text-align:center}
 </style>
@@ -162,16 +170,13 @@ function noteHtml(pitch, dur, tonic, isMajor, div){
   const oct=Math.round((pitch-tonic)/12);
   const {cls, dotted}=durClass(dur, div);
   let html=`<span class="note ${cls}`;
-  if(oct>0) html+=" dot-above"+(oct>1?"2":"");
-  if(oct<0) html+=" dot-below"+(-oct>1?"2":"");
+  if(oct>0) html+= oct>1 ? " dot-above2" : " dot-above";
+  if(oct<0) html+= (-oct>1) ? " dot-below2" : " dot-below";
   if(dotted) html+=" dotted";
   html+='"><span class="num">';
   if(sharp) html+="#";
   if(flat) html+="b";
-  html+=num;
-  if(oct>0) html+='<span class="dot-above">'+(oct>1?"··":"·")+'</span>';
-  if(oct<0) html+='<span class="dot-below">'+(-oct>1?"··":"·")+'</span>';
-  html+="</span>";
+  html+=num+"</span>";
   if(cls==="half"||cls==="whole"){
     const lines=cls==="whole"?3:1;
     for(let i=0;i<lines;i++) html+='<span class="ext">-</span>';
@@ -188,7 +193,10 @@ function convert(){
     const div=data.div;
     const barLen=div*(data.timeSig.num)/(data.timeSig.den/4);
     let totalNotes=0;
-    let html="";
+    const NOTE_NAMES=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+    let html=`<div class="score-head">`;
+    html+=`<span class="key">1 = ${NOTE_NAMES[tonic]}${isMajor?"":" 小调"}</span>`;
+    html+=`<span class="ts">${data.timeSig.num}/${data.timeSig.den} 拍</span></div>`;
     data.tracks.forEach((tr,ti)=>{
       if(!tr.pairs.length) return;
       tr.pairs.sort((a,b)=>a.start-b.start);
