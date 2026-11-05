@@ -25,7 +25,8 @@ static std::string htmlEscape(const std::string& s) {
 
 // 把单个音符转成 HTML 片段
 static std::string noteToHtml(int pitch, long durTicks,
-                              const KeyEstimate& key, int division) {
+                              const KeyEstimate& key, int division,
+                              const std::string& lyric = "") {
     std::string jp = pitchToJianpu(pitch, key);  // 如 "1'", "#4", "5,"
     // 解析出八度标记
     int highDots = 0, lowDots = 0;
@@ -68,6 +69,7 @@ static std::string noteToHtml(int pitch, long durTicks,
     if (dotted) os << " dotted";
     os << "'><span class='num'>" << htmlEscape(num) << "</span>";
     for (int i = 0; i < extLines; i++) os << "<span class='ext'>-</span>";
+    if (!lyric.empty()) os << "<span class='lyric'>" << htmlEscape(lyric) << "</span>";
     os << "</span>";
     return os.str();
 }
@@ -193,19 +195,16 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 body << "<span class='note quarter'><span class='num'>0</span></span>";
                 lastPitch = -1;
             }
-            // 同音连续 → 延音线，三连音组内不合并
+            // 歌词显示在音符下方
+            std::string syl;
+            if (lyricLines) {
+                syl = lyricForNote(n.startTicks);
+            }
             if (!triplets[idx] && n.pitch == lastPitch && !hasRest && gap < data.division / 4) {
                 body << "<span class='ext'>-</span>";
             } else {
-                body << noteToHtml(n.pitch, n.durationTicks, key, data.division);
+                body << noteToHtml(n.pitch, n.durationTicks, key, data.division, syl);
                 lastPitch = n.pitch;
-            }
-            // 歌词显示在音符下方
-            if (lyricLines) {
-                std::string syl = lyricForNote(n.startTicks);
-                if (!syl.empty()) {
-                    body << "<span class='lyric'>" << htmlEscape(syl) << "</span>";
-                }
             }
             prevEnd = n.startTicks + n.durationTicks;
         }
@@ -215,7 +214,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
     std::ostringstream html;
     html << "<!DOCTYPE html><html lang='zh'><head><meta charset='utf-8'>"
          << "<title>" << displayTitle << "</title>"
-         << R"(<link rel='icon' href='data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>1</text></svg>'><style>
+         << R"(<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>1</text></svg>"><style>
 body{font-family:"Noto Serif SC","SimSun",serif;max-width:900px;margin:40px auto;background:#fafafa;color:#222}
 h1{font-size:24px;border-bottom:none;padding-bottom:8px;text-align:center;color:#b03030;margin-bottom:4px}
 .meta{color:#666;margin-bottom:24px;font-size:14px;text-align:center}
