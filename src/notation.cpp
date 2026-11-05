@@ -74,14 +74,41 @@ std::string pitchToJianpu(int pitch, const KeyEstimate& key) {
 }
 
 std::string durationSuffix(long durationTicks, int division) {
-    // 以四分音符为一拍，换算音符类型
     double beats = (double)durationTicks / division;
-    // 近似到标准时值（全/二分/四分/八分/十六分）
-    if (beats >= 3.5) return "---";       // 全音符
-    if (beats >= 1.5) return "-";         // 二分音符
-    if (beats >= 0.75) return "";         // 四分音符（基准）
-    if (beats >= 0.375) return ".";      // 八分音符（下划线，文本用.）
-    return "..";                          // 十六分
+    if (beats >= 3.5) return "---";
+    if (beats >= 1.5) return "-";
+    if (beats >= 0.75) return "";
+    if (beats >= 0.375) return ".";
+    return "..";
+}
+
+// 输出单个轨的简谱，返回该轨输出文本
+static std::string formatTrack(
+    const std::vector<NoteEvent>& notes,
+    const KeyEstimate& key, const MidiData& data, bool isMain) {
+
+    std::ostringstream os;
+    double barLen = data.timeSig.barLengthTicks(data.division);
+    int currentBar = -1;
+    long prevEnd = 0;  // 上一个音符结束tick
+
+    for (const auto& n : notes) {
+        int bar = (int)(n.startTicks / barLen);
+        if (bar != currentBar) {
+            if (currentBar >= 0) os << " |\n";
+            currentBar = bar;
+        }
+        // 休止符：与上一个音符之间有超过半拍的空隙
+        long gap = n.startTicks - prevEnd;
+        if (gap >= data.division / 2 && prevEnd > 0) {
+            os << "0" << durationSuffix(gap, data.division) << " ";
+        }
+        os << pitchToJianpu(n.pitch, key)
+           << durationSuffix(n.durationTicks, data.division) << " ";
+        prevEnd = n.startTicks + n.durationTicks;
+    }
+    os << " |\n";
+    return os.str();
 }
 
 std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
@@ -91,20 +118,23 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
        << "    " << data.timeSig.toString() << "\n"
        << "----------------------------------------\n";
 
-    double barLen = data.timeSig.barLengthTicks(data.division);
-    int currentBar = 0;
+    // 按 track 分组
+    std::map<int, std::vector<NoteEvent>> byTrack;
+    for (const auto& n : data.notes) byTrack[n.track].push_back(n);
 
-    for (const auto& n : data.notes) {
-        // 是否进入新小节
-        int bar = (int)(n.startTicks / barLen);
-        if (bar != currentBar) {
-            os << " |\n";
-            currentBar = bar;
-        }
-        os << pitchToJianpu(n.pitch, key)
-           << durationSuffix(n.durationTicks, data.division) << " ";
+    // 找出音符最多的轨作为主旋律
+    int mainTrack = -1;
+    size_t maxNotes = 0;
+    for (auto& [t, ns] : byTrack) {
+        if (ns.size() > maxNotes) { maxNotes = ns.size(); mainTrack = t; }
     }
-    os << " |\n";
+
+    for (auto& [t, ns] : byTrack) {
+        bool isMain = (t == mainTrack);
+        os << (isMain ? "[旋律轨] " : "[伴奏轨" + std::to_string(t) + "] ")
+           << "(" << ns.size() << " 音符)\n";
+        os << formatTrack(ns, key, data, isMain);
+    }
     return os.str();
 }
 
