@@ -43,7 +43,7 @@ if(M2J_BUILD_WASM)
   add_executable(midi2jianpu_wasm src/wasm_bindings.cpp ${M2J_CORE})
   set_target_properties(midi2jianpu_wasm PROPERTIES OUTPUT_NAME "midi2jianpu")
   target_link_options(midi2jianpu_wasm PRIVATE
-    "-sEXPORTED_FUNCTIONS=['_malloc','_free','_midi2jianpu_parse','_midi2jianpu_html','_midi2jianpu_musicxml','_midi2jianpu_result_len','_midi2jianpu_copy_result','_midi2jianpu_set_lyrics','_midi2jianpu_get_notes_json']"
+    "-sEXPORTED_FUNCTIONS=['_malloc','_free','_midi2jianpu_parse','_midi2jianpu_html','_midi2jianpu_musicxml','_midi2jianpu_result_len','_midi2jianpu_copy_result','_midi2jianpu_set_lyrics','_midi2jianpu_set_title','_midi2jianpu_get_notes_json']"
     # HEAPU8 必须显式导出：新版 Emscripten 不再默认把它挂到 Module 上，
     # 而 docs/index.html 正是用它把 MIDI 字节拷进 wasm 内存的。
     "-sEXPORTED_RUNTIME_METHODS=['UTF8ToString','lengthBytesUTF8','stringToUTF8','HEAPU8']"

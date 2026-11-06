@@ -38,12 +38,16 @@ function check(cond, msg, extra) {
 function makeCaller(mod) {
   let midi = null;
   let lyrics = '';
+  let title = '';
 
   function setMidi(bytes) {
     midi = bytes;
   }
   function setLyrics(txt) {
     lyrics = txt || '';
+  }
+  function setTitle(txt) {
+    title = txt || '';
   }
   function call(fnName, keyPitch, isMajor) {
     const fn = mod['_' + fnName];
@@ -60,6 +64,14 @@ function makeCaller(mod) {
       mod._free(lp);
     }
 
+    if (mod._midi2jianpu_set_title) {
+      const n = mod.lengthBytesUTF8(title) + 1;
+      const tp = mod._malloc(n);
+      mod.stringToUTF8(title, tp, n);
+      mod._midi2jianpu_set_title(tp);
+      mod._free(tp);
+    }
+
     fn(ptr, midi.length, keyPitch, isMajor);
     const len = mod._midi2jianpu_result_len();
     const buf = mod._malloc(len + 1);
@@ -70,7 +82,7 @@ function makeCaller(mod) {
     mod._free(buf);
     return out;
   }
-  return { setMidi, setLyrics, call };
+  return { setMidi, setLyrics, setTitle, call };
 }
 
 const sampleMidi = readFileSync(path.join(FIXTURES, 'sample.mid'));
@@ -142,10 +154,17 @@ check(xml && !xml.includes('<error>'), 'MusicXML 无错误节点');
 // ---- 5. 歌词：设置后应一字一音地出现 ----
 c.setMidi(sampleMidi);
 c.setLyrics(sampleLrc);
+c.setTitle('蝶衣碎雪');
 const htmlLyric = c.call('midi2jianpu_html', -1, 1);
 const firstChar = sampleLrc.split('\n').map((l) => l.replace(/^\[[^\]]*\]/, '')).join('').trim()[0];
 check(htmlLyric && htmlLyric.includes(firstChar),
   `HTML 谱面含歌词首字「${firstChar}」`, '歌词没进谱面');
+
+// 标题应写成歌名；调号行不能再出现重复的 "1 = 1=C"
+check(htmlLyric && htmlLyric.includes('<h1>蝶衣碎雪</h1>'), 'HTML 谱面标题取传入的歌名',
+  htmlLyric && (htmlLyric.match(/<h1>[^<]*<\/h1>/) || [''])[0]);
+check(!/1 = 1=C/.test(htmlLyric || ''), '调号行不重复写 "1 = 1=C"');
+check(/<footer[^>]*>[^<]*v\d/.test(htmlLyric || ''), '页脚标注版本号');
 
 // ---- 6. 真实录音 MIDI（量化 + 首调）也能走通 ----
 c.setMidi(humanMidi);

@@ -10,6 +10,7 @@
 // 简单字符串缓冲区
 static std::string g_result;
 static std::string g_lyrics;  // 歌词文本(LRC格式)
+static std::string g_title;   // 谱面标题（网页传文件名进来）
 
 extern "C" {
 
@@ -75,7 +76,8 @@ const char* midi2jianpu_html(const uint8_t* midiData, int size, int keyPitch, in
         lyricLines = m2j::parseLrcText(g_lyrics, data.division, bpm);
     }
 
-    g_result = m2j::renderHtml(data, key, "midi2jianpu", lyricLines.empty() ? nullptr : &lyricLines);
+    g_result = m2j::renderHtml(data, key, g_title.empty() ? "简谱" : g_title,
+                              lyricLines.empty() ? nullptr : &lyricLines);
     return g_result.c_str();
 }
 
@@ -94,6 +96,11 @@ void midi2jianpu_copy_result(char* buf, int maxLen) {
 // 设置歌词(LRC格式文本)
 void midi2jianpu_set_lyrics(const char* lyrics) {
     g_lyrics = lyrics ? lyrics : "";
+}
+
+// 设置谱面标题（网页传 MIDI 文件名进来，让谱子顶上是歌名而不是程序名）
+void midi2jianpu_set_title(const char* title) {
+    g_title = title ? title : "";
 }
 
 // 获取MIDI音符数据(JSON格式, 用于播放)
