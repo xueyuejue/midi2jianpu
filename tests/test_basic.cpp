@@ -52,17 +52,25 @@ int main() {
     check(midiNoteName(60) == "C4", "60 -> C4");
     check(midiNoteName(72) == "C5", "72 -> C5");
 
-    std::cout << "\n测试 a 小调 (主音A=9)\n";
+    std::cout << "\n测试 a 小调 (主音A=9，首调记作 1=C，主音=6)\n";
     KeyEstimate aMinor{9, false};
-    check(pitchToJianpu(69, aMinor) == "1",
-          "A4(69) -> 1 (a小调主音)");
-    // 修正：C5 在 a 小调里与主音 A4 同处一个八度，不应带高八度点
-    check(pitchToJianpu(72, aMinor) == "3",
-          "C5(72) -> 3 (a小调3级), 实际: " + pitchToJianpu(72, aMinor));
-    check(pitchToJianpu(76, aMinor) == "5",
-          "E5(76) -> 5 (a小调5级), 实际: " + pitchToJianpu(76, aMinor));
-    check(pitchToJianpu(81, aMinor) == "1'",
-          "A5(81) -> 1' (高八度主音)");
+    // 简谱用首调唱名：小调不写 1=主音，而是把关系大调的 do 记作 1。
+    // a 小调的关系大调是 C，所以 1=C，主音 A 落在 6 上。
+    check(keyName(aMinor) == "C", "a小调调号记作 1=C, 实际: " + keyName(aMinor));
+    check(pitchToJianpu(69, aMinor) == "6",
+          "A4(69) -> 6 (a小调主音，首调), 实际: " + pitchToJianpu(69, aMinor));
+    check(pitchToJianpu(72, aMinor) == "1'",
+          "C5(72) -> 1' (关系大调主音，高于主音所在八度), 实际: " + pitchToJianpu(72, aMinor));
+    check(pitchToJianpu(76, aMinor) == "3'",
+          "E5(76) -> 3' (a小调5级), 实际: " + pitchToJianpu(76, aMinor));
+    check(pitchToJianpu(81, aMinor) == "6'",
+          "A5(81) -> 6' (高八度主音), 实际: " + pitchToJianpu(81, aMinor));
+    // 和声小调的升七级 G# 在首调里记作 #5
+    check(pitchToJianpu(68, aMinor) == "#5",
+          "G#4(68) -> #5 (和声小调升七级), 实际: " + pitchToJianpu(68, aMinor));
+    // e 小调 -> 关系大调 G
+    KeyEstimate eMinor{4, false};
+    check(keyName(eMinor) == "G", "e小调调号记作 1=G, 实际: " + keyName(eMinor));
 
     std::cout << "\n测试 G 大调 (主音G=7)\n";
     KeyEstimate gMajor{7, true};
@@ -137,6 +145,64 @@ int main() {
     }
     auto notTrip = detectTriplets(normalNotes, 480);
     check(!notTrip[0], "四分音符不检测为三连音");
+
+    // 回归：一整串八分音符曾被误判成三连音，导致整份谱子被 3( ... ) 包住
+    std::vector<NoteEvent> eighthNotes;
+    for (int i = 0; i < 9; i++) {
+        NoteEvent n;
+        n.startTicks = i * 240;
+        n.durationTicks = 240;
+        n.pitch = 60 + (i % 3);
+        eighthNotes.push_back(n);
+    }
+    auto eighthTrip = detectTriplets(eighthNotes, 480);
+    bool anyTrip = false;
+    for (bool b : eighthTrip) if (b) anyTrip = true;
+    check(!anyTrip, "八分音符连奏不检测为三连音");
+
+    std::cout << "\n测试时值量化（真实录音 MIDI 的门限衰减）\n";
+    {
+        // 造一份"八分音符 + 门限 85%"的数据：音头间隔 480，实际时长 408
+        MidiData qd;
+        qd.division = 960;
+        qd.timeSig = TimeSignature{4, 4};
+        for (int i = 0; i < 16; i++) {
+            NoteEvent n;
+            n.startTicks = i * 480;
+            n.durationTicks = 408;          // 0.425 拍，容易被判成附点十六分
+            n.durationSeconds = 408 / 960.0 * 60.0 / 120.0;
+            n.pitch = 60 + (i % 5);
+            n.track = 0;
+            qd.notes.push_back(n);
+        }
+        QuantizeReport rep = quantizeTiming(qd);
+        check(rep.gate > 0.8 && rep.gate < 0.9,
+              "估计出门限因子约 0.85, 实际: " + std::to_string(rep.gate));
+        check(qd.notes[0].durationTicks == 480,
+              "408 tick 还原为八分音符 480, 实际: "
+                  + std::to_string(qd.notes[0].durationTicks));
+        check(durationSuffix(qd.notes[0].durationTicks, qd.division) == "_",
+              "量化后时值后缀为八分音符 _");
+        check(qd.notes[1].startTicks == 480, "音头吸附到网格");
+    }
+    {
+        // 已经是标准时值的数据不应被改动
+        MidiData qd;
+        qd.division = 480;
+        qd.timeSig = TimeSignature{4, 4};
+        for (int i = 0; i < 8; i++) {
+            NoteEvent n;
+            n.startTicks = i * 240;
+            n.durationTicks = 240;
+            n.pitch = 60;
+            n.track = 0;
+            qd.notes.push_back(n);
+        }
+        QuantizeReport rep = quantizeTiming(qd);
+        check(qd.notes[0].durationTicks == 240, "规整数据量化后时长不变");
+        check(qd.notes[3].startTicks == 720, "规整数据量化后音头不变");
+        (void)rep;
+    }
 
     std::cout << "\n测试弯音轮数据结构\n";
     MidiData testData;

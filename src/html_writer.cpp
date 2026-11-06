@@ -260,7 +260,16 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         auto it = data.trackNames.find(t);
         if (it != data.trackNames.end() && !it->second.empty()) body << htmlEscape(it->second);
         else body << (isMain ? "旋律轨" : "伴奏轨 " + std::to_string(t));
-        body << " <small>(" << merged.size() << " 音符)</small></h3><div class='staff'>";
+        body << " <small>(" << merged.size() << " 音符)</small></h3><div class='staff'><div class='row'>";
+
+        // 每行放多少小节：按 16 拍折算（4/4 即 4 小节一行），与简谱歌本的习惯一致。
+        // 原来靠 flex 自动换行，每行 3~4 小节不等，整页行宽参差。
+        double beatsPerBar = (double)barLen / data.division;
+        int measuresPerRow = 1;
+        if (beatsPerBar > 0) {
+            int n = (int)std::lround(16.0 / beatsPerBar);
+            measuresPerRow = n < 1 ? 1 : (n > 8 ? 8 : n);
+        }
 
         // ---- 按小节切分 ----
         // 简谱的 `-` 是「延长一拍」，不能跨过小节线：一个 6 拍的长音若整个画在
@@ -346,7 +355,11 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             int bar = (int)(n.startTicks / barLen);
 
             if (bar != curBar) {
-                if (curBar >= 0) body << "</span>";   // 收尾上一个小节
+                if (curBar >= 0) {
+                    body << "</span>";                 // 收尾上一个小节
+                    // 每 measuresPerRow 个小节换一行
+                    if (bar % measuresPerRow == 0) body << "</div><div class='row'>";
+                }
                 curBar = bar;
                 openBar(bar, n.startTicks, n.channel);
             } else if (inTriplet && !grp[0]->trip) {
@@ -386,7 +399,10 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                     else if (c == ',') lowDots++;
                     else num += c;
                 }
-                std::string syl = (isMain && lyricLines && n.pitch != 0 && !firstNote)
+                // 不要再排除第一个音：休止符是单独插入的列，本来就不参与歌词分配，
+                // 多一个 !firstNote 只会把一句词的第一个字吞掉（"风霜染尽客行袍"
+                // 变成"风霜染尽客行"+下一小节的"袍"）。
+                std::string syl = (isMain && lyricLines && n.pitch != 0)
                                   ? lyricForNote(n.startTicks) : std::string();
                 body << noteColumn(num, highDots, lowDots, beats, syl);
             } else {
@@ -416,7 +432,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             firstNote = false;
         }
 
-        body << "</span><span class='final-bar'></span></div></div>";
+        body << "</span><span class='final-bar'></span></div></div></div>";
     }
 
     std::ostringstream html;
@@ -434,14 +450,14 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
 .track h3{margin:0 0 10px;font-size:14px;color:#666;text-align:center;font-weight:600}
 .track h3 small{color:#aaa;font-weight:normal;font-size:12px}
 
-/* 谱面用 flex 换行；每个小节是一块，块内音符横排 */
-.staff{display:flex;flex-wrap:wrap;align-items:flex-start;font-size:26px;padding:4px 0}
-.measure{display:flex;flex-wrap:wrap;align-items:flex-start;border-left:1.5px solid #bbb;
-         padding:0 0 0 9px;margin:0 0 12px 0}
-.measure:first-child{border-left:none;padding-left:0}
+/* 谱面：每行固定若干小节，行内横排。原来用 flex 自动换行，行宽参差不齐。 */
+.staff{display:block;font-size:26px;padding:4px 0}
+.row{display:flex;align-items:flex-start;padding-top:15px}
+.measure{display:flex;align-items:flex-start;position:relative;border-left:1.5px solid #bbb;
+         padding:0 0 0 9px;margin:0 16px 0 0}
 
-/* 一个小节内可能有小节号/和弦/力度等行内标记，单独成一列 */
-.barno{font-size:11px;color:#bbb;align-self:flex-start;margin-right:4px;line-height:1}
+/* 小节号放在小节左上角外侧，不再插在音符流里挤占位置 */
+.barno{position:absolute;top:-13px;left:1px;font-size:10px;color:#c9c9c9;line-height:1}
 .chord{font-size:14px;font-weight:600;color:#b03030;align-self:flex-start;margin-right:6px;line-height:1.6}
 .dyn{font-size:14px;font-style:italic;color:#999;align-self:flex-start;margin-right:6px;line-height:1.6}
 .trip{font-size:12px;color:#666;align-self:flex-start;margin-right:2px;line-height:1.6}
@@ -498,8 +514,7 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
 </style></head><body>
 <h1>)" << htmlEscape(displayTitle) << R"(</h1>
 <div class="meta">1 = )"
-         << keyName(key)
-         << (key.isMajor ? " 大调" : " 小调")
+         << htmlEscape(keyDescription(key))
          << " ｜ " << data.timeSig.toString()
          << " ｜ " << (data.keySig.valid ? "MIDI调号" : "自动猜测")
          << "</div>" << body.str()

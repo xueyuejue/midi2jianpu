@@ -196,31 +196,40 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key) {
             xml << "</note>\n";
         };
 
+        // <attributes> 只能在第一个真正写出来的小节里出现一次。
+        // 原来写死成 `bar == 0`，一旦乐曲开头有整拍休止（前几个小节由下面的
+        // 空小节补齐逻辑生成），attributes 就整个丢失，divisions / 拍号 / 调号 /
+        // 谱号全没了，导出的文件 MuseScore 打不开。
+        bool wroteAttrs = false;
+        auto emitAttributes = [&]() {
+            if (wroteAttrs) return;
+            wroteAttrs = true;
+            xml << "      <attributes>\n"
+                // divisions 用文件自身的时值分辨率，保证 duration 全为整数
+                << "        <divisions>" << division << "</divisions>\n"
+                << "        <key><fifths>" << fifths << "</fifths>"
+                << "<mode>" << (key.isMajor ? "major" : "minor") << "</mode></key>\n"
+                << "        <time><beats>" << data.timeSig.numerator
+                << "</beats><beat-type>" << (1 << data.timeSig.denomPow)
+                << "</beat-type></time>\n"
+                << "        <clef><sign>" << (bassClef ? "F" : "G") << "</sign><line>"
+                << (bassClef ? 4 : 2) << "</line></clef>\n"
+                << "      </attributes>\n";
+            // 速度标记只写一遍，放在第一个声部
+            if (partIdx == 1) {
+                xml << "      <direction placement=\"above\">\n"
+                    << "        <direction-type><metronome>"
+                    << "<beat-unit>quarter</beat-unit>"
+                    << "<per-minute>" << (int)std::lround(bpm) << "</per-minute>"
+                    << "</metronome></direction-type>"
+                    << "<sound tempo=\"" << (int)std::lround(bpm) << "\"/>\n"
+                    << "      </direction>\n";
+            }
+        };
+
         auto openMeasure = [&](int bar) {
             xml << "    <measure number=\"" << (bar + 1) << "\">\n";
-            if (bar == 0) {
-                xml << "      <attributes>\n"
-                    // divisions 用文件自身的时值分辨率，保证 duration 全为整数
-                    << "        <divisions>" << division << "</divisions>\n"
-                    << "        <key><fifths>" << fifths << "</fifths>"
-                    << "<mode>" << (key.isMajor ? "major" : "minor") << "</mode></key>\n"
-                    << "        <time><beats>" << data.timeSig.numerator
-                    << "</beats><beat-type>" << (1 << data.timeSig.denomPow)
-                    << "</beat-type></time>\n"
-                    << "        <clef><sign>" << (bassClef ? "F" : "G") << "</sign><line>"
-                    << (bassClef ? 4 : 2) << "</line></clef>\n"
-                    << "      </attributes>\n";
-                // 速度标记只写一遍，放在第一个声部
-                if (partIdx == 1) {
-                    xml << "      <direction placement=\"above\">\n"
-                        << "        <direction-type><metronome>"
-                        << "<beat-unit>quarter</beat-unit>"
-                        << "<per-minute>" << (int)std::lround(bpm) << "</per-minute>"
-                        << "</metronome></direction-type>"
-                        << "<sound tempo=\"" << (int)std::lround(bpm) << "\"/>\n"
-                        << "      </direction>\n";
-                }
-            }
+            emitAttributes();
             writtenUpTo = (long)(bar * barLen);
         };
 
@@ -236,8 +245,9 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key) {
 
                 // 补齐中间完全空的小节，否则小节编号会跳号
                 for (int b = curBar + 1; b < seg.bar; b++) {
-                    xml << "    <measure number=\"" << (b + 1) << "\">\n"
-                        << "      <note><rest measure=\"yes\"/><duration>"
+                    xml << "    <measure number=\"" << (b + 1) << "\">\n";
+                    emitAttributes();   // 开头就是空小节时，属性要写在这里
+                    xml << "      <note><rest measure=\"yes\"/><duration>"
                         << (long)barLen << "</duration><voice>1</voice><type>whole</type></note>\n"
                         << "    </measure>\n";
                 }

@@ -125,6 +125,46 @@ LRC = """[ti:测试]
 """
 
 
+# ---------------------------------------------------------------------------
+# 第二份素材：模拟"真实录音转出的 MIDI"，专门覆盖时值量化与调性判定。
+#
+# 真实录音 MIDI 有两个特征会让朴素的记谱实现出错：
+#   1) note-off 早于下一个音头（门限时间，DAW 默认常见 85%），
+#      于是八分音符的时长是 0.425 拍而不是 0.5 拍；
+#   2) 旋律是五声/六声的，缺某几个音级，K-S 调性识别容易判偏。
+#
+# 这里用 A 羽调式（音级 A B C D E G，没有 F / F#）、八分音符、85% 门限，
+# 终止音落在 A。正确结果应是 1=C（a 小调，主音=6），且时值全部是八分音符。
+# ---------------------------------------------------------------------------
+HUMAN_PITCHES = [69, 67, 64, 67, 69, 72, 69, 67,   # A G E G A C A G
+                 64, 67, 69, 67, 64, 62, 60, 62]   # E G A G E D C D
+HUMAN_DIV = 960
+HUMAN_GATE = 0.85          # 门限：实际时长 = 音头间隔 × 0.85
+HUMAN_UNIT = 480           # 八分音符 = 480 tick
+HUMAN_LEAD = 4 * 4 * HUMAN_DIV   # 开头空 4 小节，复现"前几小节全是休止"的情况
+
+
+def build_humanized() -> bytes:
+    t0 = Track()
+    t0.add(0, meta(0x51, (833333).to_bytes(3, "big")))      # 72 BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x03, b"Conductor"))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    t1.program(0, 53, 0)
+    for i, p in enumerate(HUMAN_PITCHES):
+        start = HUMAN_LEAD + i * HUMAN_UNIT
+        dur = int(HUMAN_UNIT * HUMAN_GATE)                  # 408 tick
+        t1.note(0, p, 90, start, dur)
+    # 终止音拉长，落在 A 上（羽调式的终止）
+    last = HUMAN_LEAD + len(HUMAN_PITCHES) * HUMAN_UNIT
+    t1.note(0, 69, 90, last, int(HUMAN_DIV * 2 * HUMAN_GATE))   # 二分音符，1360 tick
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, HUMAN_DIV)
+    return header + t0.render() + t1.render()
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -136,6 +176,13 @@ def main() -> None:
         f.write(LRC)
     print(f"wrote {mid} ({len(data)} bytes)")
     print(f"wrote {lrc}")
+
+    # 量化用的素材与 sample.mid 同目录，文件名固定
+    hmid = os.path.join(here, "humanized.mid")
+    with open(hmid, "wb") as f:
+        hdata = build_humanized()
+        f.write(hdata)
+    print(f"wrote {hmid} ({len(hdata)} bytes)")
 
 
 if __name__ == "__main__":

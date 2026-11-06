@@ -21,6 +21,7 @@ static void printHelp() {
         "  midi2jianpu <input.mid> --track 0         只输出指定轨道\n"
         "  midi2jianpu <input.mid> --transpose +2     移调(半音, 正负都可)\n"
         "  midi2jianpu <input.mid> --lyrics lyrics.lrc  加载歌词\n"
+        "  midi2jianpu <input.mid> --no-quantize    关闭时值量化(保留 MIDI 原始时长)\n"
         "  midi2jianpu --version\n"
         "  midi2jianpu --help\n";
 }
@@ -66,6 +67,7 @@ int main(int argc, char** argv) {
     std::string input, htmlOut, keyArg, txtOut, xmlOut, lyricsPath;
     int trackFilter = -1;
     int transpose = 0;
+    bool quantize = true;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--help" || a == "-h") { printHelp(); return 0; }
@@ -78,6 +80,7 @@ int main(int argc, char** argv) {
         else if (a == "--output" && i + 1 < argc) { txtOut = argv[++i]; }
         else if (a == "--musicxml" && i + 1 < argc) { xmlOut = argv[++i]; }
         else if (a == "--lyrics" && i + 1 < argc) { lyricsPath = argv[++i]; }
+        else if (a == "--no-quantize") { quantize = false; }
         else if (a == "--track" && i + 1 < argc) {
             if (!parseInt(argv[++i], trackFilter)) {
                 std::cerr << "错误: --track 需要整数\n"; return 1;
@@ -115,6 +118,15 @@ int main(int argc, char** argv) {
     if (transpose != 0) {
         for (auto& n : data.notes) n.pitch += transpose;
         std::cout << "移调: " << (transpose > 0 ? "+" : "") << transpose << " 半音\n";
+    }
+
+    // 时值量化：真实录音 MIDI 的 note-off 普遍提前，不量化会把八分判成附点十六
+    if (quantize) {
+        m2j::QuantizeReport qr = m2j::quantizeTiming(data);
+        if (qr.adjusted > 0) {
+            std::cout << "时值量化: 修正 " << qr.adjusted << " 个音符 (网格 "
+                      << qr.gridTicks << " tick, 门限 " << qr.gate << ")\n";
+        }
     }
 
     m2j::KeyEstimate key;

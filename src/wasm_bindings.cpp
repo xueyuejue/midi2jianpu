@@ -29,6 +29,8 @@ const char* midi2jianpu_parse(const uint8_t* midiData, int size, int keyPitch, i
         return g_result.c_str();
     }
 
+    m2j::quantizeTiming(data);
+
     m2j::KeyEstimate key;
     if (keyPitch >= 0) {
         key.tonicPitchClass = keyPitch;
@@ -53,6 +55,8 @@ const char* midi2jianpu_html(const uint8_t* midiData, int size, int keyPitch, in
         return g_result.c_str();
     }
 
+    m2j::quantizeTiming(data);
+
     m2j::KeyEstimate key;
     if (keyPitch >= 0) {
         key.tonicPitchClass = keyPitch;
@@ -61,37 +65,14 @@ const char* midi2jianpu_html(const uint8_t* midiData, int size, int keyPitch, in
         key = m2j::estimateKey(data);
     }
 
-    // 解析歌词
+    // 解析歌词。原来这里复制了一份 LRC 解析，且用裸 std::stoi / std::stod：
+    // WASM 版默认关闭 C++ 异常，用户贴一段畸形 LRC 就会 abort 崩掉整页。
+    // 现在统一走 notation.cpp 里的共享实现（同样不抛异常）。
     std::vector<m2j::LyricLine> lyricLines;
     if (!g_lyrics.empty()) {
-        int bpm = (int)(60000000.0 / data.tempo);
-        // 简单LRC解析: [mm:ss.xx]歌词
-        std::string lrc = g_lyrics;
-        size_t pos = 0;
-        while (pos < lrc.size()) {
-            size_t lineStart = lrc.find('[', pos);
-            if (lineStart == std::string::npos) break;
-            size_t close = lrc.find(']', lineStart);
-            if (close == std::string::npos) break;
-            std::string ts = lrc.substr(lineStart + 1, close - lineStart - 1);
-            // 解析mm:ss.xx
-            size_t colon = ts.find(':');
-            if (colon != std::string::npos && isdigit(ts[0])) {
-                int mm = std::stoi(ts.substr(0, colon));
-                double ss = std::stod(ts.substr(colon + 1));
-                double totalSec = mm * 60.0 + ss;
-                double secPerBeat = 60.0 / bpm;
-                long startTick = (long)(totalSec / secPerBeat * data.division);
-                // 找歌词文本
-                size_t nextLine = lrc.find('\n', close);
-                if (nextLine == std::string::npos) nextLine = lrc.size();
-                std::string text = lrc.substr(close + 1, nextLine - close - 1);
-                // trim
-                while (!text.empty() && (text.back() == '\r' || text.back() == '\n')) text.pop_back();
-                if (!text.empty()) lyricLines.push_back({startTick, text});
-            }
-            pos = close + 1;
-        }
+        int bpm = (data.tempo > 0) ? (int)(60000000.0 / data.tempo) : 120;
+        if (bpm <= 0) bpm = 120;
+        lyricLines = m2j::parseLrcText(g_lyrics, data.division, bpm);
     }
 
     g_result = m2j::renderHtml(data, key, "midi2jianpu", lyricLines.empty() ? nullptr : &lyricLines);
@@ -145,6 +126,8 @@ const char* midi2jianpu_musicxml(const uint8_t* midiData, int size, int keyPitch
         g_result = "<error>无法解析MIDI</error>";
         return g_result.c_str();
     }
+    m2j::quantizeTiming(data);
+
     m2j::KeyEstimate key;
     if (keyPitch >= 0) {
         key.tonicPitchClass = keyPitch;

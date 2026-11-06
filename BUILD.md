@@ -107,13 +107,47 @@ python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2ji
 
 ## WebAssembly（网页版）
 
+### 一、装 emsdk
+
 ```bash
-# 需要 emsdk 已 source 到 PATH
-emcmake cmake -B build-wasm -S . -DM2J_BUILD_WASM=ON
-cmake --build build-wasm
+git clone --depth 1 https://github.com/emscripten-core/emsdk.git
+cd emsdk
+./emsdk install latest        # Windows: emsdk.bat install latest
+./emsdk activate latest
+source ./emsdk_env.sh         # Windows: emsdk_env.bat
 ```
 
-产物 `midi2jianpu.js` + `midi2jianpu.wasm`，复制到 `docs/wasm/` 即可被 `docs/index.html` 加载。
+### 二、编译
+
+```bash
+emcmake cmake -B build-wasm -S . -DM2J_BUILD_WASM=ON
+cmake --build build-wasm
+cp build-wasm/midi2jianpu.js   docs/wasm/
+cp build-wasm/midi2jianpu.wasm docs/wasm/
+```
+
+产物 `midi2jianpu.js` + `midi2jianpu.wasm`，`docs/index.html` 直接加载这两个文件。
+用 `file://` 打开会因浏览器跨域策略拒绝加载 `.wasm`，本地预览请起一个 HTTP 服务：
+
+```bash
+python -m http.server 8000 -d docs
+```
+
+### 三、国内下载 emsdk 的坑
+
+emsdk 的二进制包全部放在 `storage.googleapis.com`，大文件传输很容易被中途重置
+（`WinError 10054` / `curl: (35) Recv failure`）。两个实测有效的办法：
+
+1. **curl 的 schannel 吊销检查会误报失败**，加 `--ssl-no-revoke` 即可：
+   ```bash
+   curl --ssl-no-revoke -O https://storage.googleapis.com/webassembly/...
+   ```
+2. **分块断点续传**：`tools/fetch.py` 把文件切成 2MB 一块，每块单独重试，
+   中断后重跑会从 `.part` 续上。669MB 的主包靠它能稳定下完：
+   ```bash
+   python tools/fetch.py <url> tools/emsdk/downloads/wasm-binaries.zip --chunk 2097152
+   ```
+   下完再跑 `./emsdk install latest`，emsdk 会复用 `downloads/` 里的缓存不再重下。
 
 导出的函数（`src/wasm_bindings.cpp`）：
 
@@ -127,7 +161,9 @@ _midi2jianpu_result_len     结果长度
 _midi2jianpu_copy_result    拷出结果
 ```
 
-> **注意**：仓库里已提交的 `docs/wasm/midi2jianpu.wasm` 可能是在 `_midi2jianpu_musicxml` 导出之前编译的。网页上的「下载 MusicXML」按钮已做能力探测，若 wasm 未导出该函数会给出提示而不是静默失败。要启用网页版 MusicXML 导出，按上面的命令重新编译 wasm 并覆盖 `docs/wasm/`。
+> **注意**：网页上的「下载 MusicXML」按钮做了能力探测——若 `docs/wasm/midi2jianpu.wasm`
+> 是在 `_midi2jianpu_musicxml` 导出加入之前编译的，会提示改用命令行版，而不是静默失败。
+> 重新编译并覆盖 `docs/wasm/` 后按钮即生效。
 
 ## 常见问题
 
