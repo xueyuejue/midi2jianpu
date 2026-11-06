@@ -43,7 +43,7 @@
 - [x] 多轨选择：`--track 0`
 - [x] `--version` 打印版本号
 - [x] **在线 Demo**：WASM 核心，浏览器内运行 C++ 代码
-- [x] 81 项单元测试 + 13 组端到端冒烟测试 + WASM 产物一致性检查
+- [x] 81 项单元测试 + 12 组端到端冒烟测试 + WASM 产物一致性检查
 
 ## 在线 Demo 功能
 
@@ -134,7 +134,7 @@ Windows 产物在 `build\Release\midi2jianpu.exe`。详细说明、WASM 编译�
 - 调性识别：**Krumhansl-Schmuckler** 算法（音乐信息检索标准）
 - 和弦检测：基于音级出现频率匹配（9种和弦类型）
 - 输出：文本 + 自包含 HTML（内联 CSS）+ MusicXML 3.1
-- 测试：内置断言 81 项单元测试，另有 `tests/smoke.py` 13 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`）
+- 测试：内置断言 81 项单元测试，另有 `tests/smoke.py` 12 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`）
 
 ## 路线图
 
