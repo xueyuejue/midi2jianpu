@@ -1,4 +1,11 @@
 // musicxml_writer.cpp - MIDI 数据 -> MusicXML 3.1
+//
+// 输出目标是「MuseScore 打开就能用」，因此比纯文本输出严格得多：
+//   - duration 必须是整数，且 divisions 取自源文件，不做二次换算
+//   - 同时发声的音符要标 <chord/>，否则会被当成旋律音顺次排开
+//   - 跨小节的音符必须切开，段间用 <tie> 连接，否则小节时长会溢出
+//   - 三连音的 <type> 要写名义时值（乘 3/2），不能写实际时长
+//   - 每个小节的总时长必须等于拍号规定值，不足要补休止符
 #include "midi2jianpu/musicxml_writer.hpp"
 #include "midi2jianpu/notation.hpp"
 
@@ -6,10 +13,11 @@
 #include <cmath>
 #include <map>
 #include <sstream>
+#include <vector>
 
 namespace m2j {
 
-// 升号写法（默认）
+// 升号写法（调号不含降号时使用）
 static const char* SHARP_STEP[12] = {
     "C", "C", "D", "D", "E", "F",
     "F", "G", "G", "A", "A", "B"
@@ -27,18 +35,25 @@ static const int FLAT_ALTER[12] = {
     0, -1, 0, -1, 0, 0, -1, 0, -1, 0, -1, 0
 };
 
-// 时值 -> MusicXML type + 是否附点
+// 拍数 -> MusicXML <type> + 是否附点
+//
+// 传入的必须是**名义时值**：三连音八分音符实际占 1/3 拍，但它的 <type>
+// 应写 eighth（名义 0.5 拍）并配 <time-modification>。若直接把 0.333 传进来，
+// 会落到 16th 上，MuseScore 里三连音就画错了。
 static std::pair<std::string, bool> durTypeDot(double beats) {
     static const struct { double base; const char* type; } stds[] = {
         {4.0, "whole"}, {2.0, "half"}, {1.0, "quarter"},
-        {0.5, "eighth"}, {0.25, "16th"}, {0.125, "32nd"}
+        {0.5, "eighth"}, {0.25, "16th"}, {0.125, "32nd"}, {0.0625, "64th"}
     };
+    // 先精确匹配（含附点），容差按比例收紧到 8%，
+    // 原来 15% 会把 5 拍误判成附点全音符。
     for (auto& s : stds) {
-        if (std::abs(beats - s.base) / s.base < 0.15) return {s.type, false};
-        if (std::abs(beats - s.base * 1.5) / (s.base * 1.5) < 0.15) return {s.type, true};
+        if (std::abs(beats - s.base) / s.base < 0.08) return {s.type, false};
+        double dotted = s.base * 1.5;
+        if (std::abs(beats - dotted) / dotted < 0.08) return {s.type, true};
     }
-    // 三连音等非常规时值：按最接近的基础时值输出，配合 time-modification
-    double best = 1e9; std::string bestType = "eighth";
+    // 兜底：取最接近的基础时值
+    double best = 1e9; std::string bestType = "quarter";
     for (auto& s : stds) {
         double d = std::abs(beats - s.base);
         if (d < best) { best = d; bestType = s.type; }
@@ -46,12 +61,27 @@ static std::pair<std::string, bool> durTypeDot(double beats) {
     return {bestType, false};
 }
 
+// 一个待输出的音符片段。
+// 跨小节的音符会被切成多段，段与段之间用 tie 连接——这是 MuseScore 正确
+// 渲染延音的前提，也是小节时长不溢出的前提。
+struct Segment {
+    long start = 0;        // 绝对 tick
+    long dur = 0;          // 本段持续 tick
+    int bar = 0;           // 所属小节（从 0 计）
+    int pitch = 0;
+    bool triplet = false;  // 属于三连音组，需要 <time-modification>
+    bool tieStart = false; // 后面还有延续段 -> <tie type="start"/>
+    bool tieEnd = false;   // 前面有被切开的段 -> <tie type="stop"/>
+};
+
 std::string renderMusicXml(const MidiData& data, const KeyEstimate& key) {
     std::ostringstream xml;
     xml << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
     xml << "<score-partwise version=\"3.1\">\n";
 
-    // 弯音修正（只统计同通道）
+    const int division = (data.division > 0) ? data.division : 480;
+
+    // 弯音修正（只统计同通道，避免不同乐器互相干扰）
     auto bendOffset = [&](long start, long end, int channel) -> double {
         if (data.pitchBends.empty()) return 0.0;
         double sum = 0; int count = 0;
@@ -86,108 +116,180 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key) {
     }
     xml << "  </part-list>\n";
 
-    double barLen = data.timeSig.barLengthTicks(data.division);
+    // 小节长度（tick）。拍号缺失或非法时回退到 4/4，
+    // 否则后面所有除法都会炸。
+    double barLen = data.timeSig.barLengthTicks(division);
+    if (!(barLen > 0)) barLen = division * 4.0;
+
     const bool flat = prefersFlats(key);
     const int fifths = keyFifths(key);
 
+    // 速度：MIDI 里 tempo 是「每四分音符的微秒数」，取首个非零值
+    double bpm = 120.0;
+    if (data.tempo > 0) bpm = 60000000.0 / data.tempo;
+    else if (!data.tempoChanges.empty() && data.tempoChanges[0].bpm > 0) bpm = data.tempoChanges[0].bpm;
+
     partIdx = 1;
     for (auto& [t, ns] : byTrack) {
-        xml << "  <part id=\"P" << partIdx << "\">\n";
-        int curBar = -1;
-        long prevEnd = 0;
-        long lastStart = -1;                  // 用于识别同拍和弦
-        bool measureHasContent = false;
-        auto triplets = detectTriplets(ns, data.division);
+        if (ns.empty()) { partIdx++; continue; }
 
-        auto closeMeasure = [&]() {
-            if (curBar >= 0) {
-                // 小节内音符总长不足时补休止符，保证 MuseScore 导入后小节完整
-                double filled = (prevEnd - curBar * barLen) / (double)data.division;
-                if (filled < 0) filled = 0;
-                double need = barLen / (double)data.division - filled;
-                if (need >= 0.25) {
-                    auto [rt, rd] = durTypeDot(need);
-                    xml << "      <note><rest/>"
-                        << "<duration>" << (long)std::llround(need * data.division) << "</duration>"
-                        << "<type>" << rt << "</type>";
-                    if (rd) xml << "<dot/>";
-                    xml << "</note>\n";
-                }
-                xml << "    </measure>\n";
+        // ---- 1. 展开成片段：跨小节的音符在此切开 ----
+        auto triplets = detectTriplets(ns, division);
+        std::vector<Segment> segs;
+        segs.reserve(ns.size() * 2);
+
+        for (size_t i = 0; i < ns.size(); i++) {
+            const auto& n = ns[i];
+            long start = n.startTicks;
+            long end = start + std::max<long>(n.durationTicks, 1);
+            bool firstPart = true;
+
+            while (start < end) {
+                int bar = (int)(start / barLen);
+                long barEnd = (long)((bar + 1) * barLen);
+                long segEnd = std::min(end, barEnd);
+                // 防御：若换算出的小节末尾没有推进，直接吃到音符结束，避免死循环
+                if (segEnd <= start) segEnd = end;
+
+                Segment s;
+                s.start = start;
+                s.dur = segEnd - start;
+                s.bar = bar;
+                s.pitch = n.pitch;
+                s.triplet = (i < triplets.size()) ? triplets[i] : false;
+                s.tieEnd = !firstPart;      // 前面被切过
+                s.tieStart = (segEnd < end); // 后面还有
+                segs.push_back(s);
+
+                start = segEnd;
+                firstPart = false;
             }
+        }
+
+        // ---- 2. 按 (小节, 起始 tick) 稳定排序，保持和弦内各音次序 ----
+        std::stable_sort(segs.begin(), segs.end(), [](const Segment& a, const Segment& b) {
+            if (a.bar != b.bar) return a.bar < b.bar;
+            return a.start < b.start;
+        });
+
+        // ---- 3. 谱号：音域偏低时用低音谱号，否则高音谱号 ----
+        // 不判断的话钢琴左手会用高音谱号写，满屏加线。
+        double pitchSum = 0;
+        for (const auto& n : ns) pitchSum += n.pitch;
+        double avgPitch = pitchSum / (double)ns.size();
+        const bool bassClef = avgPitch < 58.0;  // 约 A#3 以下
+
+        // ---- 4. 输出 ----
+        xml << "  <part id=\"P" << partIdx << "\">\n";
+
+        int curBar = -1;
+        long writtenUpTo = 0;   // 当前小节内已写到的绝对 tick
+        long lastSegStart = -1; // 识别同拍和弦
+
+        auto emitRest = [&](long from, long to) {
+            if (to <= from) return;
+            long len = to - from;
+            auto [rt, rd] = durTypeDot(len / (double)division);
+            xml << "      <note><rest/><duration>" << len
+                << "</duration><voice>1</voice><type>" << rt << "</type>";
+            if (rd) xml << "<dot/>";
+            xml << "</note>\n";
         };
 
-        for (size_t idx = 0; idx < ns.size(); idx++) {
-            const auto& n = ns[idx];
-            int bar = (int)(n.startTicks / barLen);
-            bool isChordMember = (n.startTicks == lastStart);
-
-            if (bar != curBar) {
-                if (curBar >= 0) {
-                    closeMeasure();
-                    prevEnd = (long)(bar * barLen);
-                }
-                curBar = bar;
-                lastStart = -1;
-                isChordMember = false;
-                xml << "    <measure number=\"" << (bar + 1) << "\">\n";
-                if (bar == 0) {
-                    xml << "      <attributes>\n"
-                        // divisions 用文件自身的时值分辨率，保证 duration 是整数
-                        << "        <divisions>" << data.division << "</divisions>\n"
-                        << "        <key><fifths>" << fifths << "</fifths>"
-                        << "<mode>" << (key.isMajor ? "major" : "minor") << "</mode></key>\n"
-                        << "        <time><beats>" << data.timeSig.numerator
-                        << "</beats><beat-type>" << (1 << data.timeSig.denomPow)
-                        << "</beat-type></time>\n"
-                        << "      </attributes>\n";
-                }
-            }
-
-            // 间隙 → 休止符（和弦成员不重复插入）
-            if (!isChordMember) {
-                long gap = n.startTicks - prevEnd;
-                if (gap >= data.division / 2) {
-                    double restBeats = gap / (double)data.division;
-                    auto [rtype, rdot] = durTypeDot(restBeats);
-                    xml << "      <note><rest/>"
-                        << "<duration>" << gap << "</duration>"
-                        << "<type>" << rtype << "</type>";
-                    if (rdot) xml << "<dot/>";
-                    xml << "</note>\n";
+        auto openMeasure = [&](int bar) {
+            xml << "    <measure number=\"" << (bar + 1) << "\">\n";
+            if (bar == 0) {
+                xml << "      <attributes>\n"
+                    // divisions 用文件自身的时值分辨率，保证 duration 全为整数
+                    << "        <divisions>" << division << "</divisions>\n"
+                    << "        <key><fifths>" << fifths << "</fifths>"
+                    << "<mode>" << (key.isMajor ? "major" : "minor") << "</mode></key>\n"
+                    << "        <time><beats>" << data.timeSig.numerator
+                    << "</beats><beat-type>" << (1 << data.timeSig.denomPow)
+                    << "</beat-type></time>\n"
+                    << "        <clef><sign>" << (bassClef ? "F" : "G") << "</sign><line>"
+                    << (bassClef ? 4 : 2) << "</line></clef>\n"
+                    << "      </attributes>\n";
+                // 速度标记只写一遍，放在第一个声部
+                if (partIdx == 1) {
+                    xml << "      <direction placement=\"above\">\n"
+                        << "        <direction-type><metronome>"
+                        << "<beat-unit>quarter</beat-unit>"
+                        << "<per-minute>" << (int)std::lround(bpm) << "</per-minute>"
+                        << "</metronome></direction-type>"
+                        << "<sound tempo=\"" << (int)std::lround(bpm) << "\"/>\n"
+                        << "      </direction>\n";
                 }
             }
+            writtenUpTo = (long)(bar * barLen);
+        };
 
-            long durTicks = std::max<long>(n.durationTicks, 1);
-            double beats = durTicks / (double)data.division;
-            int pc = n.pitch % 12;
-            int octave = n.pitch / 12 - 1;
+        auto closeMeasure = [&]() {
+            long barEndTick = (long)((curBar + 1) * barLen);
+            if (writtenUpTo < barEndTick) emitRest(writtenUpTo, barEndTick);
+            xml << "    </measure>\n";
+        };
+
+        for (const auto& seg : segs) {
+            if (seg.bar != curBar) {
+                if (curBar >= 0) closeMeasure();
+
+                // 补齐中间完全空的小节，否则小节编号会跳号
+                for (int b = curBar + 1; b < seg.bar; b++) {
+                    xml << "    <measure number=\"" << (b + 1) << "\">\n"
+                        << "      <note><rest measure=\"yes\"/><duration>"
+                        << (long)barLen << "</duration><voice>1</voice><type>whole</type></note>\n"
+                        << "    </measure>\n";
+                }
+
+                curBar = seg.bar;
+                openMeasure(curBar);
+                lastSegStart = -1;
+            }
+
+            // 间隙补休止符（和弦成员不重复补）
+            bool isChordMember = (seg.start == lastSegStart);
+            if (!isChordMember && seg.start > writtenUpTo) emitRest(writtenUpTo, seg.start);
+
+            int pc = seg.pitch % 12;
+            if (pc < 0) pc += 12;
+            int octave = seg.pitch / 12 - 1;
             const char* step = flat ? FLAT_STEP[pc] : SHARP_STEP[pc];
             int alter = flat ? FLAT_ALTER[pc] : SHARP_ALTER[pc];
+
+            double beats = seg.dur / (double)division;
+            // 三连音：<type> 写名义时值，实际缩放交给 <time-modification>
+            auto [ntype, ndot] = durTypeDot(seg.triplet ? beats * 1.5 : beats);
 
             xml << "      <note>";
             if (isChordMember) xml << "<chord/>";
             xml << "<pitch><step>" << step << "</step>";
             if (alter != 0) xml << "<alter>" << alter << "</alter>";
             xml << "<octave>" << octave << "</octave></pitch>"
-                << "<duration>" << durTicks << "</duration>";
-            if (triplets[idx]) {
+                << "<duration>" << seg.dur << "</duration>";
+            if (seg.tieEnd)   xml << "<tie type=\"stop\"/>";
+            if (seg.tieStart) xml << "<tie type=\"start\"/>";
+            xml << "<voice>1</voice><type>" << ntype << "</type>";
+            if (ndot) xml << "<dot/>";
+            if (seg.triplet) {
                 xml << "<time-modification>"
                     << "<actual-notes>3</actual-notes>"
                     << "<normal-notes>2</normal-notes>"
                     << "</time-modification>";
             }
-            auto [ntype, ndot] = durTypeDot(beats);
-            xml << "<type>" << ntype << "</type>";
-            if (ndot) xml << "<dot/>";
+            if (seg.tieEnd || seg.tieStart) {
+                xml << "<notations>";
+                if (seg.tieEnd)   xml << "<tied type=\"stop\"/>";
+                if (seg.tieStart) xml << "<tied type=\"start\"/>";
+                xml << "</notations>";
+            }
             xml << "</note>\n";
 
-            lastStart = n.startTicks;
-            prevEnd = std::max(prevEnd, n.startTicks + durTicks);
-            measureHasContent = true;
+            lastSegStart = seg.start;
+            writtenUpTo = std::max(writtenUpTo, seg.start + seg.dur);
         }
-        (void)measureHasContent;
-        closeMeasure();
+
+        if (curBar >= 0) closeMeasure();
         xml << "  </part>\n";
         partIdx++;
     }

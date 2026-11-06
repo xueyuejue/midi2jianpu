@@ -1,10 +1,23 @@
 // html_writer.cpp - 简谱 -> 自包含 HTML 渲染
+//
+// 排版坐标约定（一个音符是一列）：
+//
+//     ·  ·      <- 上八度点（.oct 固定 12px 高，无点时留空占位）
+//     5  -  -   <- 数字与延音线同行（.core 用 flex row）
+//     ·         <- 下八度点（.oct.low，紧贴数字下方，不会被歌词压住）
+//     风        <- 歌词
+//
+// 早先 .note 用 flex-direction:column 却把 `-` 直接作为子元素，导致延音线
+// 掉到数字下一行、整份谱子看起来像一堆方块；低八度点用 absolute 定位在
+// .note 底部，有歌词时会压在字上。这两处都是纯排版问题，改用分层结构解决。
 #include "midi2jianpu/html_writer.hpp"
+#include "midi2jianpu/notation.hpp"
 #include "midi2jianpu/version.hpp"
 
+#include <cmath>
 #include <map>
 #include <sstream>
-#include <cmath>
+#include <vector>
 
 namespace m2j {
 
@@ -19,76 +32,94 @@ static std::string htmlEscape(const std::string& s) {
     return out;
 }
 
-// 把单个音符转成 HTML 片段
-static std::string noteToHtml(int pitch, long durTicks,
-                              const KeyEstimate& key, int division,
-                              const std::string& lyric = "") {
-    std::string jp = pitchToJianpu(pitch, key);  // 如 "1'", "#4", "5,"
-    // 解析出八度标记
-    int highDots = 0, lowDots = 0;
-    std::string num;
-    for (char c : jp) {
-        if (c == '\'') highDots++;
-        else if (c == ',') lowDots++;
-        else num += c;
-    }
+// 时值 -> CSS class + 延音线条数
+struct DurStyle {
+    const char* cls;
+    bool dotted;
+    int extLines;   // 延音线数量：二分 1 条、附点二分 2 条、全音符 3 条
+};
 
-    // 时值：最近邻匹配标准时值
-    double beats = (double)durTicks / division;
-    struct DurT { double beats; const char* cls; bool dotted; int extLines; };
-    DurT table[] = {
-        {0.25, "sixteenth", false, 0},
-        {0.5,  "eighth",    false, 0},
-        {0.75, "eighth",    true,  0},
-        {1.0,  "quarter",   false, 0},
-        {1.5,  "quarter",   true,  0},
-        {2.0,  "half",      false, 1},
-        {3.0,  "half",      true,  1},
-        {4.0,  "whole",     false, 3},
+static DurStyle durStyleOf(double beats) {
+    static const struct { double beats; DurStyle st; } table[] = {
+        {0.125, {"thirtysecond", false, 0}},
+        {0.25,  {"sixteenth",    false, 0}},
+        {0.375, {"sixteenth",    true,  0}},
+        {0.5,   {"eighth",       false, 0}},
+        {0.75,  {"eighth",       true,  0}},
+        {1.0,   {"quarter",      false, 0}},
+        {1.5,   {"quarter",      true,  0}},
+        {2.0,   {"half",         false, 1}},
+        {3.0,   {"half",         true,  2}},
+        {4.0,   {"whole",        false, 3}},
+        {6.0,   {"whole",        true,  5}},
     };
-    const char* durClass = "quarter";
-    bool dotted = false;
-    int extLines = 0;
-    double bestDist = 1e9;
-    for (auto& d : table) {
-        double dist = std::abs(beats - d.beats);
-        if (dist < bestDist) {
-            bestDist = dist;
-            durClass = d.cls; dotted = d.dotted; extLines = d.extLines;
-        }
+    double best = 1e9;
+    DurStyle out{"quarter", false, 0};
+    for (auto& t : table) {
+        double d = std::abs(beats - t.beats);
+        if (d < best) { best = d; out = t.st; }
     }
+    return out;
+}
+
+// 生成一个音符的 HTML 列。
+//
+// 关键点：延音线不参与宽度计算（绝对定位挂在 .core 右侧），所以 .note 的
+// 实际宽度由数字决定，八度点和歌词都对准数字中心——这是简谱的硬性要求，
+// 否则 `1 - - -` 的低八度点会飘到整个音符的正中，偏离数字好远。
+static std::string noteColumn(const std::string& numText, int highDots, int lowDots,
+                              double beats, const std::string& lyric,
+                              const std::string& extraClass = "") {
+    DurStyle ds = durStyleOf(beats);
 
     std::ostringstream os;
-    os << "<span class='note " << durClass;
-    if (highDots > 0) os << " dot-above" << (highDots > 1 ? "2" : "");
-    if (lowDots > 0) os << " dot-below" << (lowDots > 1 ? "2" : "");
-    if (dotted) os << " dotted";
-    os << "'><span class='num'>" << htmlEscape(num) << "</span>";
-    for (int i = 0; i < extLines; i++) os << "<span class='ext'>-</span>";
-    if (!lyric.empty()) os << "<span class='lyric'>" << htmlEscape(lyric) << "</span>";
+    os << "<span class='note " << ds.cls << extraClass << "'";
+    // --n 是延音线条数，用来给 .note 预留右侧空间
+    if (ds.extLines > 0) os << " style='--n:" << ds.extLines << "'";
+    os << ">";
+
+    // 上八度点：固定高度占位，保证各行音符顶部对齐
+    os << "<span class='oct'>";
+    for (int i = 0; i < highDots; i++) os << "<i></i>";
+    os << "</span>";
+
+    // 数字（延音线绝对定位在其右侧，不撑宽）
+    os << "<span class='core'><span class='num'>" << htmlEscape(numText) << "</span>";
+    if (ds.extLines > 0) {
+        os << "<span class='exts'>";
+        for (int i = 0; i < ds.extLines; i++) os << "<span class='ext'>-</span>";
+        os << "</span>";
+    }
+    os << "</span>";
+
+    // 下八度点：紧跟数字下方、歌词之前
+    os << "<span class='oct low'>";
+    for (int i = 0; i < lowDots; i++) os << "<i></i>";
+    os << "</span>";
+
+    // 歌词：始终占位，保证同一行音符底部对齐
+    os << "<span class='lyric'>" << htmlEscape(lyric) << "</span>";
     os << "</span>";
     return os.str();
 }
 
 std::string renderHtml(const MidiData& data, const KeyEstimate& key,
-                        const std::string& title,
-                        const std::vector<LyricLine>* lyricLines) {
+                       const std::string& title,
+                       const std::vector<LyricLine>* lyricLines) {
     std::string displayTitle = title.empty() ? "简谱" : title;
-    // 加版本号, 方便确认是否加载了最新版
     displayTitle += " v";
     displayTitle += M2J_VERSION;
+
     std::ostringstream body;
     double barLen = data.timeSig.barLengthTicks(data.division);
+    if (!(barLen > 0)) barLen = data.division * 4.0;
 
-    // 检测和弦
+    // 和弦检测（按小节起点索引）
     auto chords = detectChords(data, key);
     std::map<long, std::string> chordByBar;
-    for (const auto& c : chords) {
-        chordByBar[c.startTick] = c.name;
-    }
+    for (const auto& c : chords) chordByBar[c.startTick] = c.name;
 
-    // 歌词对齐: 把行文本按字拆分, 对齐到该行内的音符
-    // 预处理: 每行歌词的字列表
+    // 歌词按行拆成单字
     std::vector<std::pair<long, std::vector<std::string>>> lineSyls;
     if (lyricLines) {
         for (const auto& ll : *lyricLines) {
@@ -106,26 +137,22 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             lineSyls.push_back({ll.startTick, syls});
         }
     }
-    // 当前行索引 + 已分配的字索引
+
     int curLineIdx = -1;
     int curCharIdx = 0;
     auto lyricForNote = [&](long tick) -> std::string {
         if (lineSyls.empty()) return "";
-        // 找当前tick属于哪一行
         int bestLine = -1;
         for (int i = 0; i < (int)lineSyls.size(); i++) {
             if (lineSyls[i].first <= tick) bestLine = i;
             else break;
         }
         if (bestLine < 0) return "";
-        // 换行了: 如果上一行剩余字≤2, 继续分配; 否则丢弃
         if (bestLine != curLineIdx) {
+            // 上一行还剩一两个字没分配完时继续给它，避免歌词丢字
             if (curLineIdx >= 0 && curCharIdx < (int)lineSyls[curLineIdx].second.size()) {
                 int remaining = (int)lineSyls[curLineIdx].second.size() - curCharIdx;
-                if (remaining <= 2) {
-                    // 继续分配剩余字
-                    return lineSyls[curLineIdx].second[curCharIdx++];
-                }
+                if (remaining <= 2) return lineSyls[curLineIdx].second[curCharIdx++];
             }
             curLineIdx = bestLine;
             curCharIdx = 0;
@@ -134,7 +161,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         return lineSyls[curLineIdx].second[curCharIdx++];
     };
 
-    // 弯音修正（只统计同通道的弯音事件）
+    // 弯音修正（只统计同通道）
     auto bendOffset = [&](long start, long end, int channel) -> double {
         if (data.pitchBends.empty()) return 0.0;
         double sum = 0; int count = 0;
@@ -147,151 +174,236 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         return count > 0 ? sum / count : 0.0;
     };
 
-    // 按轨分组（应用弯音修正）
     std::map<int, std::vector<NoteEvent>> byTrack;
     for (auto n : data.notes) {
         double off = bendOffset(n.startTicks, n.startTicks + n.durationTicks, n.channel);
         if (std::abs(off) >= 0.5) n.pitch += (int)std::round(off);
         byTrack[n.track].push_back(n);
     }
+
+    // 音符最多的轨道视作旋律轨：和弦标记与歌词都只给它
     int mainTrack = -1; size_t maxN = 0;
     for (auto& [t, ns] : byTrack)
         if (ns.size() > maxN) { maxN = ns.size(); mainTrack = t; }
 
     for (auto& [t, ns] : byTrack) {
+        const bool isMain = (t == mainTrack);
+
+        // ---- 同音合并：连续同音且首尾相接时并成一个长音 ----
+        // 不合并的话同音重复会被画成 `5 - 5 -`，而简谱规范应写成 `5 - - -`。
+        auto triplets0 = detectTriplets(ns, data.division);
+        std::vector<NoteEvent> merged;
+        std::vector<bool> trip;
+        for (size_t i = 0; i < ns.size(); i++) {
+            if (i > 0 && !triplets0[i] && !triplets0[i - 1] && !merged.empty() &&
+                ns[i].pitch == merged.back().pitch &&
+                ns[i].startTicks == merged.back().startTicks + merged.back().durationTicks) {
+                merged.back().durationTicks += ns[i].durationTicks;
+                merged.back().durationSeconds += ns[i].durationSeconds;
+                continue;
+            }
+            merged.push_back(ns[i]);
+            trip.push_back(triplets0[i]);
+        }
+
         body << "<div class='track'><h3>";
         auto it = data.trackNames.find(t);
-        if (it != data.trackNames.end() && !it->second.empty()) {
-            body << it->second;
-        } else {
-            body << (t == mainTrack ? "旋律轨" : "伴奏轨 " + std::to_string(t));
+        if (it != data.trackNames.end() && !it->second.empty()) body << htmlEscape(it->second);
+        else body << (isMain ? "旋律轨" : "伴奏轨 " + std::to_string(t));
+        body << " <small>(" << merged.size() << " 音符)</small></h3><div class='staff'>";
+
+        // ---- 按小节切分 ----
+        // 简谱的 `-` 是「延长一拍」，不能跨过小节线：一个 6 拍的长音若整个画在
+        // 一个小节里，该小节就凭空多出 2 拍，小节线位置随之全部错位。
+        // 切分后首段照常写数字，后续段（cont）只画 `-`。
+        struct HNote { NoteEvent n; bool cont; bool trip; };
+        std::vector<HNote> seq;
+        for (size_t i = 0; i < merged.size(); i++) {
+            const auto& n = merged[i];
+            long s = n.startTicks;
+            long e = s + std::max<long>(n.durationTicks, 1);
+            bool cont = false;
+            while (s < e) {
+                long barEnd = (long)(((long)(s / barLen) + 1) * barLen);
+                long segEnd = std::min(e, barEnd);
+                if (segEnd <= s) segEnd = e;   // 防御，避免死循环
+                NoteEvent seg = n;
+                seg.startTicks = s;
+                seg.durationTicks = segEnd - s;
+                seq.push_back({seg, cont, cont ? false : (i < trip.size() ? trip[i] : false)});
+                s = segEnd;
+                cont = true;
+            }
         }
-        body << " <small>(" << ns.size() << " 音符)</small></h3><div class='staff'>";
 
         int curBar = -1;
         long prevEnd = 0;
-        int lastPitch = -1;
         std::string lastDyn;
-        auto triplets = detectTriplets(ns, data.division);
         bool inTriplet = false;
-        for (size_t idx = 0; idx < ns.size(); idx++) {
-            const auto& n = ns[idx];
-            int bar = (int)(n.startTicks / barLen);
-            if (bar != curBar) {
-                if (curBar >= 0) body << "</span>";
-                curBar = bar;
-                lastPitch = -1;
-                body << "<span class='measure'>";
-                // 和弦标记只标在旋律轨上
-                long barStart = bar * (long)barLen;
-                auto chordIt = chordByBar.find(barStart);
-                if (t == mainTrack && chordIt != chordByBar.end()) {
-                    body << "<span class='chord'>" << chordIt->second << "</span>";
+
+        auto openBar = [&](int bar, long firstTick, int channel) {
+            long barStart = (long)(bar * barLen);
+            if (prevEnd < barStart) prevEnd = barStart;
+            body << "<span class='measure'>";
+
+            // 小节号：长谱子靠它定位，从第 2 小节起显示
+            if (bar > 0) body << "<span class='barno'>" << (bar + 1) << "</span>";
+
+            // 和弦标记只标旋律轨
+            auto chordIt = chordByBar.find(barStart);
+            if (isMain && chordIt != chordByBar.end())
+                body << "<span class='chord'>" << htmlEscape(chordIt->second) << "</span>";
+
+            // 力度记号按通道取，变化时才写
+            if (!data.dynamics.empty()) {
+                int val = -1;
+                for (const auto& dp : data.dynamics) {
+                    if (dp.tick > firstTick) break;
+                    if (dp.channel == channel) val = dp.value;
                 }
-                if (!data.dynamics.empty()) {
-                    int val = -1;
-                    for (const auto& dp : data.dynamics) {
-                        if (dp.tick > n.startTicks) break;
-                        if (dp.channel == n.channel) val = dp.value;
-                    }
-                    if (val >= 0) {
-                        const char* dyn = "mf";
-                        if (val < 20) dyn = "pp"; else if (val < 40) dyn = "p";
-                        else if (val < 60) dyn = "mp"; else if (val < 80) dyn = "mf";
-                        else if (val < 100) dyn = "f"; else dyn = "ff";
-                        std::string ds = dyn;
-                        if (ds != lastDyn) {
-                            body << "<span class='dyn'>" << dyn << "</span>";
-                            lastDyn = ds;
-                        }
+                if (val >= 0) {
+                    const char* dyn = "mf";
+                    if (val < 20) dyn = "pp"; else if (val < 40) dyn = "p";
+                    else if (val < 60) dyn = "mp"; else if (val < 80) dyn = "mf";
+                    else if (val < 100) dyn = "f"; else dyn = "ff";
+                    if (lastDyn != dyn) {
+                        body << "<span class='dyn'>" << dyn << "</span>";
+                        lastDyn = dyn;
                     }
                 }
             }
-            if (triplets[idx] && !inTriplet) {
-                body << "<sup class='trip'>3</sup>";
+        };
+
+        bool firstNote = true;
+        for (size_t idx = 0; idx < seq.size(); idx++) {
+            const NoteEvent& n = seq[idx].n;
+            const bool cont = seq[idx].cont;
+            int bar = (int)(n.startTicks / barLen);
+
+            if (bar != curBar) {
+                if (curBar >= 0) body << "</span>";   // 收尾上一个小节
+                curBar = bar;
+                openBar(bar, n.startTicks, n.channel);
+            } else if (inTriplet && !seq[idx].trip) {
+                inTriplet = false;
+            }
+
+            // 三连音组的标记
+            if (seq[idx].trip && !inTriplet) {
+                body << "<span class='trip'>3</span>";
                 inTriplet = true;
             }
-            if (!triplets[idx] && inTriplet) inTriplet = false;
+
+            // 间隙补休止符。原来这里多了一个 `prevEnd > 0` 条件，
+            // 导致乐曲开头的休止符（第一个音不在 tick 0）永远不显示。
             long gap = n.startTicks - prevEnd;
-            bool hasRest = (gap >= data.division / 2 && prevEnd > 0);
-            if (hasRest) {
-                // 根据休止符时长选择合适的时值类
+            if (gap >= data.division / 2) {
                 double restBeats = (double)gap / data.division;
-                std::string restClass = "quarter";
-                int restExtLines = 0;
-                if (restBeats >= 3.5) { restClass = "whole"; restExtLines = 3; }
-                else if (restBeats >= 2.5) { restClass = "half"; restExtLines = 1; }
-                else if (restBeats >= 1.5) { restClass = "half"; }
-                else if (restBeats >= 0.75) { restClass = "eighth"; }
-                else if (restBeats >= 0.375) { restClass = "sixteenth"; }
-                body << "<span class='note " << restClass << "'>";
-                body << "<span class='num'>0</span>";
-                for (int i = 0; i < restExtLines; i++) body << "<span class='ext'>-</span>";
-                body << "</span>";
-                lastPitch = -1;
+                body << noteColumn("0", 0, 0, restBeats, "");
             }
-            // 歌词显示在音符下方 (休止符和延音线不分配歌词)
-            bool isExt = !triplets[idx] && n.pitch == lastPitch && !hasRest && gap < data.division / 4;
-            std::string syl;
-            if (lyricLines && n.pitch != 0 && !isExt) {
-                syl = lyricForNote(n.startTicks);
-            }
-            if (isExt) {
-                body << "<span class='ext'>-</span>";
+
+            double beats = (double)n.durationTicks / data.division;
+
+            if (cont) {
+                // 延续段：一拍一个 `-`，与前一音只隔一个小节线
+                int cnt = (int)std::llround(beats);
+                if (cnt < 1) cnt = 1;
+                for (int k = 0; k < cnt; k++) body << noteColumn("-", 0, 0, 1.0, "");
             } else {
-                body << noteToHtml(n.pitch, n.durationTicks, key, data.division, syl);
-                lastPitch = n.pitch;
+                // 解析简谱串里的八度标记
+                std::string jp = pitchToJianpu(n.pitch, key);
+                int highDots = 0, lowDots = 0;
+                std::string num;
+                for (char c : jp) {
+                    if (c == '\'') highDots++;
+                    else if (c == ',') lowDots++;
+                    else num += c;
+                }
+                std::string syl = (isMain && lyricLines && n.pitch != 0 && !firstNote)
+                                  ? lyricForNote(n.startTicks) : std::string();
+                body << noteColumn(num, highDots, lowDots, beats, syl);
             }
+
             prevEnd = n.startTicks + n.durationTicks;
+            firstNote = false;
         }
+
         body << "</span><span class='final-bar'></span></div></div>";
     }
 
     std::ostringstream html;
     html << "<!DOCTYPE html><html lang='zh'><head><meta charset='utf-8'>"
-         << "<title>" << displayTitle << "</title>"
+         << "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+         << "<title>" << htmlEscape(displayTitle) << "</title>"
          << R"(<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>1</text></svg>"><style>
-body{font-family:"Noto Serif SC","SimSun",serif;max-width:900px;margin:40px auto;background:#fff;color:#222}
-h1{font-size:28px;border-bottom:none;padding-bottom:4px;text-align:center;color:#b03030;margin-bottom:4px;font-weight:700}
-.meta{color:#888;margin-bottom:24px;font-size:13px;text-align:center}
-.track{background:#fff;border:none;padding:20px 0;margin-bottom:16px}
-.track h3{margin:0 0 12px;font-size:15px;color:#444;text-align:center}
-.track h3 small{color:#999;font-weight:normal}
-.staff{font-size:26px;line-height:2.6;padding:10px 0}
-.measure{display:inline-block;margin:0 2px 10px 0;padding:0 4px 0 8px;white-space:nowrap;border-left:2px solid #999;vertical-align:bottom}
-.measure:first-child{border-left:none}
-.note{display:inline-flex;flex-direction:column;justify-content:flex-start;align-items:center;position:relative;margin:0 5px;min-width:22px;min-height:55px;vertical-align:bottom}
-.num{font-weight:600;line-height:1.2;font-size:26px}
-.bar{color:#999;margin:0 12px;font-weight:300}
-.dyn{font-size:16px;font-style:italic;color:#888;margin-right:8px}
-.trip{font-size:14px;color:#666;margin-right:2px}
-.chord{font-size:16px;font-weight:600;color:#b03030;margin-right:8px;margin-bottom:4px;display:block}
-.lyric{display:block;font-size:15px;color:#666;text-align:center;margin-top:6px;min-height:20px}
-.final-bar{display:inline-block;width:3px;height:36px;background:#333;margin-left:8px;vertical-align:middle}
-.final-bar::after{content:"";display:block;width:5px;height:36px;background:#333;margin-left:5px;margin-top:-36px}
-.footer{color:#999;font-size:12px;text-align:center;margin-top:20px}
+*{box-sizing:border-box}
+body{font-family:"Noto Serif SC","Source Han Serif SC","SimSun",serif;max-width:960px;margin:36px auto;background:#fff;color:#222;padding:0 20px}
+h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700}
+.meta{color:#888;margin-bottom:26px;font-size:13px;text-align:center}
+
+.track{padding:16px 0;margin-bottom:6px;border-bottom:1px dashed #eee}
+.track:last-of-type{border-bottom:none}
+.track h3{margin:0 0 10px;font-size:14px;color:#666;text-align:center;font-weight:600}
+.track h3 small{color:#aaa;font-weight:normal;font-size:12px}
+
+/* 谱面用 flex 换行；每个小节是一块，块内音符横排 */
+.staff{display:flex;flex-wrap:wrap;align-items:flex-start;font-size:26px;padding:4px 0}
+.measure{display:flex;flex-wrap:wrap;align-items:flex-start;border-left:1.5px solid #bbb;
+         padding:0 0 0 9px;margin:0 0 12px 0}
+.measure:first-child{border-left:none;padding-left:0}
+
+/* 一个小节内可能有小节号/和弦/力度等行内标记，单独成一列 */
+.barno{font-size:11px;color:#bbb;align-self:flex-start;margin-right:4px;line-height:1}
+.chord{font-size:14px;font-weight:600;color:#b03030;align-self:flex-start;margin-right:6px;line-height:1.6}
+.dyn{font-size:14px;font-style:italic;color:#999;align-self:flex-start;margin-right:6px;line-height:1.6}
+.trip{font-size:12px;color:#666;align-self:flex-start;margin-right:2px;line-height:1.6}
+
+/* ---- 音符列 ----
+   .note 的宽度只由数字决定：延音线用绝对定位挂在 .core 右侧，并通过 --n
+   给右侧预留 padding。这样 .oct（八度点）和 .lyric（歌词）都会精确对齐数字。 */
+.note{display:inline-flex;flex-direction:column;align-items:center;position:relative;
+      margin:0 6px;vertical-align:top;padding-right:calc(var(--n,0) * 1.15em)}
+.oct{display:flex;flex-direction:column;align-items:center;gap:2px;height:12px;flex:none}
+.oct.low{margin-top:2px}
+.oct i{display:block;width:5px;height:5px;border-radius:50%;background:#222}
+.core{position:relative;display:inline-block;line-height:1.15}
+.num{font-weight:600;font-size:26px;line-height:1.15;display:inline-block}
+.exts{position:absolute;left:100%;top:50%;transform:translateY(-42%);
+      display:flex;white-space:nowrap}
+.ext{font-size:26px;line-height:1;margin-left:7px;color:#222}
+.lyric{font-size:14px;color:#666;margin-top:3px;min-height:18px;line-height:1.2;white-space:nowrap}
+
+/* 减时线：八分 1 条、十六分 2 条、三十二分 3 条 */
+.eighth .num,.sixteenth .num,.thirtysecond .num{border-bottom:2px solid #222;padding-bottom:1px}
+.sixteenth .num{box-shadow:0 4px 0 #222}
+.thirtysecond .num{box-shadow:0 4px 0 #222,0 8px 0 #222}
+.dotted .num::after{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;
+                    background:#222;margin-left:4px;vertical-align:middle}
+
+.final-bar{display:inline-block;width:2px;height:34px;background:#333;margin-left:10px;align-self:center;position:relative}
+.final-bar::after{content:"";position:absolute;left:5px;top:0;width:4px;height:34px;background:#333}
+.footer{color:#bbb;font-size:12px;text-align:center;margin:24px 0 10px}
+
 @media print{
-  body{background:#fff;padding:0}
-  .track-card{border:none;page-break-inside:avoid}
+  body{max-width:none;margin:0;padding:0}
+  .track{page-break-inside:auto;border-bottom:none}
   .measure{page-break-inside:avoid}
+  .barno{color:#ddd}
 }
-.dot-above::before{content:"";position:absolute;top:-5px;left:50%;transform:translateX(-50%);width:6px;height:6px;border-radius:50%;background:#222}
-.dot-above2::before{top:-17px}
-.dot-below::after{content:"";position:absolute;bottom:-5px;left:50%;transform:translateX(-50%);width:6px;height:6px;border-radius:50%;background:#222}
-.dot-below2::after{bottom:-17px}
-.eighth .num{border-bottom:2px solid #222}
-.sixteenth .num{border-bottom:2px solid #222;box-shadow:0 4px 0 #222}
-.dotted .num::after{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;background:#222;margin-left:4px}
-.ext{margin-left:2px;letter-spacing:4px;color:#222;font-size:24px}
+@media (max-width:600px){
+  .staff{font-size:20px}
+  .num,.ext{font-size:20px}
+  .lyric{font-size:12px}
+}
 </style></head><body>
-<h1>)" << displayTitle << R"(</h1>
+<h1>)" << htmlEscape(displayTitle) << R"(</h1>
 <div class="meta">1 = )"
          << keyName(key)
          << (key.isMajor ? " 大调" : " 小调")
          << " ｜ " << data.timeSig.toString()
          << " ｜ " << (data.keySig.valid ? "MIDI调号" : "自动猜测")
          << "</div>" << body.str()
-         << "<footer style='color:#aaa;font-size:12px;margin-top:20px'>由 midi2jianpu 生成</footer>"
+         << "<footer class='footer'>由 midi2jianpu 生成</footer>"
          << "</body></html>";
     return html.str();
 }

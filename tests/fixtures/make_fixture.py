@@ -13,6 +13,7 @@
     轨道 1  Vocal    ：四个四分音符、二分音符、同音重复（应合并成延音）、
                        三连音、休止符，并带 p / ff / mf 三次力度变化
     轨道 2  Piano    ：C - F - C/G - F 的和弦进行，用于和弦检测
+    轨道 3  Pad      ：两个跨越小节线的长音，用于验证 MusicXML 的切分与 <tie>
 """
 import os
 import struct
@@ -102,8 +103,17 @@ def build() -> bytes:
     for p in (53, 57, 60):   # F
         t2.note(1, p, 70, BAR * 3, BAR)
 
-    header = b"MThd" + struct.pack(">IHHH", 6, 1, 3, DIV)
-    return header + t0.render() + t1.render() + t2.render()
+    # 轨道 3  Pad：专门覆盖「音符跨小节线」这个最容易出错的场景。
+    # MIDI 允许一个音符跨越小节线，但 MusicXML 必须把它切开、段间加 <tie>，
+    # 否则该小节的 duration 会超出拍号规定值，MuseScore 会报错或强行排乱。
+    t3 = Track()
+    t3.add(0, meta(0x03, b"Pad"))
+    t3.program(2, 89, 0)
+    t3.note(2, 48, 70, BAR * 0 + 1440, 960)    # m1 第 4 拍 -> m2 第 1 拍（短跨）
+    t3.note(2, 60, 70, BAR * 1 + 960, 2880)    # m2 第 3 拍 -> m3 末（跨 5 拍，拆 half + whole）
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 4, DIV)
+    return header + t0.render() + t1.render() + t2.render() + t3.render()
 
 
 LRC = """[ti:测试]

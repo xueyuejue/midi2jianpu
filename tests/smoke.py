@@ -55,7 +55,7 @@ def main():
     rc, out, err = run(exe, mid)
     check(rc == 0, "退出码为 0", err)
     check("1 = C 大调" in out, "识别出 C 大调", out[:200])
-    check("[Vocal]" in out and "[Piano]" in out, "分离出两个轨道")
+    check("[Vocal]" in out and "[Piano]" in out and "[Pad]" in out, "分离出三个轨道")
     check(re.search(r"5\s+-", out) is not None, "二分音符标出延长线（5 -）")
     check("3(5 5 5" in out, "三连音标记 3(5 5 5)")
     check("1' -" in out, "同音重复合并成延音（1' -）")
@@ -79,7 +79,8 @@ def main():
 
     print("\n[5] --track 轨道过滤")
     rc, out, _ = run(exe, mid, "--track", "1")
-    check(rc == 0 and "[Vocal]" in out and "[Piano]" not in out, "只输出轨道 1")
+    check(rc == 0 and "[Vocal]" in out
+          and "[Piano]" not in out and "[Pad]" not in out, "只输出轨道 1")
 
     print("\n[6] --transpose 移调")
     rc, out, _ = run(exe, mid, "--key", "C", "--transpose", "2")
@@ -99,6 +100,57 @@ def main():
     check("<chord/>" in body, "同时发声的音符标了 <chord/>")
     check(re.search(r"<measure number=\"1\">", body) is not None, "存在小节编号")
 
+    # 结构化校验：这些是 MuseScore 能正确打开、不乱排的前提
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(body)
+        parsed = True
+    except ET.ParseError as e:
+        check(False, "XML 可以被解析", str(e))
+        parsed = False
+
+    if parsed:
+        div = int(root.find(".//divisions").text)
+        ts = root.find(".//time")
+        bar_len = int(ts.find("beats").text) * div * 4 // int(ts.find("beat-type").text)
+
+        # 小节时长必须等于拍号规定值，否则 MuseScore 会报错或强行排乱
+        bad = []
+        for pi, part in enumerate(root.findall("part")):
+            for m in part.findall("measure"):
+                tot = sum(int(n.find("duration").text)
+                          for n in m.findall("note") if n.find("chord") is None)
+                if tot != bar_len:
+                    bad.append(f"P{pi+1}m{m.get('number')}={tot}")
+        check(not bad, f"每个小节时长都等于 {bar_len}", " ".join(bad[:6]))
+
+        # 三连音的 <type> 必须是名义时值（eighth），不能写成实际时长对应的 16th
+        trip_types = set()
+        for n in root.iter("note"):
+            if n.find("time-modification") is not None and n.find("type") is not None:
+                trip_types.add(n.find("type").text)
+        check(trip_types == {"eighth"},
+              "三连音 <type> 为名义时值 eighth", str(trip_types))
+
+        # 速度标记：MuseScore 导入后应能看到 BPM
+        check(root.find(".//sound[@tempo]") is not None, "带速度标记 <sound tempo>")
+        check(root.find(".//metronome") is not None, "带节拍器标记 <metronome>")
+
+        # 谱号：低音轨应自动用 F 谱号，避免满屏加线
+        clefs = [c.find("sign").text for c in root.iter("clef")]
+        check(len(clefs) == len(root.findall("part")), "每个声部都有谱号")
+        check("F" in clefs, "低音域轨道自动使用低音谱号")
+
+        # 跨小节音符：必须切开并用 tie 首尾配对
+        starts = len(list(root.iter("tie")))
+        start_n = sum(1 for t in root.iter("tie") if t.get("type") == "start")
+        stop_n = sum(1 for t in root.iter("tie") if t.get("type") == "stop")
+        check(start_n > 0, "跨小节长音被切开并加了 <tie>", f"tie 总数={starts}")
+        check(start_n == stop_n, "tie start/stop 数量配对",
+              f"start={start_n} stop={stop_n}")
+        check(len(list(root.iter("tied"))) == starts,
+              "<tie> 与 <notations><tied> 数量一致")
+
     print("\n[8] --html + --lyrics 导出")
     html = os.path.join(tmp, "out.html")
     rc, out, _ = run(exe, mid, "--html", html, "--lyrics", lrc)
@@ -107,6 +159,22 @@ def main():
     check("<!DOCTYPE html>" in body, "带 DOCTYPE")
     check("class='note" in body, "含音符样式元素")
     check("歌词已加载" in out, "歌词加载成功")
+
+    # 排版结构回归：这几条对应曾经真实出现过的排版事故
+    check("class='exts'" in body, "延音线单独成层（不会掉到数字下一行）")
+    check("class='oct'" in body, "八度点是独立层（不会压住歌词）")
+    check("class='barno'" in body, "小节线旁标注小节号")
+    check(re.search(r"class='note [a-z]+' style='--n:", body) is not None,
+          "带延音线的音符预留了右侧空间")
+    # 跨小节长音必须在小节线处断开，否则该小节时值溢出
+    tracks = body.split("<div class='track'>")
+    pad = next((t for t in tracks if "<h3>Pad" in t), "")
+    check(pad.count("class='note") >= 2, "Pad 轨内容已渲染")
+    # 歌词只能出现在旋律轨，伴奏轨出现歌词说明对齐逻辑串轨了
+    piano = next((t for t in tracks if "<h3>Piano" in t), "")
+    piano_chunk = piano.split("<div class='track'>")[0]
+    check("风" not in piano_chunk and "江湖" not in piano_chunk,
+          "伴奏轨不串入歌词")
 
     print("\n[9] --output 文本落盘")
     txt = os.path.join(tmp, "out.txt")
