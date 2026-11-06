@@ -121,12 +121,37 @@ KeyEstimate estimateKey(const MidiData& data) {
     return r;
 }
 
+// 大调主音音级 -> 调号升降数（取绝对值最小的等音写法）
+// C=0, C#/Db=-5, D=2, D#/Eb=-3, E=4, F=-1, F#/Gb=6, G=1, G#/Ab=-4, A=3, A#/Bb=-2, B=5
+static const int MAJOR_FIFTHS[12] = {0, -5, 2, -3, 4, -1, 6, 1, -4, 3, -2, 5};
+
+int keyFifths(const KeyEstimate& key) {
+    int pc = key.tonicPitchClass;
+    if (key.isMajor) return MAJOR_FIFTHS[pc];
+    // 关系小调的主音比关系大调高小三度
+    return MAJOR_FIFTHS[(pc + 3) % 12];
+}
+
+bool prefersFlats(const KeyEstimate& key) {
+    return keyFifths(key) < 0;
+}
+
+std::string keyName(const KeyEstimate& key) {
+    static const char* SHARP_NAMES[12] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
+    static const char* FLAT_NAMES[12]  = {"C","Db","D","Eb","E","F","Gb","G","Ab","A","Bb","B"};
+    return prefersFlats(key) ? FLAT_NAMES[key.tonicPitchClass]
+                             : SHARP_NAMES[key.tonicPitchClass];
+}
+
 std::string pitchToJianpu(int pitch, const KeyEstimate& key) {
     const auto& scale = key.isMajor ? MAJOR : MINOR;
     int semi = ((pitch - key.tonicPitchClass) % 12 + 12) % 12;
-    // C4=60 为简谱中音, 负方向需要向下取整
-    int octave = (pitch - 60) / 12;
-    if (pitch < 60 && (pitch - 60) % 12 != 0) octave--;  // 向下取整修正
+
+    // 八度以"主音所在的中音区"为基准（旧实现以 C4=60 为基准，
+    // 导致 G/D/A 等主音高于 C 的调性整体高一个八度点）
+    int tonicRef = 60 + key.tonicPitchClass;
+    int diff = pitch - tonicRef;
+    int octave = (diff >= 0) ? (diff / 12) : -(((-diff) + 11) / 12);
 
     int degree = -1;
     std::string accidental;
@@ -134,14 +159,19 @@ std::string pitchToJianpu(int pitch, const KeyEstimate& key) {
         if (scale[i] == semi) { degree = i; break; }
     }
     if (degree < 0) {
-        for (int i = 6; i >= 0; i--) {
-            if (scale[i] < semi) {
-                degree = i;
-                accidental = (semi == scale[i] + 1) ? "#" : "b";
-                break;
-            }
-        }
-        if (degree < 0) { degree = 6; accidental = (semi == 11) ? "#" : ""; }
+        // 非音阶音：找出上下相邻的两个音级，按调性习惯决定用 # 还是 b
+        int lower = -1, upper = -1;
+        for (int i = 0; i < 7; i++) if (scale[i] < semi) lower = i;
+        for (int i = 0; i < 7; i++) if (scale[i] > semi) { upper = i; break; }
+
+        bool useFlat = false;
+        // 降号调优先用"降某音级"的写法；但主音上方半音习惯写成 #1 而不是 b2
+        if (upper >= 0 && scale[upper] - semi == 1 && prefersFlats(key) && lower != 0) useFlat = true;
+        if (upper >= 0 && scale[upper] - semi == 1 && lower < 0) useFlat = true;
+
+        if (useFlat) { degree = upper; accidental = "b"; }
+        else if (lower >= 0) { degree = lower; accidental = (semi == scale[lower] + 1) ? "#" : "b"; }
+        else { degree = upper >= 0 ? upper : 0; accidental = "b"; }
     }
 
     std::string s = accidental + std::to_string(degree + 1);
@@ -151,39 +181,50 @@ std::string pitchToJianpu(int pitch, const KeyEstimate& key) {
 }
 
 std::string durationSuffix(long durationTicks, int division) {
+    if (division <= 0) return "";
     double beats = (double)durationTicks / division;
-    // 标准时值（四分音符=1）：精确匹配附点节奏
-    // 按从长到短排序，优先匹配长时值
-    struct Dur { double beats; std::string suffix; double weight; };
-    Dur table[] = {
-        {4.0,    "---",   1.0},   // 全音符
-        {3.0,    "-.-",   0.5},   // 附点二分
-        {2.0,    "-",     1.0},   // 二分音符
-        {1.5,    ".-",    0.8},   // 附点四分 + 八分
-        {1.0,    "",      1.0},   // 四分音符
-        {0.75,   ".",     0.8},   // 附点八分
-        {0.5,    ".",     1.0},   // 八分音符
-        {0.375,  "..",    0.8},   // 附点十六分
-        {0.25,   "..",    1.0},   // 十六分
-        {0.125,  "...",   0.5},   // 三十二分
+
+    // 文本简谱记法（与 HTML 版的视觉记法一一对应）：
+    //   延长线 "-"  每多一拍加一条
+    //   下划线 "_" 表示八分，"=" 表示十六分，"%%" 表示三十二分
+    //   附点在数字右侧用 "." 表示
+    struct Dur { double beats; const char* suffix; };
+    static const Dur table[] = {
+        {0.125, "%%"},   // 三十二分
+        {0.25,  "="},    // 十六分
+        {0.375, "=."},   // 附点十六分
+        {0.5,   "_"},    // 八分
+        {0.75,  "_."},   // 附点八分
+        {1.0,   ""},     // 四分
+        {1.5,   "."},    // 附点四分
+        {2.0,   "-"},    // 二分
+        {3.0,   "--"},   // 附点二分
+        {4.0,   "---"},  // 全音符
     };
-    std::string best = "";
+
+    if (beats > 4.5) {  // 超长音符退化为延长线计数
+        int n = (int)std::lround(beats) - 1;
+        return std::string(n > 0 ? n : 0, '-');
+    }
+
+    const char* best = "";
     double bestDist = 1e9;
-    for (auto& d : table) {
-        double dist = std::abs(beats - d.beats) * d.weight;
+    for (const auto& d : table) {
+        double dist = std::abs(beats - d.beats);
         if (dist < bestDist) { bestDist = dist; best = d.suffix; }
     }
     return best;
 }
 
-// 查询某 tick 位置的当前力度（从 dynamics 曲线），映射为简谱动态标记
-static std::string dynAt(long tick, const MidiData& data) {
-    if (data.dynamics.empty()) return "";
-    int val = 80;  // 默认 mf
+// 查询某 tick 位置、某通道的当前力度（从 dynamics 曲线），映射为简谱动态标记
+// 旧实现不看通道，会把伴奏的力度标到旋律上
+static std::string dynAt(long tick, int channel, const MidiData& data) {
+    int val = -1;
     for (const auto& dp : data.dynamics) {
-        if (dp.tick <= tick) val = dp.value;
-        else break;
+        if (dp.tick > tick) break;
+        if (dp.channel == channel) val = dp.value;
     }
+    if (val < 0) return "";
     if (val < 20) return "pp";
     if (val < 40) return "p";
     if (val < 60) return "mp";
@@ -213,29 +254,58 @@ std::vector<bool> detectTriplets(const std::vector<NoteEvent>& notes, int divisi
     return isTriplet;
 }
 
+// 输出一个音符记号：延长线拆成独立 token，读起来是 "1 - -" 而不是 "1--"
+static void emitNoteToken(std::ostringstream& os, const std::string& head,
+                          const std::string& dur) {
+    os << head;
+    bool onlyDashes = !dur.empty() &&
+                      dur.find_first_not_of('-') == std::string::npos;
+    if (onlyDashes) {
+        for (size_t i = 0; i < dur.size(); i++) os << " -";
+    } else {
+        os << dur;
+    }
+    os << " ";
+}
+
 // 输出单个轨的简谱，返回该轨输出文本
 static std::string formatTrack(
     const std::vector<NoteEvent>& notes,
-    const KeyEstimate& key, const MidiData& data, bool isMain,
+    const KeyEstimate& key, const MidiData& data,
     const std::map<long, std::string>* chords = nullptr) {
 
     std::ostringstream os;
     double barLen = data.timeSig.barLengthTicks(data.division);
     int currentBar = -1;
+    bool started = false;
     long prevEnd = 0;
-    int lastPitch = -1;
     std::string lastDyn;
-    auto triplets = detectTriplets(notes, data.division);
+
+    // 先合并"同音高、首尾相接"的连续音符（1 1 1 → 1 - -）。
+    // 三连音组内的音符不参与合并，否则会把三连音拆成普通长音。
+    auto trip0 = detectTriplets(notes, data.division);
+    std::vector<NoteEvent> merged;
+    merged.reserve(notes.size());
+    for (size_t i = 0; i < notes.size(); i++) {
+        if (i > 0 && !trip0[i] && !trip0[i - 1] && !merged.empty() &&
+            notes[i].pitch == merged.back().pitch &&
+            notes[i].startTicks == merged.back().startTicks + merged.back().durationTicks) {
+            merged.back().durationTicks += notes[i].durationTicks;
+            merged.back().durationSeconds += notes[i].durationSeconds;
+            continue;
+        }
+        merged.push_back(notes[i]);
+    }
+    auto triplets = detectTriplets(merged, data.division);
     bool inTriplet = false;
 
-    for (size_t idx = 0; idx < notes.size(); idx++) {
-        const auto& n = notes[idx];
+    for (size_t idx = 0; idx < merged.size(); idx++) {
+        const auto& n = merged[idx];
         int bar = (int)(n.startTicks / barLen);
         if (bar != currentBar) {
             if (currentBar >= 0) os << " |\n";
             currentBar = bar;
-            lastPitch = -1;
-            // 显示和弦标记
+            // 和弦标记只标在旋律轨上，避免伴奏轨重复标注
             if (chords) {
                 long barStart = bar * (long)barLen;
                 auto it = chords->find(barStart);
@@ -243,7 +313,7 @@ static std::string formatTrack(
                     os << "[" << it->second << "] ";
                 }
             }
-            std::string d = dynAt(n.startTicks, data);
+            std::string d = dynAt(n.startTicks, n.channel, data);
             if (!d.empty() && d != lastDyn) {
                 os << "[" << d << "] ";
                 lastDyn = d;
@@ -254,15 +324,14 @@ static std::string formatTrack(
         if (!triplets[idx] && inTriplet) { os << ") "; inTriplet = false; }
 
         long gap = n.startTicks - prevEnd;
-        bool hasRest = (gap >= data.division / 2 && prevEnd > 0);
-        if (hasRest) { os << "0 "; lastPitch = -1; }
-        // 三连音组内不做同音合并
-        if (!triplets[idx] && n.pitch == lastPitch && !hasRest && gap < data.division / 4) {
-            os << "- ";
-        } else {
-            os << pitchToJianpu(n.pitch, key) << " ";
-            lastPitch = n.pitch;
+        bool hasRest = (gap >= data.division / 2) && (started || n.startTicks > 0);
+        if (hasRest) {
+            emitNoteToken(os, "0", durationSuffix(gap, data.division));
         }
+        // 三连音组内的音符不标时值后缀（"3(...)" 已表达节奏）
+        std::string dur = triplets[idx] ? "" : durationSuffix(n.durationTicks, data.division);
+        emitNoteToken(os, pitchToJianpu(n.pitch, key), dur);
+        started = true;
         prevEnd = n.startTicks + n.durationTicks;
     }
     if (inTriplet) os << ")";
@@ -272,7 +341,7 @@ static std::string formatTrack(
 
 std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
     std::ostringstream os;
-    os << "1 = " << NOTE_NAMES[key.tonicPitchClass]
+    os << "1 = " << keyName(key)
        << (key.isMajor ? " 大调" : " 小调")
        << "    " << data.timeSig.toString();
     if (!data.tempoChanges.empty()) {
@@ -280,12 +349,12 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
     }
     os << "\n----------------------------------------\n";
 
-    // 弯音修正：对每个音符，计算其持续期间的平均弯音偏移
-    auto bendOffset = [&](long start, long end) -> double {
+    // 弯音修正：只统计与音符同通道的弯音事件
+    auto bendOffset = [&](long start, long end, int channel) -> double {
         if (data.pitchBends.empty()) return 0.0;
         double sum = 0; int count = 0;
         for (const auto& pb : data.pitchBends) {
-            if (pb.tick >= start && pb.tick <= end) {
+            if (pb.channel == channel && pb.tick >= start && pb.tick <= end) {
                 sum += (pb.value - 8192) / 8192.0 * data.bendRange;  // ±2半音范围
                 count++;
             }
@@ -296,7 +365,7 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
     // 按 track 分组（应用弯音修正）
     std::map<int, std::vector<NoteEvent>> byTrack;
     for (auto n : data.notes) {
-        double off = bendOffset(n.startTicks, n.startTicks + n.durationTicks);
+        double off = bendOffset(n.startTicks, n.startTicks + n.durationTicks, n.channel);
         if (std::abs(off) >= 0.5) {
             n.pitch += (int)std::round(off);
         }
@@ -331,7 +400,7 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
             os << " · 和弦: " << chordByBar.size() << " 个";
         }
         os << "\n";
-        os << formatTrack(ns, key, data, isMain, &chordByBar);
+        os << formatTrack(ns, key, data, (t == mainTrack) ? &chordByBar : nullptr);
     }
     return os.str();
 }

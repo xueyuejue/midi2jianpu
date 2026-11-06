@@ -3,6 +3,7 @@
 #include "midi2jianpu/notation.hpp"
 #include "midi2jianpu/html_writer.hpp"
 #include "midi2jianpu/musicxml_writer.hpp"
+#include "midi2jianpu/version.hpp"
 
 #include <fstream>
 #include <iostream>
@@ -10,34 +11,53 @@
 
 static void printHelp() {
     std::cout <<
-        "midi2jianpu - MIDI 文件转中文简谱\n"
+        "midi2jianpu " M2J_VERSION " - MIDI 文件转中文简谱\n"
         "用法:\n"
         "  midi2jianpu <input.mid>                 打印文本简谱\n"
         "  midi2jianpu <input.mid> --html out.html 导出 HTML 谱面\n"
+        "  midi2jianpu <input.mid> --musicxml out.xml  导出 MusicXML(可用 MuseScore 打开)\n"
         "  midi2jianpu <input.mid> --key Am         手动指定调性(如 Am=小调, C=大调)\n"
         "  midi2jianpu <input.mid> --output out.txt  文本简谱输出到文件\n"
         "  midi2jianpu <input.mid> --track 0         只输出指定轨道\n"
         "  midi2jianpu <input.mid> --transpose +2     移调(半音, 正负都可)\n"
         "  midi2jianpu <input.mid> --lyrics lyrics.lrc  加载歌词\n"
+        "  midi2jianpu --version\n"
         "  midi2jianpu --help\n";
 }
 
-// 解析 --key 参数: "C"=C大调, "Am"=a小调, "F#"=F#大调
+// 解析 --key 参数: "C"=C大调, "Am"=a小调, "F#"=F#大调, "Bb"=降B大调
 static bool parseKey(const std::string& s, m2j::KeyEstimate& out) {
-    static const char* names[] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
+    static const char* names[]     = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
+    static const char* flatNames[] = {"C","Db","D","Eb","E","F","Gb","G","Ab","A","Bb","B"};
+    if (s.empty()) return false;
     size_t i = 0;
     std::string name;
-    if (s.size() >= 2 && (s[1] == '#' || s[1] == 'b')) {
-        name = s.substr(0, 2); i = 2;
-    } else {
-        name = s.substr(0, 1); i = 1;
-    }
+    if (s.size() >= 2 && (s[1] == '#' || s[1] == 'b')) { name = s.substr(0, 2); i = 2; }
+    else { name = s.substr(0, 1); i = 1; }
+    if (name[0] >= 'a' && name[0] <= 'z') name[0] = char(name[0] - 'a' + 'A');
+
     int pc = -1;
     for (int k = 0; k < 12; k++) if (names[k] == name) { pc = k; break; }
+    if (pc < 0) for (int k = 0; k < 12; k++) if (flatNames[k] == name) { pc = k; break; }
     if (pc < 0) return false;
+
     out.tonicPitchClass = pc;
     out.isMajor = !(i < s.size() && (s[i] == 'm' || s[i] == 'M'));
     return true;
+}
+
+// 安全的整数解析：非法输入不再抛异常中断程序
+static bool parseInt(const char* s, int& out) {
+    try {
+        size_t used = 0;
+        std::string str(s);
+        int v = std::stoi(str, &used);
+        if (used != str.size()) return false;
+        out = v;
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 int main(int argc, char** argv) {
@@ -49,14 +69,30 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--help" || a == "-h") { printHelp(); return 0; }
+        else if (a == "--version" || a == "-v") {
+            std::cout << "midi2jianpu " M2J_VERSION "\n";
+            return 0;
+        }
         else if (a == "--html" && i + 1 < argc) { htmlOut = argv[++i]; }
         else if (a == "--key" && i + 1 < argc) { keyArg = argv[++i]; }
         else if (a == "--output" && i + 1 < argc) { txtOut = argv[++i]; }
         else if (a == "--musicxml" && i + 1 < argc) { xmlOut = argv[++i]; }
         else if (a == "--lyrics" && i + 1 < argc) { lyricsPath = argv[++i]; }
-        else if (a == "--track" && i + 1 < argc) { trackFilter = std::stoi(argv[++i]); }
-        else if (a == "--transpose" && i + 1 < argc) { transpose = std::stoi(argv[++i]); }
+        else if (a == "--track" && i + 1 < argc) {
+            if (!parseInt(argv[++i], trackFilter)) {
+                std::cerr << "错误: --track 需要整数\n"; return 1;
+            }
+        }
+        else if (a == "--transpose" && i + 1 < argc) {
+            if (!parseInt(argv[++i], transpose)) {
+                std::cerr << "错误: --transpose 需要整数（半音数，可为负）\n"; return 1;
+            }
+        }
         else if (a.substr(0, 2) != "--") input = a;
+        else {
+            std::cerr << "警告: 未知参数 " << a << "（用 --help 查看用法）\n";
+            ++i;  // 跳过其可能的取值
+        }
     }
     if (input.empty()) { printHelp(); return 1; }
 
@@ -86,6 +122,10 @@ int main(int argc, char** argv) {
     if (!keyArg.empty() && parseKey(keyArg, key)) {
         keySource = "(手动指定 " + keyArg + ")";
     } else {
+        if (!keyArg.empty()) {
+            std::cerr << "警告: 无法识别的调性 \"" << keyArg
+                      << "\"，已改用自动识别（示例: C / Am / F# / Bb）\n";
+        }
         key = m2j::estimateKey(data);
         keySource = data.keySig.valid ? "(MIDI调号)" : "(自动猜测)";
     }

@@ -1,16 +1,12 @@
 // html_writer.cpp - 简谱 -> 自包含 HTML 渲染
 #include "midi2jianpu/html_writer.hpp"
+#include "midi2jianpu/version.hpp"
 
 #include <map>
 #include <sstream>
 #include <cmath>
 
 namespace m2j {
-
-static const char* NOTE_NAMES[12] = {
-    "C", "C#", "D", "D#", "E", "F",
-    "F#", "G", "G#", "A", "A#", "B"
-};
 
 static std::string htmlEscape(const std::string& s) {
     std::string out;
@@ -79,7 +75,8 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                         const std::vector<LyricLine>* lyricLines) {
     std::string displayTitle = title.empty() ? "简谱" : title;
     // 加版本号, 方便确认是否加载了最新版
-    displayTitle += " v1.5.0";
+    displayTitle += " v";
+    displayTitle += M2J_VERSION;
     std::ostringstream body;
     double barLen = data.timeSig.barLengthTicks(data.division);
 
@@ -137,12 +134,12 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         return lineSyls[curLineIdx].second[curCharIdx++];
     };
 
-    // 弯音修正
-    auto bendOffset = [&](long start, long end) -> double {
+    // 弯音修正（只统计同通道的弯音事件）
+    auto bendOffset = [&](long start, long end, int channel) -> double {
         if (data.pitchBends.empty()) return 0.0;
         double sum = 0; int count = 0;
         for (const auto& pb : data.pitchBends) {
-            if (pb.tick >= start && pb.tick <= end) {
+            if (pb.channel == channel && pb.tick >= start && pb.tick <= end) {
                 sum += (pb.value - 8192) / 8192.0 * data.bendRange;
                 count++;
             }
@@ -153,7 +150,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
     // 按轨分组（应用弯音修正）
     std::map<int, std::vector<NoteEvent>> byTrack;
     for (auto n : data.notes) {
-        double off = bendOffset(n.startTicks, n.startTicks + n.durationTicks);
+        double off = bendOffset(n.startTicks, n.startTicks + n.durationTicks, n.channel);
         if (std::abs(off) >= 0.5) n.pitch += (int)std::round(off);
         byTrack[n.track].push_back(n);
     }
@@ -185,25 +182,28 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 curBar = bar;
                 lastPitch = -1;
                 body << "<span class='measure'>";
-                // 显示和弦标记
+                // 和弦标记只标在旋律轨上
                 long barStart = bar * (long)barLen;
                 auto chordIt = chordByBar.find(barStart);
-                if (chordIt != chordByBar.end()) {
+                if (t == mainTrack && chordIt != chordByBar.end()) {
                     body << "<span class='chord'>" << chordIt->second << "</span>";
                 }
                 if (!data.dynamics.empty()) {
-                    int val = 80;
+                    int val = -1;
                     for (const auto& dp : data.dynamics) {
-                        if (dp.tick <= n.startTicks) val = dp.value; else break;
+                        if (dp.tick > n.startTicks) break;
+                        if (dp.channel == n.channel) val = dp.value;
                     }
-                    const char* dyn = "mf";
-                    if (val < 20) dyn = "pp"; else if (val < 40) dyn = "p";
-                    else if (val < 60) dyn = "mp"; else if (val < 80) dyn = "mf";
-                    else if (val < 100) dyn = "f"; else dyn = "ff";
-                    std::string ds = dyn;
-                    if (ds != lastDyn) {
-                        body << "<span class='dyn'>" << dyn << "</span>";
-                        lastDyn = ds;
+                    if (val >= 0) {
+                        const char* dyn = "mf";
+                        if (val < 20) dyn = "pp"; else if (val < 40) dyn = "p";
+                        else if (val < 60) dyn = "mp"; else if (val < 80) dyn = "mf";
+                        else if (val < 100) dyn = "f"; else dyn = "ff";
+                        std::string ds = dyn;
+                        if (ds != lastDyn) {
+                            body << "<span class='dyn'>" << dyn << "</span>";
+                            lastDyn = ds;
+                        }
                     }
                 }
             }
@@ -286,7 +286,7 @@ h1{font-size:28px;border-bottom:none;padding-bottom:4px;text-align:center;color:
 </style></head><body>
 <h1>)" << displayTitle << R"(</h1>
 <div class="meta">1 = )"
-         << NOTE_NAMES[key.tonicPitchClass]
+         << keyName(key)
          << (key.isMajor ? " 大调" : " 小调")
          << " ｜ " << data.timeSig.toString()
          << " ｜ " << (data.keySig.valid ? "MIDI调号" : "自动猜测")

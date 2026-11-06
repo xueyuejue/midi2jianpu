@@ -44,9 +44,11 @@ struct KeySignature {
 };
 
 // 力度变化点（从 CC 0x0B Expression 解析）
+// channel 用于把力度限定在所属轨道，避免伴奏的力度串到旋律轨
 struct DynPoint {
     long tick;
     int value;
+    int channel = 0;
 };
 
 // 速度变化点（从 0x51 set_tempo 解析）
@@ -58,7 +60,8 @@ struct TempoPoint {
 // 弯音轮事件（从 0xE0 解析，14位值，中心8192）
 struct PitchBendPoint {
     long tick;
-    int value;  // 0-16383, 8192=无弯音
+    int value;          // 0-16383, 8192=无弯音
+    int channel = 0;    // 所属通道，避免不同乐器互相干扰
 };
 
 // 歌词事件（从 MIDI 0x05 lyric 解析）
