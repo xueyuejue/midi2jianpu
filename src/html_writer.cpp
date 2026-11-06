@@ -145,8 +145,6 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                        const std::string& title,
                        const std::vector<LyricLine>* lyricLines) {
     std::string displayTitle = title.empty() ? "简谱" : title;
-    displayTitle += " v";
-    displayTitle += M2J_VERSION;
 
     std::ostringstream body;
     double barLen = data.timeSig.barLengthTicks(data.division);
@@ -529,12 +527,12 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
 }
 </style></head><body>
 <h1>)" << htmlEscape(displayTitle) << R"(</h1>
-<div class="meta">1 = )"
+<div class="meta">)"
          << htmlEscape(keyDescription(key))
          << " ｜ " << data.timeSig.toString()
          << " ｜ " << (data.keySig.valid ? "MIDI调号" : "自动猜测")
          << "</div>" << body.str()
-         << "<footer class='footer'>由 midi2jianpu 生成</footer>"
+         << "<footer class='footer'>由 midi2jianpu v" M2J_VERSION " 生成</footer>"
          << "</body></html>";
     return html.str();
 }
