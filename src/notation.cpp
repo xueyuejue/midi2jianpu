@@ -283,13 +283,24 @@ static std::string formatTrack(
 
     // 先合并"同音高、首尾相接"的连续音符（1 1 1 → 1 - -）。
     // 三连音组内的音符不参与合并，否则会把三连音拆成普通长音。
+    //
+    // 还要排除多声部：C 和弦的 5 与紧接的 G 和弦的 5 音高相同、时间也相接，
+    // 合并后 G 和弦会凭空少一个音。只在两处都是单声部时才允许合并。
     auto trip0 = detectTriplets(notes, data.division);
+    std::map<long, int> onsetCount;
+    for (const auto& n : notes) onsetCount[n.startTicks]++;
+    auto isSingle = [&](long tick) {
+        auto cit = onsetCount.find(tick);
+        return cit == onsetCount.end() || cit->second <= 1;
+    };
+
     std::vector<NoteEvent> merged;
     merged.reserve(notes.size());
     for (size_t i = 0; i < notes.size(); i++) {
         if (i > 0 && !trip0[i] && !trip0[i - 1] && !merged.empty() &&
             notes[i].pitch == merged.back().pitch &&
-            notes[i].startTicks == merged.back().startTicks + merged.back().durationTicks) {
+            notes[i].startTicks == merged.back().startTicks + merged.back().durationTicks &&
+            isSingle(notes[i].startTicks) && isSingle(merged.back().startTicks)) {
             merged.back().durationTicks += notes[i].durationTicks;
             merged.back().durationSeconds += notes[i].durationSeconds;
             continue;
