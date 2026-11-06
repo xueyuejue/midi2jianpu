@@ -33,7 +33,7 @@ cmake --build build --config Release
 
 ## 测试
 
-### 单元测试（81 项）
+### 单元测试（88 项）
 
 ```bash
 cd build && ctest --output-on-failure
@@ -41,7 +41,7 @@ cd build && ctest --output-on-failure
 ./build/test_basic
 ```
 
-成功时输出 `共 81 项，失败 0 项 -> 全部通过`。
+成功时输出 `共 88 项，失败 0 项 -> 全部通过`。
 
 覆盖范围：调性识别、各调八度基准、升降号书写（含降号调）、时值后缀、三连音、同音合并、和弦检测、移调、MusicXML 小节时长与 `<chord/>`，以及三组解析层回归——**鼓轨过滤**、**旋律轨判定**、**变速 tempo map 秒数换算**（这三组在内存里现构造最小 SMF，不依赖 fixture 文件）。
 
@@ -50,7 +50,7 @@ cd build && ctest --output-on-failure
 需要 Python 3（只用标准库）：
 
 ```bash
-python tests/fixtures/make_fixture.py     # 生成 sample / humanized / drums / melisma 四份素材
+python tests/fixtures/make_fixture.py     # 生成 sample / humanized / drums / melisma / harmony 五份素材
 python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2jianpu.exe
 ```
 
@@ -59,6 +59,8 @@ python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2ji
 其中 `drums.mid` 专测打击乐轨：鼓轨有 192 个音符（远超旋律的 8 个），谱面里不能出现 `[Drums]`、不能出现鼓的音高，旋律轨必须判给单声部的 Vocal。
 
 `melisma.mid` 专测一字多音：一行 LRC 只有 4 个字，旋律却在两小节里唱 8 个音。四个字必须分到两小节（早先顺序分配会把它们全塞进第一小节，第二小节看着像漏词）。
+
+`harmony.mid` 专测和声粒度与变速：钢琴一小节换两次和弦（`| C Am | F G |`），conductor 轨在第 5 小节把速度从 120 改成 90。断言要求同一小节里同时出现 `[C]` 与 `[Am]`（小节起点和弦在标记行、第三拍和弦浮在音符上方各算一个），且速度标记只印在第一行谱上（两轨各印一遍会出 4 个而不是 2 个）。
 
 减时线连通也在这一组里校验：三连音必须是「一条线 + 一个 3」，不能被时值表最近的 0.375 档误判成附点十六分（两条线加一个点）。
 

@@ -214,7 +214,28 @@ if (existsSync(drumsPath)) {
   check(false, '素材 drums.mid 存在（先跑 make_fixture.py）');
 }
 
-// ---- 9. 坏数据不能把整页搞崩 ----
+// ---- 9. 和声粒度与变速标记（与 CLI 共用同一份代码，网页侧也兜一道）----
+const harmonyPath = path.join(FIXTURES, 'harmony.mid');
+if (existsSync(harmonyPath)) {
+  const h = makeCaller(mod);
+  h.setMidi(readFileSync(harmonyPath));
+  h.setLyrics('');
+  const hText = h.call('midi2jianpu_parse', -1, 1);
+  check(hText && hText.includes("[C] 1' 7 [Am] 6 5"),
+    '一小节里同时标出 C 与 Am', hText && hText.slice(0, 200));
+  check(hText && hText.includes('♩=120 → 90(第5小节)'),
+    '页眉写出中途变速', hText && hText.slice(0, 160));
+
+  const hHtml = h.call('midi2jianpu_html', -1, 1);
+  check(hHtml && (hHtml.match(/class='chordx'/g) || []).length === 8,
+    'HTML 有 8 个第三拍和弦');
+  check(hHtml && (hHtml.match(/class='tempo'/g) || []).length === 2,
+    'HTML 只印 2 个速度标记（每轨各印一遍会变 4 个）');
+} else {
+  check(false, '素材 harmony.mid 存在（先跑 make_fixture.py）');
+}
+
+// ---- 10. 坏数据不能把整页搞崩 ----
 c.setMidi(new Uint8Array([1, 2, 3, 4, 5]));
 const bad = c.call('midi2jianpu_parse', -1, 1);
 check(typeof bad === 'string' && bad.length > 0, '非法 MIDI 返回错误文本而非崩溃', bad);

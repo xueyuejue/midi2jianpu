@@ -128,7 +128,13 @@ std::vector<TrackProfile> profileTracks(const MidiData& data,
 // 返回 -1 表示没有可用轨道。
 int pickMelodyTrack(const MidiData& data, const std::vector<LyricLine>* lyrics = nullptr);
 
-// 从MIDI数据中检测和弦(按小节)
+// 速度摘要（变速曲目会列出每次变化及其小节）
+std::string tempoSummary(const MidiData& data);
+
+// 和声窗长度（tick）：4/4 半小节、6/8 附点四分、3/4 整小节
+long chordWindowTicks(const MidiData& data);
+
+// 从MIDI数据中检测和弦（按和声窗，相邻同名合并）
 std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key);
 
 } // namespace m2j

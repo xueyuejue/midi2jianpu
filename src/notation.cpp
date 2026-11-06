@@ -536,6 +536,7 @@ static std::string formatTrack(
     // 而丢掉 3 条小节线；跨小节的长音同样会溢出到下一小节之外。
     auto barOf = [&](long tick) -> long { return tick / barLenI; };
     std::string lastChord;
+    long lastChordTick = -1;   // 已经处理过的和弦位置，避免同一和弦标两次
     auto switchToBar = [&](long bar, long atTick, int channel) {
         if ((int)bar == currentBar) return;
         if (currentBar >= 0) os << " |\n";
@@ -548,6 +549,7 @@ static std::string formatTrack(
                 os << "[" << it->second << "] ";
                 lastChord = it->second;
             }
+            lastChordTick = std::max(lastChordTick, bar * barLenI);
         }
         std::string d = dynAt(atTick, channel, data);
         if (!d.empty() && d != lastDyn) {
@@ -588,6 +590,23 @@ static std::string formatTrack(
 
         switchToBar(barOf(n.startTicks), n.startTicks, n.channel);
 
+        // 小节内换和弦（第 3 拍、6/8 的第二个附点四分……）。
+        // 只在小节起点找和弦会把这类变化整个漏掉——而流行歌里一小节两个
+        // 和弦比一小节一个更常见。跨过多个和弦时只留最后一个：文本谱一行
+        // 挤三个 [C][Am][F] 反而看不出位置。
+        if (chords) {   // 传进来的和弦表本来就是 nullptr（非旋律轨）
+            std::string pending;
+            auto cit = chords->upper_bound(lastChordTick);
+            for (; cit != chords->end() && cit->first <= n.startTicks; ++cit) {
+                if (cit->second != lastChord) pending = cit->second;
+                lastChordTick = cit->first;
+            }
+            if (!pending.empty()) {
+                os << "[" << pending << "] ";
+                lastChord = pending;
+            }
+        }
+
         // 左括号放在小节线之后，否则 "3(" 会留在上一行末
         if (triplets[idx] && !inTriplet) { os << "3("; inTriplet = true; }
 
@@ -625,13 +644,31 @@ static size_t distinctChordCount(const std::map<long, std::string>& byBar) {
     return names.size();
 }
 
+// 速度摘要：单一速度写 "♩=120"，变速曲目写 "♩=120 → 90(第5小节)"。
+// 只写第一个速度是错的：后半首按 90 唱，谱面却还印着 120。
+std::string tempoSummary(const MidiData& data) {
+    if (data.tempoChanges.empty()) return std::string();
+    std::ostringstream os;
+    os << "♩=" << (int)std::lround(data.tempoChanges[0].bpm);
+    if (data.tempoChanges.size() > 1) {
+        double barLen = data.timeSig.barLengthTicks(data.division);
+        if (!(barLen > 0)) barLen = data.division * 4.0;
+        for (size_t i = 1; i < data.tempoChanges.size() && i <= 4; i++) {
+            os << (i > 1 ? " → " : " → ")
+               << (int)std::lround(data.tempoChanges[i].bpm)
+               << "(第" << (long)(data.tempoChanges[i].tick / barLen) + 1 << "小节)";
+        }
+        if (data.tempoChanges.size() > 5) os << " → …";
+    }
+    return os.str();
+}
+
 std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
     std::ostringstream os;
     os << keyDescription(key)
        << "    " << data.timeSig.toString();
-    if (!data.tempoChanges.empty()) {
-        os << "    ♩=" << (int)data.tempoChanges[0].bpm;
-    }
+    std::string tempo = tempoSummary(data);
+    if (!tempo.empty()) os << "    " << tempo;
     // 鼓轨被丢弃这件事必须让用户看见，否则会以为谱子漏了内容。
     // 写进谱面头部而不是只打在命令行，网页版（WASM）才同样能看到。
     if (data.drumNotesSkipped > 0) {
@@ -944,26 +981,46 @@ std::vector<LyricLine> parseLrcLines(const std::string& lrcPath, int division, i
     return parseLrcText(all, division, bpm);
 }
 
-// 和弦检测：从伴奏轨中按小节提取音符，匹配和弦类型
-std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key) {
-    std::vector<ChordMark> chords;
-
-    // 找伴奏轨（除旋律轨以外的所有轨），旋律轨由 pickMelodyTrack 判定
-    int mainTrack = pickMelodyTrack(data, nullptr);
-
-    // 按小节分组音符
+// ---- 和弦检测 ----
+//
+// 粒度是一个「和声窗」，不是一整小节。
+//
+// 早先按小节汇总伴奏音，一小节只出一个和弦。真实流行歌最常见的写法恰恰是
+// 一小节两个和弦（`| C  Am |`、`| F  G |`），按小节汇总会把后半小节的和声
+// 整个吞掉；更糟的是整小节混池之后，「和弦各音都在场」的判定会把 C 与 Am
+// 的音凑成 Cmaj7 之类的假和弦——谱面上是错的，而且看不出来错。
+//
+// 窗口取法跟着拍号走：4/4 取半小节、6/8 取附点四分、3/4 取整小节。
+// 相邻窗口同名就合并，所以和声不变的地方不会多出标记。
+long chordWindowTicks(const MidiData& data) {
     double barLen = data.timeSig.barLengthTicks(data.division);
-    std::map<long, std::vector<int>> barNotes;  // barStartTick -> pitchClasses
+    if (!(barLen > 0)) barLen = data.division * 4.0;
+    long barLenI = std::max<long>(1, (long)std::llround(barLen));
+
+    int beats = data.timeSig.numerator > 0 ? data.timeSig.numerator : 4;
+    // 偶数拍（4/4、6/8、12/8）折半：和弦常在第三拍或第二个附点四分处换。
+    // 奇数拍（3/4、3/8）本来就是一小节一个和声，再细分只会放大噪声。
+    int k = (beats % 2 == 0) ? 2 : 1;
+    return std::max<long>(1, barLenI / k);
+}
+
+std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key) {
+    (void)key;   // 目前不按调性做等音转换，保留参数以便后续按调写成 bB / #F
+    std::vector<ChordMark> chords;
+    if (data.division <= 0 || data.notes.empty()) return chords;
+
+    // 旋律轨不参与和声判定：它自带经过音与装饰音，会把和弦算歪
+    int mainTrack = pickMelodyTrack(data, nullptr);
+    const long win = chordWindowTicks(data);
+
+    std::map<long, std::map<int, int>> winPitch;  // 窗口起点 -> 音级 -> 次数
     for (const auto& note : data.notes) {
-        if (note.track == mainTrack) continue;  // 跳过旋律轨
-        long bar = (long)(note.startTicks / barLen);
-        long barStart = bar * (long)barLen;
-        barNotes[barStart].push_back(note.pitch % 12);
+        if (note.track == mainTrack) continue;
+        winPitch[(note.startTicks / win) * win][note.pitch % 12]++;
     }
 
-    // 和弦类型定义（音程间隔）
     struct ChordType { const char* suffix; std::vector<int> intervals; };
-    std::vector<ChordType> chordTypes = {
+    const std::vector<ChordType> chordTypes = {
         {"",     {0, 4, 7}},      // 大三和弦
         {"m",    {0, 3, 7}},      // 小三和弦
         {"7",    {0, 4, 7, 10}},  // 属七和弦
@@ -980,46 +1037,39 @@ std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key
         "F#", "G", "G#", "A", "A#", "B"
     };
 
-    // 对每个小节检测和弦
-    for (auto& [barStart, pitches] : barNotes) {
-        if (pitches.size() < 2) continue;  // 至少2个音符才可能是和弦
+    // 单个窗口里最可能的和弦；证据不足时返回空串
+    auto bestChordOf = [&](const std::map<int, int>& pitchCount) -> std::string {
+        if (pitchCount.size() < 2) return std::string();   // 只有一个音级不构成和弦
 
-        // 统计音级出现次数
-        std::map<int, int> pitchCount;
-        for (int p : pitches) pitchCount[p]++;
-
-        // 尝试每个音级作为根音
-        int bestRoot = -1;
-        std::string bestChord;
+        std::string best;
         int bestScore = 0;
-
-        for (auto& [root, count] : pitchCount) {
-            for (auto& ct : chordTypes) {
-                // 检查这个和弦的所有音是否都在小节中出现
+        for (const auto& kv : pitchCount) {
+            const int root = kv.first;
+            for (const auto& ct : chordTypes) {
                 int score = 0;
                 bool allPresent = true;
                 for (int interval : ct.intervals) {
-                    int pitchClass = (root + interval) % 12;
-                    if (pitchCount.count(pitchClass)) {
-                        score += pitchCount[pitchClass];
-                    } else {
-                        allPresent = false;
-                    }
+                    auto f = pitchCount.find((root + interval) % 12);
+                    if (f == pitchCount.end()) { allPresent = false; break; }
+                    score += f->second;
                 }
-                // 所有音都存在才得分
                 if (allPresent && score > bestScore) {
                     bestScore = score;
-                    bestRoot = root;
-                    bestChord = NOTE_NAMES[root] + std::string(ct.suffix);
+                    best = NOTE_NAMES[root] + std::string(ct.suffix);
                 }
             }
         }
+        return bestScore >= 3 ? best : std::string();
+    };
 
-        if (bestRoot >= 0 && bestScore >= 3) {
-            chords.push_back({barStart, bestChord});
-        }
+    // 相邻同名合并。空窗口不改 prevName，所以「C · 空 · C」不会标两次。
+    std::string prevName;
+    for (const auto& kv : winPitch) {
+        std::string name = bestChordOf(kv.second);
+        if (name.empty() || name == prevName) continue;
+        chords.push_back({kv.first, name});
+        prevName = name;
     }
-
     return chords;
 }
 

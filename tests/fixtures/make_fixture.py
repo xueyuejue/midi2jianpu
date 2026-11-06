@@ -249,6 +249,54 @@ def build_melisma() -> bytes:
     return header + t0.render() + t1.render()
 
 
+# ---------------------------------------------------------------------------
+# 第五份素材：一小节两个和弦 + 中途变速。
+#
+# 两件事都是真实流行歌的常态，也都曾被实现漏掉：
+#   1) `| C  Am | F  G |` 一小节换两次和弦。按小节汇总伴奏音只会得到一个和弦，
+#      后半小节的和声在谱面上根本不存在；
+#   2) 副歌提速（120 → 90 这里反过来是降速），页眉只写第一个速度，
+#      照着唱就会把后半首唱快。
+#
+# 正确结果：8 个小节，每小节一个起点和弦（标记行）+ 一个第三拍和弦（音符上方），
+# 页眉写成 "♩=120 → 90(第5小节)"，第 5 小节上有 ♩=90 的速度标记。
+# ---------------------------------------------------------------------------
+HARMONY_BARS = 8
+HARMONY_MEL = [72, 71, 69, 67]        # 1' 7 6 5
+# (小节奇数, 前半小节和弦, 后半小节和弦)
+HARMONY_PROG = [((48, 52, 55), (45, 48, 52)),    # C  -> Am
+                ((41, 45, 48), (43, 47, 50))]    # F  -> G
+
+
+def build_harmony() -> bytes:
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))            # 120BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))                 # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))                        # C 大调
+    t0.add(4 * BAR, meta(0x51, bytes([0x0A, 0x2C, 0x2B])))      # 第 5 小节起 90BPM
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    t1.program(0, 0, 0)
+    for bar in range(HARMONY_BARS):
+        for b, p in enumerate(HARMONY_MEL):
+            t1.note(0, p, 90, bar * BAR + b * DIV, DIV)
+
+    t2 = Track()
+    t2.add(0, meta(0x03, b"Piano"))
+    t2.program(1, 0, 0)
+    for bar in range(HARMONY_BARS):
+        first, second = HARMONY_PROG[bar % 2]
+        for p in first:
+            t2.note(1, p, 70, bar * BAR, 2 * DIV)
+        for p in second:
+            t2.note(1, p, 70, bar * BAR + 2 * DIV, 2 * DIV)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 3, DIV)
+    return header + t0.render() + t1.render() + t2.render()
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -285,6 +333,13 @@ def main() -> None:
         f.write(MELISMA_LRC)
     print(f"wrote {mmid} ({len(mdata)} bytes)")
     print(f"wrote {mlrc}")
+
+    # 小节内换和弦 + 中途变速的素材
+    hmid2 = os.path.join(here, "harmony.mid")
+    with open(hmid2, "wb") as f:
+        hdata2 = build_harmony()
+        f.write(hdata2)
+    print(f"wrote {hmid2} ({len(hdata2)} bytes)")
 
 
 if __name__ == "__main__":
