@@ -40,7 +40,7 @@
 - [x] 多轨选择：`--track 0`
 - [x] `--version` 打印版本号
 - [x] **在线 Demo**：WASM 核心，浏览器内运行 C++ 代码
-- [x] 68 项单元测试 + 12 组端到端冒烟测试
+- [x] 71 项单元测试 + 12 组端到端冒烟测试 + WASM 产物一致性检查
 
 ## 在线 Demo 功能
 
@@ -123,13 +123,15 @@ Windows 产物在 `build\Release\midi2jianpu.exe`。详细说明、WASM 编译�
 
 > **时值量化**（默认开启）：真实录音转出的 MIDI，note-off 普遍早于下一个音头（DAW 的门限时间，常见 85%），八分音符的时长只有 0.425 拍。直接拿这个时长查时值表会判成附点十六分，整份谱子的节奏全错。量化做法是：音头吸附到 1/24 拍网格（同时容纳 32 分音符与三连音），从全曲 `dur/ioi` 的众数估出门限因子还原音值，再吸附到最近的合法时值。`--no-quantize` 可关闭。
 
+> **跨小节切分**：小节线只由拍子位置决定，不由音符音头决定。所以整段前奏会老老实实写成 4 行 `0 - - -`，而不是把十几个 `-` 挤进第 1 小节；长音跨小节时也在小节线处断开，后段用 `-` 续写（6 拍长音 → `1 - - -` | `- -`）。
+
 ## 技术选型
 
 - 核心：**C++17**，手写 SMF 二进制解析，无第三方库依赖，便于编译成 WASM
 - 调性识别：**Krumhansl-Schmuckler** 算法（音乐信息检索标准）
 - 和弦检测：基于音级出现频率匹配（9种和弦类型）
 - 输出：文本 + 自包含 HTML（内联 CSS）+ MusicXML 3.1
-- 测试：内置断言 68 项单元测试，另有 `tests/smoke.py` 12 组端到端冒烟（含真实录音特征素材 `humanized.mid`）
+- 测试：内置断言 71 项单元测试，另有 `tests/smoke.py` 12 组端到端冒烟（含真实录音特征素材 `humanized.mid`）
 
 ## 路线图
 
@@ -160,8 +162,9 @@ Issue / PR 都欢迎。尤其欢迎：
 提交前请跑一遍：
 
 ```bash
-cd build && ctest --output-on-failure          # 58 项单元测试
-python tests/smoke.py build/Release/midi2jianpu.exe   # 端到端冒烟
+cd build && ctest --output-on-failure                  # 71 项单元测试
+python tests/smoke.py build/Release/midi2jianpu.exe    # 端到端冒烟（55 项断言）
+node tests/wasm_smoke.mjs                              # WASM 产物与源码是否同步
 ```
 
 构建细节、记谱对照表、WASM 编译与常见编译问题见 [BUILD.md](./BUILD.md)。

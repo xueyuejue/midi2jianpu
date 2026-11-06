@@ -304,6 +304,53 @@ int main() {
               "二分音符标出延长线 \"5 -\", 实际输出: " + s.substr(s.find('\n', 40) + 1));
     }
 
+    std::cout << "\n测试文本简谱：跨小节的静音与长音必须在小节线处断开\n";
+    {
+        // 4 小节前奏（0 音符）+ 第 5 小节才进旋律。
+        // 曾经整段前奏挤进第 1 小节，输出一串十几个 '-' 且丢掉 3 条小节线。
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.tempoChanges.push_back({0, 72.0});
+        NoteEvent n;
+        n.pitch = 60;                 // 1
+        n.startTicks = 16 * 480;      // 第 5 小节第 1 拍
+        n.durationTicks = 480;
+        n.startSeconds = 8.0;
+        n.durationSeconds = 0.5;
+        n.track = 0;
+        n.channel = 0;
+        d.notes.push_back(n);
+        KeyEstimate c{0, true};
+        std::string s = formatJianpu(d, c);
+        size_t bars = 0;
+        for (size_t i = 0; i + 1 < s.size(); i++) {
+            if (s[i] == '|' && s[i + 1] == '\n') bars++;
+        }
+        check(bars == 5, "4 小节前奏 + 1 小节旋律 = 5 条小节线, 实际: " + std::to_string(bars));
+        check(s.find("0 - - -  |\n0 - - -  |\n0 - - -  |\n0 - - -  |") != std::string::npos,
+              "前奏写成每小节一个 \"0 - - -\"");
+    }
+    {
+        // 第 1 拍起、长 6 拍：应写成 "1 - - -" | "- -"
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.tempoChanges.push_back({0, 120.0});
+        NoteEvent n;
+        n.pitch = 60;
+        n.startTicks = 0;
+        n.durationTicks = 6 * 480;
+        n.track = 0;
+        n.channel = 0;
+        d.notes.push_back(n);
+        KeyEstimate c{0, true};
+        std::string s = formatJianpu(d, c);
+        check(s.find("1 - - -  |\n- -  |") != std::string::npos,
+              "6 拍长音在小节线断开，后段用延长线续写, 实际: " +
+                  s.substr(s.find('\n', 40) + 1));
+    }
+
     std::cout << "\n测试LRC歌词解析\n";
     {
         // 这里只测试结构, 实际解析需要文件
