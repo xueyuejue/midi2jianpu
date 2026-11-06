@@ -511,11 +511,18 @@ static std::string formatTrack(
 
     std::vector<NoteEvent> merged;
     merged.reserve(notes.size());
+    long barLenI = (long)std::llround(barLen);
+    if (barLenI <= 0) barLenI = (long)data.division * 4;
+    auto barIndexOf = [&](long tick) { return tick / barLenI; };
     for (size_t i = 0; i < notes.size(); i++) {
         if (i > 0 && !trip0[i] && !trip0[i - 1] && !merged.empty() &&
             notes[i].pitch == merged.back().pitch &&
             notes[i].startTicks == merged.back().startTicks + merged.back().durationTicks &&
-            isSingle(notes[i].startTicks) && isSingle(merged.back().startTicks)) {
+            isSingle(notes[i].startTicks) && isSingle(merged.back().startTicks) &&
+            // 不跨小节线合并：真实演奏里同音相邻几乎都是两次发音而不是延音，
+            // 合并后会把小节线上的音吞掉（第 15 小节开头的 6 变成 `-`）。
+            // 跨小节的长音本来就该显式切分。
+            barIndexOf(notes[i].startTicks) == barIndexOf(merged.back().startTicks)) {
             merged.back().durationTicks += notes[i].durationTicks;
             merged.back().durationSeconds += notes[i].durationSeconds;
             continue;
