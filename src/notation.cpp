@@ -659,10 +659,84 @@ static void emitNoteToken(std::ostringstream& os, const std::string& head,
     os << " ";
 }
 
+// ---- 调性 map（中途转调） ----
+
+std::vector<KeySigPoint> keyChangesOf(const MidiData& data) {
+    std::vector<KeySigPoint> out;
+    if (!data.applyKeyChanges || data.keySigChanges.size() < 2) return out;
+    // 与「当前生效调号」比较而不是与曲首比较：C→D→C 的最后一次是转回原调，
+    // 相对曲首没变，但谱面上必须再写一次 1=C。
+    int cur = data.keySigChanges.front().sig.sharpsFlats;
+    for (size_t i = 1; i < data.keySigChanges.size(); i++) {
+        const auto& p = data.keySigChanges[i];
+        if (p.sig.sharpsFlats == cur) continue;   // 重复声明，不是转调
+        out.push_back(p);
+        cur = p.sig.sharpsFlats;
+    }
+    return out;
+}
+
+KeyMap::KeyMap(const MidiData& data, const KeyEstimate& base) : base_(base) {
+    const auto pts = keyChangesOf(data);
+    if (pts.empty()) return;
+
+    const BarGrid grid = barGridOf(data);
+    const int sf0 = data.keySigChanges.front().sig.sharpsFlats;
+    const int doPc0 = notationDoPitchClass(base);
+    int curDo = doPc0;
+
+    for (const auto& p : pts) {
+        // 首调 do 只由调号的升降数决定，与大小调无关（a 小调与 C 大调同是
+        // 1=C）。五度循环里每多一个升号，do 上移 7 个半音。所以转调幅度是
+        // 一个「相对量」：用户 --key 手工指定曲首时，整条转调链跟着平移，
+        // 而不是跳回 MIDI 文件写的绝对调号。
+        int d = (7 * (p.sig.sharpsFlats - sf0)) % 12;
+        if (d < 0) d += 12;
+        const int doPc = (doPc0 + d) % 12;
+        if (doPc == curDo) continue;   // 等音/绕回原调，唱名没变
+
+        KeyEstimate k;
+        k.tonicPitchClass = base.isMajor ? doPc : (doPc - 3 + 12) % 12;
+        k.isMajor = base.isMajor;      // mode 继承曲首，见头文件说明
+        // 吸附到小节起点：简谱的转调标记落在小节线上，不允许一小节里
+        // 前半用旧唱名、后半用新唱名。
+        const long tick = grid.barStart(grid.barIndex(p.tick));
+        KeyChange ch{tick, k, d, "1=" + keyName(k)};
+        if (!changes_.empty() && changes_.back().tick >= tick) changes_.back() = ch;
+        else changes_.push_back(ch);
+        curDo = doPc;
+    }
+}
+
+KeyEstimate KeyMap::at(long tick) const {
+    KeyEstimate k = base_;
+    for (const auto& c : changes_) {
+        if (c.tick > tick) break;
+        k = c.key;
+    }
+    return k;
+}
+
+bool KeyMap::keyChangedAtBar(long bar, const BarGrid& grid) const {
+    if (bar <= 0 || changes_.empty()) return false;
+    return notationDoPitchClass(keyAtBar(bar, grid)) !=
+           notationDoPitchClass(keyAtBar(bar - 1, grid));
+}
+
+std::string KeyMap::summary(const BarGrid& grid) const {
+    std::ostringstream os;
+    os << keyDescription(base_);
+    for (const auto& c : changes_) {
+        os << " → " << c.label << "(第"
+           << grid.measureNumber(grid.barIndex(c.tick)) << "小节)";
+    }
+    return os.str();
+}
+
 // 输出单个轨的简谱，返回该轨输出文本
 static std::string formatTrack(
     const std::vector<NoteEvent>& notes,
-    const KeyEstimate& key, const MidiData& data,
+    const KeyMap& keys, const MidiData& data,
     const std::map<long, std::string>* chords = nullptr) {
 
     std::ostringstream os;
@@ -721,6 +795,11 @@ static std::string formatTrack(
         // 页眉的摘要说明「什么时候变」，这里说明「从哪一栏开始按新拍子数」。
         if (chords && grid.meterChangedAt(bar))
             os << "[" << grid.sigForBar(bar).toString() << "] ";
+        // 转调标记落在起作用的那一小节：页眉的摘要说「什么时候变」，
+        // 这里说「从哪一栏起按新调唱」。用「转」字与 [3/4] 拍号、
+        // [C] 和弦区分开，纯文本里也不会看混。
+        if (chords && keys.keyChangedAtBar(bar, grid))
+            os << "[转" << ("1=" + keyName(keys.keyAtBar(bar, grid))) << "] ";
         // 和弦标记只标在旋律轨上，避免伴奏轨重复标注；
         // 连续小节是同一个和弦时不重复写——歌本里和弦只在变化处标注
         if (chords) {
@@ -791,7 +870,7 @@ static std::string formatTrack(
         if (triplets[idx] && !inTriplet) { os << "3("; inTriplet = true; }
 
         // 三连音组内的音符不标时值后缀（"3(...)" 已表达节奏）
-        std::string head = pitchToJianpu(n.pitch, key);
+        std::string head = pitchToJianpu(n.pitch, keys.at(n.startTicks));
         long noteEnd = n.startTicks + n.durationTicks;
         long barEnd = grid.barEnd(barOf(n.startTicks));
         if (triplets[idx] || noteEnd <= barEnd) {
@@ -845,8 +924,10 @@ std::string tempoSummary(const MidiData& data) {
 }
 
 std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
+    const KeyMap keys(data, key);
+    const BarGrid grid = barGridOf(data);
     std::ostringstream os;
-    os << keyDescription(key)
+    os << keys.summary(grid)
        << "    " << meterSummary(data);
     std::string tempo = tempoSummary(data);
     if (!tempo.empty()) os << "    " << tempo;
@@ -906,7 +987,7 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
             os << " · 和弦: " << distinctChordCount(chordByBar) << " 个";
         }
         os << "\n";
-        os << formatTrack(ns, key, data, (t == mainTrack) ? &chordByBar : nullptr);
+        os << formatTrack(ns, keys, data, (t == mainTrack) ? &chordByBar : nullptr);
     }
     return os.str();
 }
@@ -1203,7 +1284,9 @@ long chordWindowTicks(const MidiData& data) {
 }
 
 std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key) {
-    (void)key;   // 目前不按调性做等音转换，保留参数以便后续按调写成 bB / #F
+    // 和弦根名用绝对音名，但等音写法要跟「当前小节的调」走：转进降号调后
+    // 该写 Bb 而不是 A#。无转调时 KeyMap 只有一个点，与旧行为完全一致。
+    const KeyMap keys(data, key);
     std::vector<ChordMark> chords;
     if (data.division <= 0 || data.notes.empty()) return chords;
 
@@ -1246,13 +1329,18 @@ std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key
         {"sus2", {0, 2, 7}},      // 挂二和弦
     };
 
-    static const char* NOTE_NAMES[12] = {
+    static const char* NOTE_NAMES_SHARP[12] = {
         "C", "C#", "D", "D#", "E", "F",
         "F#", "G", "G#", "A", "A#", "B"
     };
+    static const char* NOTE_NAMES_FLAT[12] = {
+        "C", "Db", "D", "Eb", "E", "F",
+        "Gb", "G", "Ab", "A", "Bb", "B"
+    };
 
     // 单个窗口里最可能的和弦；证据不足时返回空串
-    auto bestChordOf = [&](const std::map<int, int>& pitchCount) -> std::string {
+    auto bestChordOf = [&](const std::map<int, int>& pitchCount,
+                           const char* const* names) -> std::string {
         if (pitchCount.size() < 2) return std::string();   // 只有一个音级不构成和弦
 
         std::string best;
@@ -1269,7 +1357,7 @@ std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key
                 }
                 if (allPresent && score > bestScore) {
                     bestScore = score;
-                    best = NOTE_NAMES[root] + std::string(ct.suffix);
+                    best = names[root] + std::string(ct.suffix);
                 }
             }
         }
@@ -1279,7 +1367,9 @@ std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key
     // 相邻同名合并。空窗口不改 prevName，所以「C · 空 · C」不会标两次。
     std::string prevName;
     for (const auto& kv : winPitch) {
-        std::string name = bestChordOf(kv.second);
+        const char* const* names = prefersFlats(keys.at(kv.first))
+                                 ? NOTE_NAMES_FLAT : NOTE_NAMES_SHARP;
+        std::string name = bestChordOf(kv.second, names);
         if (name.empty() || name == prevName) continue;
         chords.push_back({kv.first, name});
         prevName = name;

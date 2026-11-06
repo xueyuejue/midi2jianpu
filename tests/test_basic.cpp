@@ -2,7 +2,7 @@
 // 覆盖：音高->简谱、八度基准、升降号、时值后缀、三连音、调性识别、
 //       和弦检测、同音合并、MusicXML 相关的基础数据结构、
 //       鼓轨过滤、旋律轨判定、变速（tempo map）换算、内置歌词规整、
-//       拍号 map 与逐小节网格。
+//       拍号 map 与逐小节网格、调号 map（中途转调 / KeyMap）。
 #include "midi2jianpu/notation.hpp"
 
 #include <algorithm>
@@ -931,6 +931,144 @@ int main() {
         check(meterChangesOf(plain).empty() && !gp.hasMeterChange() &&
               gp.barStart(3) == 5760 && gp.barSpan(2) == 1920 &&
               meterSummary(plain) == "4/4", "单拍号文件行为与旧版一致");
+    }
+
+    std::cout << "\n测试中途转调（调号 map / KeyMap）\n";
+    {
+        // 1=C ×4 小节 -> 1=D ×4 -> 1=F ×4，伴奏轨还重复声明了 0x59。
+        // 旧实现拿最后一次 0x59 覆盖 data.keySig，整份谱子都会按 F 大调
+        // 换算唱名。旋律每小节第一个音故意都放 C4=60，一眼能看出三段
+        // 应该记作 1 / #6, / 5,。
+        SmfTrack cond, vocal, piano;
+        cond.at(0,     ev({0xFF, 0x59, 0x02, 0x00, 0x00}));       // sf=0  C
+        cond.at(7680,  ev({0xFF, 0x59, 0x02, 0x02, 0x00}));       // sf=+2 D
+        cond.at(15360, ev({0xFF, 0x59, 0x02, 0xFF, 0x00}));       // sf=-1 F
+        cond.at(0,     ev({0xFF, 0x58, 0x04, 4, 2, 24, 8}));
+        piano.at(0,    ev({0xFF, 0x59, 0x02, 0x00, 0x00}));       // 多轨重复声明
+        piano.at(7680, ev({0xFF, 0x59, 0x02, 0x02, 0x00}));
+        auto addNote = [&](long tick, int pitch) {
+            vocal.at(tick, ev({0x90, pitch, 90}));
+            vocal.at(tick + 480, ev({0x80, pitch, 0}));
+        };
+        const int scales[3][4] = {{60, 62, 64, 65}, {60, 62, 64, 66}, {60, 65, 67, 69}};
+        for (int seg = 0; seg < 3; seg++)
+            for (int bar = 0; bar < 4; bar++)
+                for (int b = 0; b < 4; b++)
+                    addNote(seg * 7680L + bar * 1920L + b * 480L, scales[seg][b]);
+
+        auto bytes = buildSmf(3, 480, {cond, vocal, piano});
+        MidiData d;
+        check(loadMidiFromMemory(bytes.data(), bytes.size(), d), "带转调的 SMF 能解析");
+        check(d.keySigChanges.size() == 3,
+              "三次 0x59 全记进 map，多轨同 tick 已去重，实际 " +
+              std::to_string(d.keySigChanges.size()));
+        check(d.keySig.valid && d.keySig.sharpsFlats == 0 && !d.keySig.isMinor,
+              "data.keySig 固定是曲首调号，不是最后一个 F 大调");
+        check(keyChangesOf(d).size() == 2, "只留实质性的转调点");
+
+        const KeyEstimate cMajor{0, true};
+        const BarGrid g = barGridOf(d);
+        const KeyMap keys(d, cMajor);
+        check(keys.hasChange() && keys.changes().size() == 2, "KeyMap 有两处变化");
+        check(keys.changes()[0].tick == 7680 && keys.changes()[1].tick == 15360,
+              "转调点落在第 5 / 第 9 小节线");
+        check(keys.at(0).tonicPitchClass == 0 && keys.at(7679).tonicPitchClass == 0,
+              "变化点之前仍是 C 大调");
+        check(keys.at(7680).tonicPitchClass == 2 && keys.at(15359).tonicPitchClass == 2,
+              "第 5 小节起是 D 大调直到下一次转调");
+        check(keys.at(15360).tonicPitchClass == 5 && keys.at(99999).tonicPitchClass == 5,
+              "第 9 小节起是 F 大调且延伸到曲终");
+        check(pitchToJianpu(60, keys.at(0)) == "1", "C 段 C4 -> 1");
+        check(pitchToJianpu(60, keys.at(7680)) == "#6,",
+              "D 段同一个 C4 -> #6,（首调八度基准随 1 移动）");
+        check(pitchToJianpu(60, keys.at(15360)) == "5,", "F 段同一个 C4 -> 5,");
+        check(keys.keyChangedAtBar(4, g) && keys.keyChangedAtBar(8, g) &&
+              !keys.keyChangedAtBar(0, g) && !keys.keyChangedAtBar(5, g),
+              "只有转调小节才标新调号");
+        check(keys.keyAtBar(4, g).tonicPitchClass == 2 &&
+              keys.keyAtBar(8, g).tonicPitchClass == 5, "按小节取到生效调性");
+        check(keys.summary(g) == "1=C 大调 → 1=D(第5小节) → 1=F(第9小节)",
+              "页眉摘要列出每次转调及小节号: " + keys.summary(g));
+
+        const std::string jp = formatJianpu(d, cMajor);
+        check(jp.find("1=C 大调 → 1=D(第5小节) → 1=F(第9小节)") != std::string::npos,
+              "文本谱页眉写出转调链");
+        check(jp.find("[转1=D]") != std::string::npos &&
+              jp.find("[转1=F]") != std::string::npos, "文本谱在变化小节标注转调");
+        check(jp.find("#6,") != std::string::npos && jp.find("5,") != std::string::npos,
+              "文本谱三段唱名确实不同");
+
+        // --key 手工覆盖：转调是相对量，整条链跟着平移，不能跳回 MIDI 的绝对调号
+        const KeyMap gKeys(d, KeyEstimate{7, true});
+        check(gKeys.summary(g) == "1=G 大调 → 1=A(第5小节) → 1=C(第9小节)",
+              "--key G 时转调链整体平移: " + gKeys.summary(g));
+        check(gKeys.at(7680).tonicPitchClass == 9 && gKeys.at(15360).tonicPitchClass == 0,
+              "手工覆盖后的各段绝对调性正确");
+        const KeyMap emKeys(d, KeyEstimate{4, false});
+        check(emKeys.summary(g).find("1=G (E小调, 主音=6) → 1=A(第5小节) → 1=C(第9小节)")
+              != std::string::npos, "小调按首调 1=关系大调 参与转调");
+        check(pitchToJianpu(76, emKeys.at(0)) == "6", "e 小调主音 E5 记作 6");
+        check(pitchToJianpu(64, emKeys.at(0)) == "6,",
+              "e 小调低八度主音 E4 记作 6,（1=G4 决定八度基准）");
+
+        // --no-key-changes：事件表还在（曲首调号要用），只是不再应用
+        MidiData off = d;
+        off.applyKeyChanges = false;
+        check(keyChangesOf(off).empty() && !KeyMap(off, cMajor).hasChange(),
+              "--no-key-changes 关掉整条调号 map");
+        check(KeyMap(off, cMajor).at(15360).tonicPitchClass == 0, "关闭后全曲按曲首调");
+        check(formatJianpu(off, cMajor).find("转1=D") == std::string::npos,
+              "关闭后谱面不再标转调");
+
+        // 只有一个调号 / 多处重复声明同一个调号：都不算转调
+        MidiData dup = d;
+        dup.keySigChanges = {{0, KeySignature{0, false, true}},
+                             {7680, KeySignature{0, false, true}},
+                             {15360, KeySignature{0, false, true}}};
+        check(keyChangesOf(dup).empty() && !KeyMap(dup, cMajor).hasChange(),
+              "不同 tick 重复声明同一调号不算转调");
+
+        // 转回原调：相对曲首没变，但谱面必须再写一次 1=C
+        MidiData back = d;
+        back.keySigChanges = {{0, KeySignature{0, false, true}},
+                              {7680, KeySignature{2, false, true}},
+                              {15360, KeySignature{0, false, true}}};
+        check(keyChangesOf(back).size() == 2, "C→D→C 的「转回原调」不能丢");
+        const KeyMap bk(back, cMajor);
+        check(bk.changes().size() == 2 && bk.at(15360).tonicPitchClass == 0,
+              "最后一回到 C 大调");
+        check(bk.summary(g).find("→ 1=C(第9小节)") != std::string::npos,
+              "转回原调也要标出来: " + bk.summary(g));
+
+        // 0x59 落在小节中间：吸附到该小节起点，不允许一小节两种唱名体系
+        MidiData midBar = d;
+        midBar.keySigChanges = {{0, KeySignature{0, false, true}},
+                                {8000, KeySignature{2, false, true}}};
+        const KeyMap mk(midBar, cMajor);
+        check(mk.changes().size() == 1 && mk.changes()[0].tick == 7680,
+              "小节中间的转调点吸附到小节线");
+
+        // 等音：调号写成 7 个升号时，首调 do 仍按半音平移（C#/Db 同音级）
+        MidiData enh = d;
+        enh.keySigChanges = {{0, KeySignature{0, false, true}},
+                             {7680, KeySignature{7, false, true}}};
+        check(KeyMap(enh, cMajor).at(7680).tonicPitchClass == 1,
+              "极端调号按五度循环折算，不越界");
+
+        // 和弦根名的等音写法跟着当前调走：F 段（降号调）写 Bb 而不是 A#
+        MidiData harm = d;
+        for (int p : {46, 50, 53}) {
+            NoteEvent n;
+            n.track = 2; n.channel = 1; n.pitch = p;
+            n.startTicks = 15360; n.durationTicks = 1920;
+            harm.notes.push_back(n);
+        }
+        bool hasBb = false, hasSharp = false;
+        for (const auto& c : detectChords(harm, cMajor)) {
+            if (c.startTick == 15360 && c.name == "Bb") hasBb = true;
+            if (c.name.find("#") != std::string::npos) hasSharp = true;
+        }
+        check(hasBb && !hasSharp, "降号调里的 Bb 和弦不写成 A#");
     }
 
     std::cout << "\n------------------------------------------------\n";

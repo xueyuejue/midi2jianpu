@@ -104,6 +104,24 @@ static void normalizeMeterMap(MidiData& out) {
     if (!out.timeSig.valid) out.timeSig = TimeSignature{4, 2, true};
 }
 
+// 调号事件收齐后统一整理。和拍号一样，format 1 的 conductor 轨与乐器轨
+// 常在 tick 0 各自声明一遍同样的 0x59；同 tick 去重后，keySig 固定取曲首。
+// 注意：不同 tick 上「与当前生效调号相同」的重复声明不算转调，由
+// notation.cpp 的 keyChangesOf() 过滤，这里保留原始序列供调试与测试。
+static void normalizeKeyMap(MidiData& out) {
+    auto& v = out.keySigChanges;
+    std::stable_sort(v.begin(), v.end(),
+                     [](const KeySigPoint& a, const KeySigPoint& b) { return a.tick < b.tick; });
+    std::vector<KeySigPoint> uniq;
+    uniq.reserve(v.size());
+    for (const auto& p : v) {
+        if (!uniq.empty() && uniq.back().tick == p.tick) uniq.back() = p;  // 同 tick 后写覆盖
+        else uniq.push_back(p);
+    }
+    v.swap(uniq);
+    if (!v.empty()) out.keySig = v.front().sig;
+}
+
 // 核心解析：从内存buffer解析MIDI
 static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
     if (size < 14) return false;
@@ -200,9 +218,14 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
                         if (!out.timeSig.valid) out.timeSig = ts;
                     }
                 } else if (metaType == 0x59u && metaLen >= 2) {  // key signature
-                    out.keySig.sharpsFlats = (int8_t)d[pos];
-                    out.keySig.isMinor = d[pos+1] != 0;
-                    out.keySig.valid = true;
+                    KeySignature ks;
+                    ks.sharpsFlats = (int8_t)d[pos];
+                    ks.isMinor = d[pos+1] != 0;
+                    ks.valid = true;
+                    // 记全序列而不是覆盖：一首歌中途可以转调（0x59 出现在
+                    // 副歌/桥段的小节线上），曲首之外的点由 KeyMap 消费。
+                    if (ks.sharpsFlats >= -7 && ks.sharpsFlats <= 7)
+                        out.keySigChanges.push_back({absTick, ks});
                 } else if (metaType == 0x03u) {  // track name
                     std::string name((const char*)&d[pos], metaLen);
                     out.trackNames[trackIdx] = name;
@@ -267,6 +290,7 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
                   return a.pitch < b.pitch;
               });
     normalizeMeterMap(out);
+    normalizeKeyMap(out);
     recomputeSeconds(out);
     return true;
 }

@@ -2,9 +2,10 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 8 份素材：sample / humanized / drums /
-melisma / harmony / pickup / karaoke / meter，最后一份是把变拍号、变速、
-鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」。
+随时重建素材、复现问题。共生成 9 份素材：sample / humanized / drums /
+melisma / harmony / pickup / karaoke / meter / modulation。meter 是把变拍号、
+变速、鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」，modulation 则是
+中途转调（1=C → 1=D → 1=F）与变速、鼓轨、内置歌词、和弦叠在一起。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -481,6 +482,88 @@ def build_meter() -> bytes:
     return header + t0.render() + t1.render() + t2.render() + t3.render()
 
 
+def build_modulation() -> bytes:
+    """中途转调（1=C → 1=D → 1=F）的混合压力素材，12 小节 4/4。
+
+    时间轴（division=480，每小节 1920）：
+        第 1~4 小节  0     ~ 7680   C 大调 (0x59 sf=0)
+        第 5~8 小节  7680  ~ 15360  D 大调 (0x59 sf=+2)，同时降速到 90 BPM
+        第 9~12 小节 15360 ~ 23040  F 大调 (0x59 sf=-1)
+
+    验证要点：
+      * 同一个绝对音高 C4=60 在三段里应分别记作 1 / #6 / 5 —— 三段旋律
+        每小节第一个音都故意放 C4，唱名不随调变就是没生效；
+      * 伴奏在 F 段放 Bb 三和弦，降号调里应写 Bb 而不是 A#；
+      * 转调点与变速点同落在第 5 小节，两种 attributes 要合进一个块；
+      * 伴奏轨重复声明 0x59 不算转调；鼓轨、内置歌词、melisma 全部叠加，
+        确认转调不会把歌词/和弦/时值带偏。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))     # 120 BPM
+    t0.add(7680, meta(0x51, bytes([0x0A, 0x2C, 0x2A])))  # 666666us -> 90 BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))                  # C 大调
+    t0.add(7680, meta(0x59, bytes([2, 0])))                # D 大调
+    t0.add(15360, meta(0x59, bytes([(-1) & 0xFF, 0])))     # F 大调
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    t1.program(0, 54, 0)
+    # 每段四个小节，每小节 4 个四分音符；每小节第一个音都是 C4=60。
+    scales = [
+        (60, 62, 64, 65),   # C 段：C D E F
+        (60, 62, 64, 66),   # D 段：C D E F#
+        (60, 65, 67, 69),   # F 段：C F G A
+    ]
+    words = "春风又绿江南岸明月何时照我还归去来兮风雪夜归人田园将芜胡不归既自以心为形役奚惆怅而独悲悟已往之不谏知来者之可追实迷途其未远觉今是而昨非"
+    wi = 0
+    onsets = []
+    for seg in range(3):
+        for bar in range(4):
+            base = seg * 4 * 1920 + bar * 1920
+            for beat in range(4):
+                tick = base + beat * 480
+                t1.note(0, scales[seg][beat], 90, tick, 480)
+                onsets.append(tick)
+    # 每个音头一个 0x05 事件；两处用 "-" 延续，应恰好产生 2 组连音线。
+    for tick in onsets:
+        if tick in (480, 8160):
+            t1.add(tick, meta(0x05, b"-"))
+        else:
+            t1.add(tick, meta(0x05, words[wi % len(words)].encode("utf-8")))
+            wi += 1
+
+    t2 = Track()
+    t2.add(0, meta(0x03, b"Piano"))
+    t2.program(1, 0, 0)
+    # 多轨重复声明调号：归一化时同 tick 去重，不能算成额外转调
+    t2.add(0, meta(0x59, bytes([0, 0])))
+    t2.add(7680, meta(0x59, bytes([2, 0])))
+    chords = [
+        (48, 52, 55),   # C
+        (53, 57, 60),   # F
+        (50, 54, 57),   # D
+        (55, 59, 62),   # G
+        (53, 57, 60),   # F
+        (46, 50, 53),   # Bb —— 降号调里应写作 Bb 而非 A#
+    ]
+    for seg in range(3):
+        for bar in range(4):
+            start = seg * 4 * 1920 + bar * 1920
+            chord = chords[seg * 2 + (bar % 2)]
+            for p in chord:
+                t2.note(1, p, 70, start, 1920)
+
+    t3 = Track()
+    t3.add(0, meta(0x03, b"Drums"))
+    for bar in range(12):
+        t3.note(9, 36, 100, bar * 1920, 120)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 4, DIV)
+    return header + t0.render() + t1.render() + t2.render() + t3.render()
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -545,6 +628,13 @@ def main() -> None:
         metdata = build_meter()
         f.write(metdata)
     print(f"wrote {metmid} ({len(metdata)} bytes)")
+
+    # 中途转调 1=C → 1=D → 1=F 的混合压力素材
+    modmid = os.path.join(here, "modulation.mid")
+    with open(modmid, "wb") as f:
+        moddata = build_modulation()
+        f.write(moddata)
+    print(f"wrote {modmid} ({len(moddata)} bytes)")
 
 
 if __name__ == "__main__":

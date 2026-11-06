@@ -590,6 +590,96 @@ def main():
         check(per_part and all(v == 1 for v in per_part),
               "单拍号 MusicXML 每个声部只写一次 <time>", str(per_part))
 
+    print("\n[19] 中途转调 1=C → 1=D → 1=F（调号 map 全链路）")
+    mod = os.path.join(FIXTURES, "modulation.mid")
+    if not os.path.exists(mod):
+        check(False, "素材 modulation.mid 存在（先跑 make_fixture.py）")
+    else:
+        mh = os.path.join(tmp, "modulation.html")
+        mx = os.path.join(tmp, "modulation.xml")
+        rc, out, err = run(exe, mod, "--html", mh, "--musicxml", mx)
+        check(rc == 0, "转调素材能正常转换", err)
+        check("1=C 大调 → 1=D(第5小节) → 1=F(第9小节)" in out,
+              "文本谱页眉写出完整转调链")
+        check("转调 2 处" in out, "控制台提示唱名按各段调号换算")
+        check("[转1=D]" in out and "[转1=F]" in out,
+              "文本谱在第 5 / 第 9 小节标注转调")
+        # 三段旋律每小节第一个音都是 C4，唱名必须各不相同
+        check("1 2 3 4" in out and "#6, 1 2 3" in out and "5, 1 2 3" in out,
+              "同一个 C4 在三段分别记作 1 / #6, / 5,")
+        check("[Bb]" in out and "[A#]" not in out,
+              "降号调里 Bb 和弦不写成 A#")
+
+        h = open(mh, encoding="utf-8").read()
+        check("1=C 大调 → 1=D(第5小节) → 1=F(第9小节)" in h,
+              "HTML 页眉写出完整转调链")
+        check(h.count("class='keychg'>") == 4,
+              "两条轨各 2 个转调标签", str(h.count("class='keychg'>")))
+        check("class='keychg'>转 1=D" in h and "class='keychg'>转 1=F" in h,
+              "转调标签内容正确")
+        check(".keychg{" in h, "转调标签有独立样式")
+        check(h.count("<span class='measure'>") == 24,
+              "两条轨各 12 小节，没有跳号", str(h.count("<span class='measure'>")))
+        check(h.count("歌词：MIDI 内置（46 音节）") == 1 and h.count("class='sgrp'") == 2,
+              "转调下内置歌词与一字多音弧线不受影响")
+
+        root = ET.parse(mx).getroot()
+        for idx, p in enumerate(root.findall("part")):
+            fifths = [k.findtext("fifths") for k in p.iter("key")]
+            modes = [k.findtext("mode") for k in p.iter("key")]
+            check(fifths == ["0", "2", "-1"],
+                  f"声部{idx + 1} 依次写出 C / D / F 三个调号", str(fifths))
+            check(modes == ["major", "major", "major"],
+                  f"声部{idx + 1} 的 mode 跟着调号走", str(modes))
+            measures = p.findall("measure")
+            check(len(measures) == 12, f"声部{idx + 1} 仍是 12 小节",
+                  str(len(measures)))
+            durs = [sum(int(n.find("duration").text) for n in m.findall("note")
+                        if n.find("chord") is None) for m in measures]
+            check(all(v == 1920 for v in durs),
+                  f"声部{idx + 1} 转调不改变小节时长", str(durs))
+            # attributes 子元素顺序固定：key 必须排在 time/divisions 之后、
+            # clef 之前；本素材没有变拍号，变化小节只应出现一个 <key>
+            ks = [m.get("number") for m in measures if m.find("attributes/key") is not None]
+            check(ks == ["1", "5", "9"],
+                  f"声部{idx + 1} 只在第 1/5/9 小节写 <key>", str(ks))
+            ts = [m.get("number") for m in measures if m.find("attributes/time") is not None]
+            check(ts == ["1"], f"声部{idx + 1} 没变拍号就只写一次 <time>", str(ts))
+        check(len(root.findall("part")) == 2, "鼓轨仍被丢弃，只剩两个声部")
+        sl = [x.get("type") for x in root.iter("slur")]
+        check(sl.count("start") == 2 and sl.count("stop") == 2,
+              "2 对 slur 起止配对", str(sl))
+
+        # --key 手工覆盖：转调是相对量，整条链跟着平移
+        rc2, out2, _ = run(exe, mod, "--key", "G")
+        check(rc2 == 0 and "1=G 大调 → 1=A(第5小节) → 1=C(第9小节)" in out2,
+              "--key G 时转调链整体平移，没有跳回 MIDI 绝对调号")
+        rc3, out3, _ = run(exe, mod, "--key", "Em")
+        check("1=G (E小调, 主音=6) → 1=A(第5小节) → 1=C(第9小节)" in out3,
+              "小调按首调 1=关系大调 参与转调")
+
+        # --no-key-changes：全曲一个调，XML 也只写一次 <key>
+        oh = os.path.join(tmp, "modulation_off.html")
+        ox = os.path.join(tmp, "modulation_off.xml")
+        run(exe, mod, "--no-key-changes", "--html", oh, "--musicxml", ox)
+        rc4, out4, _ = run(exe, mod, "--no-key-changes")
+        check("1=C 大调    4/4" in out4 and "→ 1=D" not in out4,
+              "--no-key-changes 后页眉只有曲首调性")
+        check("转调" not in out4, "--no-key-changes 后不再提示转调")
+        check("class='keychg'>" not in open(oh, encoding="utf-8").read(),
+              "关闭后 HTML 没有转调标签")
+        oroot = ET.parse(ox).getroot()
+        off_fifths = [k.findtext("fifths") for k in oroot.iter("key")]
+        check(off_fifths == ["0", "0"],
+              "关闭后每个声部只写一次曲首调号", str(off_fifths))
+
+        # 只有一个 0x59 的普通素材：行为与旧版完全一致
+        sh = os.path.join(tmp, "sample_key_reg.html")
+        run(exe, os.path.join(FIXTURES, "sample.mid"), "--html", sh)
+        check("class='keychg'>" not in open(sh, encoding="utf-8").read() and
+              "→ 1=" not in open(sh, encoding="utf-8").read(),
+              "单调号素材不出现任何转调标记")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

@@ -126,6 +126,7 @@ const REQUIRED = [
   '_midi2jianpu_get_notes_json',
   '_midi2jianpu_result_len',
   '_midi2jianpu_copy_result',
+  '_midi2jianpu_key_change_count', // 网页的转调提示
   '_malloc',
   '_free',
 ];
@@ -368,7 +369,56 @@ if (existsSync(meterPath)) {
   check(false, '素材 meter.mid 存在（先跑 make_fixture.py）');
 }
 
-// ---- 14. 坏数据不能把整页搞崩 ----
+// ---- 14. 中途转调：WASM 产物必须带上调号 map 与转调点查询 ----
+const modulationPath = path.join(FIXTURES, 'modulation.mid');
+if (existsSync(modulationPath)) {
+  const modBytes = new Uint8Array(readFileSync(modulationPath));
+  const qc = mod._malloc(modBytes.length);
+  mod.HEAPU8.set(modBytes, qc);
+  const kc = mod._midi2jianpu_key_change_count
+    ? mod._midi2jianpu_key_change_count(qc, modBytes.length) : -1;
+  mod._free(qc);
+  check(kc === 2, '转调点查询接口返回 2（网页据此提示按段换算）', String(kc));
+
+  const kc2 = makeCaller(mod);
+  kc2.setMidi(modBytes);
+  kc2.setTitle('转调测试');
+  const kh = kc2.call('midi2jianpu_html', -1, 1);
+  check(kh && kh.includes('1=C 大调 → 1=D(第5小节) → 1=F(第9小节)'),
+    'WASM 版页眉写出完整转调链（旧产物只会写最后一个调号）');
+  check(kh && (kh.match(/class='keychg'>/g) || []).length === 4
+    && kh.includes("class='keychg'>转 1=D"),
+    'WASM 版谱面在两条轨各标出 2 处转调');
+  check(kh && kh.includes('歌词：MIDI 内置（46 音节）')
+    && (kh.match(/class='sgrp'/g) || []).length === 2,
+    'WASM 版转调下内置歌词与连音线仍正确');
+
+  const kt = kc2.call('midi2jianpu_parse', -1, 1);
+  check(kt && kt.includes('1 2 3 4') && kt.includes('#6, 1 2 3')
+    && kt.includes('5, 1 2 3') && kt.includes('[转1=D]'),
+    'WASM 版同一个 C4 在三段唱名不同（旧产物全曲按 F 大调算）');
+
+  const kx = kc2.call('midi2jianpu_musicxml', -1, 1);
+  const kf = kx ? [...kx.matchAll(/<fifths>(-?\d+)<\/fifths>/g)].map(m => m[1]) : [];
+  check(kf.length === 6 && kf.filter(v => v === '0').length === 2
+    && kf.filter(v => v === '2').length === 2 && kf.filter(v => v === '-1').length === 2,
+    'WASM 版 MusicXML 每个声部写出 C / D / F 三个调号', String(kf));
+
+  // 网页下拉框选调时，转调链要整体平移，不能跳回 MIDI 的绝对调号
+  const kg = kc2.call('midi2jianpu_html', 7, 1);
+  check(kg && kg.includes('1=G 大调 → 1=A(第5小节) → 1=C(第9小节)'),
+    'WASM 版手动选 G 调后转调链整体平移');
+
+  const sq = mod._malloc(sampleMidi.length);
+  mod.HEAPU8.set(sampleMidi, sq);
+  const zero = mod._midi2jianpu_key_change_count(sq, sampleMidi.length);
+  mod._free(sq);
+  check(zero === 0, '单调号素材的转调点查询返回 0', String(zero));
+} else {
+  check(false, '素材 modulation.mid 存在（先跑 make_fixture.py）');
+}
+
+// ---- 15. 坏数据不能把整页搞崩 ----
 c.setMidi(new Uint8Array([1, 2, 3, 4, 5]));
 const bad = c.call('midi2jianpu_parse', -1, 1);
 check(typeof bad === 'string' && bad.length > 0, '非法 MIDI 返回错误文本而非崩溃', bad);

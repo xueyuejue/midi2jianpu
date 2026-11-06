@@ -67,6 +67,16 @@ struct TimeSigPoint {
     TimeSignature sig;
 };
 
+// 调号变化点（从 0x59 key_signature 解析）
+//
+// 旧实现每读到一个 0x59 就覆盖 out.keySig，于是「前 1=C、副歌转 1=D」的
+// 曲子整份谱子都按最后一个调号换算唱名：前半首的数字全错。调号和拍号、
+// 速度一样是一张按 tick 排序的 map；keySig 字段只表示「曲首调号」。
+struct KeySigPoint {
+    long tick;
+    KeySignature sig;
+};
+
 // 弯音轮事件（从 0xE0 解析，14位值，中心8192）
 struct PitchBendPoint {
     long tick;
@@ -107,6 +117,7 @@ struct MidiData {
     std::vector<DynPoint> dynamics;
     std::vector<TempoPoint> tempoChanges;
     std::vector<TimeSigPoint> timeSigChanges;  // 0x58 全序列；timeSig = 曲首那一个
+    std::vector<KeySigPoint> keySigChanges;    // 0x59 全序列；keySig = 曲首那一个
     std::vector<PitchBendPoint> pitchBends;
     double bendRange = 2.0;  // 弯音范围(半音), 默认±2, 可被RPN 0x00改变
     std::map<int, std::string> trackNames;  // 轨道名称(0x03 meta)
@@ -127,6 +138,10 @@ struct MidiData {
     // 音就从 tick 0 开始，第一小节天然不满。若照 `tick / barLen` 划小节线，
     // 整条网格会整体左移，谱面上每一小节的重音都落到第 4 拍，小节线也全部错位。
     long pickupTicks = -1;
+
+    // 是否应用中途转调（0x59 map）。CLI 的 --no-key-changes 把它关掉，
+    // 但事件表本身保留——调号还要用来判曲首调性，清空数据会把两件事搅在一起。
+    bool applyKeyChanges = true;
 };
 
 // ---- 小节网格 ----
