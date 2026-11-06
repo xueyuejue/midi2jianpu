@@ -282,6 +282,52 @@ struct BarGrid {
 
 BarGrid barGridOf(const MidiData& data);
 
+// ---- 调性 map（中途转调） ----
+// 简谱是首调记谱：调一变，同一段旋律的唱名就得整体重算。旧实现全曲只有
+// 一个 KeyEstimate，解析出来的 0x59 又只留最后一个，于是「前 1=C、副歌
+// 转 1=D」的文件前半首数字全错。
+//
+// 和 BarGrid 一样的思路：把「当前调性」抽象成按 tick 查表的对象，三个输出
+// 层不再各自持有常量。转调点一律吸附到所在小节的起点，避免一个小节里
+// 前半用旧调、后半用新调（简谱歌本的转调标记都落在小节线上）。
+struct KeyChange {
+    long tick = 0;        // 生效 tick（已吸附到小节起点）
+    KeyEstimate key;      // 该点起生效的调性（按 base 平移后的绝对调性）
+    int delta = 0;        // 相对曲首首调 do 的半音偏移
+    std::string label;    // "1=D"
+};
+
+class KeyMap {
+public:
+    KeyMap() = default;
+    // data 提供 0x59 序列；base 是「曲首调性」，可以来自 estimateKey 的
+    // 自动/MIDI 调号识别，也可以是用户 --key 手工指定。
+    KeyMap(const MidiData& data, const KeyEstimate& base);
+
+    KeyEstimate at(long tick) const;
+    KeyEstimate keyAtBar(long bar, const BarGrid& grid) const {
+        return at(grid.barStart(bar));
+    }
+    // 这一小节是否刚转调（页眉外的谱面标记、MusicXML 重写 <key> 都用它）
+    bool keyChangedAtBar(long bar, const BarGrid& grid) const;
+
+    bool hasChange() const { return !changes_.empty(); }
+    const std::vector<KeyChange>& changes() const { return changes_; }
+    KeyEstimate base() const { return base_; }
+
+    // 页眉摘要，如 "1=C 大调 → 1=D(第5小节) → 1=F(第9小节)"；
+    // 没有转调时就是 keyDescription(base)。
+    std::string summary(const BarGrid& grid) const;
+
+private:
+    KeyEstimate base_;
+    std::vector<KeyChange> changes_;
+};
+
+// 实质性的转调点（按 tick 排序，已去重复声明、去掉与当前生效调号相同的）。
+// 空 = 全曲同一个调。
+std::vector<KeySigPoint> keyChangesOf(const MidiData& data);
+
 // 实质性的拍号变化（已按 tick 排序、去掉多轨重复声明、去掉曲首那一个）。
 // 空 = 全曲同一个拍号。
 std::vector<TimeSigPoint> meterChangesOf(const MidiData& data);

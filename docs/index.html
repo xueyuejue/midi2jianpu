@@ -86,7 +86,7 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     <label class="hint"><input type="checkbox" id="useMidiLyrics" checked> 使用 MIDI 自带歌词</label>
     <span class="hint" id="midiLyricHint"></span>
   </div>
-  <div class="hint">歌词会按时间戳对齐到音符，只显示在旋律轨上；一字多音会画连音线，下载 MusicXML 也带词。文件自带歌词时无需再找 LRC，粘贴的 LRC 优先级更高。中途变拍号、弱起、变速会自动按段划分小节线。</div>
+  <div class="hint">歌词会按时间戳对齐到音符，只显示在旋律轨上；一字多音会画连音线，下载 MusicXML 也带词。文件自带歌词时无需再找 LRC，粘贴的 LRC 优先级更高。中途变拍号、弱起、变速、转调会自动识别：前三者按段划分小节线，转调则按段重算唱名。</div>
   <input type="file" id="lyricsFile" accept=".lrc" style="display:none">
 </details>
 
@@ -142,17 +142,26 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
   }
 
   // ---- 文件读取 ----
-  // 读一次 MIDI，问 wasm 它自带多少可唱音节；这样用户看到「此文件自带 N 个
-  // 歌词音节」就知道不用再去翻 LRC 了。
-  function updateMidiLyricHint() {
+  // 读一次 MIDI，问 wasm 它自带多少可唱音节、有几处中途转调。前者让用户
+  // 知道不用再翻 LRC，后者说明谱面里的「转 1=D」不是乱码。两个查询共用
+  // 同一块内存，避免为每个提示各 malloc/free 一次。
+  function updateFileHints() {
     var box = $('midiLyricHint');
     if (!box) return;
-    if (!wasmMod || !midiBytes || !wasmMod._midi2jianpu_midi_lyric_count) return;
+    if (!wasmMod || !midiBytes) return;
+    var hints = [];
     var p = wasmMod._malloc(midiBytes.length);
     wasmMod.HEAPU8.set(midiBytes, p);
-    var n = wasmMod._midi2jianpu_midi_lyric_count(p, midiBytes.length);
+    if (wasmMod._midi2jianpu_midi_lyric_count) {
+      var n = wasmMod._midi2jianpu_midi_lyric_count(p, midiBytes.length);
+      hints.push(n > 0 ? '此文件自带 ' + n + ' 个歌词音节' : '此文件没有内置歌词');
+    }
+    if (wasmMod._midi2jianpu_key_change_count) {
+      var k = wasmMod._midi2jianpu_key_change_count(p, midiBytes.length);
+      if (k > 0) hints.push('检测到 ' + k + ' 处转调，唱名已按段换算');
+    }
     wasmMod._free(p);
-    box.textContent = n > 0 ? '此文件自带 ' + n + ' 个歌词音节' : '此文件没有内置歌词';
+    box.textContent = hints.join(' · ');
   }
 
   var drop = $('drop'), fileInput = $('file');
@@ -177,7 +186,7 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     fr.onload = function () {
       midiBytes = new Uint8Array(fr.result);
       $('meta').textContent = f.name + ' · ' + (midiBytes.length / 1024).toFixed(1) + ' KB';
-      updateMidiLyricHint();
+      updateFileHints();
       convert();
     };
     fr.onerror = function () { showErr('读取文件失败'); };

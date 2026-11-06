@@ -134,9 +134,9 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
     // 小节长度（tick）。拍号缺失或非法时回退到 4/4，
     // 否则后面所有除法都会炸。弱起曲目的整套换算走 BarGrid。
     const BarGrid grid = barGridOf(data);
-
-    const bool flat = prefersFlats(key);
-    const int fifths = keyFifths(key);
+    // 调号按小节查表：中途转调时 MuseScore 必须看到新的 <fifths>/<mode>，
+    // 音符的升/降等音写法也跟着当前调走。
+    const KeyMap keys(data, key);
 
     // 速度：MIDI 里 tempo 是「每四分音符的微秒数」，取首个非零值
     double bpm = 120.0;
@@ -226,19 +226,28 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
         // 中途变拍号时，在变化的那一小节再写一次只含 <time> 的 attributes：
         // 少写这一次，MuseScore 会把后半首也按曲首拍号解释，小节线全错。
         bool wroteAttrs = false;
+        auto emitKeyXml = [&](const KeyEstimate& k) {
+            xml << "        <key><fifths>" << keyFifths(k) << "</fifths>"
+                << "<mode>" << (k.isMajor ? "major" : "minor") << "</mode></key>\n";
+        };
+        auto emitTimeXml = [&](const TimeSignature& sig) {
+            xml << "        <time><beats>" << sig.numerator
+                << "</beats><beat-type>" << (1 << sig.denomPow)
+                << "</beat-type></time>\n";
+        };
         auto emitAttributes = [&](int bar) {
+            const bool meterChanged = grid.meterChangedAt(bar);
+            const bool keyChanged = keys.keyChangedAtBar(bar, grid);
+            const KeyEstimate k = keys.keyAtBar(bar, grid);
+            const TimeSignature sig = grid.sigForBar(bar);
             if (!wroteAttrs) {
                 wroteAttrs = true;
-                const TimeSignature sig = grid.sigForBar(bar);
                 xml << "      <attributes>\n"
                     // divisions 用文件自身的时值分辨率，保证 duration 全为整数
-                    << "        <divisions>" << division << "</divisions>\n"
-                    << "        <key><fifths>" << fifths << "</fifths>"
-                    << "<mode>" << (key.isMajor ? "major" : "minor") << "</mode></key>\n"
-                    << "        <time><beats>" << sig.numerator
-                    << "</beats><beat-type>" << (1 << sig.denomPow)
-                    << "</beat-type></time>\n"
-                    << "        <clef><sign>" << (bassClef ? "F" : "G") << "</sign><line>"
+                    << "        <divisions>" << division << "</divisions>\n";
+                emitKeyXml(k);
+                emitTimeXml(sig);
+                xml << "        <clef><sign>" << (bassClef ? "F" : "G") << "</sign><line>"
                     << (bassClef ? 4 : 2) << "</line></clef>\n"
                     << "      </attributes>\n";
                 // 速度标记只写一遍，放在第一个声部
@@ -251,13 +260,13 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                         << "<sound tempo=\"" << (int)std::lround(bpm) << "\"/>\n"
                         << "      </direction>\n";
                 }
-            } else if (grid.meterChangedAt(bar)) {
-                const TimeSignature sig = grid.sigForBar(bar);
-                xml << "      <attributes>\n"
-                    << "        <time><beats>" << sig.numerator
-                    << "</beats><beat-type>" << (1 << sig.denomPow)
-                    << "</beat-type></time>\n"
-                    << "      </attributes>\n";
+            } else if (meterChanged || keyChanged) {
+                // attributes 的子元素有固定顺序：<key> 必须排在 <time> 前面，
+                // 否则某些记谱软件只认到第一个。两者同时变化时合进一个块。
+                xml << "      <attributes>\n";
+                if (keyChanged) emitKeyXml(k);
+                if (meterChanged) emitTimeXml(sig);
+                xml << "      </attributes>\n";
             }
         };
 
@@ -307,6 +316,7 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             int pc = seg.pitch % 12;
             if (pc < 0) pc += 12;
             int octave = seg.pitch / 12 - 1;
+            const bool flat = prefersFlats(keys.at(seg.start));
             const char* step = flat ? FLAT_STEP[pc] : SHARP_STEP[pc];
             int alter = flat ? FLAT_ALTER[pc] : SHARP_ALTER[pc];
 

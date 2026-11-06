@@ -179,6 +179,9 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
     // 小节网格（含弱起）。三个输出模块共用同一套换算，见 notation.hpp 的 BarGrid
     const BarGrid grid = barGridOf(data);
     const long barLen = grid.barLen;
+    // 调性也和网格一样是「按位置查表」：中途转调后同一个 MIDI 音高的唱名
+    // 要随所在小节重算，页眉与谱面标记都由它给出。
+    const KeyMap keys(data, key);
 
     // 和弦检测。按「和声窗」而不是整小节（4/4 半小节、6/8 附点四分），
     // 所以索引键是准确的 tick，同一小节里可以有多个和弦。
@@ -363,6 +366,12 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             if (showTempo && grid.meterChangedAt(bar))
                 body << "<span class='meter'>" << grid.sigForBar(bar).toString() << "</span>";
 
+            // 中途转调：标在换调那一小节。页眉写完整链条，这里指出
+            // 「从哪一栏起按新调唱」，与拍号 / 速度标记同在标记行。
+            if (keys.keyChangedAtBar(bar, grid))
+                body << "<span class='keychg'>转 "
+                     << "1=" << keyName(keys.keyAtBar(bar, grid)) << "</span>";
+
             // 中途变速：标在速度变化的那一小节。单一速度已经写在页眉，
             // 谱面上再印一遍纯属噪音，所以只在有两个以上速度时显示。
             if (showTempo && data.tempoChanges.size() > 1) {
@@ -484,6 +493,9 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                     if (b > 0) body << "<span class='barno'>" << grid.measureNumber(b) << "</span>";
                     if (showTempo && grid.meterChangedAt(b))
                         body << "<span class='meter'>" << grid.sigForBar(b).toString() << "</span>";
+                    if (keys.keyChangedAtBar(b, grid))
+                        body << "<span class='keychg'>转 "
+                             << "1=" << keyName(keys.keyAtBar(b, grid)) << "</span>";
                     // 旋律还没进来、伴奏已经在走的前奏小节：和弦照标，
                     // 否则开头的 4 小节就是四块空白，看不出和声进行。
                     // 休止时值按本小节的实际长度算——弱起小节比正常小节短
@@ -538,7 +550,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                     emit(withChord(noteColumn("-", 0, 0, 1.0, ""), chordMarkFor(tk)), tk);
                 }
             } else if (grp.size() == 1) {
-                std::string jp = pitchToJianpu(n.pitch, key);
+                std::string jp = pitchToJianpu(n.pitch, keys.at(n.startTicks));
                 int highDots = 0, lowDots = 0;
                 std::string num;
                 for (char c : jp) {
@@ -600,7 +612,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
 
                 std::vector<std::pair<std::string, std::pair<int, int>>> tones;
                 for (const auto& t : sorted) {
-                    std::string jp = pitchToJianpu(t.pitch, key);
+                    std::string jp = pitchToJianpu(t.pitch, keys.at(t.startTicks));
                     int hi = 0, lo = 0;
                     std::string num;
                     for (char c : jp) {
@@ -656,6 +668,10 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
        border:1px solid #cdd8e8;border-radius:3px;padding:1px 4px;background:#f4f7fc}
 .meter{font-size:11px;font-weight:700;color:#8a5a2b;line-height:1;
        border:1px solid #e4d3bb;border-radius:3px;padding:1px 4px;background:#fdf8f0}
+/* 转调标记与拍号/速度同为「谱面事件」，但用紫红色区分，扫一眼就知道
+   这里不是节奏变了、而是整段唱名换了。 */
+.keychg{font-size:11px;font-weight:700;color:#7a3f7d;line-height:1;
+        border:1px solid #e0cbe1;border-radius:3px;padding:1px 4px;background:#fbf5fb}
 
 /* 和弦标记：浮在它所管的那个音符上方，不占宽度。
    位置必须跟音符走——标记行是从左往右排的，一旦前面多了一个速度标记，
@@ -754,7 +770,7 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
 </style></head><body>
 <h1>)" << htmlEscape(displayTitle) << R"(</h1>
 <div class="meta">)"
-         << htmlEscape(keyDescription(key))
+         << htmlEscape(keys.summary(grid))
          << " ｜ " << meterSummary(data)
          << " ｜ " << (data.keySig.valid ? "MIDI调号" : "自动猜测")
          << (tempoSummary(data).empty() ? "" : " ｜ " + tempoSummary(data))

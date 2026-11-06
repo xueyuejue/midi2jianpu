@@ -129,6 +129,14 @@ void midi2jianpu_set_use_midi_lyrics(int on) {
     g_useMidiLyrics = (on != 0);
 }
 
+// 查询文件里的实质转调点数，供网页提示「检测到 N 处转调，唱名已按段换算」。
+// 与内置歌词计数一样只读文件，不受任何渲染开关影响；解析失败返回 0。
+int midi2jianpu_key_change_count(const uint8_t* midiData, int size) {
+    m2j::MidiData data;
+    if (!m2j::loadMidiFromMemory(midiData, size, data)) return 0;
+    return (int)m2j::keyChangesOf(data).size();
+}
+
 // 获取MIDI音符数据(JSON格式, 用于播放)
 const char* midi2jianpu_get_notes_json(const uint8_t* midiData, int size) {
     m2j::MidiData data;

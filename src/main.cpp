@@ -25,6 +25,7 @@ static void printHelp() {
         "  midi2jianpu <input.mid> --no-midi-lyrics  忽略 MIDI 文件自带的歌词\n"
         "  midi2jianpu <input.mid> --pickup 1       手动指定弱起小节长度(拍)\n"
         "  midi2jianpu <input.mid> --no-pickup      关闭弱起自动判定\n"
+        "  midi2jianpu <input.mid> --no-key-changes 忽略中途转调(全曲按一个调记谱)\n"
         "  midi2jianpu <input.mid> --no-quantize    关闭时值量化(保留 MIDI 原始时长)\n"
         "  midi2jianpu --version\n"
         "  midi2jianpu --help\n";
@@ -87,6 +88,7 @@ int main(int argc, char** argv) {
     int transpose = 0;
     bool quantize = true;
     bool noMidiLyrics = false;
+    bool noKeyChanges = false;
     double pickupBeats = -1;   // <0 表示没指定（走自动判定）
     bool noPickup = false;
     for (int i = 1; i < argc; i++) {
@@ -104,6 +106,7 @@ int main(int argc, char** argv) {
         else if (a == "--no-quantize") { quantize = false; }
         else if (a == "--no-midi-lyrics") { noMidiLyrics = true; }
         else if (a == "--no-pickup") { noPickup = true; }
+        else if (a == "--no-key-changes") { noKeyChanges = true; }
         else if (a == "--pickup" && i + 1 < argc) {
             if (!parseBeats(argv[++i], pickupBeats)) {
                 std::cerr << "错误: --pickup 需要正数（单位：拍，如 1 / 1.5）\n"; return 1;
@@ -132,6 +135,10 @@ int main(int argc, char** argv) {
         std::cerr << "错误: 无法读取或解析 MIDI 文件: " << input << "\n";
         return 2;
     }
+    // 中途转调（0x59 map）默认生效。关掉时保留事件表本身：曲首调号还要
+    // 用来判调性，清空数据会把「忽略转调」和「没有调号」混为一谈。
+    if (noKeyChanges) data.applyKeyChanges = false;
+
     // 鼓轨的提示写在谱面头部（formatJianpu 里），这里只管「只剩鼓」这种致命情况
     if (data.notes.empty()) {
         if (data.drumNotesSkipped > 0) {
@@ -245,6 +252,10 @@ int main(int argc, char** argv) {
     if (!meterChanges.empty())
         std::cout << "\n拍号变化 " << meterChanges.size()
                   << " 处，小节线已按各段拍号分别划分\n";
+    const auto keyChanges = m2j::keyChangesOf(data);
+    if (!keyChanges.empty())
+        std::cout << "\n转调 " << keyChanges.size()
+                  << " 处，唱名已按各段调号分别换算（--no-key-changes 可忽略）\n";
 
     if (!txtOut.empty()) {
         std::ofstream f(txtOut);
