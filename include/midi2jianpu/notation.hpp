@@ -12,9 +12,45 @@ namespace m2j {
 struct KeyEstimate {
     int tonicPitchClass = 0;  // 0=C ... 11=B
     bool isMajor = true;
+    // 非空表示识别到中国五声调式，如 "G 徵调式"。只用于页眉/MusicXML 的
+    // 文字标注：简谱的唱名换算仍只由 tonicPitchClass + isMajor 决定，
+    // 这样 KeyMap 转调、等音写法等既有链路完全不用改。
+    std::string scaleLabel;
 };
 
-// 根据 MIDI 数据估计调性（优先用内置调号，否则 Krumhansl-Schmuckler 相关度匹配）
+// ---- 中国五声调式（宫商角徵羽）----
+// 值就是该调式主音相对宫音的唱名（宫=1、商=2、角=3、徵=5、羽=6）。
+enum class PentatonicMode { None = 0, Gong = 1, Shang = 2, Jue = 3, Zhi = 5, Yu = 6 };
+
+struct PentatonicEstimate {
+    bool detected = false;
+    PentatonicMode mode = PentatonicMode::None;
+    int gongPitchClass = 0;    // 宫音，也就是简谱的 1
+    int finalPitchClass = 0;   // 终止音（调式主音）
+    double confidence = 0.0;   // 五声正音覆盖的时长比例，1.0 = 纯五声
+    int distinctPitchClasses = 0;
+    double outsideWeight = 0.0;  // 偏音（非本调五声正音）占的时长比例
+    std::string label() const;   // "G 徵调式（宫音 C）"
+};
+
+// 五声调式判定：只看旋律轨的音级分布与终止音。
+//
+// Krumhansl-Schmuckler 用的是七声大/小调轮廓，遇到纯五声旋律会把 1 定错：
+// C D E G A 且落在 G 上的 G 徵调式，KS 相关度最高的是 G 大调（1=G），
+// 整份谱子的唱名就全错了。中国民歌/古风曲里「终止音不是宫音」是常态，
+// 所以必须按「宫音 + 终止音」定调式，而不是硬套大小调主音。
+// 七声（≥7 个音级）、偏音过多、终止音落在偏音上、宫音有歧义时一律拒绝，
+// 交回 KS，避免把普通流行歌误判成五声。
+PentatonicEstimate detectPentatonic(const MidiData& data);
+
+std::string pentatonicModeName(PentatonicMode mode);
+
+// 手动指定宫音（CLI --gong C / --gong Bb）时按当前终止音推出调式。
+// 返回可直接交给三个输出层的 KeyEstimate，失败时返回空 label 的宫调式。
+KeyEstimate keyFromGong(const MidiData& data, int gongPitchClass);
+
+// 根据 MIDI 数据估计调性（优先用内置调号，否则 Krumhansl-Schmuckler 相关度匹配，
+// 再由高置信的五声调式判定校正宫音）
 KeyEstimate estimateKey(const MidiData& data);
 
 // 简谱调号的 do 音所在音级。

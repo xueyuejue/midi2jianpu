@@ -12,11 +12,14 @@ static std::string g_result;
 static std::string g_lyrics;  // 歌词文本(LRC格式)
 static std::string g_title;   // 谱面标题（网页传文件名进来）
 static bool g_useMidiLyrics = true;  // 是否使用 MIDI 自带的 0x05 歌词
+static bool g_usePentatonic = true;  // 是否按五声调式校正宫音
 
-// 网页上那个「使用 MIDI 自带歌词」复选框。清空事件表而不是只跳过渲染：
-// 歌词事件同时参与旋律轨判定，关掉就得连证据一起去掉。
-static void applyMidiLyricOption(m2j::MidiData& data) {
+// 网页上的两个渲染开关。清空内置歌词事件表而不是只跳过渲染：歌词事件同时
+// 参与旋律轨判定，关掉就得连证据一起去掉。五声开关则直接落在 MidiData 上，
+// CLI 的 --no-pentatonic 走的是同一个字段。
+static void applyRenderOptions(m2j::MidiData& data) {
     if (!g_useMidiLyrics) data.midiLyrics.clear();
+    data.usePentatonic = g_usePentatonic;
 }
 
 extern "C" {
@@ -39,7 +42,7 @@ const char* midi2jianpu_parse(const uint8_t* midiData, int size, int keyPitch, i
         return g_result.c_str();
     }
 
-    applyMidiLyricOption(data);
+    applyRenderOptions(data);
     m2j::quantizeTiming(data);
 
     m2j::KeyEstimate key;
@@ -68,7 +71,7 @@ const char* midi2jianpu_html(const uint8_t* midiData, int size, int keyPitch, in
         return g_result.c_str();
     }
 
-    applyMidiLyricOption(data);
+    applyRenderOptions(data);
     m2j::quantizeTiming(data);
 
     m2j::KeyEstimate key;
@@ -129,6 +132,24 @@ void midi2jianpu_set_use_midi_lyrics(int on) {
     g_useMidiLyrics = (on != 0);
 }
 
+// 网页版「五声调式宫音校正」开关：0 = 回到 Krumhansl-Schmuckler，非 0 = 校正。
+void midi2jianpu_set_use_pentatonic(int on) {
+    g_usePentatonic = (on != 0);
+}
+
+// 五声调式信息打包成一个整数，供网页提示「检测到 G 徵调式，1=C 按宫音校正」：
+//   finalPc * 100 + gongPc * 10 + mode（mode: 宫1 商2 角3 徵5 羽6）
+// 0 = 没检出 / 关了开关 / 文件自带 0x59 调号（此时以调号为准，不校正）。
+int midi2jianpu_pentatonic_info(const uint8_t* midiData, int size) {
+    if (!g_usePentatonic) return 0;
+    m2j::MidiData data;
+    if (!m2j::loadMidiFromMemory(midiData, size, data)) return 0;
+    if (data.keySig.valid) return 0;
+    const m2j::PentatonicEstimate p = m2j::detectPentatonic(data);
+    if (!p.detected) return 0;
+    return p.finalPitchClass * 100 + p.gongPitchClass * 10 + (int)p.mode;
+}
+
 // 查询文件里的实质转调点数，供网页提示「检测到 N 处转调，唱名已按段换算」。
 // 与内置歌词计数一样只读文件，不受任何渲染开关影响；解析失败返回 0。
 int midi2jianpu_key_change_count(const uint8_t* midiData, int size) {
@@ -167,7 +188,7 @@ const char* midi2jianpu_musicxml(const uint8_t* midiData, int size, int keyPitch
         g_result = "<error>无法解析MIDI</error>";
         return g_result.c_str();
     }
-    applyMidiLyricOption(data);
+    applyRenderOptions(data);
     m2j::quantizeTiming(data);
 
     m2j::KeyEstimate key;

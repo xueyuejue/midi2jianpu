@@ -2,10 +2,11 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 9 份素材：sample / humanized / drums /
-melisma / harmony / pickup / karaoke / meter / modulation。meter 是把变拍号、
-变速、鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」，modulation 则是
-中途转调（1=C → 1=D → 1=F）与变速、鼓轨、内置歌词、和弦叠在一起。
+随时重建素材、复现问题。共生成 10 份素材：sample / humanized / drums /
+melisma / harmony / pickup / karaoke / meter / modulation / pentatonic。
+meter 是把变拍号、变速、鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」，
+modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五声调式
+（C 宫、G 徵调式，故意不写 0x59 逼自动猜调暴露宫音判错）。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -564,6 +565,59 @@ def build_modulation() -> bytes:
     return header + t0.render() + t1.render() + t2.render() + t3.render()
 
 
+def build_pentatonic() -> bytes:
+    """中国五声调式压力素材：C 宫五声、终止音 G 的「G 徵调式」。
+
+    故意不写 0x59 调号，逼 estimateKey 走自动猜调：Krumhansl-Schmuckler
+    的七声大/小调轮廓会把这首判成 G 大调（1=G），整份谱子的唱名全错。
+    正确结果应按宫音记成 1=C，终止音 G 记作 5，页眉标「G 徵调式」。
+
+    8 小节 4/4，旋律只使用 C D E G A 五个音级；叠加同样只用五声音的钢琴
+    伴奏、鼓轨和 0x05 内置歌词，确认调式判定不会被伴奏/歌词/鼓轨带偏。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120 BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    # 关键：这里不写 0x59，自动猜调链路才会被走到
+    t0.add(0, meta(0x06, b"Pentatonic"))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    t1.program(0, 54, 0)
+    melody = [
+        60, 62, 64, 67,   69, 67, 64, 62,
+        60, 62, 64, 67,   69, 67, 64, 60,
+        67, 69, 72, 74,   76, 74, 72, 67,
+        60, 62, 64, 67,   69, 67, 64, 67,   # 末音 G = 终止音（徵）
+    ]
+    words = "春江潮水连海平海上明月共潮生滟滟随波千万里何处春江无月明江流宛转绕芳甸月照花林皆似霰"
+    for i, pitch in enumerate(melody):
+        tick = i * 480
+        t1.note(0, pitch, 90, tick, 480)
+        t1.add(tick, meta(0x05, words[i % len(words)].encode("utf-8")))
+
+    t2 = Track()
+    t2.add(0, meta(0x03, b"Piano"))
+    t2.program(1, 0, 0)
+    # 低音与和弦音都取 C D E G A，不引入偏音
+    chords = [
+        (48, 55, 64), (50, 57, 62), (52, 55, 60), (50, 57, 64),
+        (48, 55, 64), (50, 57, 62), (48, 55, 60), (43, 55, 62),
+    ]
+    for bar, chord in enumerate(chords):
+        for p in chord:
+            t2.note(1, p, 70, bar * 1920, 1920)
+
+    t3 = Track()
+    t3.add(0, meta(0x03, b"Drums"))
+    for bar in range(8):
+        t3.note(9, 36, 100, bar * 1920, 120)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 4, DIV)
+    return header + t0.render() + t1.render() + t2.render() + t3.render()
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -635,6 +689,13 @@ def main() -> None:
         moddata = build_modulation()
         f.write(moddata)
     print(f"wrote {modmid} ({len(moddata)} bytes)")
+
+    # 中国五声调式（C 宫 / G 徵），故意不写 0x59 的自动猜调素材
+    pentmid = os.path.join(here, "pentatonic.mid")
+    with open(pentmid, "wb") as f:
+        pentdata = build_pentatonic()
+        f.write(pentdata)
+    print(f"wrote {pentmid} ({len(pentdata)} bytes)")
 
 
 if __name__ == "__main__":

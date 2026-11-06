@@ -772,7 +772,8 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
 <div class="meta">)"
          << htmlEscape(keys.summary(grid))
          << " ｜ " << meterSummary(data)
-         << " ｜ " << (data.keySig.valid ? "MIDI调号" : "自动猜测")
+         << " ｜ " << (data.keySig.valid ? "MIDI调号"
+                       : (key.scaleLabel.empty() ? "自动猜测" : "五声宫音校正"))
          << (tempoSummary(data).empty() ? "" : " ｜ " + tempoSummary(data))
          << (pickupLabel(data).empty() ? "" : " ｜ " + pickupLabel(data))
          << (data.drumNotesSkipped > 0 ? " ｜ 已跳过鼓轨" : "")

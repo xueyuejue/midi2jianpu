@@ -75,6 +75,7 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
       <option value="5:0">f 小调（1=Ab）</option>
     </optgroup>
   </select>
+  <label class="hint"><input type="checkbox" id="usePentatonic" checked> 五声调式宫音校正</label>
 </div>
 
 <details class="lyrics">
@@ -86,7 +87,7 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     <label class="hint"><input type="checkbox" id="useMidiLyrics" checked> 使用 MIDI 自带歌词</label>
     <span class="hint" id="midiLyricHint"></span>
   </div>
-  <div class="hint">歌词会按时间戳对齐到音符，只显示在旋律轨上；一字多音会画连音线，下载 MusicXML 也带词。文件自带歌词时无需再找 LRC，粘贴的 LRC 优先级更高。中途变拍号、弱起、变速、转调会自动识别：前三者按段划分小节线，转调则按段重算唱名。</div>
+  <div class="hint">歌词会按时间戳对齐到音符，只显示在旋律轨上；一字多音会画连音线，下载 MusicXML 也带词。文件自带歌词时无需再找 LRC，粘贴的 LRC 优先级更高。中途变拍号、弱起、变速、转调会自动识别：前三者按段划分小节线，转调则按段重算唱名。中国民歌/古风曲若只用五声音阶，自动识别会按宫音定 1（如 G 徵调式记 1=C 而不是 1=G），关掉上方复选框可回到大小调判定。</div>
   <input type="file" id="lyricsFile" accept=".lrc" style="display:none">
 </details>
 
@@ -135,7 +136,7 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     createMidi2Jianpu().then(function (mod) {
       wasmMod = mod;
       wasmReady = true;
-      if (midiBytes) { updateMidiLyricHint(); convert(); }
+      if (midiBytes) { updateFileHints(); convert(); }
     }).catch(function (e) {
       showErr('WASM 模块加载失败：' + e.message);
     });
@@ -159,6 +160,15 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     if (wasmMod._midi2jianpu_key_change_count) {
       var k = wasmMod._midi2jianpu_key_change_count(p, midiBytes.length);
       if (k > 0) hints.push('检测到 ' + k + ' 处转调，唱名已按段换算');
+    }
+    if (wasmMod._midi2jianpu_pentatonic_info && $('key').value.indexOf('-1') === 0) {
+      var pi = wasmMod._midi2jianpu_pentatonic_info(p, midiBytes.length);
+      if (pi > 0) {
+        var names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+        var modes = {1:'宫', 2:'商', 3:'角', 5:'徵', 6:'羽'};
+        var fin = Math.floor(pi / 100), gong = Math.floor(pi / 10) % 10, md = pi % 10;
+        hints.push('检测到 ' + names[fin] + ' ' + (modes[md] || '') + '调式，1=' + names[gong] + ' 按宫音校正');
+      }
     }
     wasmMod._free(p);
     box.textContent = hints.join(' · ');
@@ -196,8 +206,15 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
   // ---- 歌词 ----
   var lyricsArea = $('lyricsText');
   var useMidiBox = $('useMidiLyrics');
+  var usePentBox = $('usePentatonic');
   useMidiBox.onchange = function () {
     if (midiBytes && wasmReady) convert();
+  };
+  usePentBox.onchange = function () {
+    // 五声开关同时影响「提示」和「渲染」两侧，先推到 wasm 再刷新
+    if (wasmMod && wasmMod._midi2jianpu_set_use_pentatonic)
+      wasmMod._midi2jianpu_set_use_pentatonic(usePentBox.checked ? 1 : 0);
+    if (midiBytes && wasmReady) { updateFileHints(); convert(); }
   };
   $('lyricsBtn').onclick = function () { $('lyricsFile').click(); };
   $('lyricsFile').onchange = function () {
@@ -244,6 +261,9 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     // 内置歌词开关每次都重设：wasm 里是全局状态，不然换文件会沿用上一次选择
     if (wasmMod._midi2jianpu_set_use_midi_lyrics) {
       wasmMod._midi2jianpu_set_use_midi_lyrics(useMidiBox.checked ? 1 : 0);
+    }
+    if (wasmMod._midi2jianpu_set_use_pentatonic) {
+      wasmMod._midi2jianpu_set_use_pentatonic(usePentBox.checked ? 1 : 0);
     }
 
     // 标题同理，每次重置，避免换了文件还顶着上一首的歌名
@@ -301,7 +321,7 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     }
   }
 
-  $('key').onchange = function () { if (midiBytes) convert(); };
+  $('key').onchange = function () { if (midiBytes) { updateFileHints(); convert(); } };
 
   // ---- 复制简谱文本 ----
   // 直接用 wasm 的文本输出，不再从 DOM 里爬（旧的爬取逻辑依赖已删除的
