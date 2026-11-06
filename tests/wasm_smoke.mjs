@@ -21,7 +21,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
 const FIXTURES = path.join(ROOT, 'tests', 'fixtures');
 
-const jsPath = process.argv[2] || path.join(ROOT, 'docs', 'wasm', 'midi2jianpu.js');
+const jsPath = path.resolve(process.argv[2] || path.join(ROOT, 'docs', 'wasm', 'midi2jianpu.js'));
 
 const failures = [];
 function check(cond, msg, extra) {
@@ -80,7 +80,14 @@ const sampleLrc = readFileSync(path.join(FIXTURES, 'sample.lrc'), 'utf8');
 check(existsSync(jsPath), `产物存在: ${path.relative(ROOT, jsPath)}`);
 
 const require = createRequire(import.meta.url);
-const factory = require(jsPath);
+let factory = null;
+try {
+  factory = require(jsPath);
+} catch (e) {
+  console.log(`  [FAIL] JS 胶水层无法加载: ${e.message}\n`);
+  console.log('先编译：emcmake cmake -B build-wasm -S . -DM2J_BUILD_WASM=ON && cmake --build build-wasm');
+  process.exit(1);
+}
 
 check(typeof factory === 'function', 'JS 胶水层可加载（MODULARIZE 导出为函数）');
 
@@ -104,6 +111,8 @@ const REQUIRED = [
 for (const s of REQUIRED) {
   check(typeof mod[s] === 'function', `导出符号 ${s}`);
 }
+// 新版 Emscripten 不再默认暴露内存视图；网页靠它把 MIDI 字节写进 wasm
+check(mod.HEAPU8 instanceof Uint8Array, '导出 HEAPU8 内存视图');
 
 // ---- 2. 文本简谱 ----
 c.setMidi(sampleMidi);
