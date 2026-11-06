@@ -188,7 +188,8 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
                     }
                 } else if (metaType == 0x05u) {  // lyric event
                     std::string lyric((const char*)&d[pos], metaLen);
-                    out.midiLyrics.push_back({absTick, lyric});
+                    // 保留空事件：很多文件用空 lyric 表示换行/段落，规整阶段再决定
+                    out.midiLyrics.push_back({absTick, lyric, trackIdx});
                 } else if (metaType == 0x01u) {  // text event
                     std::string text((const char*)&d[pos], metaLen);
                     // 只存非空的文本

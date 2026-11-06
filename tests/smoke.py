@@ -458,6 +458,67 @@ def main():
         check("<lyric" not in x0 and "<slur" not in x0,
               "不带 --lyrics 的 MusicXML 保持旧格式")
 
+    # ---- 17. MIDI 内置歌词（0x05 lyric meta） ----
+    # 卡拉 OK .mid 自带精确 tick 的歌词流，不需要另外找 LRC。事件流里混着
+    # @ 元数据、-/_ 延续符、/ 换行、+ 续行前缀、中文标点、英文单词。
+    print("\n[17] MIDI 内置歌词（0x05 lyric meta）")
+    kar = os.path.join(FIXTURES, "karaoke.mid")
+    if not os.path.exists(kar):
+        check(False, "素材 karaoke.mid 存在（先跑 make_fixture.py）")
+    else:
+        kh = os.path.join(tmp, "karaoke.html")
+        kx = os.path.join(tmp, "karaoke.xml")
+        rc, out, err = run(exe, kar, "--html", kh, "--musicxml", kx)
+        check(rc == 0, "带内置歌词的 MIDI 能正常转换", err)
+        check("MIDI 内置歌词: 5 个音节" in out, "控制台提示已自动加载内置歌词")
+        h = open(kh, encoding="utf-8").read()
+        check("歌词：MIDI 内置（5 音节）" in h, "页眉标注歌词来源")
+        words = [w for w in re.findall(r"<span class='lyric'>([^<]*)</span>", h) if w]
+        check(words == ["你", "好", "世", "界", "Hello"],
+              "五个音节（含英文单词）按 tick 精确落位", str(words))
+        check(h.count("class='sgrp'") == 3,
+              "3 条连音线（你/好/Hello 各拖两个音）", str(h.count("class='sgrp'")))
+
+        import xml.etree.ElementTree as ET4
+        root = ET4.fromstring(open(kx, encoding="utf-8").read())
+        texts = [n.findtext("lyric/text") for n in root.iter("note")
+                 if n.find("lyric") is not None and n.findtext("lyric/text")]
+        check("".join(texts) == "你好世界Hello", "MusicXML 歌词完整且顺序正确", str(texts))
+        syl = [n.findtext("lyric/syllabic") for n in root.iter("note")
+               if n.find("lyric") is not None]
+        check(syl == ["begin", "end", "begin", "end", "single", "single",
+                      "begin", "end"],
+              "一字多音写 begin/end，一音一字写 single", str(syl))
+        st = len(root.findall(".//slur[@type='start']"))
+        sp = len(root.findall(".//slur[@type='stop']"))
+        check(st == 3 and sp == 3, "3 对 slur 起止配对", f"{st}/{sp}")
+        durs = [sum(int(n.find("duration").text) for n in mm.findall("note")
+                    if n.find("chord") is None) for mm in root.iter("measure")]
+        check(all(v == 1920 for v in durs), "带内置歌词后每小节仍是 4 拍", str(durs))
+
+        koff = os.path.join(tmp, "karaoke_off.html")
+        rc2, out2, _ = run(exe, kar, "--no-midi-lyrics", "--html", koff)
+        hoff = open(koff, encoding="utf-8").read()
+        check(rc2 == 0 and "已忽略 MIDI 内置歌词" in out2, "--no-midi-lyrics 生效")
+        check(not [w for w in re.findall(r"<span class='lyric'>([^<]*)</span>", hoff) if w]
+              and "歌词：MIDI 内置" not in hoff,
+              "关掉后没有任何歌词字，页眉也不再标注来源")
+
+        kext = os.path.join(tmp, "karaoke_ext.html")
+        rc3, out3, _ = run(exe, kar, "--html", kext,
+                           "--lyrics", os.path.join(FIXTURES, "melisma.lrc"))
+        hext = open(kext, encoding="utf-8").read()
+        check(rc3 == 0 and "外部歌词优先" in out3, "显式 LRC 时控制台说明优先级")
+        check("歌词：外部 LRC" in hext and "<span class='lyric'>一</span>" in hext
+              and "<span class='lyric'>你</span>" not in hext,
+              "谱面用的是外部 LRC 而不是内置歌词")
+
+        snoly = os.path.join(tmp, "sample_nolyrics.xml")
+        run(exe, os.path.join(FIXTURES, "sample.mid"), "--musicxml", snoly)
+        xs = open(snoly, encoding="utf-8").read()
+        check("<lyric" not in xs and "<slur" not in xs,
+              "无内置歌词的素材仍导出无词 MusicXML")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

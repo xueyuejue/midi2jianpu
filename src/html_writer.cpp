@@ -173,6 +173,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                        const std::string& title,
                        const std::vector<LyricLine>* lyricLines) {
     std::string displayTitle = title.empty() ? "简谱" : title;
+    const std::string lyricLabel = lyricSourceLabel(data, lyricLines);
 
     std::ostringstream body;
     // 小节网格（含弱起）。三个输出模块共用同一套换算，见 notation.hpp 的 BarGrid
@@ -220,11 +221,11 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
     int mainTrack = pickMelodyTrack(data, lyricLines);
 
     // ---- 歌词对齐 ----
-    // 一行 LRC 常常跨两小节，而旋律音数往往多于字数（衬腔、走句、装饰音），
-    // 均匀铺开后一个字会拖着好几个音唱——这就是一字多音。assignLyrics 除了
-    // 给出「哪个音领哪个字」，还会给出每个字的覆盖区间，下面据此画连音线。
-    if (lyricLines && !lyricLines->empty() && mainTrack >= 0)
-        lyrics = assignLyrics(data, *lyricLines, mainTrack);
+    // 一行 LRC 常常跨两小节、音多于字，要按行内音数均匀铺开；MIDI 自带的
+    // 0x05 歌词则每个音节都带精确 tick，不能抹平。两种来源由 resolveLyrics
+    // 统一成同一份 LyricAssignment（显式 --lyrics 优先，否则自动用内置歌词），
+    // 下面画连音线、写歌词字都只读这份结果。
+    if (mainTrack >= 0) lyrics = resolveLyrics(data, lyricLines, mainTrack);
 
     for (auto& [t, ns] : byTrack) {
         const bool isMain = (t == mainTrack);
@@ -541,7 +542,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 // 不要再排除第一个音：休止符是单独插入的列，本来就不参与歌词分配，
                 // 多一个 !firstNote 只会把一句词的第一个字吞掉（"风霜染尽客行袍"
                 // 变成"风霜染尽客行"+下一小节的"袍"）。
-                std::string syl = (isMain && lyricLines && n.pitch != 0)
+                std::string syl = (isMain && !lyrics.empty() && n.pitch != 0)
                                   ? lyricForNote(n.startTicks) : std::string();
                 // 三连音走单独的时值档位，避免 1/3 拍被当成附点十六分
                 DurStyle ds = grp[0]->trip ? tripletStyleOf(beats) : durStyleOf(beats);
@@ -746,6 +747,7 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
          << (tempoSummary(data).empty() ? "" : " ｜ " + tempoSummary(data))
          << (pickupLabel(data).empty() ? "" : " ｜ " + pickupLabel(data))
          << (data.drumNotesSkipped > 0 ? " ｜ 已跳过鼓轨" : "")
+         << (lyricLabel.empty() ? "" : " ｜ " + lyricLabel)
          << "</div>" << body.str()
          << "<footer class='footer'>由 midi2jianpu v" M2J_VERSION " 生成</footer>"
          << "</body></html>";

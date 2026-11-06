@@ -21,7 +21,8 @@ static void printHelp() {
         "  midi2jianpu <input.mid> --output out.txt  文本简谱输出到文件\n"
         "  midi2jianpu <input.mid> --track 0         只输出指定轨道\n"
         "  midi2jianpu <input.mid> --transpose +2     移调(半音, 正负都可)\n"
-        "  midi2jianpu <input.mid> --lyrics lyrics.lrc  加载歌词\n"
+        "  midi2jianpu <input.mid> --lyrics lyrics.lrc  加载歌词(优先于 MIDI 内置歌词)\n"
+        "  midi2jianpu <input.mid> --no-midi-lyrics  忽略 MIDI 文件自带的歌词\n"
         "  midi2jianpu <input.mid> --pickup 1       手动指定弱起小节长度(拍)\n"
         "  midi2jianpu <input.mid> --no-pickup      关闭弱起自动判定\n"
         "  midi2jianpu <input.mid> --no-quantize    关闭时值量化(保留 MIDI 原始时长)\n"
@@ -85,6 +86,7 @@ int main(int argc, char** argv) {
     int trackFilter = -1;
     int transpose = 0;
     bool quantize = true;
+    bool noMidiLyrics = false;
     double pickupBeats = -1;   // <0 表示没指定（走自动判定）
     bool noPickup = false;
     for (int i = 1; i < argc; i++) {
@@ -100,6 +102,7 @@ int main(int argc, char** argv) {
         else if (a == "--musicxml" && i + 1 < argc) { xmlOut = argv[++i]; }
         else if (a == "--lyrics" && i + 1 < argc) { lyricsPath = argv[++i]; }
         else if (a == "--no-quantize") { quantize = false; }
+        else if (a == "--no-midi-lyrics") { noMidiLyrics = true; }
         else if (a == "--no-pickup") { noPickup = true; }
         else if (a == "--pickup" && i + 1 < argc) {
             if (!parseBeats(argv[++i], pickupBeats)) {
@@ -137,6 +140,22 @@ int main(int argc, char** argv) {
             std::cerr << "未提取到音符。\n";
         }
         return 3;
+    }
+
+    // MIDI 内置歌词（0x05 lyric meta）：默认自动加载，--no-midi-lyrics 忽略。
+    // 这里直接清空事件表而不是加一个「是否启用」的标志位：歌词事件同时还是
+    // 旋律轨判定的证据，关掉就该连证据一起消失，否则会出现「谱面无词、旋律
+    // 轨却被自带歌词带偏」这种半开半关的状态。
+    const size_t builtinLyricEvents = data.midiLyrics.size();
+    if (noMidiLyrics) {
+        data.midiLyrics.clear();
+        if (builtinLyricEvents > 0)
+            std::cout << "已忽略 MIDI 内置歌词: " << builtinLyricEvents << " 个事件\n";
+    } else if (builtinLyricEvents > 0) {
+        const auto syls = m2j::normalizeMidiLyrics(data);
+        if (!syls.empty())
+            std::cout << "MIDI 内置歌词: " << syls.size() << " 个音节（自动加载，"
+                      << "--no-midi-lyrics 可关闭）\n";
     }
 
     // --track 过滤指定轨道
@@ -209,7 +228,11 @@ int main(int argc, char** argv) {
             for (const auto& s : syls) lyricLines.push_back({s.tick, s.text});
         }
         std::cout << "歌词已加载: " << lyricLines.size() << " 行\n";
-        if (!lyricLines.empty()) lyricPtr = &lyricLines;
+        if (!lyricLines.empty()) {
+            lyricPtr = &lyricLines;
+            if (!data.midiLyrics.empty())
+                std::cout << "外部歌词优先，MIDI 内置歌词已让位\n";
+        }
     }
 
     std::string jianpu = m2j::formatJianpu(data, key);

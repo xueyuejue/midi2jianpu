@@ -23,6 +23,7 @@
 - [x] 手动指定调性：`--key Em` / `--key Bb` / `--key f`
 - [x] 移调功能：`--transpose +2`（半音偏移）
 - [x] 识别拍号、速度（BPM）、调号、轨道名称、乐器名称、歌词、标记等元事件
+- [x] **MIDI 内置歌词**：很多卡拉 OK `.mid` 用 `0x05 lyric meta` 自带逐字歌词，不用再另找 LRC，HTML / MusicXML / 网页版自动出词（含一字多音弧线）；`--no-midi-lyrics` 可忽略，网页上是同名复选框
 - [x] 按拍号划分小节、输出小节线、HTML 自动换行排版
 - [x] **弱起小节（anacrusis）**：`| 5 | 1' 7 6 5 |` 这种从弱拍进唱的曲子，第一小节天然不满拍。自动判定弱起长度后整条小节网格随之平移，小节线、重音、和弦、小节号全部归位；判错时用 `--pickup N` 手动指定拍数，`--no-pickup` 可关掉自动判定
 - [x] 时值标注：全/二分/四分/八分/十六分/三十二分音符及附点，延长线 `-`
@@ -45,13 +46,13 @@
 - [x] `--version` 打印版本号
 - [x] **在线 Demo**：WASM 核心，浏览器内运行 C++ 代码
 - [x] **减时线按拍连通**：一拍内的八分/十六分音符共用一条横线（十六分再叠平行线），而不是每个音各画一小段；和弦的减时线只画在最下面那个音上
-- [x] 116 项单元测试 + 16 组端到端冒烟测试 + WASM 产物一致性检查
+- [x] 143 项单元测试 + 17 组端到端冒烟测试 + WASM 产物一致性检查
 
 ## 在线 Demo 功能
 
 - 拖入 MIDI 文件即转简谱（文件不上传，全部在浏览器内解析）
 - 25 种调性可选（自动识别 + 12 大调 + 12 小调）
-- 歌词：直接粘贴 LRC 文本，或选择 `.lrc` 文件
+- 歌词：文件自带 `0x05` 歌词时自动识别并提示「此文件自带 N 个歌词音节」；也可粘贴 LRC 文本或选择 `.lrc` 文件（优先级更高），并有「使用 MIDI 自带歌词」开关
 - 在线播放（Web Audio API 合成）
 - 下载 MusicXML（可用 MuseScore 继续编辑）
 - 下载 PNG 谱面
@@ -89,6 +90,11 @@ Windows 产物在 `build\Release\midi2jianpu.exe`。详细说明、WASM 编译�
 
 # 带歌词（LRC格式，用户普遍有）
 ./build/midi2jianpu 人声.mid --key Em --html 带歌词简谱.html --lyrics lyrics.lrc
+
+# MIDI 文件自带 0x05 歌词时什么都不用加，自动出词
+./build/midi2jianpu 卡拉OK.mid --html 带词简谱.html
+# 想忽略自带歌词（例如 0x05 里塞的是段落标记或乱码）
+./build/midi2jianpu 卡拉OK.mid --html 无词简谱.html --no-midi-lyrics
 
 # 导出MusicXML（可在MuseScore中编辑）
 ./build/midi2jianpu 你的歌.mid --key Em --musicxml 谱.xml
@@ -161,7 +167,26 @@ Windows 产物在 `build\Release\midi2jianpu.exe`。详细说明、WASM 编译�
 
 弧线不能和和弦字母、高八度点挤在一起：有连音线时把音符行的上留白从 18px 抬到 36px，自下而上依次是「数字 → 连音线 → 和弦字母」，三者互不侵入。只抬高存在连音线的那一轨，其余谱面行距不变。
 
-> **没有歌词时行为不变**：`--musicxml` 不带 `--lyrics` 时不会写出任何 `<lyric>` / `<slur>`，网页版同理。
+> **没有歌词时行为不变**：既没给 `--lyrics`、MIDI 里也没有 `0x05` 歌词事件时，`--musicxml` 不会写出任何 `<lyric>` / `<slur>`，网页版同理。
+
+### MIDI 内置歌词怎么读
+
+很多卡拉 OK / 人声 `.mid` 用 `0x05 lyric meta` 自带歌词：每个事件带精确 tick，通常一个事件就是一个音节。这跟 LRC 完全是两种数据——LRC 只有「一行词从哪一刻开始」，字要靠行内音数均分；内置歌词的 tick 是文件作者标好的，塞进 `assignLyrics()` 反而会把精确位置抹平，还会把相邻音节粘成一个词。所以两条通路各自规整，最后都汇成同一个 `LyricAssignment`，输出层不区分来源。
+
+事件流比「一个事件一个汉字」脏得多，规整规则（事实标准，测试素材 `karaoke.mid` 全部覆盖）：
+
+| 写法 | 处理 |
+| --- | --- |
+| `-`、`_`、空串、纯空白 | 一字多音的延续，不产生新音节 —— 前一个字的区间自然延长，正好对应简谱的连音线 |
+| `/`、`\`、CR/LF | 换行或分隔，跳过 |
+| `@KMIDI` / `@TITLE` 等 `@` 开头 | 文件元数据，跳过 |
+| `+` 前缀 | 续行标记，去掉后保留内容 |
+| 中文标点 | 不占音节；汉字一字一音节 |
+| `Hello ` 这类英文 | 连续 ASCII 字母算**一个**音节（不是五个），尾随空格 trim |
+
+优先级是「显式 `--lyrics` > MIDI 内置 > 无词」，谱面页眉会写「歌词：MIDI 内置（5 音节）」或「歌词：外部 LRC」，来源错了能一眼看见。另外，`0x05` 事件所在的轨就是文件作者标出的人声轨，这比按音符数、单音率猜都可靠——旋律轨判定会给它额外加分（format 0 只有一条轨、或歌词分散在多轨时不采信，避免误判）。
+
+> 关掉内置歌词是「清空事件表」而不是加一个渲染开关：歌词事件同时还是旋律轨判定的证据，关掉就得连证据一起消失，否则会出现「谱面无词、旋律轨却被自带歌词带偏」这种半开半关的状态。
 
 ## 技术选型
 
@@ -169,7 +194,7 @@ Windows 产物在 `build\Release\midi2jianpu.exe`。详细说明、WASM 编译�
 - 调性识别：**Krumhansl-Schmuckler** 算法（音乐信息检索标准）
 - 和弦检测：按和声窗（半小节 / 附点四分 / 整小节）统计音级频率，匹配 9 种和弦类型
 - 输出：文本 + 自包含 HTML（内联 CSS）+ MusicXML 3.1
-- 测试：内置断言 116 项单元测试，另有 `tests/smoke.py` 16 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`）
+- 测试：内置断言 143 项单元测试，另有 `tests/smoke.py` 17 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`）
 
 ## 路线图
 
@@ -186,6 +211,7 @@ Windows 产物在 `build\Release\midi2jianpu.exe`。详细说明、WASM 编译�
 - [x] 变速曲目的 tempo map 换算
 - [x] 弱起小节（anacrusis）：自动判定 + `--pickup` 手动覆盖
 - [x] 一字多音连音线弧线（HTML 画弧线；MusicXML 同步写出 `<lyric>` / `<slur>`）
+- [x] MIDI 内置歌词（`0x05` lyric meta）自动加载 + 旋律轨证据 + 手动忽略开关
 - [ ] 更多真实 MIDI 样本校验
 
 ## 为什么开源
@@ -204,7 +230,7 @@ Issue / PR 都欢迎。尤其欢迎：
 提交前请跑一遍：
 
 ```bash
-cd build && ctest --output-on-failure                  # 116 项单元测试
+cd build && ctest --output-on-failure                  # 143 项单元测试
 python tests/smoke.py build/Release/midi2jianpu.exe    # 端到端冒烟（含鼓轨场景）
 node tests/wasm_smoke.mjs                              # WASM 产物与源码是否同步
 ```

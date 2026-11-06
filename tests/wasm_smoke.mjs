@@ -39,6 +39,7 @@ function makeCaller(mod) {
   let midi = null;
   let lyrics = '';
   let title = '';
+  let useMidiLyrics = 1;
 
   function setMidi(bytes) {
     midi = bytes;
@@ -48,6 +49,9 @@ function makeCaller(mod) {
   }
   function setTitle(txt) {
     title = txt || '';
+  }
+  function setUseMidiLyrics(on) {
+    useMidiLyrics = on ? 1 : 0;
   }
   function call(fnName, keyPitch, isMajor) {
     const fn = mod['_' + fnName];
@@ -72,6 +76,11 @@ function makeCaller(mod) {
       mod._free(tp);
     }
 
+    // 内置歌词开关也是全局状态，网页每次转换都重设，这里保持一致
+    if (mod._midi2jianpu_set_use_midi_lyrics) {
+      mod._midi2jianpu_set_use_midi_lyrics(useMidiLyrics);
+    }
+
     fn(ptr, midi.length, keyPitch, isMajor);
     const len = mod._midi2jianpu_result_len();
     const buf = mod._malloc(len + 1);
@@ -82,7 +91,7 @@ function makeCaller(mod) {
     mod._free(buf);
     return out;
   }
-  return { setMidi, setLyrics, setTitle, call };
+  return { setMidi, setLyrics, setTitle, setUseMidiLyrics, call };
 }
 
 const sampleMidi = readFileSync(path.join(FIXTURES, 'sample.mid'));
@@ -277,7 +286,58 @@ if (existsSync(melismaPath)) {
   check(false, '素材 melisma.mid 存在（先跑 make_fixture.py）');
 }
 
-// ---- 12. 坏数据不能把整页搞崩 ----
+// ---- 12. MIDI 内置歌词：不贴 LRC 也该有词 ----
+// 网页版不经过 main.cpp，且用户可能根本没打开歌词面板。上一版只认
+// set_lyrics 传进来的 LRC，自带歌词的 .mid 打开后是空白谱面。
+const karaokePath = path.join(FIXTURES, 'karaoke.mid');
+if (existsSync(karaokePath)) {
+  const k = makeCaller(mod);
+  const kb = readFileSync(karaokePath);
+  k.setMidi(kb);
+  k.setLyrics('');                 // 刻意不提供 LRC
+
+  const kHtml = k.call('midi2jianpu_html', -1, 1);
+  check(kHtml && kHtml.includes("<span class='lyric'>你</span>"),
+    '网页版自动显示 MIDI 内置歌词', kHtml && kHtml.slice(0, 200));
+  check(kHtml && kHtml.includes('歌词：MIDI 内置（5 音节）'),
+    '页眉标注歌词来源');
+  check(kHtml && kHtml.includes("<span class='lyric'>Hello</span>"),
+    '英文单词按一个音节显示，未被拆成字母');
+  check(kHtml && (kHtml.match(/class='sgrp'/g) || []).length === 3,
+    '3 条连音线弧线');
+
+  const kXml = k.call('midi2jianpu_musicxml', -1, 1);
+  check(kXml && kXml.includes('<text>Hello</text>'),
+    '网页导出的 MusicXML 带内置歌词');
+  check(kXml && (kXml.match(/<slur type="start"/g) || []).length === 3,
+    '网页导出的 MusicXML 有 3 个连音线起点');
+
+  // 网页用来提示「无需另找 LRC」的查询接口
+  const qp = mod._malloc(kb.length);
+  mod.HEAPU8.set(kb, qp);
+  const cnt = mod._midi2jianpu_midi_lyric_count
+    ? mod._midi2jianpu_midi_lyric_count(qp, kb.length) : -1;
+  mod._free(qp);
+  check(cnt === 5, '内置歌词音节数查询接口返回 5', String(cnt));
+
+  k.setUseMidiLyrics(false);
+  const kOff = k.call('midi2jianpu_html', -1, 1);
+  check(kOff && !kOff.includes("<span class='lyric'>你</span>"),
+    '关闭内置歌词开关后谱面无词');
+  check(kOff && !kOff.includes('歌词：MIDI 内置'),
+    '关闭后页眉也不再标注来源');
+  k.setUseMidiLyrics(true);
+
+  k.setLyrics('[00:00.00]甲乙\n');
+  const kExt = k.call('midi2jianpu_html', -1, 1);
+  check(kExt && kExt.includes('歌词：外部 LRC')
+    && !kExt.includes("<span class='lyric'>你</span>"),
+    '粘贴 LRC 后优先使用外部歌词');
+} else {
+  check(false, '素材 karaoke.mid 存在（先跑 make_fixture.py）');
+}
+
+// ---- 13. 坏数据不能把整页搞崩 ----
 c.setMidi(new Uint8Array([1, 2, 3, 4, 5]));
 const bad = c.call('midi2jianpu_parse', -1, 1);
 check(typeof bad === 'string' && bad.length > 0, '非法 MIDI 返回错误文本而非崩溃', bad);
