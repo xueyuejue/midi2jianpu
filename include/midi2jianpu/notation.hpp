@@ -1,6 +1,7 @@
 #pragma once
 // notation.hpp - 调性识别与音高->简谱转换
 #include "midi2jianpu/midifile.hpp"
+#include <map>
 #include <string>
 #include <vector>
 
@@ -91,6 +92,43 @@ std::vector<LyricLine> parseLrcLines(const std::string& lrcPath, int division, i
 // 同 parseLrcLines，但输入是 LRC 文本而不是路径。
 // WASM 版没有文件系统，只能走这个入口。
 std::vector<LyricLine> parseLrcText(const std::string& lrc, int division, int bpm);
+
+// ---- 歌词对齐结果 ----
+// 一个字落在哪个音上、以及它「唱」了几个音。noteCount >= 2 就是一字多音
+// （melisma）：HTML 要画连音线，MusicXML 要写 syllabic=begin/middle/end 与 <slur>。
+// 这段判定原先只活在 HTML 渲染器里，导出 MusicXML 时整份歌词都丢了。
+struct LyricPlacement {
+    std::string text;       // 单字
+    long tick = 0;          // 起始音头
+    long spanEnd = 0;       // 覆盖区间右端（不含）：下一个字 / 下一行的起点
+    int noteCount = 1;      // 区间内的音头数
+    long lastNoteTick = 0;  // 区间内最后一个音头
+};
+
+struct LyricAssignment {
+    // 音头 tick -> 该字的起始信息（只有起始音上有条目）
+    std::map<long, LyricPlacement> at;
+    // noteCount >= 2 的组，按 tick 升序
+    std::vector<LyricPlacement> melismas;
+
+    // 任意 tick 落在哪个一字多音组里：返回 melismas 下标 + 1，0 表示不在。
+    // 传延长段（`-`）的 tick 也能命中，连音线才不会在长音中间断掉。
+    int groupAt(long tick) const {
+        for (size_t i = 0; i < melismas.size(); i++)
+            if (tick >= melismas[i].tick && tick < melismas[i].spanEnd) return (int)i + 1;
+        return 0;
+    }
+    bool empty() const { return at.empty(); }
+};
+
+// 把 LRC 行按「行内音数均匀分布」铺到旋律轨上。
+// n > m（音多于字）时第 i 个字落在第 floor(i*n/m) 个音上，剩下的音由这个字
+// 拖着唱；n <= m 时一音一字，多出来的字没有音可挂。
+// mainTrack 由 pickMelodyTrack 给出；传 -1 或空行返回空结果。
+// 三个输出层必须共用它，否则会出现「网页有连音线、导入 MuseScore 却没有词」。
+LyricAssignment assignLyrics(const MidiData& data,
+                             const std::vector<LyricLine>& lines,
+                             int mainTrack);
 
 // 和弦标记
 struct ChordMark {

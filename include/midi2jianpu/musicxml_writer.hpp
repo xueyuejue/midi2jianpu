@@ -7,6 +7,9 @@
 namespace m2j {
 
 // 生成 MusicXML 3.1 文档
-std::string renderMusicXml(const MidiData& data, const KeyEstimate& key);
+// lyricLines 非空时，旋律轨会写出 <lyric> 与一字多音的 <slur>。
+// 默认 nullptr 保持「只导谱、不带词」的旧行为。
+std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
+                           const std::vector<LyricLine>* lyricLines = nullptr);
 
 } // namespace m2j

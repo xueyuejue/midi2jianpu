@@ -146,7 +146,17 @@ const char* midi2jianpu_musicxml(const uint8_t* midiData, int size, int keyPitch
     } else {
         key = m2j::estimateKey(data);
     }
-    g_result = m2j::renderMusicXml(data, key);
+    // 网页版导出 MusicXML 也要带词：歌词文本由 midi2jianpu_set_lyrics 传进来，
+    // 和 HTML 谱面走同一个 LRC 解析器，连音线/音节划分才不会两边不一致。
+    std::vector<m2j::LyricLine> lyricLines;
+    const std::vector<m2j::LyricLine>* lyricPtr = nullptr;
+    if (!g_lyrics.empty()) {
+        int bpm = (data.tempo > 0) ? (int)(60000000.0 / data.tempo) : 120;
+        if (bpm <= 0) bpm = 120;
+        lyricLines = m2j::parseLrcText(g_lyrics, data.division, bpm);
+        if (!lyricLines.empty()) lyricPtr = &lyricLines;
+    }
+    g_result = m2j::renderMusicXml(data, key, lyricPtr);
     return g_result.c_str();
 }
 

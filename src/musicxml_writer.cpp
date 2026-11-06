@@ -17,6 +17,20 @@
 
 namespace m2j {
 
+// 歌词是用户贴进来的任意文本，'&' 或 '<' 会直接把 XML 打坏
+static std::string xmlEscape(const std::string& s) {
+    std::string out;
+    for (char c : s) {
+        if (c == '&') out += "&amp;";
+        else if (c == '<') out += "&lt;";
+        else if (c == '>') out += "&gt;";
+        else if (c == '"') out += "&quot;";
+        else if (c == '\'') out += "&apos;";
+        else out += c;
+    }
+    return out;
+}
+
 // 升号写法（调号不含降号时使用）
 static const char* SHARP_STEP[12] = {
     "C", "C", "D", "D", "E", "F",
@@ -74,7 +88,8 @@ struct Segment {
     bool tieEnd = false;   // 前面有被切开的段 -> <tie type="stop"/>
 };
 
-std::string renderMusicXml(const MidiData& data, const KeyEstimate& key) {
+std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
+                           const std::vector<LyricLine>* lyricLines) {
     std::ostringstream xml;
     xml << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
     xml << "<score-partwise version=\"3.1\">\n";
@@ -128,9 +143,18 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key) {
     if (data.tempo > 0) bpm = 60000000.0 / data.tempo;
     else if (!data.tempoChanges.empty() && data.tempoChanges[0].bpm > 0) bpm = data.tempoChanges[0].bpm;
 
+    // 歌词只挂旋律轨。判定要用同一套 pickMelodyTrack（有 LRC 时「行首能否
+    // 对齐」是最强证据），否则词会被写到音符最多的伴奏轨上。
+    const int mainTrack = (lyricLines && !lyricLines->empty())
+                        ? pickMelodyTrack(data, lyricLines) : -1;
+
     partIdx = 1;
     for (auto& [t, ns] : byTrack) {
         if (ns.empty()) { partIdx++; continue; }
+
+        const LyricAssignment lyrics = (t == mainTrack)
+                                     ? assignLyrics(data, *lyricLines, t)
+                                     : LyricAssignment();
 
         // ---- 1. 展开成片段：跨小节的音符在此切开 ----
         auto triplets = detectTriplets(ns, division);
@@ -279,6 +303,37 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key) {
             // 三连音：<type> 写名义时值，实际缩放交给 <time-modification>
             auto [ntype, ndot] = durTypeDot(seg.triplet ? beats * 1.5 : beats);
 
+            // ---- 歌词与一字多音 ----
+            // 只挂在旋律轨的「真实音头」上：跨小节切出来的延续段（tieEnd）
+            // 与和弦的第二、三个音（chordMember）都不是新音节，重复写会让
+            // MuseScore 把同一个字显示两遍。
+            // 一个字唱多个音时：首音 syllabic=begin + slur start，中间音
+            // middle，末音 end + slur stop；一音一字则写 single。
+            std::string lyricXml, slurXml;
+            if (!lyrics.empty() && !seg.tieEnd && !isChordMember) {
+                auto pit = lyrics.at.find(seg.start);
+                if (pit != lyrics.at.end()) {
+                    const LyricPlacement& pl = pit->second;
+                    const bool multi = (pl.noteCount >= 2);
+                    lyricXml = std::string("<lyric number=\"1\"><syllabic>")
+                             + (multi ? "begin" : "single")
+                             + "</syllabic><text>" + xmlEscape(pl.text) + "</text></lyric>";
+                    if (multi) slurXml = "<slur type=\"start\" number=\"1\"/>";
+                } else {
+                    int g = lyrics.groupAt(seg.start);
+                    if (g > 0) {
+                        const LyricPlacement& pl = lyrics.melismas[g - 1];
+                        const bool last = (seg.start == pl.lastNoteTick);
+                        // <extend/> 是 MusicXML 里表示「这个字还在拖」的标准
+                        // 元素；只写 syllabic 不写 text 有些记谱软件会当成空词。
+                        lyricXml = std::string("<lyric number=\"1\"><syllabic>")
+                                 + (last ? "end" : "middle")
+                                 + "</syllabic><extend/></lyric>";
+                        if (last) slurXml = "<slur type=\"stop\" number=\"1\"/>";
+                    }
+                }
+            }
+
             xml << "      <note>";
             if (isChordMember) xml << "<chord/>";
             xml << "<pitch><step>" << step << "</step>";
@@ -295,12 +350,15 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key) {
                     << "<normal-notes>2</normal-notes>"
                     << "</time-modification>";
             }
-            if (seg.tieEnd || seg.tieStart) {
-                xml << "<notations>";
-                if (seg.tieEnd)   xml << "<tied type=\"stop\"/>";
-                if (seg.tieStart) xml << "<tied type=\"start\"/>";
-                xml << "</notations>";
-            }
+            // MusicXML 的 note 子元素有固定顺序：notations 在 lyric 之前。
+            // tied 与 slur 必须合进同一个 <notations>，分两个写会让某些
+            // 记谱软件只认第一个。
+            std::string notations;
+            if (seg.tieEnd)   notations += "<tied type=\"stop\"/>";
+            if (seg.tieStart) notations += "<tied type=\"start\"/>";
+            notations += slurXml;
+            if (!notations.empty()) xml << "<notations>" << notations << "</notations>";
+            xml << lyricXml;
             xml << "</note>\n";
 
             lastSegStart = seg.start;
