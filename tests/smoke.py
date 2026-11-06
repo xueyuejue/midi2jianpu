@@ -54,7 +54,7 @@ def main():
     print("\n[1] 默认输出（自动识别调性）")
     rc, out, err = run(exe, mid)
     check(rc == 0, "退出码为 0", err)
-    check("1 = C 大调" in out, "识别出 C 大调", out[:200])
+    check("1=C 大调" in out, "识别出 C 大调", out[:200])
     check("[Vocal]" in out and "[Piano]" in out and "[Pad]" in out, "分离出三个轨道")
     check(re.search(r"5\s+-", out) is not None, "二分音符标出延长线（5 -）")
     check("3(5 5 5" in out, "三连音标记 3(5 5 5)")
@@ -65,14 +65,14 @@ def main():
 
     print("\n[2] 手动调性 --key G（八度基准回归）")
     rc, out, _ = run(exe, mid, "--key", "G")
-    check(rc == 0 and "1 = G 大调" in out, "输出 G 大调")
+    check(rc == 0 and "1=G 大调" in out, "输出 G 大调")
     vocal = [l for l in out.splitlines() if l.startswith("[C]") or l.startswith("[F]")]
     joined = " ".join(vocal)
     check("4'" not in joined, "G 大调里 C5 不再错误地带高八度点", joined)
 
     print("\n[3] 降号调 --key Bb")
     rc, out, _ = run(exe, mid, "--key", "Bb")
-    check(rc == 0 and "1 = Bb 大调" in out, "输出 Bb 大调")
+    check(rc == 0 and "1=Bb 大调" in out, "输出 Bb 大调")
     check("b" in out, "出现降号写法")
 
     print("\n[4] 非法调性应给出警告而不是静默失败")
@@ -182,13 +182,45 @@ def main():
     txt = os.path.join(tmp, "out.txt")
     rc, out, _ = run(exe, mid, "--output", txt)
     check(rc == 0 and os.path.exists(txt), "生成文本文件")
-    check("1 = C 大调" in open(txt, encoding="utf-8").read(), "文件内有调性行")
+    check("1=C 大调" in open(txt, encoding="utf-8").read(), "文件内有调性行")
 
     print("\n[10] --help / --version")
     rc, out, _ = run(exe, "--help")
     check(rc == 0 and "--musicxml" in out, "帮助里列出了 --musicxml")
     rc, out, _ = run(exe, "--version")
     check(rc == 0 and re.search(r"\d+\.\d+\.\d+", out) is not None, "版本号正常")
+
+    # ---- [11] 真实录音 MIDI：时值量化 + 首调调性 ----
+    # humanized.mid 是 A 羽调式、八分音符、85% 门限（note-off 提前），
+    # 这两点正是真实录音 MIDI 最容易让记谱出错的地方。
+    print("\n[11] 真实录音 MIDI：时值量化与首调调性")
+    human = os.path.join(FIXTURES, "humanized.mid")
+    if not os.path.exists(human):
+        check(False, "素材 humanized.mid 存在（先跑 make_fixture.py）")
+    else:
+        rc, out, err = run(exe, human)
+        check(rc == 0, "退出码为 0", err)
+        # 五声音阶 + 终止音 A -> a 小调；首调记作 1=C，主音落在 6 上
+        check("1=C" in out, "a 小调记为 1=C（首调）", out[:160])
+        check("小调" in out and "主音=6" in out, "调性描述标出主音=6")
+        # 门限 0.425 拍的音若不做量化，会被判成附点十六分 "=."
+        check("=." not in out, "八分音符未被误判成附点十六分", out[:400])
+        check(re.search(r"6_\s+5_\s+3_\s+5_", out) is not None,
+              "音符 A G E G 都记成八分音符", out[:400])
+        check(re.search(r"6\s+-", out) is not None, "终止音 A 为二分音符（6 -）", out[-80:])
+
+        # --no-quantize 应保留原始时长（此时就会出现非八分音符）
+        rc2, out2, _ = run(exe, human, "--no-quantize")
+        check(rc2 == 0 and out2 != out, "关闭量化后输出与量化版不同")
+
+        # MusicXML 必须带 attributes，否则 MuseScore 打不开
+        hx = os.path.join(tmp, "h.xml")
+        rc3, _, _ = run(exe, human, "--musicxml", hx)
+        body = open(hx, encoding="utf-8").read()
+        check(rc3 == 0 and "<divisions>960</divisions>" in body,
+              "开头全是休止时仍写出 <divisions>")
+        check("<mode>minor</mode>" in body, "调式写成 minor")
+        check("<time><beats>4</beats>" in body, "拍号已写出")
 
     print("\n" + "-" * 48)
     if failures:

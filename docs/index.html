@@ -3,14 +3,14 @@
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta charset="utf-8">
-<title>midi2jianpu - MIDI转简谱 在线版</title>
+<title>midi2jianpu - MIDI 转简谱 在线版</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>1</text></svg>">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:"Noto Serif SC","SimSun",serif;background:#f8f8f5;color:#222;padding:20px;min-height:100vh}
 .wrap{max-width:900px;margin:0 auto}
 h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bottom:16px;color:#b03030;font-weight:700}
-.drop{border:2px dashed #ccc;border-radius:12px;padding:40px 20px;text-align:center;background:#fff;cursor:pointer;transition:all .2s}
+.drop{border:2px dashed #ccc;border-radius:12px;padding:36px 20px;text-align:center;background:#fff;cursor:pointer;transition:all .2s}
 .drop:hover,.drop.over{background:#fef5f5;border-color:#b03030}
 .drop p{color:#999;font-size:14px;margin-top:6px}
 .controls{margin:16px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -18,355 +18,394 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
 .controls select{padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:14px;background:#fff}
 .controls button{padding:6px 14px;background:#fff;border:1px solid #ddd;border-radius:6px;cursor:pointer;font-size:13px;transition:all .2s}
 .controls button:hover{background:#f5f5f0;border-color:#bbb}
-.meta{color:#888;font-size:13px;margin:8px 0;text-align:center}
-.score{background:#fff;border:none;border-radius:0;padding:20px 0;margin-top:16px;display:none}
-.error{color:#c00;font-size:14px;margin:12px 0;display:none}
-.footer{margin-top:24px;color:#aaa;font-size:12px;text-align:center}
-.loading{text-align:center;padding:40px;color:#888}
+.controls button:disabled{opacity:.45;cursor:default}
+.lyrics{margin:10px 0}
+.lyrics summary{cursor:pointer;font-size:14px;color:#555;padding:6px 0}
+.lyrics textarea{width:100%;height:120px;padding:10px;border:1px solid #ddd;border-radius:8px;
+                 font-family:ui-monospace,Consolas,monospace;font-size:13px;line-height:1.6;resize:vertical;background:#fff}
+.hint{font-size:12px;color:#999;margin-top:4px}
+.meta{color:#888;font-size:13px;margin:8px 0;text-align:center;min-height:18px}
+.score{background:#fff;border-radius:10px;padding:10px 0;margin-top:16px;display:none;overflow-x:auto}
+.error{color:#c00;font-size:14px;margin:12px 0;padding:10px 12px;background:#fff3f3;
+       border:1px solid #f0caca;border-radius:8px;display:none;white-space:pre-wrap}
+.footer{margin-top:24px;color:#aaa;font-size:12px;text-align:center;line-height:1.8}
+.footer a{color:#b03030;text-decoration:none}
 </style>
 </head>
 <body>
 <div class="wrap">
 <h1>MIDI → 简谱 在线转换</h1>
+
 <div class="drop" id="drop">
   <div style="font-size:18px;font-weight:500">拖入 .mid 文件到这里</div>
-  <p>或点击选择 · 纯浏览器解析，不上传服务器</p>
+  <p>或点击选择 · 纯浏览器解析，文件不会上传任何服务器</p>
 </div>
 <input type="file" id="file" accept=".mid,.midi" style="display:none">
+
 <div class="controls">
-  <label>调性：</label>
+  <label for="key">调性：</label>
   <select id="key">
     <option value="-1:1">自动识别</option>
     <optgroup label="大调">
-      <option value="0:1">1=C 大调</option>
-      <option value="7:1">1=G 大调</option>
-      <option value="2:1">1=D 大调</option>
-      <option value="9:1">1=A 大调</option>
-      <option value="4:1">1=E 大调</option>
-      <option value="11:1">1=B 大调</option>
-      <option value="6:1">1=F# 大调</option>
-      <option value="1:1">1=C# 大调</option>
-      <option value="5:1">1=F 大调</option>
-      <option value="10:1">1=Bb 大调</option>
-      <option value="3:1">1=Eb 大调</option>
-      <option value="8:1">1=Ab 大调</option>
+      <option value="0:1">1=C</option>
+      <option value="7:1">1=G</option>
+      <option value="2:1">1=D</option>
+      <option value="9:1">1=A</option>
+      <option value="4:1">1=E</option>
+      <option value="11:1">1=B</option>
+      <option value="6:1">1=F#</option>
+      <option value="1:1">1=C#</option>
+      <option value="5:1">1=F</option>
+      <option value="10:1">1=Bb</option>
+      <option value="3:1">1=Eb</option>
+      <option value="8:1">1=Ab</option>
     </optgroup>
-    <optgroup label="小调">
-      <option value="9:0">6=A 小调</option>
-      <option value="4:0" selected>6=E 小调</option>
-      <option value="11:0">6=B 小调</option>
-      <option value="6:0">6=F# 小调</option>
-      <option value="1:0">6=C# 小调</option>
-      <option value="8:0">6=G# 小调</option>
-      <option value="3:0">6=Eb 小调</option>
-      <option value="10:0">6=Bb 小调</option>
-      <option value="2:0">6=D 小调</option>
-      <option value="7:0">6=G 小调</option>
-      <option value="0:0">6=C 小调</option>
-      <option value="5:0">6=F 小调</option>
+    <optgroup label="小调（首调记作 1=关系大调，主音为 6）">
+      <option value="9:0">a 小调（1=C）</option>
+      <option value="4:0">e 小调（1=G）</option>
+      <option value="11:0">b 小调（1=D）</option>
+      <option value="6:0">f# 小调（1=A）</option>
+      <option value="1:0">c# 小调（1=E）</option>
+      <option value="8:0">g# 小调（1=B）</option>
+      <option value="3:0">eb 小调（1=Gb）</option>
+      <option value="10:0">bb 小调（1=Db）</option>
+      <option value="2:0">d 小调（1=F）</option>
+      <option value="7:0">g 小调（1=Bb）</option>
+      <option value="0:0">c 小调（1=Eb）</option>
+      <option value="5:0">f 小调（1=Ab）</option>
     </optgroup>
   </select>
-  <button id="lyricsBtn">上传歌词 (.lrc)</button>
-  <input type="file" id="lyricsFile" accept=".lrc,.json" style="display:none">
-  <button id="playBtn" style="display:none">播放</button>
-  <button id="copyText" style="display:none">复制简谱文本</button>
-  <button id="downloadPng" style="display:none">下载 PNG 谱面</button>
-  <button id="downloadXml" style="display:none">下载 MusicXML</button>
 </div>
+
+<details class="lyrics">
+  <summary>歌词（可选）：粘贴 LRC 文本，或选择 .lrc 文件</summary>
+  <textarea id="lyricsText" placeholder="[00:13.33]风霜染尽客行袍&#10;[00:20.00]江湖夜雨任潇潇"></textarea>
+  <div class="controls">
+    <button id="lyricsBtn">选择 .lrc 文件</button>
+    <button id="lyricsClear">清空歌词</button>
+    <span class="hint">歌词会按时间戳对齐到音符，只显示在旋律轨上</span>
+  </div>
+  <input type="file" id="lyricsFile" accept=".lrc" style="display:none">
+</details>
+
+<div class="controls">
+  <button id="playBtn" disabled>播放</button>
+  <button id="copyText" disabled>复制简谱文本</button>
+  <button id="downloadXml" disabled>下载 MusicXML</button>
+  <button id="downloadPng" disabled>下载 PNG 谱面</button>
+</div>
+
 <div class="meta" id="meta"></div>
-<div class="score" id="score"></div>
 <div class="error" id="err"></div>
-<div class="footer">midi2jianpu · 在线 demo · WASM 核心 · C++ 见 GitHub</div>
+<div class="score" id="score"></div>
+
+<div class="footer">
+  midi2jianpu · 纯前端 WASM 转换 · <a href="https://github.com/xueyuejue/midi2jianpu">源码与命令行版</a><br>
+  打印：Ctrl/Cmd + P，谱面已做打印分页优化
+</div>
 </div>
 
 <script src="wasm/midi2jianpu.js"></script>
 <script>
-let wasmMod=null;
-let midiBytes=null;
-let lyricsText=null;
+(function () {
+  'use strict';
 
-// 初始化WASM
-createMidi2Jianpu().then(mod => {
-  wasmMod = mod;
-  console.log('WASM模块加载完成');
-}).catch(e => {
-  document.getElementById('err').textContent = 'WASM加载失败: ' + e.message;
-  document.getElementById('err').style.display = 'block';
-});
+  var wasmMod = null;
+  var midiBytes = null;
+  var wasmReady = false;
 
-// 上传MIDI文件
-const drop = document.getElementById('drop');
-const fileInput = document.getElementById('file');
-drop.onclick = () => fileInput.click();
-drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
-drop.ondragleave = () => drop.classList.remove('over');
-drop.ondrop = e => {
-  e.preventDefault();
-  drop.classList.remove('over');
-  loadMidi(e.dataTransfer.files[0]);
-};
-fileInput.onchange = () => loadMidi(fileInput.files[0]);
+  var $ = function (id) { return document.getElementById(id); };
+  var errBox = $('err');
 
-function loadMidi(f) {
-  if (!f) return;
-  const fr = new FileReader();
-  fr.onload = () => {
-    midiBytes = new Uint8Array(fr.result);
-    convert();
+  function showErr(msg) {
+    errBox.textContent = msg;
+    errBox.style.display = 'block';
+  }
+  function clearErr() {
+    errBox.style.display = 'none';
+  }
+
+  // ---- WASM 初始化 ----
+  if (typeof createMidi2Jianpu !== 'function') {
+    showErr('未能加载 wasm/midi2jianpu.js。\n如果是本地打开，请用 HTTP 服务（如 python -m http.server）而不是 file://，\n浏览器会因跨域策略拒绝加载 .wasm。');
+  } else {
+    createMidi2Jianpu().then(function (mod) {
+      wasmMod = mod;
+      wasmReady = true;
+      if (midiBytes) convert();
+    }).catch(function (e) {
+      showErr('WASM 模块加载失败：' + e.message);
+    });
+  }
+
+  // ---- 文件读取 ----
+  var drop = $('drop'), fileInput = $('file');
+  drop.onclick = function () { fileInput.click(); };
+  drop.ondragover = function (e) { e.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = function () { drop.classList.remove('over'); };
+  drop.ondrop = function (e) {
+    e.preventDefault();
+    drop.classList.remove('over');
+    if (e.dataTransfer.files.length) loadMidi(e.dataTransfer.files[0]);
   };
-  fr.readAsArrayBuffer(f);
-}
+  fileInput.onchange = function () {
+    if (fileInput.files.length) loadMidi(fileInput.files[0]);
+  };
 
-// 歌词上传
-const lyricsBtn = document.getElementById('lyricsBtn');
-const lyricsFile = document.getElementById('lyricsFile');
-lyricsBtn.onclick = () => lyricsFile.click();
-lyricsFile.onchange = () => {
-  const f = lyricsFile.files[0];
-  if (!f) return;
-  const fr = new FileReader();
-  fr.onload = () => {
-    lyricsText = fr.result;
-    lyricsBtn.textContent = `歌词已加载`;
+  function loadMidi(f) {
+    if (!f) return;
+    clearErr();
+    var fr = new FileReader();
+    fr.onload = function () {
+      midiBytes = new Uint8Array(fr.result);
+      $('meta').textContent = f.name + ' · ' + (midiBytes.length / 1024).toFixed(1) + ' KB';
+      convert();
+    };
+    fr.onerror = function () { showErr('读取文件失败'); };
+    fr.readAsArrayBuffer(f);
+  }
+
+  // ---- 歌词 ----
+  var lyricsArea = $('lyricsText');
+  $('lyricsBtn').onclick = function () { $('lyricsFile').click(); };
+  $('lyricsFile').onchange = function () {
+    var f = $('lyricsFile').files[0];
+    if (!f) return;
+    var fr = new FileReader();
+    fr.onload = function () {
+      lyricsArea.value = fr.result;
+      if (midiBytes) convert();
+    };
+    fr.readAsText(f);
+  };
+  $('lyricsClear').onclick = function () {
+    lyricsArea.value = '';
     if (midiBytes) convert();
   };
-  fr.readAsText(f);
-};
 
-// 转换
-function convert() {
-  if (!wasmMod) {
-    document.getElementById('err').textContent = 'WASM模块尚未加载完成，请稍候';
-    document.getElementById('err').style.display = 'block';
-    return;
-  }
-  if (!midiBytes) return;
+  // 歌词输入防抖，避免每敲一个字就跑一次转换
+  var lyricTimer = null;
+  lyricsArea.oninput = function () {
+    if (!midiBytes) return;
+    clearTimeout(lyricTimer);
+    lyricTimer = setTimeout(convert, 500);
+  };
 
-  try {
-    const [keyPitch, isMajor] = document.getElementById('key').value.split(':').map(Number);
+  // ---- 通用：把 MIDI 传进 wasm，调用 fn，取回字符串 ----
+  function callWasm(fnName, keyPitch, isMajor) {
+    var fn = wasmMod['_' + fnName];
+    if (typeof fn !== 'function') return null;
 
-    // 分配内存
-    const ptr = wasmMod._malloc(midiBytes.length);
+    var ptr = wasmMod._malloc(midiBytes.length);
     wasmMod.HEAPU8.set(midiBytes, ptr);
 
-    // 调用WASM生成HTML
-    // 先设置歌词
-    if (lyricsText && wasmMod._midi2jianpu_set_lyrics) {
-      const lrcLen = wasmMod.lengthBytesUTF8(lyricsText) + 1;
-      const lrcPtr = wasmMod._malloc(lrcLen);
-      wasmMod.stringToUTF8(lyricsText, lrcPtr, lrcLen);
-      wasmMod._midi2jianpu_set_lyrics(lrcPtr);
-      wasmMod._free(lrcPtr);
+    // 歌词每次都重新设置：wasm 里是全局缓冲，不清空会串到下一次转换
+    if (wasmMod._midi2jianpu_set_lyrics) {
+      var txt = lyricsArea.value || '';
+      var n = wasmMod.lengthBytesUTF8(txt) + 1;
+      var lp = wasmMod._malloc(n);
+      wasmMod.stringToUTF8(txt, lp, n);
+      wasmMod._midi2jianpu_set_lyrics(lp);
+      wasmMod._free(lp);
     }
-    wasmMod._midi2jianpu_html(ptr, midiBytes.length, keyPitch, isMajor);
-    const len = wasmMod._midi2jianpu_result_len();
-    const buf = wasmMod._malloc(len + 1);
-    wasmMod._midi2jianpu_copy_result(buf, len + 1);
-    const html = wasmMod.UTF8ToString(buf);
 
-    // 释放内存
+    fn(ptr, midiBytes.length, keyPitch, isMajor);
+    var len = wasmMod._midi2jianpu_result_len();
+    var buf = wasmMod._malloc(len + 1);
+    wasmMod._midi2jianpu_copy_result(buf, len + 1);
+    var out = wasmMod.UTF8ToString(buf);
+
     wasmMod._free(ptr);
     wasmMod._free(buf);
-
-    // 显示结果
-    document.getElementById('score').innerHTML = html;
-    document.getElementById('score').style.display = 'block';
-    document.getElementById('downloadPng').style.display = 'inline-block';
-    document.getElementById('downloadXml').style.display = 'inline-block';
-    document.getElementById('copyText').style.display = 'inline-block';
-    document.getElementById('playBtn').style.display = 'inline-block';
-    document.getElementById('err').style.display = 'none';
-
-    // 提取元信息
-    const noteMatch = html.match(/(\d+)\s*音符/);
-    if (noteMatch) {
-      document.getElementById('meta').textContent = `共 ${noteMatch[1]} 音符 · WASM 核心`;
-    }
-  } catch (e) {
-    document.getElementById('err').textContent = '解析失败: ' + e.message;
-    document.getElementById('err').style.display = 'block';
+    return out;
   }
-}
 
-// 调性选择变化时重新转换
-document.getElementById('key').onchange = () => {
-  if (midiBytes) convert();
-};
-
-// 下载PNG
-document.getElementById('downloadPng').onclick = function() {
-  const el = document.getElementById('score');
-  if (typeof html2canvas === 'undefined') {
-    alert('html2canvas未加载');
-    return;
+  function keyPair() {
+    var v = $('key').value.split(':');
+    return [Number(v[0]), Number(v[1])];
   }
-  html2canvas(el, { backgroundColor: '#fff', scale: 2 }).then(canvas => {
-    const a = document.createElement('a');
-    a.download = 'jianpu.png';
-    a.href = canvas.toDataURL('image/png');
-    a.click();
-  });
-};
 
-// 下载MusicXML
-document.getElementById('downloadXml').onclick = function() {
-  if (!wasmMod || !midiBytes) return;
-  // 能力探测：仓库里的 wasm 产物可能早于 MusicXML 功能编译，直接调用会抛
-  // "not a function"。这里给出可读提示，而不是让用户看到晦涩的异常。
-  if (typeof wasmMod._midi2jianpu_musicxml !== 'function') {
-    alert('当前网页版的 wasm 尚未包含 MusicXML 导出。\n\n' +
-          '请用命令行版：\n  midi2jianpu 你的歌.mid --musicxml out.xml\n\n' +
-          '（重新编译 wasm 的方法见 BUILD.md 的「WebAssembly」一节）');
-    return;
-  }
-  try {
-    const [keyPitch, isMajor] = document.getElementById('key').value.split(':').map(Number);
-    const ptr = wasmMod._malloc(midiBytes.length);
-    wasmMod.HEAPU8.set(midiBytes, ptr);
-    wasmMod._midi2jianpu_musicxml(ptr, midiBytes.length, keyPitch, isMajor);
-    const len = wasmMod._midi2jianpu_result_len();
-    const buf = wasmMod._malloc(len + 1);
-    wasmMod._midi2jianpu_copy_result(buf, len + 1);
-    const xml = wasmMod.UTF8ToString(buf);
-    wasmMod._free(ptr);
-    wasmMod._free(buf);
-    // 下载
-    const blob = new Blob([xml], {type: 'application/xml'});
-    const a = document.createElement('a');
-    a.download = 'jianpu.xml';
-    a.href = URL.createObjectURL(blob);
-    a.click();
-  } catch (e) {
-    alert('导出MusicXML失败: ' + e.message);
-  }
-};
-
-// 复制简谱文本
-document.getElementById('copyText').onclick = function() {
-  const el = document.getElementById('score');
-  // 从HTML中提取文本简谱
-  const measures = el.querySelectorAll('.measure');
-  let text = '';
-  // 提取标题和元信息
-  const h1 = el.querySelector('h1');
-  const meta = el.querySelector('.meta');
-  if (h1) text += h1.textContent + '\n';
-  if (meta) text += meta.textContent + '\n';
-  text += '-'.repeat(40) + '\n';
-  // 提取每个小节的音符
-  measures.forEach(m => {
-    let line = '';
-    const notes = m.querySelectorAll('.note');
-    notes.forEach(n => {
-      const num = n.querySelector('.num');
-      const lyric = n.querySelector('.lyric');
-      if (num) {
-        let s = num.textContent;
-        // 检查高音点/低音点
-        if (n.classList.contains('dot-above')) s += "'";
-        if (n.classList.contains('dot-below')) s += ',';
-        line += s + ' ';
+  // ---- 主转换 ----
+  function convert() {
+    if (!wasmReady || !midiBytes) return;
+    clearErr();
+    try {
+      var kp = keyPair();
+      var html = callWasm('midi2jianpu_html', kp[0], kp[1]);
+      if (html === null) {
+        showErr('当前 wasm 不含 HTML 渲染函数，请重新编译（见 BUILD.md）。');
+        return;
       }
-      const exts = n.querySelectorAll('.ext');
-      exts.forEach(e => { line += e.textContent + ' '; });
+      if (html.indexOf('错误') >= 0 && html.indexOf('<h1') < 0) {
+        showErr(html.replace(/<[^>]+>/g, ''));
+        return;
+      }
+
+      $('score').innerHTML = html;
+      $('score').style.display = 'block';
+      ['playBtn', 'copyText', 'downloadXml', 'downloadPng'].forEach(function (id) {
+        $(id).disabled = false;
+      });
+
+      var m = html.match(/1=[^｜<]*/);
+      $('meta').textContent = (m ? m[0].trim() + ' · ' : '') + 'WASM 核心';
+    } catch (e) {
+      showErr('转换失败：' + e.message);
+    }
+  }
+
+  $('key').onchange = function () { if (midiBytes) convert(); };
+
+  // ---- 复制简谱文本 ----
+  // 直接用 wasm 的文本输出，不再从 DOM 里爬（旧的爬取逻辑依赖已删除的
+  // dot-above / dot-below 类，复制出来的谱子会丢八度点）。
+  $('copyText').onclick = function () {
+    if (!wasmReady || !midiBytes) return;
+    try {
+      var kp = keyPair();
+      var text = callWasm('midi2jianpu_parse', kp[0], kp[1]);
+      if (!text) { showErr('当前 wasm 不含文本输出函数。'); return; }
+      copyToClipboard(text, $('copyText'));
+    } catch (e) {
+      showErr('生成文本失败：' + e.message);
+    }
+  };
+
+  function copyToClipboard(text, btn) {
+    var done = function () {
+      var old = btn.textContent;
+      btn.textContent = '已复制';
+      setTimeout(function () { btn.textContent = old; }, 1500);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(fallback);
+    } else {
+      fallback();
+    }
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); done(); }
+      catch (e) { showErr('复制失败，请手动选择文本复制'); }
+      document.body.removeChild(ta);
+    }
+  }
+
+  // ---- 下载 MusicXML ----
+  // 保留能力探测：仓库里已提交的 wasm 可能早于 MusicXML 导出编译，
+  // 直接调用会抛 "not a function"。提示改成命令行，而不是让用户看异常。
+  $('downloadXml').onclick = function () {
+    if (!wasmReady || !midiBytes) return;
+    if (typeof wasmMod._midi2jianpu_musicxml !== 'function') {
+      showErr('当前网页版的 wasm 尚未包含 MusicXML 导出。\n\n' +
+              '可以改用命令行版：\n  midi2jianpu 你的歌.mid --musicxml out.xml\n\n' +
+              '重新编译 wasm 的方法见 BUILD.md 的「WebAssembly」一节。');
+      return;
+    }
+    try {
+      var kp = keyPair();
+      var xml = callWasm('midi2jianpu_musicxml', kp[0], kp[1]);
+      downloadBlob(xml, 'jianpu.xml', 'application/xml');
+    } catch (e) {
+      showErr('导出 MusicXML 失败：' + e.message);
+    }
+  };
+
+  function downloadBlob(data, name, mime) {
+    var blob = new Blob([data], { type: mime });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.download = name;
+    a.href = url;
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 3000);
+  }
+
+  // ---- 下载 PNG：优先用浏览器原生 SVG 外框，没有 html2canvas 也不影响出图 ----
+  $('downloadPng').onclick = function () {
+    var el = $('score');
+    if (typeof html2canvas === 'undefined') {
+      showErr('PNG 导出需要 html2canvas（CDN 未加载，可能处于离线状态）。\n' +
+              '替代方案：直接 Ctrl/Cmd + P 打印为 PDF，版式更清晰。');
+      return;
+    }
+    html2canvas(el, { backgroundColor: '#fff', scale: 2 }).then(function (canvas) {
+      var a = document.createElement('a');
+      a.download = 'jianpu.png';
+      a.href = canvas.toDataURL('image/png');
+      a.click();
+    }).catch(function (e) {
+      showErr('生成图片失败：' + e.message);
     });
-    const exts = m.querySelectorAll('.ext');
-    exts.forEach(e => { line += e.textContent + ' '; });
-    if (line.trim()) text += line.trim() + '  |\n';
-  });
-  // 复制到剪贴板
-  navigator.clipboard.writeText(text).then(() => {
-    const btn = document.getElementById('copyText');
-    const old = btn.textContent;
-    btn.textContent = '已复制!';
-    setTimeout(() => btn.textContent = old, 1500);
-  }).catch(() => {
-    alert('复制失败，请手动选择文本复制');
-  });
-};
+  };
 
-// 播放功能
-let audioCtx = null;
-let isPlaying = false;
-let playTimeout = null;
-  if (!wasmMod || !midiBytes) return;
-  if (isPlaying) {
-    stopPlayback();
-    return;
+  // ---- 播放 ----
+  var audioCtx = null;
+  var playing = false;
+  var stopTimer = null;
+
+  $('playBtn').onclick = function () {
+    if (!wasmReady || !midiBytes) return;
+    if (playing) { stopPlayback(); return; }
+    startPlayback();
+  };
+
+  function startPlayback() {
+    try {
+      var ptr = wasmMod._malloc(midiBytes.length);
+      wasmMod.HEAPU8.set(midiBytes, ptr);
+      wasmMod._midi2jianpu_get_notes_json(ptr, midiBytes.length);
+      var len = wasmMod._midi2jianpu_result_len();
+      var buf = wasmMod._malloc(len + 1);
+      wasmMod._midi2jianpu_copy_result(buf, len + 1);
+      var json = wasmMod.UTF8ToString(buf);
+      wasmMod._free(ptr);
+      wasmMod._free(buf);
+
+      var notes = JSON.parse(json);
+      if (!notes.length) { showErr('没有可播放的音符。'); return; }
+
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+
+      var t0 = audioCtx.currentTime + 0.1;
+      var end = 0;
+      notes.forEach(function (n) {
+        var osc = audioCtx.createOscillator();
+        var gain = audioCtx.createGain();
+        osc.frequency.value = 440 * Math.pow(2, (n.pitch - 69) / 12);
+        osc.type = 'triangle';
+        var start = t0 + n.time;
+        var dur = Math.max(n.duration, 0.12);
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.linearRampToValueAtTime(0.22, start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start(start);
+        osc.stop(start + dur);
+        if (start + dur > end) end = start + dur;
+      });
+
+      playing = true;
+      $('playBtn').textContent = '停止';
+      stopTimer = setTimeout(stopPlayback, (end - t0 + 0.6) * 1000);
+    } catch (e) {
+      showErr('播放失败：' + e.message);
+    }
   }
-  startPlayback();
-};
 
-function startPlayback() {
-  try {
-    // 从WASM获取音符JSON
-    const ptr = wasmMod._malloc(midiBytes.length);
-    wasmMod.HEAPU8.set(midiBytes, ptr);
-    wasmMod._midi2jianpu_get_notes_json(ptr, midiBytes.length);
-    const len = wasmMod._midi2jianpu_result_len();
-    const buf = wasmMod._malloc(len + 1);
-    wasmMod._midi2jianpu_copy_result(buf, len + 1);
-    const jsonStr = wasmMod.UTF8ToString(buf);
-    wasmMod._free(ptr);
-    wasmMod._free(buf);
-
-    const notes = JSON.parse(jsonStr);
-    if (notes.length === 0) return;
-
-    // 创建AudioContext
-    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    if (audioCtx.state === 'suspended') audioCtx.resume();
-
-    const now = audioCtx.currentTime;
-    let maxEnd = 0;
-
-    // 播放每个音符
-    notes.forEach(note => {
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      // MIDI音高转频率: 440 * 2^((pitch-69)/12)
-      const freq = 440 * Math.pow(2, (note.pitch - 69) / 12);
-      osc.frequency.value = freq;
-      osc.type = 'triangle';
-      // 包络: 快速起音, 缓慢衰减
-      const start = now + note.time;
-      const dur = Math.max(note.duration, 0.1);
-      gain.gain.setValueAtTime(0, start);
-      gain.gain.linearRampToValueAtTime(0.3, start + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.01, start + dur);
-      osc.connect(gain);
-      gain.connect(audioCtx.destination);
-      osc.start(start);
-      osc.stop(start + dur);
-      maxEnd = Math.max(maxEnd, start + dur);
-    });
-
-    isPlaying = true;
-    const btn = document.getElementById('playBtn');
-    btn.textContent = '停止';
-    // 播放结束后恢复按钮
-    playTimeout = setTimeout(() => {
-      stopPlayback();
-    }, (maxEnd - now) * 1000 + 500);
-  } catch (e) {
-    alert('播放失败: ' + e.message);
+  function stopPlayback() {
+    playing = false;
+    if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
+    if (audioCtx) { audioCtx.close(); audioCtx = null; }
+    $('playBtn').textContent = '播放';
   }
-}
-
-function stopPlayback() {
-  isPlaying = false;
-  if (playTimeout) {
-    clearTimeout(playTimeout);
-    playTimeout = null;
-  }
-  // 停止所有正在播放的音符
-  if (audioCtx) {
-    audioCtx.close();
-    audioCtx = null;
-  }
-  const btn = document.getElementById('playBtn');
-  btn.textContent = '播放';
-}
+})();
 </script>
 <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 </body>

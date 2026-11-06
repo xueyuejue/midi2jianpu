@@ -14,8 +14,16 @@ struct KeyEstimate {
 // 根据 MIDI 数据估计调性（优先用内置调号，否则 Krumhansl-Schmuckler 相关度匹配）
 KeyEstimate estimateKey(const MidiData& data);
 
-// 调性名（自动选择升/降写法，如 "Bb" 而不是 "A#"）
+// 简谱调号的 do 音所在音级。
+// 简谱用首调唱名：小调不写 1=主音，而是把关系大调的 do 记作 1，主音落在 6 上
+// （la 为主音）。所以 a 小调的调号是 1=C，e 小调是 1=G。
+int notationDoPitchClass(const KeyEstimate& key);
+
+// 调号音名（已按首调换算），如 "C"、"Bb"；a 小调返回 "C"
 std::string keyName(const KeyEstimate& key);
+
+// 完整调性描述，如 "1=C (a小调)"、"1=G 大调"
+std::string keyDescription(const KeyEstimate& key);
 
 // 该调性是否习惯用降号记谱（调号含降号）
 bool prefersFlats(const KeyEstimate& key);
@@ -30,6 +38,24 @@ std::string pitchToJianpu(int pitch, const KeyEstimate& key);
 //   4拍="---" 3拍="--" 2拍="-" 附点四分="." 四分=""
 //   附点八分="_." 八分="_" 附点十六="=." 十六="=" 三十二="%%"
 std::string durationSuffix(long durationTicks, int division);
+
+// 时值量化报告
+struct QuantizeReport {
+    int adjusted = 0;    // 被修正时值/位置的音符数
+    long gridTicks = 0;  // 实际使用的音头网格（tick）
+    double gate = 1.0;   // 估计出的门限因子（note-off 提前比例）
+    bool changed() const { return adjusted > 0; }
+};
+
+// 把演奏 MIDI 的时值吸附到记谱网格。
+//
+// 真实录音转出的 MIDI 里，note-off 普遍早于下一个音头（门限时间 85% 左右是
+// DAW 的常见默认值），直接拿时长查时值表会把八分音符判成附点十六分。这里做两件事：
+//   1) 音头吸附到 1/24 拍网格（同时容纳 32 分音符与三连音）
+//   2) 时长取「到下一个音头的时间」——当原时长接近该间隔时（>=70%），
+//      说明只是门限衰减而非休止；否则按原时长吸附到最近的合法时值
+// 会就地修改 data.notes 的 startTicks / durationTicks，seconds 保持不变。
+QuantizeReport quantizeTiming(MidiData& data);
 
 // 把音符列表格式化成文本简谱（含拍号、小节线、时值）
 std::string formatJianpu(const MidiData& data, const KeyEstimate& key);
@@ -60,6 +86,10 @@ std::vector<LyricSyllable> parseLrc(const std::string& lrcPath, int division, in
 
 // 解析LRC为行列表（用于按音符对齐）
 std::vector<LyricLine> parseLrcLines(const std::string& lrcPath, int division, int bpm);
+
+// 同 parseLrcLines，但输入是 LRC 文本而不是路径。
+// WASM 版没有文件系统，只能走这个入口。
+std::vector<LyricLine> parseLrcText(const std::string& lrc, int division, int bpm);
 
 // 和弦标记
 struct ChordMark {
