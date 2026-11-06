@@ -16,28 +16,29 @@
 
 ## 已实现
 
-- [x] 解析标准 MIDI 文件（手写二进制解析，多轨、多通道、可变速度）
+- [x] 解析标准 MIDI 文件（手写二进制解析，多轨、多通道、可变速度、SysEx 跳过）
 - [x] 自动识别调性（Krumhansl-Schmuckler 算法，音乐信息检索标准）
-- [x] 手动指定调性：`--key Em` / `--key C`
+- [x] 手动指定调性：`--key Em` / `--key Bb` / `--key f`
 - [x] 移调功能：`--transpose +2`（半音偏移）
 - [x] 识别拍号、速度（BPM）、调号、轨道名称、乐器名称、歌词、标记等元事件
 - [x] 按拍号划分小节、输出小节线、HTML 自动换行排版
-- [x] 时值标注：全/二分/四分/八分/十六分音符及附点，延长线 `-`
+- [x] 时值标注：全/二分/四分/八分/十六分/三十二分音符及附点，延长线 `-`
 - [x] 同音延音合并（`1 1 1` → `1 - -`）
 - [x] 多轨分离（优先用 MIDI 内置轨道名）
 - [x] 休止符 `0`（按时长显示时值线）
-- [x] 高低八度点、升降号 `#`/`b`
-- [x] 强弱记号（从 MIDI Expression 解析：pp/p/mp/mf/f/ff）
+- [x] 高低八度点、升降号 `#`/`b`（降号调自动优先写 `b`）
+- [x] 强弱记号（从 MIDI Expression 解析：pp/p/mp/mf/f/ff，按通道隔离）
 - [x] 三连音自动识别（连续3个等长音符，组内不做同音合并）
 - [x] 弯音轮修正（Pitch Bend 平均偏移 ±0.5 半音以上修正音高）
 - [x] **和弦检测**：自动识别伴奏轨和弦进行（C/Am/G7 等9种类型）
 - [x] **HTML 谱面导出**：自包含网页，浏览器打开即可打印 PDF，含和弦标记
-- [x] **MusicXML 导出**：`--musicxml out.xml`，可被 MuseScore 打开
+- [x] **MusicXML 导出**：`--musicxml out.xml`，符合 3.1 规范（整数 `duration`、`<chord/>`、正确 `<fifths>`）
 - [x] **歌词写入**：`--lyrics lyrics.lrc` 支持 LRC 格式，按时间戳精确对齐
 - [x] 文本输出到文件：`--output out.txt`（含和弦标记）
 - [x] 多轨选择：`--track 0`
+- [x] `--version` 打印版本号
 - [x] **在线 Demo**：WASM 核心，浏览器内运行 C++ 代码
-- [x] 40 项单元测试
+- [x] 58 项单元测试 + 10 组端到端冒烟测试
 
 ## 在线 Demo 功能
 
@@ -50,12 +51,14 @@
 
 ## 使用
 
-### 构建（需 C++17 编译器 + CMake）
+### 构建（需 C++17 编译器 + CMake，无第三方依赖）
 
 ```bash
 cmake -B build -S .
-cmake --build build
+cmake --build build --config Release
 ```
+
+Windows 产物在 `build\Release\midi2jianpu.exe`。详细说明、WASM 编译、常见编译问题见 [BUILD.md](./BUILD.md)。
 
 ### 转换
 
@@ -63,8 +66,9 @@ cmake --build build
 # 打印文本简谱（自动猜调性）
 ./build/midi2jianpu 你的歌.mid
 
-# 手动指定调性（更准）
+# 手动指定调性（更准），大小调均可，降号调写 Bb / Eb
 ./build/midi2jianpu 你的歌.mid --key Em
+./build/midi2jianpu 你的歌.mid --key Bb
 
 # 移调（上移2个半音）
 ./build/midi2jianpu 你的歌.mid --key C --transpose +2
@@ -80,29 +84,46 @@ cmake --build build
 
 # 导出MusicXML（可在MuseScore中编辑）
 ./build/midi2jianpu 你的歌.mid --key Em --musicxml 谱.xml
+
+# 只看某个轨道 / 看版本
+./build/midi2jianpu 你的歌.mid --track 0
+./build/midi2jianpu --version
 ```
 
 打开 `简谱.html` 即可在浏览器查看、打印为 PDF。
 
 ## 输出示例
 
-```
-1 = E 小调    4/4    ♩=72
+```text
+共提取 30 个音符 (division=480, 拍号=4/4) (MIDI调号)
+
+1 = C 大调    4/4    ♩=120
 ----------------------------------------
-[Vocal] (286 音符) · 和弦: 12 个
-[C] 1 7 6 7 1. 7 6  |  [Am] 0 7 1. 7 6  |
-风 霜 染 尽 客 行 袍    江 湖 夜 雨
+[Vocal] (15 音符) · 和弦: 4 个
+[C] [p] 1 2 3 4  |
+[F] 5 - 6 7  |
+[Cmaj7] [ff] 1' - 3' -  |
+[F] [mf] 3(5 5 5 ) 0 6 7  |
+[Piano] (15 音符)
+1, - - - 3, - - - 5, - - -  |
+4, - - - 6, - - - 1 - - -  |
 ```
 
-记谱约定：数字为唱名（1=do），`'` 高八度，`,` 低八度，`#`/`b` 升降半音，`0` 休止，`-` 延长一拍，`[C]` 和弦标记。
+### 记谱约定
+
+数字为唱名（1=do），随调性移动；`'` 高八度、`,` 低八度（可叠加）；`#`/`b` 升降半音（书写跟调号走）；`0` 休止；`-` 延长一拍；`[C]` 和弦标记（只标旋律轨）；`[p]` 力度记号（按通道隔离）；`3(...)` 三连音。
+
+时值后缀跟在数字后：`%%` 三十二分、`=` 十六分、`_.` 附点八分、`_` 八分、`.` 附点四分、无后缀为四分、`-` 为二分。完整对照表见 [BUILD.md](./BUILD.md#时值后缀)。
+
+> **八度基准随主音移动**：`1` 代表主音所在八度，不是固定以 C4 为基准。所以 `--key G` 时 C5 写作 `4` 而非 `4'`。这是简谱的标准做法，早期版本以 C4 为基准导致所有音整体偏高一个八度点，已修正。
 
 ## 技术选型
 
 - 核心：**C++17**，手写 SMF 二进制解析，无第三方库依赖，便于编译成 WASM
 - 调性识别：**Krumhansl-Schmuckler** 算法（音乐信息检索标准）
 - 和弦检测：基于音级出现频率匹配（9种和弦类型）
-- 输出：文本 + 自包含 HTML（内联 CSS）+ MusicXML
-- 测试：内置断言，40 项单元测试
+- 输出：文本 + 自包含 HTML（内联 CSS）+ MusicXML 3.1
+- 测试：内置断言 58 项单元测试，另有 `tests/smoke.py` 端到端冒烟测试
 
 ## 路线图
 
@@ -129,6 +150,17 @@ Issue / PR 都欢迎。尤其欢迎：
 - 简谱排版规范与视觉校验
 - 各调式换算测试用例
 - 和弦检测算法优化
+
+提交前请跑一遍：
+
+```bash
+cd build && ctest --output-on-failure          # 58 项单元测试
+python tests/smoke.py build/Release/midi2jianpu.exe   # 端到端冒烟
+```
+
+构建细节、记谱对照表、WASM 编译与常见编译问题见 [BUILD.md](./BUILD.md)。
+
+> 维护者内部文档（环境配置、凭据管理、双机交替流程）不随仓库公开。
 
 ## License
 
