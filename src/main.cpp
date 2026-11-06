@@ -5,6 +5,7 @@
 #include "midi2jianpu/musicxml_writer.hpp"
 #include "midi2jianpu/version.hpp"
 
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -21,6 +22,8 @@ static void printHelp() {
         "  midi2jianpu <input.mid> --track 0         只输出指定轨道\n"
         "  midi2jianpu <input.mid> --transpose +2     移调(半音, 正负都可)\n"
         "  midi2jianpu <input.mid> --lyrics lyrics.lrc  加载歌词\n"
+        "  midi2jianpu <input.mid> --pickup 1       手动指定弱起小节长度(拍)\n"
+        "  midi2jianpu <input.mid> --no-pickup      关闭弱起自动判定\n"
         "  midi2jianpu <input.mid> --no-quantize    关闭时值量化(保留 MIDI 原始时长)\n"
         "  midi2jianpu --version\n"
         "  midi2jianpu --help\n";
@@ -61,6 +64,20 @@ static bool parseInt(const char* s, int& out) {
     }
 }
 
+// 拍数解析：弱起长度可以带小数（1.5 拍这种半拍弱起在歌本里并不罕见）
+static bool parseBeats(const char* s, double& out) {
+    try {
+        size_t used = 0;
+        std::string str(s);
+        double v = std::stod(str, &used);
+        if (used != str.size() || v < 0) return false;
+        out = v;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) { printHelp(); return 1; }
 
@@ -68,6 +85,8 @@ int main(int argc, char** argv) {
     int trackFilter = -1;
     int transpose = 0;
     bool quantize = true;
+    double pickupBeats = -1;   // <0 表示没指定（走自动判定）
+    bool noPickup = false;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--help" || a == "-h") { printHelp(); return 0; }
@@ -81,6 +100,12 @@ int main(int argc, char** argv) {
         else if (a == "--musicxml" && i + 1 < argc) { xmlOut = argv[++i]; }
         else if (a == "--lyrics" && i + 1 < argc) { lyricsPath = argv[++i]; }
         else if (a == "--no-quantize") { quantize = false; }
+        else if (a == "--no-pickup") { noPickup = true; }
+        else if (a == "--pickup" && i + 1 < argc) {
+            if (!parseBeats(argv[++i], pickupBeats)) {
+                std::cerr << "错误: --pickup 需要正数（单位：拍，如 1 / 1.5）\n"; return 1;
+            }
+        }
         else if (a == "--track" && i + 1 < argc) {
             if (!parseInt(argv[++i], trackFilter)) {
                 std::cerr << "错误: --track 需要整数\n"; return 1;
@@ -134,6 +159,24 @@ int main(int argc, char** argv) {
         if (qr.adjusted > 0) {
             std::cout << "时值量化: 修正 " << qr.adjusted << " 个音符 (网格 "
                       << qr.gridTicks << " tick, 门限 " << qr.gate << ")\n";
+        }
+    }
+
+    // 弱起：--pickup N 给的是「拍」，换算成 tick 写回数据；
+    // --no-pickup 则明确关掉自动判定。两者都不给时由 detectPickupTicks 判。
+    if (noPickup) {
+        data.pickupTicks = 0;
+    } else if (pickupBeats >= 0) {
+        double beatLen = data.division * 4.0 / (double)(1 << data.timeSig.denomPow);
+        if (!(beatLen > 0)) beatLen = data.division;
+        data.pickupTicks = (long)std::llround(pickupBeats * beatLen);
+    }
+    {
+        long pk = m2j::effectivePickupTicks(data);
+        if (pk > 0) {
+            std::cout << m2j::pickupLabel(data)
+                      << (pickupBeats >= 0 ? "（手动指定）" : "（自动判定，如不对用 --pickup / --no-pickup 覆盖）")
+                      << "\n";
         }
     }
 

@@ -33,7 +33,7 @@ cmake --build build --config Release
 
 ## 测试
 
-### 单元测试（88 项）
+### 单元测试（102 项）
 
 ```bash
 cd build && ctest --output-on-failure
@@ -41,20 +41,20 @@ cd build && ctest --output-on-failure
 ./build/test_basic
 ```
 
-成功时输出 `共 88 项，失败 0 项 -> 全部通过`。
+成功时输出 `共 102 项，失败 0 项 -> 全部通过`。
 
-覆盖范围：调性识别、各调八度基准、升降号书写（含降号调）、时值后缀、三连音、同音合并、和弦检测、移调、MusicXML 小节时长与 `<chord/>`，以及三组解析层回归——**鼓轨过滤**、**旋律轨判定**、**变速 tempo map 秒数换算**（这三组在内存里现构造最小 SMF，不依赖 fixture 文件）。
+覆盖范围：调性识别、各调八度基准、升降号书写（含降号调）、时值后缀、三连音、同音合并、和弦检测、移调、MusicXML 小节时长与 `<chord/>`，以及四组解析层回归——**鼓轨过滤**、**旋律轨判定**、**变速 tempo map 秒数换算**、**弱起小节网格**（都在内存里现构造最小 SMF，不依赖 fixture 文件）。
 
 ### 冒烟测试（端到端，验证 README 承诺的每个参数）
 
 需要 Python 3（只用标准库）：
 
 ```bash
-python tests/fixtures/make_fixture.py     # 生成 sample / humanized / drums / melisma / harmony 五份素材
+python tests/fixtures/make_fixture.py     # 生成 sample / humanized / drums / melisma / harmony / pickup 六份素材
 python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2jianpu.exe
 ```
 
-覆盖 `--key` / `--track` / `--transpose` / `--musicxml` / `--html` / `--lyrics` / `--output` / `--help` / `--version` 全部参数，并校验导出的 XML 里 `duration` 为整数、和弦音带 `<chord/>`。
+覆盖 `--key` / `--track` / `--transpose` / `--musicxml` / `--html` / `--lyrics` / `--pickup` / `--no-pickup` / `--output` / `--help` / `--version` 全部参数，并校验导出的 XML 里 `duration` 为整数、和弦音带 `<chord/>`。
 
 其中 `drums.mid` 专测打击乐轨：鼓轨有 192 个音符（远超旋律的 8 个），谱面里不能出现 `[Drums]`、不能出现鼓的音高，旋律轨必须判给单声部的 Vocal。
 

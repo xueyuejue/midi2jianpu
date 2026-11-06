@@ -175,8 +175,9 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
     std::string displayTitle = title.empty() ? "简谱" : title;
 
     std::ostringstream body;
-    double barLen = data.timeSig.barLengthTicks(data.division);
-    if (!(barLen > 0)) barLen = data.division * 4.0;
+    // 小节网格（含弱起）。三个输出模块共用同一套换算，见 notation.hpp 的 BarGrid
+    const BarGrid grid = barGridOf(data);
+    const long barLen = grid.barLen;
 
     // 和弦检测。按「和声窗」而不是整小节（4/4 半小节、6/8 附点四分），
     // 所以索引键是准确的 tick，同一小节里可以有多个和弦。
@@ -307,7 +308,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 ns[i].pitch == merged.back().pitch &&
                 ns[i].startTicks == merged.back().startTicks + merged.back().durationTicks &&
                 isSingle(ns[i].startTicks) && isSingle(merged.back().startTicks) &&
-                (long)(ns[i].startTicks / barLen) == (long)(merged.back().startTicks / barLen)) {
+                grid.barIndex(ns[i].startTicks) == grid.barIndex(merged.back().startTicks)) {
                 merged.back().durationTicks += ns[i].durationTicks;
                 merged.back().durationSeconds += ns[i].durationSeconds;
                 continue;
@@ -343,7 +344,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             long e = s + std::max<long>(n.durationTicks, 1);
             bool cont = false;
             while (s < e) {
-                long barEnd = (long)(((long)(s / barLen) + 1) * barLen);
+                long barEnd = grid.barEnd(grid.barIndex(s));
                 long segEnd = std::min(e, barEnd);
                 if (segEnd <= s) segEnd = e;   // 防御，避免死循环
                 NoteEvent seg = n;
@@ -396,12 +397,13 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         // 「Cmaj7 ff 1̇」看起来像一个词的三个字母，和弦与力度根本分不开。
         // 分成上下两层后，标记有固定的 17px 高度，各小节音符行也随之顶部对齐。
         auto openBar = [&](int bar, long firstTick, int channel) {
-            long barStart = (long)(bar * barLen);
+            long barStart = grid.barStart(bar);
             if (prevEnd < barStart) prevEnd = barStart;
             body << "<span class='measure'><span class='marks'>";
 
-            // 小节号：长谱子靠它定位，从第 2 小节起显示
-            if (bar > 0) body << "<span class='barno'>" << (bar + 1) << "</span>";
+            // 小节号：长谱子靠它定位，从第 2 小节起显示。
+            // 弱起小节不编号，第一个完整小节才是 1（见 BarGrid::measureNumber）
+            if (bar > 0) body << "<span class='barno'>" << grid.measureNumber(bar) << "</span>";
 
             // 中途变速：标在速度变化的那一小节。单一速度已经写在页眉，
             // 谱面上再印一遍纯属噪音，所以只在有两个以上速度时显示。
@@ -470,7 +472,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             const auto& grp = groups[gi];
             const NoteEvent& n = grp[0]->n;
             const bool cont = grp[0]->cont;
-            int bar = (int)(n.startTicks / barLen);
+            int bar = (int)grid.barIndex(n.startTicks);
 
             if (bar != curBar) {
                 flushBeam();                                  // 小节线截断减时线
@@ -483,14 +485,16 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 for (int b = from; b < bar; b++) {
                     if (b > 0 && b % measuresPerRow == 0) body << "</div><div class='row'>";
                     body << "<span class='measure'><span class='marks'>";
-                    if (b > 0) body << "<span class='barno'>" << (b + 1) << "</span>";
+                    if (b > 0) body << "<span class='barno'>" << grid.measureNumber(b) << "</span>";
                     // 旋律还没进来、伴奏已经在走的前奏小节：和弦照标，
-                    // 否则开头的 4 小节就是四块空白，看不出和声进行
+                    // 否则开头的 4 小节就是四块空白，看不出和声进行。
+                    // 休止时值按本小节的实际长度算——弱起小节比正常小节短
+                    double restBeats = (double)grid.barSpan(b) / data.division;
                     body << "</span><span class='notes'>"
-                         << withChord(noteColumn("0", 0, 0, beatsPerBar, ""),
-                                      chordMarkFor((long)(b * barLen)))
+                         << withChord(noteColumn("0", 0, 0, restBeats, ""),
+                                      chordMarkFor(grid.barStart(b)))
                          << "</span></span>";
-                    prevEnd = std::max(prevEnd, (long)((b + 1) * barLen));
+                    prevEnd = std::max(prevEnd, grid.barEnd(b));
                 }
 
                 // 每 measuresPerRow 个小节换一行
@@ -731,6 +735,7 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
          << " ｜ " << data.timeSig.toString()
          << " ｜ " << (data.keySig.valid ? "MIDI调号" : "自动猜测")
          << (tempoSummary(data).empty() ? "" : " ｜ " + tempoSummary(data))
+         << (pickupLabel(data).empty() ? "" : " ｜ " + pickupLabel(data))
          << (data.drumNotesSkipped > 0 ? " ｜ 已跳过鼓轨" : "")
          << "</div>" << body.str()
          << "<footer class='footer'>由 midi2jianpu v" M2J_VERSION " 生成</footer>"

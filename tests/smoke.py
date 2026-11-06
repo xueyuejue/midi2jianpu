@@ -340,6 +340,68 @@ def main():
           % html.count("class='tempo'"))
     check("♩=90" in html, "第 5 小节标出了 ♩=90")
 
+    print("\n[15] 弱起（anacrusis）小节")
+    # 歌本里大量曲子从弱拍进唱：`| 5 | 1' 7 6 5 |`。MIDI 里这个 5 就在 tick 0，
+    # 第一小节天然不满四拍。照 `tick / 小节长` 划小节线会让整条网格左移一拍，
+    # 谱面上每个小节的重音都落到第 4 拍，和弦也跟着错（G 会被算成 Cmaj7）。
+    pk = os.path.join(FIXTURES, "pickup.mid")
+    if not os.path.exists(pk):
+        check(False, "素材 pickup.mid 存在（先跑 make_fixture.py）")
+    else:
+        rc, out, err = run(exe, pk)
+        check(rc == 0, "弱起文件能正常转换", err)
+        check("弱起 1 拍" in out, "判出 1 拍弱起", out[:200])
+        # 弱起小节自成一行，之后才是编号 1、2 的完整小节
+        check("5  |\n" in out.split("[Vocal]")[1].split("[Piano]")[0],
+              "弱起小节单独成栏（没有和后面的音挤在一起）", out[:400])
+        check("[C] 1' 7 [Am] 6 5" in out,
+              "第一个完整小节的音符与和弦都对", out[:400])
+        # 弱起小节的和弦是 G（属和弦），不是把弱起的 5 并进 C 得到的 Cmaj7
+        check("[G] 5  |" in out, "弱起小节标 G 而不是 Cmaj7", out[:400])
+        check("Cmaj7" not in out, "没有把弱起的音的并进主和弦")
+
+        # 关掉弱起应立即回到旧行为（方便用户对照/回退）
+        rc2, out2, _ = run(exe, pk, "--no-pickup")
+        check(rc2 == 0 and "弱起" not in out2, "--no-pickup 关闭弱起判定")
+        check("5 1'" in out2, "关闭后第一小节变成「5 1' …」（网格未平移）", out2[:400])
+
+        # 手动指定长度优先
+        rc3, out3, _ = run(exe, pk, "--pickup", "2")
+        check(rc3 == 0 and "弱起 2 拍" in out3, "--pickup 2 手动指定生效")
+
+        # 没有弱起的曲子不能被误判
+        rc4, out4, _ = run(exe, os.path.join(FIXTURES, "sample.mid"))
+        check(rc4 == 0 and "弱起" not in out4, "普通曲子不误判弱起", out4[:300])
+
+        ph = os.path.join(tmp, "pickup.html")
+        rc5, _, _ = run(exe, pk, "--html", ph)
+        phtml = open(ph, encoding="utf-8").read()
+        check(rc5 == 0 and "弱起 1 拍" in phtml, "HTML 页眉标注弱起")
+        vocal = phtml.split("<h3>Vocal")[1].split("<h3>")[0]   # 两条轨各 3 栏
+        measures = vocal.split("<span class='measure'>")[1:]
+        check(len(measures) == 3, f"旋律轨渲染成 3 栏（弱起 + 2 小节），实际 {len(measures)}")
+        check("class='barno'" not in measures[0], "弱起小节不印小节号")
+        check("class='barno'>1<" in measures[1] and "class='barno'>2<" in measures[2],
+              "第一个完整小节编号为 1、第二个为 2")
+
+        px = os.path.join(tmp, "pickup.xml")
+        rc6, _, _ = run(exe, pk, "--musicxml", px)
+        body = open(px, encoding="utf-8").read()
+        check(rc6 == 0 and 'number="0" implicit="yes"' in body,
+              "弱起小节写成 number=0 implicit=yes")
+        import xml.etree.ElementTree as ET2
+        proot = ET2.fromstring(body)
+        durs = []
+        for part in proot.findall("part"):
+            durs.append([(m.get("number"), sum(int(n.find("duration").text)
+                                               for n in m.findall("note")
+                                               if n.find("chord") is None))
+                         for m in part.findall("measure")])
+        check(all(d[0] == ("0", 480) for d in durs),
+              "弱起小节时长是 1 拍（不补满 4 拍）", str(durs[:1]))
+        check(all(all(x[1] == 1920 for x in d[1:]) for d in durs),
+              "之后的完整小节仍是 4 拍", str(durs[:1]))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

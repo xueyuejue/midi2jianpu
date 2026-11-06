@@ -235,7 +235,29 @@ if (existsSync(harmonyPath)) {
   check(false, '素材 harmony.mid 存在（先跑 make_fixture.py）');
 }
 
-// ---- 10. 坏数据不能把整页搞崩 ----
+// ---- 10. 弱起小节（网页侧同样要按新网格划小节线）----
+// 弱起曲目的第一小节不满四拍，网页版与 CLI 共用 BarGrid，若只改了 CLI，
+// 网页导出的小节号与和弦仍会整体错一拍。
+const pickupPath = path.join(FIXTURES, 'pickup.mid');
+if (existsSync(pickupPath)) {
+  const p = makeCaller(mod);
+  p.setMidi(readFileSync(pickupPath));
+  p.setLyrics('');
+  const pText = p.call('midi2jianpu_parse', -1, 1);
+  check(pText && pText.includes('弱起 1 拍'), '文本谱头标注弱起', pText && pText.slice(0, 200));
+  check(pText && pText.includes("[G] 5  |"), '弱起小节的和弦是 G', pText && pText.slice(0, 300));
+  const pHtml = p.call('midi2jianpu_html', -1, 1);
+  check(pHtml && pHtml.includes('弱起 1 拍'), 'HTML 页眉标注弱起');
+  check(pHtml && (pHtml.match(/class='barno'>1</g) || []).length === 2,
+    '两条轨的第一个完整小节都编号为 1（弱起小节不编号）');
+  const pXml = p.call('midi2jianpu_musicxml', -1, 1);
+  check(pXml && pXml.includes('number="0" implicit="yes"'),
+    'MusicXML 把弱起小节标成 implicit', pXml && pXml.slice(0, 300));
+} else {
+  check(false, '素材 pickup.mid 存在（先跑 make_fixture.py）');
+}
+
+// ---- 11. 坏数据不能把整页搞崩 ----
 c.setMidi(new Uint8Array([1, 2, 3, 4, 5]));
 const bad = c.call('midi2jianpu_parse', -1, 1);
 check(typeof bad === 'string' && bad.length > 0, '非法 MIDI 返回错误文本而非崩溃', bad);

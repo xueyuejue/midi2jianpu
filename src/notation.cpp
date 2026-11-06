@@ -4,6 +4,7 @@
 #include <array>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <iomanip>
@@ -467,6 +468,96 @@ std::vector<bool> detectTriplets(const std::vector<NoteEvent>& notes, int divisi
     return isTriplet;
 }
 
+// ---- 弱起小节 ----
+//
+// 判定见 notation.hpp 的注释：只用「从 tick 0 起唱」+「末音收在小节线上」两条
+// 硬证据。两条都成立时，弱起长度只有一种解释，才敢改网格。
+BarGrid barGridOf(const MidiData& data) {
+    BarGrid g;
+    double barLenD = data.timeSig.barLengthTicks(data.division);
+    long bl = (long)std::llround(barLenD);
+    if (bl <= 0) bl = (long)data.division * 4;
+    if (bl <= 0) bl = 1920;
+    g.barLen = bl;
+    g.beatsPerBar = data.timeSig.numerator > 0 ? data.timeSig.numerator : 4;
+    g.pickup = effectivePickupTicks(data);
+    // 弱起不可能有小节那么长；越界的值一律按「没有弱起」处理，
+    // 否则后面 barIndex/barStart 会算出负的小节
+    if (g.pickup < 0 || g.pickup >= g.barLen) g.pickup = 0;
+    return g;
+}
+
+long effectivePickupTicks(const MidiData& data) {
+    if (data.pickupTicks >= 0) return data.pickupTicks;   // 手动指定
+    return detectPickupTicks(data);
+}
+
+long detectPickupTicks(const MidiData& data) {
+    if (data.division <= 0 || data.notes.empty()) return 0;
+    double barLenD = data.timeSig.barLengthTicks(data.division);
+    if (!(barLenD > 0)) return 0;
+    long barLen = (long)std::llround(barLenD);
+    int beats = data.timeSig.numerator > 0 ? data.timeSig.numerator : 4;
+    if (beats < 2 || barLen <= 0) return 0;
+    long beatLen = barLen / beats;
+    if (beatLen <= 0) return 0;
+
+    long firstOnset = -1;
+    long lastEnd = 0;
+    for (const auto& n : data.notes) {
+        if (firstOnset < 0 || n.startTicks < firstOnset) firstOnset = n.startTicks;
+        lastEnd = std::max(lastEnd, n.startTicks + std::max<long>(n.durationTicks, 1));
+    }
+    // 条件 1：曲子必须从开头直接起唱。开头若干小节空白是前奏休止，不是弱起
+    if (firstOnset < 0 || firstOnset > beatLen / 8) return 0;
+
+    // 条件 2：末音收在小节线上。弱起的总长 = P + N*小节长，
+    // 所以 lastEnd mod 小节长 就是弱起长度，就近吸附到整拍。
+    long rem = lastEnd % barLen;
+    long tol = beatLen / 4;        // 允许收尾差四分之一拍（门限衰减、气口）
+    long bestP = 0;
+    long bestErr = barLen;
+    for (int k = 1; k < beats; k++) {
+        long p = beatLen * k;
+        long err = rem >= p ? rem - p : p - rem;
+        if (err < bestErr) { bestErr = err; bestP = p; }
+    }
+    if (bestP <= 0 || bestErr > tol) return 0;
+
+    // 条件 3：弱起之后的第一拍必须真有音起。弱起是「引向下一小节强拍的几个音」，
+    // 下一小节的强拍如果没有音起（只是上一个音在延续），那说明根本没有弱起，
+    // 只是最后一个音停在了小节中间——这正是误判最常发生的样子。
+    bool onsetAtDownbeat = false;
+    for (const auto& n : data.notes) {
+        if (std::labs(n.startTicks - bestP) <= beatLen / 8) { onsetAtDownbeat = true; break; }
+    }
+    if (!onsetAtDownbeat) return 0;
+
+    // 弱起之后至少要有一个完整小节，否则「弱起」和「整曲只有一小节」分不开
+    if (lastEnd < bestP + barLen) return 0;
+    return bestP;
+}
+
+// 弱起的小节数按「拍」来报：简谱读者想的是一共少了几拍，不是几百个 tick。
+std::string pickupLabel(const MidiData& data) {
+    BarGrid grid = barGridOf(data);
+    if (grid.pickup <= 0) return std::string();
+    long beatLen = grid.barLen / std::max(1, grid.beatsPerBar);
+    if (beatLen <= 0) return std::string();
+    double beats = (double)grid.pickup / (double)beatLen;
+    std::ostringstream os;
+    os << "弱起 ";
+    if (std::fabs(beats - std::round(beats)) < 0.05) {
+        os << (long)std::lround(beats);
+    } else {
+        os.setf(std::ios::fixed);
+        os.precision(1);
+        os << beats;
+    }
+    os << " 拍";
+    return os.str();
+}
+
 // 输出一个音符记号：延长线拆成独立 token，读起来是 "1 - -" 而不是 "1--"
 static void emitNoteToken(std::ostringstream& os, const std::string& head,
                           const std::string& dur) {
@@ -488,7 +579,6 @@ static std::string formatTrack(
     const std::map<long, std::string>* chords = nullptr) {
 
     std::ostringstream os;
-    double barLen = data.timeSig.barLengthTicks(data.division);
     int currentBar = -1;
     bool started = false;
     long prevEnd = 0;
@@ -509,9 +599,8 @@ static std::string formatTrack(
 
     std::vector<NoteEvent> merged;
     merged.reserve(notes.size());
-    long barLenI = (long)std::llround(barLen);
-    if (barLenI <= 0) barLenI = (long)data.division * 4;
-    auto barIndexOf = [&](long tick) { return tick / barLenI; };
+    const BarGrid grid = barGridOf(data);
+    auto barIndexOf = [&](long tick) { return grid.barIndex(tick); };
     for (size_t i = 0; i < notes.size(); i++) {
         if (i > 0 && !trip0[i] && !trip0[i - 1] && !merged.empty() &&
             notes[i].pitch == merged.back().pitch &&
@@ -534,7 +623,7 @@ static std::string formatTrack(
     // 关键：小节线只能由「拍子位置」决定，不能只在音符音头处切换。
     // 否则整段前奏（没有任何音符）会全部堆进第 1 小节，挤出一串十几个 '-'
     // 而丢掉 3 条小节线；跨小节的长音同样会溢出到下一小节之外。
-    auto barOf = [&](long tick) -> long { return tick / barLenI; };
+    auto barOf = [&](long tick) -> long { return grid.barIndex(tick); };
     std::string lastChord;
     long lastChordTick = -1;   // 已经处理过的和弦位置，避免同一和弦标两次
     auto switchToBar = [&](long bar, long atTick, int channel) {
@@ -544,12 +633,12 @@ static std::string formatTrack(
         // 和弦标记只标在旋律轨上，避免伴奏轨重复标注；
         // 连续小节是同一个和弦时不重复写——歌本里和弦只在变化处标注
         if (chords) {
-            auto it = chords->find(bar * barLenI);
+            auto it = chords->find(grid.barStart(bar));
             if (it != chords->end() && it->second != lastChord) {
                 os << "[" << it->second << "] ";
                 lastChord = it->second;
             }
-            lastChordTick = std::max(lastChordTick, bar * barLenI);
+            lastChordTick = std::max(lastChordTick, grid.barStart(bar));
         }
         std::string d = dynAt(atTick, channel, data);
         if (!d.empty() && d != lastDyn) {
@@ -581,7 +670,7 @@ static std::string formatTrack(
             while (t < n.startTicks) {
                 long bar = barOf(t);
                 switchToBar(bar, t, n.channel);
-                long seg = std::min(n.startTicks, (bar + 1) * barLenI) - t;
+                long seg = std::min(n.startTicks, grid.barEnd(bar)) - t;
                 if (seg <= 0) break;                    // 防御：避免死循环
                 emitNoteToken(os, "0", durationSuffix(seg, data.division));
                 t += seg;
@@ -613,7 +702,7 @@ static std::string formatTrack(
         // 三连音组内的音符不标时值后缀（"3(...)" 已表达节奏）
         std::string head = pitchToJianpu(n.pitch, key);
         long noteEnd = n.startTicks + n.durationTicks;
-        long barEnd = (barOf(n.startTicks) + 1) * barLenI;
+        long barEnd = grid.barEnd(barOf(n.startTicks));
         if (triplets[idx] || noteEnd <= barEnd) {
             emitNoteToken(os, head, triplets[idx] ? "" : durationSuffix(n.durationTicks, data.division));
         } else {
@@ -623,7 +712,7 @@ static std::string formatTrack(
             while (t < noteEnd) {
                 long bar = barOf(t);
                 switchToBar(bar, t, n.channel);
-                long seg = std::min(noteEnd, (bar + 1) * barLenI) - t;
+                long seg = std::min(noteEnd, grid.barEnd(bar)) - t;
                 if (seg <= 0) break;                    // 防御：避免死循环
                 emitHeld(seg);
                 t += seg;
@@ -651,12 +740,13 @@ std::string tempoSummary(const MidiData& data) {
     std::ostringstream os;
     os << "♩=" << (int)std::lround(data.tempoChanges[0].bpm);
     if (data.tempoChanges.size() > 1) {
-        double barLen = data.timeSig.barLengthTicks(data.division);
-        if (!(barLen > 0)) barLen = data.division * 4.0;
+        // 小节号走网格换算：弱起曲目里 tick/小节长 会整体偏一号
+        BarGrid grid = barGridOf(data);
         for (size_t i = 1; i < data.tempoChanges.size() && i <= 4; i++) {
             os << (i > 1 ? " → " : " → ")
                << (int)std::lround(data.tempoChanges[i].bpm)
-               << "(第" << (long)(data.tempoChanges[i].tick / barLen) + 1 << "小节)";
+               << "(第" << grid.measureNumber(grid.barIndex(data.tempoChanges[i].tick))
+               << "小节)";
         }
         if (data.tempoChanges.size() > 5) os << " → …";
     }
@@ -669,6 +759,8 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
        << "    " << data.timeSig.toString();
     std::string tempo = tempoSummary(data);
     if (!tempo.empty()) os << "    " << tempo;
+    std::string pickup = pickupLabel(data);
+    if (!pickup.empty()) os << "    " << pickup;
     // 鼓轨被丢弃这件事必须让用户看见，否则会以为谱子漏了内容。
     // 写进谱面头部而不是只打在命令行，网页版（WASM）才同样能看到。
     if (data.drumNotesSkipped > 0) {
@@ -1012,11 +1104,23 @@ std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key
     // 旋律轨不参与和声判定：它自带经过音与装饰音，会把和弦算歪
     int mainTrack = pickMelodyTrack(data, nullptr);
     const long win = chordWindowTicks(data);
+    const BarGrid grid = barGridOf(data);
+
+    // 和声窗的起点要跟着小节网格走。弱起曲目若还按 `tick / win` 切窗，
+    // 每个窗都错开半拍，小节开头的和弦会被算到上一个窗里，
+    // 谱面上第一个和弦就往左挪了一拍。
+    auto windowOf = [&](long tick) -> long {
+        if (grid.pickup > 0) {
+            if (tick < grid.pickup) return 0;
+            return grid.pickup + ((tick - grid.pickup) / win) * win;
+        }
+        return (tick / win) * win;
+    };
 
     std::map<long, std::map<int, int>> winPitch;  // 窗口起点 -> 音级 -> 次数
     for (const auto& note : data.notes) {
         if (note.track == mainTrack) continue;
-        winPitch[(note.startTicks / win) * win][note.pitch % 12]++;
+        winPitch[windowOf(note.startTicks)][note.pitch % 12]++;
     }
 
     struct ChordType { const char* suffix; std::vector<int> intervals; };
