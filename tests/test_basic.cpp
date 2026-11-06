@@ -331,6 +331,80 @@ int main() {
               "C大三和弦检测为C, 实际: " + (chords.size() > 0 ? chords[0].name : "无"));
     }
 
+    std::cout << "\n测试和声窗（小节内换和弦）\n";
+    {
+        // 窗口长度必须跟拍号走，否则「一小节两个和弦」要么被吞掉（窗口太大）
+        // 要么碎成一堆假和弦（窗口太小）。
+        auto winOf = [](int num, int denomPow) {
+            MidiData d;
+            d.division = 480;
+            d.timeSig.valid = true;
+            d.timeSig.numerator = num;
+            d.timeSig.denomPow = denomPow;
+            return chordWindowTicks(d);
+        };
+        check(winOf(4, 2) == 960, "4/4 半小节 = 960 tick，实际 " + std::to_string(winOf(4, 2)));
+        check(winOf(6, 3) == 720, "6/8 附点四分 = 720 tick，实际 " + std::to_string(winOf(6, 3)));
+        check(winOf(3, 2) == 1440, "3/4 整小节 = 1440 tick，实际 " + std::to_string(winOf(3, 2)));
+    }
+
+    std::cout << "\n测试和弦检测：一小节两个和弦\n";
+    {
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.timeSig.numerator = 4;
+        d.timeSig.denomPow = 2;
+        // 旋律轨：每拍一个音，保证 piano 不是「音符最多」的轨
+        for (int i = 0; i < 4; i++) {
+            NoteEvent n;
+            n.pitch = 72;
+            n.startTicks = i * 480;
+            n.durationTicks = 480;
+            n.track = 0;
+            d.notes.push_back(n);
+        }
+        // 前半小节 C（C E G），后半小节 Am（A C E）
+        auto addChord = [&](std::initializer_list<int> ps, long tick, long dur) {
+            for (int p : ps) {
+                NoteEvent n;
+                n.pitch = p;
+                n.startTicks = tick;
+                n.durationTicks = dur;
+                n.track = 1;
+                d.notes.push_back(n);
+            }
+        };
+        addChord({48, 52, 55}, 0, 960);      // C
+        addChord({45, 48, 52}, 960, 960);    // Am
+
+        KeyEstimate k{0, true};
+        auto chords = detectChords(d, k);
+        check(chords.size() == 2, "一小节检出两个和弦，实际 " + std::to_string(chords.size()));
+        if (chords.size() == 2) {
+            check(chords[0].name == "C" && chords[0].startTick == 0,
+                  "前半小节是 C，实际 " + chords[0].name);
+            check(chords[1].name == "Am" && chords[1].startTick == 960,
+                  "第三拍是 Am，实际 " + chords[1].name +
+                  "@" + std::to_string(chords[1].startTick));
+        }
+
+        // 整小节同一个和弦时不能标两次（相邻窗口同名要合并）
+        MidiData same;
+        same.division = 480;
+        same.timeSig = d.timeSig;
+        for (const auto& n : d.notes) {
+            if (n.track == 1 && n.startTicks == 960) continue;   // 去掉 Am
+            same.notes.push_back(n);
+        }
+        NoteEvent n2;
+        n2.pitch = 48; n2.startTicks = 960; n2.durationTicks = 960; n2.track = 1;
+        same.notes.push_back(n2);
+        auto sameChords = detectChords(same, k);
+        check(sameChords.size() == 1 && sameChords[0].name == "C",
+              "整小节 C 只标一次，实际 " + std::to_string(sameChords.size()));
+    }
+
     std::cout << "\n测试文本简谱：同音合并 (1 1 1 -> 1 - -)\n";
     {
         MidiData d;

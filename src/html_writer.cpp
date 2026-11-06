@@ -118,6 +118,20 @@ static std::string noteColumn(const std::string& numText, int highDots, int lowD
     return os.str();
 }
 
+// 把和弦标记挂到一个音符列的顶部。
+//
+// 不能另起一列：和弦标记若占宽度，同一拍的音符间距会被它撑开，
+// 谱面看起来就是参差不齐的。这里塞进 .note 内部绝对定位，浮在数字上方，
+// 与标记行里的和弦（小节起点那种）落在同一高度，视觉上是一条线。
+static std::string withChord(const std::string& col, const std::string& chord) {
+    if (chord.empty()) return col;
+    size_t p = col.find('>');
+    if (p == std::string::npos) return col;
+    return col.substr(0, p + 1) +
+           "<span class='chordx'>" + htmlEscape(chord) + "</span>" +
+           col.substr(p + 1);
+}
+
 // 生成和弦列：同一时刻发声的多个音竖向叠写，共用一个时值线。
 //
 // 简谱里和弦就是上下对齐的几行数字。若不叠排而顺序输出，一个三音和弦会被
@@ -164,10 +178,11 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
     double barLen = data.timeSig.barLengthTicks(data.division);
     if (!(barLen > 0)) barLen = data.division * 4.0;
 
-    // 和弦检测（按小节起点索引）
+    // 和弦检测。按「和声窗」而不是整小节（4/4 半小节、6/8 附点四分），
+    // 所以索引键是准确的 tick，同一小节里可以有多个和弦。
     auto chords = detectChords(data, key);
-    std::map<long, std::string> chordByBar;
-    for (const auto& c : chords) chordByBar[c.startTick] = c.name;
+    std::map<long, std::string> chordAt;
+    for (const auto& c : chords) chordAt[c.startTick] = c.name;
 
     // 歌词按行拆成单字
     std::vector<std::pair<long, std::vector<std::string>>> lineSyls;
@@ -264,6 +279,9 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
 
     for (auto& [t, ns] : byTrack) {
         const bool isMain = (t == mainTrack);
+        // 速度标记属于整份谱，只在第一行谱上印一次。每轨都印一遍是噪音，
+        // 而且同一页上会出现好几个一模一样的 ♩=90。
+        const bool showTempo = (t == byTrack.begin()->first);
 
         // ---- 同音合并：连续同音且首尾相接时并成一个长音 ----
         // 不合并的话同音重复会被画成 `5 - 5 -`，而简谱规范应写成 `5 - - -`。
@@ -354,7 +372,23 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         long prevEnd = 0;
         std::string lastDyn;
         std::string lastChord;
+        int lastTempo = -1;
         bool inTriplet = false;
+
+        // 和弦游标：按 tick 顺序推进。取「不晚于 tick 的最后一个还没标过的
+        // 和弦」，于是小节内换和弦、以及和弦落在两个音之间（旋律正拖长音）
+        // 这两种情况都不会漏标。
+        auto chordIt = chordAt.begin();
+        auto chordMarkFor = [&](long tick) -> std::string {
+            if (!isMain) return std::string();
+            std::string label;
+            while (chordIt != chordAt.end() && chordIt->first <= tick) {
+                if (chordIt->second != lastChord) label = chordIt->second;
+                ++chordIt;
+            }
+            if (!label.empty()) lastChord = label;
+            return label;
+        };
 
         // 开一个小节：上面一行放标记（小节号 / 和弦 / 力度），下面才是音符。
         //
@@ -369,13 +403,25 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             // 小节号：长谱子靠它定位，从第 2 小节起显示
             if (bar > 0) body << "<span class='barno'>" << (bar + 1) << "</span>";
 
+            // 中途变速：标在速度变化的那一小节。单一速度已经写在页眉，
+            // 谱面上再印一遍纯属噪音，所以只在有两个以上速度时显示。
+            if (showTempo && data.tempoChanges.size() > 1) {
+                int bpm = 0;
+                for (const auto& tp : data.tempoChanges) {
+                    if (tp.tick <= barStart) bpm = (int)std::lround(tp.bpm);
+                    else break;
+                }
+                if (bpm > 0 && bpm != lastTempo) {
+                    body << "<span class='tempo'>♩=" << bpm << "</span>";
+                    lastTempo = bpm;
+                }
+            }
+
             // 和弦标记只标旋律轨；连续小节同一个和弦不重复标，
             // 否则一段 8 小节的 C 和弦会在每小节左上角都印一个 C
-            auto chordIt = chordByBar.find(barStart);
-            if (isMain && chordIt != chordByBar.end() && chordIt->second != lastChord) {
-                body << "<span class='chord'>" << htmlEscape(chordIt->second) << "</span>";
-                lastChord = chordIt->second;
-            }
+            std::string barChord = chordMarkFor(barStart);
+            if (!barChord.empty())
+                body << "<span class='chord'>" << htmlEscape(barChord) << "</span>";
 
             // 力度记号按通道取，变化时才写
             if (!data.dynamics.empty()) {
@@ -443,6 +489,11 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                     if (b > 0 && b % measuresPerRow == 0) body << "</div><div class='row'>";
                     body << "<span class='measure'><span class='marks'>";
                     if (b > 0) body << "<span class='barno'>" << (b + 1) << "</span>";
+                    // 旋律还没进来、伴奏已经在走的前奏小节：和弦照标，
+                    // 否则开头的 4 小节就是四块空白，看不出和声进行
+                    std::string introChord = chordMarkFor((long)(b * barLen));
+                    if (!introChord.empty())
+                        body << "<span class='chord'>" << htmlEscape(introChord) << "</span>";
                     body << "</span><span class='notes'>"
                          << noteColumn("0", 0, 0, beatsPerBar, "") << "</span></span>";
                     prevEnd = std::max(prevEnd, (long)((b + 1) * barLen));
@@ -470,7 +521,8 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             if (gap >= data.division / 2) {
                 flushBeam();          // 休止符打断减时线
                 double restBeats = (double)gap / data.division;
-                body << noteColumn("0", 0, 0, restBeats, "");
+                body << withChord(noteColumn("0", 0, 0, restBeats, ""),
+                                  chordMarkFor(n.startTicks));
             }
 
             // 整组的时值取最长那个音
@@ -483,7 +535,10 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 flushBeam();          // 长音打断减时线
                 int cnt = (int)std::llround(beats);
                 if (cnt < 1) cnt = 1;
-                for (int k = 0; k < cnt; k++) body << noteColumn("-", 0, 0, 1.0, "");
+                for (int k = 0; k < cnt; k++) {
+                    long tk = n.startTicks + (long)k * data.division;
+                    body << withChord(noteColumn("-", 0, 0, 1.0, ""), chordMarkFor(tk));
+                }
             } else if (grp.size() == 1) {
                 std::string jp = pitchToJianpu(n.pitch, key);
                 int highDots = 0, lowDots = 0;
@@ -500,7 +555,9 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                                   ? lyricForNote(n.startTicks) : std::string();
                 // 三连音走单独的时值档位，避免 1/3 拍被当成附点十六分
                 DurStyle ds = grp[0]->trip ? tripletStyleOf(beats) : durStyleOf(beats);
-                std::string col = noteColumn(num, highDots, lowDots, beats, syl, "", &ds);
+                std::string col = withChord(
+                    noteColumn(num, highDots, lowDots, beats, syl, "", &ds),
+                    chordMarkFor(n.startTicks));
 
                 // 能否接上上一条减时线：同小节、首尾相接、减时线条数相同，
                 // 且同属一拍（三连音组例外，它本来就跨拍）。
@@ -548,7 +605,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                     }
                     tones.push_back({num, {hi, lo}});
                 }
-                body << chordColumn(tones, beats, "");
+                body << withChord(chordColumn(tones, beats, ""), chordMarkFor(n.startTicks));
             }
 
             for (const auto* h : grp) prevEnd = std::max(prevEnd, h->n.startTicks + h->n.durationTicks);
@@ -588,8 +645,19 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
 .barno{font-size:10px;color:#c9c9c9;line-height:1;align-self:flex-start}
 .chord{font-size:14px;font-weight:600;font-style:normal;color:#b03030;line-height:1}
 .dyn{font-size:14px;font-style:italic;color:#999;line-height:1}
+.tempo{font-size:11px;font-weight:600;color:#4a6fa5;line-height:1;
+       border:1px solid #cdd8e8;border-radius:3px;padding:1px 4px;background:#f4f7fc}
+
+/* 小节内换和弦：浮在该音符上方，不占宽度。
+   .notes 留了 12px 上边距当「和弦带」，bottom:calc(100% + 12px) 把浮标的底边
+   抬到与标记行和弦同一条基线，同时与音符的高八度点隔开 12px——
+   不留这段空白的话，`C` 和八度点会叠成 `C·`，读起来像和弦名的一部分。
+   也不能改成普通同行元素：那会把这一拍的音符间距撑开，谱面就参差不齐。 */
+.chordx{position:absolute;bottom:calc(100% + 12px);left:50%;transform:translateX(-50%);
+        font-size:13px;font-weight:600;font-style:normal;color:#b03030;
+        line-height:1;white-space:nowrap;pointer-events:none}
 .trip{font-size:12px;color:#666;align-self:flex-start;margin-right:2px;line-height:1.6}
-.notes{display:flex;align-items:flex-start}
+.notes{display:flex;align-items:flex-start;padding-top:12px}
 
 /* ---- 音符列 ----
    .note 的宽度只由数字决定：延音线用绝对定位挂在 .core 右侧，并通过 --n
@@ -667,6 +735,7 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
          << htmlEscape(keyDescription(key))
          << " ｜ " << data.timeSig.toString()
          << " ｜ " << (data.keySig.valid ? "MIDI调号" : "自动猜测")
+         << (tempoSummary(data).empty() ? "" : " ｜ " + tempoSummary(data))
          << (data.drumNotesSkipped > 0 ? " ｜ 已跳过鼓轨" : "")
          << "</div>" << body.str()
          << "<footer class='footer'>由 midi2jianpu v" M2J_VERSION " 生成</footer>"

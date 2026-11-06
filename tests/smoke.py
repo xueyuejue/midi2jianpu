@@ -311,6 +311,35 @@ def main():
               str(per_bar))
         check(sum(len(b) for b in per_bar) == 4, "四个字一个不丢", str(per_bar))
 
+    print("\n[14] 一小节两个和弦 + 中途变速")
+    hm = os.path.join(FIXTURES, "harmony.mid")
+    rc, out, err = run(exe, hm)
+    check(rc == 0, "带小节内换和弦的文件能正常转换", err)
+    # 每小节一个起点和弦 + 一个第三拍和弦，8 小节共 4 种和弦
+    check("和弦: 4 个" in out, "识别出 4 种和弦", out[:300])
+    check("[C] 1' 7 [Am] 6 5" in out,
+          "同一小节里标出 C -> Am（第三拍换和弦）", out[:400])
+    check("[F] 1' 7 [G] 6 5" in out,
+          "同一小节里标出 F -> G", out[:400])
+    # 每个和弦都只标一次：8 小节 x 2
+    check(out.count("[C]") == 4 and out.count("[Am]") == 4,
+          "C / Am 各标 4 次，实际 %d / %d" % (out.count("[C]"), out.count("[Am]")))
+    check("♩=120 → 90(第5小节)" in out,
+          "页眉写出变速（不是只印第一个速度）", out[:300])
+
+    hh = os.path.join(tmp, "harmony.html")
+    rc2, _, _ = run(exe, hm, "--html", hh)
+    html = open(hh, encoding="utf-8").read()
+    check(rc2 == 0, "HTML 导出成功")
+    check(html.count("class='chord'") == 8,
+          "标记行里有 8 个起点和弦，实际 %d" % html.count("class='chord'"))
+    check(html.count("class='chordx'") == 8,
+          "音符上方有 8 个第三拍和弦，实际 %d" % html.count("class='chordx'"))
+    check(html.count("class='tempo'") == 2,
+          "速度标记只印 2 个（第1、5小节），不是每轨各印一遍，实际 %d"
+          % html.count("class='tempo'"))
+    check("♩=90" in html, "第 5 小节标出了 ♩=90")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")
