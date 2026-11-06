@@ -417,11 +417,6 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 }
             }
 
-            // 和弦标记只标旋律轨；连续小节同一个和弦不重复标，
-            // 否则一段 8 小节的 C 和弦会在每小节左上角都印一个 C
-            std::string barChord = chordMarkFor(barStart);
-            if (!barChord.empty())
-                body << "<span class='chord'>" << htmlEscape(barChord) << "</span>";
 
             // 力度记号按通道取，变化时才写
             if (!data.dynamics.empty()) {
@@ -491,11 +486,10 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                     if (b > 0) body << "<span class='barno'>" << (b + 1) << "</span>";
                     // 旋律还没进来、伴奏已经在走的前奏小节：和弦照标，
                     // 否则开头的 4 小节就是四块空白，看不出和声进行
-                    std::string introChord = chordMarkFor((long)(b * barLen));
-                    if (!introChord.empty())
-                        body << "<span class='chord'>" << htmlEscape(introChord) << "</span>";
                     body << "</span><span class='notes'>"
-                         << noteColumn("0", 0, 0, beatsPerBar, "") << "</span></span>";
+                         << withChord(noteColumn("0", 0, 0, beatsPerBar, ""),
+                                      chordMarkFor((long)(b * barLen)))
+                         << "</span></span>";
                     prevEnd = std::max(prevEnd, (long)((b + 1) * barLen));
                 }
 
@@ -522,7 +516,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 flushBeam();          // 休止符打断减时线
                 double restBeats = (double)gap / data.division;
                 body << withChord(noteColumn("0", 0, 0, restBeats, ""),
-                                  chordMarkFor(n.startTicks));
+                                  chordMarkFor(prevEnd));
             }
 
             // 整组的时值取最长那个音
@@ -641,23 +635,24 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
    各小节的音符行也随之顶部对齐。 */
 .measure{display:flex;flex-direction:column;border-left:1.5px solid #bbb;
          padding:0 0 0 9px;margin:0 16px 0 0}
-.marks{display:flex;align-items:flex-end;gap:8px;height:20px;line-height:1;white-space:nowrap}
+.marks{display:flex;align-items:flex-end;gap:8px;height:20px;padding-bottom:3px;
+       line-height:1;white-space:nowrap}
 .barno{font-size:10px;color:#c9c9c9;line-height:1;align-self:flex-start}
-.chord{font-size:14px;font-weight:600;font-style:normal;color:#b03030;line-height:1}
 .dyn{font-size:14px;font-style:italic;color:#999;line-height:1}
 .tempo{font-size:11px;font-weight:600;color:#4a6fa5;line-height:1;
        border:1px solid #cdd8e8;border-radius:3px;padding:1px 4px;background:#f4f7fc}
 
-/* 小节内换和弦：浮在该音符上方，不占宽度。
-   .notes 留了 12px 上边距当「和弦带」，bottom:calc(100% + 12px) 把浮标的底边
-   抬到与标记行和弦同一条基线，同时与音符的高八度点隔开 12px——
-   不留这段空白的话，`C` 和八度点会叠成 `C·`，读起来像和弦名的一部分。
+/* 和弦标记：浮在它所管的那个音符上方，不占宽度。
+   位置必须跟音符走——标记行是从左往右排的，一旦前面多了一个速度标记，
+   和弦就被顶右移，和第 3 拍的和弦叠在一起（`C` 与 `Am` 会糊成一团）。
+   .notes 留 14px 上边距当和弦带，浮标底边贴住音符列上沿：
+   上面是小节号/力度/速度那一行，下面是音符，三者互不侵入。
    也不能改成普通同行元素：那会把这一拍的音符间距撑开，谱面就参差不齐。 */
-.chordx{position:absolute;bottom:calc(100% + 12px);left:50%;transform:translateX(-50%);
+.chordx{position:absolute;bottom:calc(100% + 4px);left:50%;transform:translateX(-50%);
         font-size:13px;font-weight:600;font-style:normal;color:#b03030;
         line-height:1;white-space:nowrap;pointer-events:none}
 .trip{font-size:12px;color:#666;align-self:flex-start;margin-right:2px;line-height:1.6}
-.notes{display:flex;align-items:flex-start;padding-top:12px}
+.notes{display:flex;align-items:flex-start;padding-top:18px}
 
 /* ---- 音符列 ----
    .note 的宽度只由数字决定：延音线用绝对定位挂在 .core 右侧，并通过 --n
