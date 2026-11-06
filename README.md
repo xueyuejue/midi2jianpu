@@ -31,8 +31,8 @@
 - [x] 三连音自动识别（连续3个等长音符，组内不做同音合并）
 - [x] 弯音轮修正（Pitch Bend 平均偏移 ±0.5 半音以上修正音高）
 - [x] **和弦检测**：自动识别伴奏轨和弦进行（C/Am/G7 等9种类型）
-- [x] **HTML 谱面导出**：自包含网页，浏览器打开即可打印 PDF，含和弦标记
-- [x] **MusicXML 导出**：`--musicxml out.xml`，符合 3.1 规范（整数 `duration`、`<chord/>`、正确 `<fifths>`）
+- [x] **HTML 谱面导出**：自包含网页，浏览器打开即可打印 PDF，含和弦标记、小节号、和弦竖向叠写
+- [x] **MusicXML 导出**：`--musicxml out.xml`，符合 3.1 规范（整数 `duration`、`<chord/>`、`<tie>` 跨小节延音、正确 `<fifths>`/`<clef>`/速度标记）
 - [x] **歌词写入**：`--lyrics lyrics.lrc` 支持 LRC 格式，按时间戳精确对齐
 - [x] 文本输出到文件：`--output out.txt`（含和弦标记）
 - [x] 多轨选择：`--track 0`
