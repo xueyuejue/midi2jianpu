@@ -223,30 +223,41 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
         // 原来写死成 `bar == 0`，一旦乐曲开头有整拍休止（前几个小节由下面的
         // 空小节补齐逻辑生成），attributes 就整个丢失，divisions / 拍号 / 调号 /
         // 谱号全没了，导出的文件 MuseScore 打不开。
+        // 中途变拍号时，在变化的那一小节再写一次只含 <time> 的 attributes：
+        // 少写这一次，MuseScore 会把后半首也按曲首拍号解释，小节线全错。
         bool wroteAttrs = false;
-        auto emitAttributes = [&]() {
-            if (wroteAttrs) return;
-            wroteAttrs = true;
-            xml << "      <attributes>\n"
-                // divisions 用文件自身的时值分辨率，保证 duration 全为整数
-                << "        <divisions>" << division << "</divisions>\n"
-                << "        <key><fifths>" << fifths << "</fifths>"
-                << "<mode>" << (key.isMajor ? "major" : "minor") << "</mode></key>\n"
-                << "        <time><beats>" << data.timeSig.numerator
-                << "</beats><beat-type>" << (1 << data.timeSig.denomPow)
-                << "</beat-type></time>\n"
-                << "        <clef><sign>" << (bassClef ? "F" : "G") << "</sign><line>"
-                << (bassClef ? 4 : 2) << "</line></clef>\n"
-                << "      </attributes>\n";
-            // 速度标记只写一遍，放在第一个声部
-            if (partIdx == 1) {
-                xml << "      <direction placement=\"above\">\n"
-                    << "        <direction-type><metronome>"
-                    << "<beat-unit>quarter</beat-unit>"
-                    << "<per-minute>" << (int)std::lround(bpm) << "</per-minute>"
-                    << "</metronome></direction-type>"
-                    << "<sound tempo=\"" << (int)std::lround(bpm) << "\"/>\n"
-                    << "      </direction>\n";
+        auto emitAttributes = [&](int bar) {
+            if (!wroteAttrs) {
+                wroteAttrs = true;
+                const TimeSignature sig = grid.sigForBar(bar);
+                xml << "      <attributes>\n"
+                    // divisions 用文件自身的时值分辨率，保证 duration 全为整数
+                    << "        <divisions>" << division << "</divisions>\n"
+                    << "        <key><fifths>" << fifths << "</fifths>"
+                    << "<mode>" << (key.isMajor ? "major" : "minor") << "</mode></key>\n"
+                    << "        <time><beats>" << sig.numerator
+                    << "</beats><beat-type>" << (1 << sig.denomPow)
+                    << "</beat-type></time>\n"
+                    << "        <clef><sign>" << (bassClef ? "F" : "G") << "</sign><line>"
+                    << (bassClef ? 4 : 2) << "</line></clef>\n"
+                    << "      </attributes>\n";
+                // 速度标记只写一遍，放在第一个声部
+                if (partIdx == 1) {
+                    xml << "      <direction placement=\"above\">\n"
+                        << "        <direction-type><metronome>"
+                        << "<beat-unit>quarter</beat-unit>"
+                        << "<per-minute>" << (int)std::lround(bpm) << "</per-minute>"
+                        << "</metronome></direction-type>"
+                        << "<sound tempo=\"" << (int)std::lround(bpm) << "\"/>\n"
+                        << "      </direction>\n";
+                }
+            } else if (grid.meterChangedAt(bar)) {
+                const TimeSignature sig = grid.sigForBar(bar);
+                xml << "      <attributes>\n"
+                    << "        <time><beats>" << sig.numerator
+                    << "</beats><beat-type>" << (1 << sig.denomPow)
+                    << "</beat-type></time>\n"
+                    << "      </attributes>\n";
             }
         };
 
@@ -256,7 +267,7 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             xml << "    <measure number=\"" << grid.measureNumber(bar) << "\"";
             if (grid.pickup > 0 && bar == 0) xml << " implicit=\"yes\"";
             xml << ">\n";
-            emitAttributes();
+            emitAttributes(bar);
             writtenUpTo = grid.barStart(bar);
         };
 
@@ -277,7 +288,7 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                     // 否则各声部的小节号与 MuseScore 的编号对不上
                     if (grid.pickup > 0 && b == 0) xml << " implicit=\"yes\"";
                     xml << ">\n";
-                    emitAttributes();   // 开头就是空小节时，属性要写在这里
+                    emitAttributes(b);   // 开头就是空小节时，属性要写在这里
                     xml << "      <note><rest measure=\"yes\"/><duration>"
                         << grid.barSpan(b) << "</duration><voice>1</voice>"
                         << "<type>whole</type></note>\n"

@@ -1,6 +1,7 @@
 #pragma once
 // notation.hpp - 调性识别与音高->简谱转换
 #include "midi2jianpu/midifile.hpp"
+#include <algorithm>
 #include <map>
 #include <string>
 #include <vector>
@@ -213,23 +214,80 @@ std::string tempoSummary(const MidiData& data);
 // ---- 小节网格 ----
 // 「tick -> 小节」的换算分散在文本 / HTML / MusicXML 三个输出里，弱起一进来
 // 就得三处同时改，否则谱面一半对一半错。统一收进这个结构体。
+//
+// 后来又发现拍号也能中途变（4/4 转 3/4 再转 6/8），固定 barLen 除法同样全错。
+// 所以网格不再是「一个常量 + 取模」，而是解析阶段就铺出一张逐小节的边界表：
+// starts[i] 是第 i 小节起点 tick，sigs[i] 是这一小节生效的拍号。
 struct BarGrid {
-    long barLen = 1920;   // 一小节多少 tick
+    long barLen = 1920;   // 曲首小节长度（无变拍号时全曲都是它）
     long pickup = 0;      // 弱起小节长度 tick（0 = 没有弱起）
-    int beatsPerBar = 4;  // 每小节拍数（拍号分子）
+    int beatsPerBar = 4;  // 曲首每小节拍数
+    long tailBarLen = 1920;  // 边界表尾之后外推用的小节长
 
-    long barIndex(long tick) const { return barIndexAt(tick, barLen, pickup); }
-    long barStart(long bar) const { return barStartTick(bar, barLen, pickup); }
-    long barEnd(long bar) const { return barEndTick(bar, barLen, pickup); }
+    std::vector<long> starts;            // 每个小节的起点 tick
+    std::vector<TimeSignature> sigs;     // 每个小节生效的拍号（与 starts 等长）
+
+    long barIndex(long tick) const {
+        if (starts.empty()) return barIndexAt(tick, barLen, pickup);  // 兜底：老行为
+        if (tick <= starts.front()) return 0;
+        auto it = std::upper_bound(starts.begin(), starts.end(), tick);
+        long idx = (long)(it - starts.begin()) - 1;
+        if (it == starts.end()) {   // 超出表尾：按最后一段长度线性外推
+            long tb = tailBarLen > 0 ? tailBarLen : barLen;
+            if (tb > 0) idx += (tick - starts.back()) / tb;
+        }
+        return idx;
+    }
+
+    long barStart(long bar) const {
+        if (starts.empty()) return barStartTick(bar, barLen, pickup);
+        if (bar <= 0) return starts.front();
+        if ((size_t)bar < starts.size()) return starts[(size_t)bar];
+        long tb = tailBarLen > 0 ? tailBarLen : barLen;
+        if (tb <= 0) tb = 1920;
+        return starts.back() + (bar - (long)starts.size() + 1) * tb;
+    }
+
+    long barEnd(long bar) const {
+        if (starts.empty()) return barEndTick(bar, barLen, pickup);
+        return barStart(bar + 1);
+    }
 
     // 谱面上印出的小节号：弱起小节不编号，第一个完整小节才是 1。
     int measureNumber(long bar) const { return pickup > 0 ? (int)bar : (int)bar + 1; }
 
-    // 一小节的实际 tick 数（弱起小节比正常小节短）
+    // 一小节的实际 tick 数（弱起小节、变拍号小节都可能和 barLen 不同）
     long barSpan(long bar) const { return barEnd(bar) - barStart(bar); }
+
+    TimeSignature sigForBar(long bar) const {
+        if (sigs.empty()) return TimeSignature{4, 2, true};
+        size_t i = bar <= 0 ? 0 : (size_t)bar;
+        return sigs[std::min(i, sigs.size() - 1)];
+    }
+    int beatsForBar(long bar) const {
+        int n = sigForBar(bar).numerator;
+        return n > 0 ? n : 4;
+    }
+    // 这一小节是否刚换了拍号（页眉标注、MusicXML 重写 <time> 都用它）
+    bool meterChangedAt(long bar) const {
+        if (bar <= 0 || sigs.size() < 2) return false;
+        return sigForBar(bar - 1).toString() != sigForBar(bar).toString();
+    }
+    bool hasMeterChange() const {
+        for (size_t i = 1; i < sigs.size(); i++)
+            if (sigs[i].toString() != sigs[0].toString()) return true;
+        return false;
+    }
 };
 
 BarGrid barGridOf(const MidiData& data);
+
+// 实质性的拍号变化（已按 tick 排序、去掉多轨重复声明、去掉曲首那一个）。
+// 空 = 全曲同一个拍号。
+std::vector<TimeSigPoint> meterChangesOf(const MidiData& data);
+
+// 拍号变化摘要，如 "4/4 → 3/4(第3小节) → 6/8(第5小节)"；无变化时返回曲首拍号。
+std::string meterSummary(const MidiData& data);
 
 // 弱起（anacrusis）小节长度，单位 tick；0 表示判不出弱起。
 //

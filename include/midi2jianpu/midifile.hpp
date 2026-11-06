@@ -57,6 +57,16 @@ struct TempoPoint {
     double bpm;  // 每分钟拍数
 };
 
+// 拍号变化点（从 0x58 time_signature 解析）
+//
+// 旧实现每次都用最后一次 0x58 覆盖 out.timeSig，于是「前 4/4、后 3/4」的曲子
+// 整份谱子都按 3/4 划小节线，还连带把弱起判错。拍号和速度一样是一张 map，
+// 必须按 tick 记全；timeSig 字段只表示「曲首拍号」，供不需要逐小节的近似计算用。
+struct TimeSigPoint {
+    long tick;
+    TimeSignature sig;
+};
+
 // 弯音轮事件（从 0xE0 解析，14位值，中心8192）
 struct PitchBendPoint {
     long tick;
@@ -96,6 +106,7 @@ struct MidiData {
     KeySignature keySig;
     std::vector<DynPoint> dynamics;
     std::vector<TempoPoint> tempoChanges;
+    std::vector<TimeSigPoint> timeSigChanges;  // 0x58 全序列；timeSig = 曲首那一个
     std::vector<PitchBendPoint> pitchBends;
     double bendRange = 2.0;  // 弯音范围(半音), 默认±2, 可被RPN 0x00改变
     std::map<int, std::string> trackNames;  // 轨道名称(0x03 meta)

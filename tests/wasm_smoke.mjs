@@ -337,7 +337,38 @@ if (existsSync(karaokePath)) {
   check(false, '素材 karaoke.mid 存在（先跑 make_fixture.py）');
 }
 
-// ---- 13. 坏数据不能把整页搞崩 ----
+// ---- 13. 中途变拍号：WASM 产物必须带上新的拍号 map ----
+const meterPath = path.join(FIXTURES, 'meter.mid');
+if (existsSync(meterPath)) {
+  const mc = makeCaller(mod);
+  mc.setMidi(new Uint8Array(readFileSync(meterPath)));
+  mc.setTitle('拍号测试');
+  const mh = mc.call('midi2jianpu_html', -1, 1);
+  check(mh && mh.includes('4/4 → 3/4(第3小节) → 6/8(第5小节)'),
+    'WASM 版页眉写出拍号摘要（旧产物只会写最后一个 6/8）');
+  check(mh && (mh.match(/class='meter'>/g) || []).length === 2
+    && mh.includes("class='meter'>3/4") && mh.includes("class='meter'>6/8"),
+    'WASM 版谱面标出两个新拍号');
+  check(mh && !mh.includes('弱起'), 'WASM 版不再误判弱起');
+  check(mh && mh.includes('歌词：MIDI 内置（24 音节）')
+    && (mh.match(/class='sgrp'/g) || []).length === 2,
+    'WASM 版变拍号下内置歌词与连音线仍正确');
+  check(mh && mh.includes('已跳过鼓轨'), 'WASM 版仍能提示鼓轨被丢弃');
+
+  const mx = mc.call('midi2jianpu_musicxml', -1, 1);
+  check(mx && mx.includes('<beats>3</beats>') && mx.includes('<beats>6</beats>')
+    && mx.includes('<beat-type>8</beat-type>'),
+    'WASM 版 MusicXML 在变拍号小节写出新的 <time>');
+  check(mx && mx.includes('<lyric'), 'WASM 版 MusicXML 仍带内置歌词');
+
+  mc.setMidi(new Uint8Array(sampleMidi));
+  const mPlain = mc.call('midi2jianpu_html', -1, 1);
+  check(mPlain && !mPlain.includes("class='meter'>"), 'WASM 版单拍号素材不出现拍号标签');
+} else {
+  check(false, '素材 meter.mid 存在（先跑 make_fixture.py）');
+}
+
+// ---- 14. 坏数据不能把整页搞崩 ----
 c.setMidi(new Uint8Array([1, 2, 3, 4, 5]));
 const bad = c.call('midi2jianpu_parse', -1, 1);
 check(typeof bad === 'string' && bad.length > 0, '非法 MIDI 返回错误文本而非崩溃', bad);

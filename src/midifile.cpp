@@ -84,6 +84,26 @@ static void recomputeSeconds(MidiData& out) {
     }
 }
 
+// 拍号事件收齐后统一整理。
+//
+// format 1 文件里 conductor 轨和各乐器轨常常重复声明同一个 0x58（同一个 tick、
+// 同一个拍号），必须先排序去重；否则「同一时刻两个 4/4」会被下游当成变拍号。
+// 另外 timeSig 固定取曲首拍号——旧实现取最后一次，是变拍号曲目全盘错位的根源。
+static void normalizeMeterMap(MidiData& out) {
+    auto& v = out.timeSigChanges;
+    std::sort(v.begin(), v.end(),
+              [](const TimeSigPoint& a, const TimeSigPoint& b) { return a.tick < b.tick; });
+    std::vector<TimeSigPoint> uniq;
+    uniq.reserve(v.size());
+    for (const auto& p : v) {
+        if (!uniq.empty() && uniq.back().tick == p.tick) uniq.back() = p;  // 同 tick 后写覆盖
+        else uniq.push_back(p);
+    }
+    v.swap(uniq);
+    if (!v.empty()) out.timeSig = v.front().sig;
+    if (!out.timeSig.valid) out.timeSig = TimeSignature{4, 2, true};
+}
+
 // 核心解析：从内存buffer解析MIDI
 static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
     if (size < 14) return false;
@@ -170,9 +190,15 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
                     long us = (long)((d[pos] << 16) | (d[pos+1] << 8) | d[pos+2]);
                     if (us > 0) out.tempoChanges.push_back({absTick, 60000000.0 / (double)us});
                 } else if (metaType == 0x58u && metaLen >= 4) {  // time signature
-                    out.timeSig.numerator = d[pos];
-                    out.timeSig.denomPow = d[pos+1];
-                    out.timeSig.valid = true;
+                    TimeSignature ts;
+                    ts.numerator = d[pos];
+                    ts.denomPow = d[pos+1];
+                    ts.valid = true;
+                    // 分母指数 0..8（二分音符到 256 分音符），超范围多半是坏数据
+                    if (ts.numerator > 0 && ts.denomPow >= 0 && ts.denomPow <= 8) {
+                        out.timeSigChanges.push_back({absTick, ts});
+                        if (!out.timeSig.valid) out.timeSig = ts;
+                    }
                 } else if (metaType == 0x59u && metaLen >= 2) {  // key signature
                     out.keySig.sharpsFlats = (int8_t)d[pos];
                     out.keySig.isMinor = d[pos+1] != 0;
@@ -240,6 +266,7 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
                   if (a.startTicks != b.startTicks) return a.startTicks < b.startTicks;
                   return a.pitch < b.pitch;
               });
+    normalizeMeterMap(out);
     recomputeSeconds(out);
     return true;
 }

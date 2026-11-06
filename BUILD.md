@@ -33,7 +33,7 @@ cmake --build build --config Release
 
 ## 测试
 
-### 单元测试（143 项）
+### 单元测试（162 项）
 
 ```bash
 cd build && ctest --output-on-failure
@@ -41,20 +41,20 @@ cd build && ctest --output-on-failure
 ./build/test_basic
 ```
 
-成功时输出 `共 143 项，失败 0 项 -> 全部通过`。
+成功时输出 `共 162 项，失败 0 项 -> 全部通过`。
 
-覆盖范围：调性识别、各调八度基准、升降号书写（含降号调）、时值后缀、三连音、同音合并、和弦检测、移调、MusicXML 小节时长与 `<chord/>`，以及六组解析层回归——**鼓轨过滤**、**旋律轨判定**、**变速 tempo map 秒数换算**、**弱起小节网格**、**歌词分配与一字多音区间**、**MIDI 内置歌词规整与精确对齐**（都在内存里现构造最小 SMF，不依赖 fixture 文件）。
+覆盖范围：调性识别、各调八度基准、升降号书写（含降号调）、时值后缀、三连音、同音合并、和弦检测、移调、MusicXML 小节时长与 `<chord/>`，以及七组解析层回归——**鼓轨过滤**、**旋律轨判定**、**变速 tempo map 秒数换算**、**弱起小节网格**、**歌词分配与一字多音区间**、**MIDI 内置歌词规整与精确对齐**、**拍号 map 与逐小节网格**（都在内存里现构造最小 SMF，不依赖 fixture 文件）。
 
 ### 冒烟测试（端到端，验证 README 承诺的每个参数）
 
 需要 Python 3（只用标准库）：
 
 ```bash
-python tests/fixtures/make_fixture.py     # 生成 sample / humanized / drums / melisma / harmony / pickup / karaoke 七份素材
+python tests/fixtures/make_fixture.py     # 生成 sample / humanized / drums / melisma / harmony / pickup / karaoke / meter 八份素材
 python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2jianpu.exe
 ```
 
-覆盖 `--key` / `--track` / `--transpose` / `--musicxml` / `--html` / `--lyrics` / `--no-midi-lyrics` / `--pickup` / `--no-pickup` / `--output` / `--help` / `--version` 全部参数，并校验导出的 XML 里 `duration` 为整数、和弦音带 `<chord/>`，带歌词时 `<lyric>` / `<slur>` 成对且 `<notations>` 排在 `<lyric>` 之前。
+覆盖 `--key` / `--track` / `--transpose` / `--musicxml` / `--html` / `--lyrics` / `--no-midi-lyrics` / `--pickup` / `--no-pickup` / `--output` / `--help` / `--version` 全部参数，并校验导出的 XML 里 `duration` 为整数、和弦音带 `<chord/>`，带歌词时 `<lyric>` / `<slur>` 成对且 `<notations>` 排在 `<lyric>` 之前，变拍号时只有变化小节重写 `<time>`。
 
 其中 `drums.mid` 专测打击乐轨：鼓轨有 192 个音符（远超旋律的 8 个），谱面里不能出现 `[Drums]`、不能出现鼓的音高，旋律轨必须判给单声部的 Vocal。
 
@@ -65,6 +65,10 @@ python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2ji
 `harmony.mid` 专测和声粒度与变速：钢琴一小节换两次和弦（`| C Am | F G |`），conductor 轨在第 5 小节把速度从 120 改成 90。断言要求同一小节里同时出现 `[C]` 与 `[Am]`（小节起点和弦在标记行、第三拍和弦浮在音符上方各算一个），且速度标记只印在第一行谱上（两轨各印一遍会出 4 个而不是 2 个）。
 
 减时线连通也在这一组里校验：三连音必须是「一条线 + 一个 3」，不能被时值表最近的 0.375 档误判成附点十六分（两条线加一个点）。
+
+`meter.mid` 是**混合压力素材**，用来回答「分开测都过、混在一起会不会互相带偏」：4/4 ×2 → 3/4 ×2 → 6/8 ×2，同时在第 3 小节把 120 改成 90 BPM，伴奏轨重复声明同样的 `0x58`，通道 10 放 6 个鼓点，Vocal 轨每个音头写一个 `0x05` 歌词事件（其中 2 处 `-` 延续）。断言覆盖：曲首拍号是 4/4 而不是 6/8、页眉摘要、两个拍号标签、6 个小节时长为 `1920/1920/1440/1440/1440/1440`、MusicXML 只在第 1/3/5 小节写 `<time>`、24 个歌词字与 2 对 slur、鼓轨被丢弃、且**没有**误判出弱起。
+
+路线图里的「更多真实 MIDI 样本校验」由这份素材配合 `die_yi_sui_xue_vocal.mid`（真实人声录音导出）完成：每次发布都用它做一次带 LRC 的全链路回归渲染，确认新网格没有改变单拍号曲目的输出。
 
 ### WASM 冒烟测试（校验提交进 docs/wasm/ 的产物是否与源码同步）
 

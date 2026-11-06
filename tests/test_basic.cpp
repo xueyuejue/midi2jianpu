@@ -1,7 +1,8 @@
 // test_basic.cpp - 核心逻辑单元测试
 // 覆盖：音高->简谱、八度基准、升降号、时值后缀、三连音、调性识别、
 //       和弦检测、同音合并、MusicXML 相关的基础数据结构、
-//       鼓轨过滤、旋律轨判定、变速（tempo map）换算。
+//       鼓轨过滤、旋律轨判定、变速（tempo map）换算、内置歌词规整、
+//       拍号 map 与逐小节网格。
 #include "midi2jianpu/notation.hpp"
 
 #include <algorithm>
@@ -846,6 +847,90 @@ int main() {
         NoteEvent w = v; w.track = 2;
         d5.notes.push_back(w);
         check(midiLyricTrack(d5) == -1, "只有元数据/延续符时不采信歌词轨号");
+    }
+
+    std::cout << "\n测试中途变拍号（拍号 map / 逐小节网格）\n";
+    {
+        // 4/4 ×2 -> 3/4 ×2 -> 6/8 ×2，伴奏轨还重复声明了同样的 0x58。
+        // 旧实现拿最后一次 0x58 覆盖 data.timeSig，整份谱子按 6/8 划小节线，
+        // 并连带触发「弱起 4 拍」误判——这是这份回归要锁住的核心場景。
+        SmfTrack cond, vocal, piano;
+        cond.at(0,    ev({0xFF, 0x58, 0x04, 4, 2, 24, 8}));
+        cond.at(3840, ev({0xFF, 0x58, 0x04, 3, 2, 24, 8}));
+        cond.at(6720, ev({0xFF, 0x58, 0x04, 6, 3, 24, 8}));
+        piano.at(0,    ev({0xFF, 0x58, 0x04, 4, 2, 24, 8}));   // 多轨重复声明
+        piano.at(3840, ev({0xFF, 0x58, 0x04, 3, 2, 24, 8}));
+        auto addNote = [&](long tick, long dur) {
+            vocal.at(tick, ev({0x90, 60, 90}));
+            vocal.at(tick + dur, ev({0x80, 60, 0}));
+        };
+        for (long t : {0L, 480L, 960L, 1440L, 1920L, 2400L, 2880L, 3360L}) addNote(t, 480);
+        for (long t : {3840L, 4320L, 4800L, 5280L, 5760L, 6240L}) addNote(t, 480);
+        for (long t = 6720; t <= 9360; t += 240) addNote(t, 240);
+
+        auto bytes = buildSmf(3, 480, {cond, vocal, piano});
+        MidiData d;
+        bool ok = loadMidiFromMemory(bytes.data(), bytes.size(), d);
+        check(ok, "带变拍号的 SMF 能解析");
+        check(d.timeSigChanges.size() == 3,
+              "三次 0x58 全部记进 map，实际 " + std::to_string(d.timeSigChanges.size()));
+        check(d.timeSig.toString() == "4/4", "data.timeSig 是曲首拍号，不是最后一个 6/8");
+        check(meterChangesOf(d).size() == 2, "多轨重复声明不算变拍号");
+
+        const BarGrid g = barGridOf(d);
+        check(g.barStart(0) == 0 && g.barStart(1) == 1920 && g.barStart(2) == 3840 &&
+              g.barStart(3) == 5280 && g.barStart(4) == 6720 && g.barStart(5) == 8160,
+              "小节边界按 4/4(1920) / 3/4(1440) / 6/8(1440) 逐段铺开");
+        check(g.barSpan(0) == 1920 && g.barSpan(2) == 1440 && g.barSpan(4) == 1440,
+              "各段小节时长正确");
+        check(g.sigForBar(0).toString() == "4/4" && g.sigForBar(2).toString() == "3/4" &&
+              g.sigForBar(4).toString() == "6/8", "每小节拿到自己的拍号");
+        check(g.beatsForBar(2) == 3 && g.beatsForBar(4) == 6, "每小节拍数随拍号变化");
+        check(g.meterChangedAt(2) && g.meterChangedAt(4) && !g.meterChangedAt(3),
+              "只有变化小节才标新拍号");
+        check(g.barIndex(3839) == 1 && g.barIndex(3840) == 2 &&
+              g.barIndex(5279) == 2 && g.barIndex(5280) == 3 && g.barIndex(6720) == 4,
+              "tick -> 小节号跨段连续");
+        check(g.barStart(20) > 9600, "表尾之后按最后一段长度安全外推");
+        check(meterSummary(d) == "4/4 → 3/4(第3小节) → 6/8(第5小节)",
+              "页眉摘要列出每次变化及其小节号: " + meterSummary(d));
+        check(detectPickupTicks(d) == 0, "多拍号曲目禁用自动弱起判定");
+        check(g.pickup == 0, "不再误判出「弱起 4 拍」");
+        check(formatJianpu(d, KeyEstimate{0, true}).find("[3/4]") != std::string::npos,
+              "文本谱在变化小节印出新拍号");
+
+        // 反证：把这同一份数据伪装成「全曲 6/8」，弱起误判就会重现
+        MidiData fake = d;
+        fake.timeSigChanges.clear();
+        fake.timeSig = TimeSignature{6, 3, true};
+        check(detectPickupTicks(fake) > 0,
+              "反证：若只认最后一个拍号，这份素材确实会被误判为弱起");
+
+        // 手动 --pickup 与变拍号可以共存
+        MidiData manual = d;
+        manual.pickupTicks = 480;
+        BarGrid gm = barGridOf(manual);
+        check(gm.pickup == 480 && gm.barStart(0) == 0 && gm.barStart(1) == 480,
+              "手动弱起与拍号 map 共存时网格仍正确");
+
+        // 0x58 落在小节中间：在那里截断，新拍号从事件 tick 起生效
+        MidiData mid = d;
+        mid.timeSigChanges = {{0, TimeSignature{4, 2, true}},
+                              {3000, TimeSignature{3, 2, true}}};
+        mid.timeSig = TimeSignature{4, 2, true};
+        BarGrid gmid = barGridOf(mid);
+        bool cut = false;
+        for (long s : gmid.starts) if (s == 3000) cut = true;
+        check(cut && gmid.barIndex(3000) > 1, "拍号事件落在小节中间时截断该小节");
+
+        // 单拍号文件：边界表与旧的等距除法完全等价
+        MidiData plain = d;
+        plain.timeSigChanges = {{0, TimeSignature{4, 2, true}}};
+        plain.timeSig = TimeSignature{4, 2, true};
+        BarGrid gp = barGridOf(plain);
+        check(meterChangesOf(plain).empty() && !gp.hasMeterChange() &&
+              gp.barStart(3) == 5760 && gp.barSpan(2) == 1920 &&
+              meterSummary(plain) == "4/4", "单拍号文件行为与旧版一致");
     }
 
     std::cout << "\n------------------------------------------------\n";

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
-不依赖任何第三方库，只输出一个很小的 .mid 和一个 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。
+不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
+随时重建素材、复现问题。共生成 8 份素材：sample / humanized / drums /
+melisma / harmony / pickup / karaoke / meter，最后一份是把变拍号、变速、
+鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -395,6 +397,90 @@ def build_karaoke() -> bytes:
     return header + t0.render() + t1.render() + t2.render()
 
 
+def build_meter() -> bytes:
+    """中途变拍号 + 变速 + 鼓轨 + 内置歌词 + 伴奏和弦的「混合压力」素材。
+
+    真实编曲工程导出的 .mid 往往同时带着这些特征，分开测都过、混在一起就
+    互相带偏（拍号取最后一个 -> 弱起误判 -> 网格平移 -> 歌词与和弦全错位）。
+    时间轴（division=480）：
+
+        4/4 × 2 小节 : 0    ~ 3840   (每小节 1920)
+        3/4 × 2 小节 : 3840 ~ 6720   (每小节 1440)
+        6/8 × 2 小节 : 6720 ~ 9600   (每小节 1440，6 个八分音符)
+
+    另外故意在伴奏轨重复声明同样的 0x58，验证多轨重复拍号不会被当成变拍号；
+    通道 10 放几个鼓点，验证打击乐不会污染旋律轨判定。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))    # 120 BPM
+    t0.add(3840, meta(0x51, bytes([0x0A, 0x2C, 0x2A])))  # 666666us -> 90 BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))          # 4/4
+    t0.add(3840, meta(0x58, bytes([3, 2, 24, 8])))       # 3/4
+    t0.add(6720, meta(0x58, bytes([6, 3, 24, 8])))       # 6/8
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    t1.program(0, 54, 0)
+    # 4/4：每小节 4 个四分音符
+    for bar in range(2):
+        for b in range(4):
+            t1.note(0, 60 + b, 90, bar * 1920 + b * 480, 480)
+    # 3/4：每小节 3 个四分音符
+    for bar in range(2):
+        for b in range(3):
+            t1.note(0, 64 + b, 90, 3840 + bar * 1440 + b * 480, 480)
+    # 6/8：每小节 6 个八分音符
+    for bar in range(2):
+        for b in range(6):
+            t1.note(0, 67 + b, 90, 6720 + bar * 1440 + b * 240, 240)
+
+    def lyric(tick: int, text: str) -> None:
+        t1.add(tick, meta(0x05, text.encode("utf-8")))
+
+    # 真实卡拉 OK 的写法：每个旋律音头一个事件，一字多音用 "-" 延续。
+    # 只有 480 与 4320 两处延续，所以应当恰好产生 2 组连音线。
+    onsets = [0, 480, 960, 1440, 1920, 2400, 2880, 3360,
+              3840, 4320, 4800, 5280, 5760, 6240,
+              6720, 6960, 7200, 7440, 7680, 7920,
+              8160, 8400, 8640, 8880, 9120, 9360]
+    words = "春风又绿江南岸明月何时照我还归去来兮风雪夜归人归"
+    wi = 0
+    for tick in onsets:
+        if tick in (480, 4320):
+            lyric(tick, "-")
+        else:
+            lyric(tick, words[wi])
+            wi += 1
+
+    t2 = Track()
+    t2.add(0, meta(0x03, b"Piano"))
+    t2.program(1, 0, 0)
+    # 多轨重复声明同一拍号：不该被算成「变拍号」
+    t2.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t2.add(3840, meta(0x58, bytes([3, 2, 24, 8])))
+    bars = [
+        (0,    1920, (48, 52, 55)),   # C
+        (1920, 1920, (53, 57, 60)),   # F
+        (3840, 1440, (55, 59, 62)),   # G
+        (5280, 1440, (48, 52, 55)),   # C
+        (6720, 1440, (53, 57, 60)),   # F
+        (8160, 1440, (55, 59, 62)),   # G
+    ]
+    for start, length, chord in bars:
+        for p in chord:
+            t2.note(1, p, 70, start, length)
+
+    t3 = Track()
+    t3.add(0, meta(0x03, b"Drums"))
+    for bar_start in (0, 1920, 3840, 5280, 6720, 8160):
+        t3.note(9, 36, 100, bar_start, 120)   # channel index 9 = MIDI 通道 10
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 4, DIV)
+    return header + t0.render() + t1.render() + t2.render() + t3.render()
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -452,6 +538,13 @@ def main() -> None:
         kdata = build_karaoke()
         f.write(kdata)
     print(f"wrote {kmid} ({len(kdata)} bytes)")
+
+    # 中途变拍号 + 变速 + 鼓轨 + 内置歌词的混合压力素材
+    metmid = os.path.join(here, "meter.mid")
+    with open(metmid, "wb") as f:
+        metdata = build_meter()
+        f.write(metdata)
+    print(f"wrote {metmid} ({len(metdata)} bytes)")
 
 
 if __name__ == "__main__":

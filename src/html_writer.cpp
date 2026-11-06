@@ -358,6 +358,11 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             // 弱起小节不编号，第一个完整小节才是 1（见 BarGrid::measureNumber）
             if (bar > 0) body << "<span class='barno'>" << grid.measureNumber(bar) << "</span>";
 
+            // 中途变拍号：把新拍号标在变化那一小节的标记行。
+            // 页眉的摘要说明「什么时候变」，这里说明「从哪一栏开始按新拍子数」。
+            if (showTempo && grid.meterChangedAt(bar))
+                body << "<span class='meter'>" << grid.sigForBar(bar).toString() << "</span>";
+
             // 中途变速：标在速度变化的那一小节。单一速度已经写在页眉，
             // 谱面上再印一遍纯属噪音，所以只在有两个以上速度时显示。
             if (showTempo && data.tempoChanges.size() > 1) {
@@ -477,6 +482,8 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                     if (b > 0 && b % measuresPerRow == 0) body << "</div><div class='row'>";
                     body << "<span class='measure'><span class='marks'>";
                     if (b > 0) body << "<span class='barno'>" << grid.measureNumber(b) << "</span>";
+                    if (showTempo && grid.meterChangedAt(b))
+                        body << "<span class='meter'>" << grid.sigForBar(b).toString() << "</span>";
                     // 旋律还没进来、伴奏已经在走的前奏小节：和弦照标，
                     // 否则开头的 4 小节就是四块空白，看不出和声进行。
                     // 休止时值按本小节的实际长度算——弱起小节比正常小节短
@@ -554,9 +561,13 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 // 能否接上上一条减时线：同小节、首尾相接、减时线条数相同，
                 // 且同属一拍（三连音组例外，它本来就跨拍）。
                 // 还要同属一个一字多音组：一条减时线跨两个字会把连音线切断。
-                long beatLen = beatsPerBar > 0 ? (long)std::llround(barLen / beatsPerBar)
-                                               : (long)data.division;
-                long curBeat = beatLen > 0 ? n.startTicks / beatLen : 0;
+                // 一拍多长要按「当前小节的拍号」算：6/8 是八分音符一拍，
+                // 沿用 4/4 的 480 tick 会把六拍全算成三拍，减时线乱连。
+                long beatLen = (long)std::llround(
+                    grid.sigForBar(bar).barLengthTicks(data.division) /
+                    std::max(1, grid.beatsForBar(bar)));
+                long curBeat = beatLen > 0
+                    ? (n.startTicks - grid.barStart(bar)) / beatLen : 0;
                 long endTick = n.startTicks + std::max<long>(n.durationTicks, 1);
                 bool join = ds.beams > 0 && ds.beams == beamLevel && !beamBuf.empty() &&
                             bar == beamBar && n.startTicks == beamPrevEnd &&
@@ -643,6 +654,8 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
 .dyn{font-size:14px;font-style:italic;color:#999;line-height:1}
 .tempo{font-size:11px;font-weight:600;color:#4a6fa5;line-height:1;
        border:1px solid #cdd8e8;border-radius:3px;padding:1px 4px;background:#f4f7fc}
+.meter{font-size:11px;font-weight:700;color:#8a5a2b;line-height:1;
+       border:1px solid #e4d3bb;border-radius:3px;padding:1px 4px;background:#fdf8f0}
 
 /* 和弦标记：浮在它所管的那个音符上方，不占宽度。
    位置必须跟音符走——标记行是从左往右排的，一旦前面多了一个速度标记，
@@ -742,7 +755,7 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
 <h1>)" << htmlEscape(displayTitle) << R"(</h1>
 <div class="meta">)"
          << htmlEscape(keyDescription(key))
-         << " ｜ " << data.timeSig.toString()
+         << " ｜ " << meterSummary(data)
          << " ｜ " << (data.keySig.valid ? "MIDI调号" : "自动猜测")
          << (tempoSummary(data).empty() ? "" : " ｜ " + tempoSummary(data))
          << (pickupLabel(data).empty() ? "" : " ｜ " + pickupLabel(data))

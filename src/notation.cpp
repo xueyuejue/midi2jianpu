@@ -468,22 +468,104 @@ std::vector<bool> detectTriplets(const std::vector<NoteEvent>& notes, int divisi
     return isTriplet;
 }
 
+// 实质性的拍号变化：排序、去掉多轨重复声明、去掉与当前生效拍号相同的事件。
+// format 1 的 conductor 轨和乐器轨经常各自写一遍 4/4，那不是变拍号。
+std::vector<TimeSigPoint> meterChangesOf(const MidiData& data) {
+    if (data.timeSigChanges.empty()) return {};
+    std::vector<TimeSigPoint> v = data.timeSigChanges;
+    std::sort(v.begin(), v.end(),
+              [](const TimeSigPoint& a, const TimeSigPoint& b) { return a.tick < b.tick; });
+    std::vector<TimeSigPoint> uniq;
+    uniq.reserve(v.size());
+    for (const auto& p : v) {
+        if (!uniq.empty() && uniq.back().tick == p.tick) uniq.back() = p;
+        else uniq.push_back(p);
+    }
+    TimeSignature cur = data.timeSig.valid ? data.timeSig : uniq.front().sig;
+    std::vector<TimeSigPoint> out;
+    for (const auto& p : uniq) {
+        if (p.tick <= 0) { cur = p.sig; continue; }   // tick 0 是曲首拍号
+        if (p.sig.toString() == cur.toString()) continue;
+        out.push_back(p);
+        cur = p.sig;
+    }
+    return out;
+}
+
+// 拍号变化摘要。无变化时就是曲首拍号，调用方可以直接替换原来的 toString()。
+std::string meterSummary(const MidiData& data) {
+    TimeSignature first = data.timeSig.valid ? data.timeSig : TimeSignature{4, 2, true};
+    std::ostringstream os;
+    os << first.toString();
+    const auto changes = meterChangesOf(data);
+    if (changes.empty()) return os.str();
+
+    const BarGrid grid = barGridOf(data);
+    for (size_t i = 0; i < changes.size() && i < 4; i++) {
+        long bar = grid.barIndex(changes[i].tick);
+        os << " → " << changes[i].sig.toString()
+           << "(第" << grid.measureNumber(bar) << "小节)";
+    }
+    if (changes.size() > 4) os << " → …";
+    return os.str();
+}
+
 // ---- 弱起小节 ----
 //
 // 判定见 notation.hpp 的注释：只用「从 tick 0 起唱」+「末音收在小节线上」两条
 // 硬证据。两条都成立时，弱起长度只有一种解释，才敢改网格。
 BarGrid barGridOf(const MidiData& data) {
     BarGrid g;
-    double barLenD = data.timeSig.barLengthTicks(data.division);
-    long bl = (long)std::llround(barLenD);
-    if (bl <= 0) bl = (long)data.division * 4;
-    if (bl <= 0) bl = 1920;
+    TimeSignature first = data.timeSig.valid ? data.timeSig : TimeSignature{4, 2, true};
+    auto lenOf = [&](const TimeSignature& s) -> long {
+        long l = (long)std::llround(s.barLengthTicks(data.division));
+        if (l <= 0) l = (long)data.division * 4;
+        return l > 0 ? l : 1920;
+    };
+    long bl = lenOf(first);
     g.barLen = bl;
-    g.beatsPerBar = data.timeSig.numerator > 0 ? data.timeSig.numerator : 4;
+    g.beatsPerBar = first.numerator > 0 ? first.numerator : 4;
+    g.tailBarLen = bl;
     g.pickup = effectivePickupTicks(data);
     // 弱起不可能有小节那么长；越界的值一律按「没有弱起」处理，
     // 否则后面 barIndex/barStart 会算出负的小节
     if (g.pickup < 0 || g.pickup >= g.barLen) g.pickup = 0;
+
+    const auto changes = meterChangesOf(data);
+
+    // 边界表要铺到最后一个音之后再多一节，延长段才不会跨出表尾
+    long songEnd = 0;
+    for (const auto& n : data.notes)
+        songEnd = std::max(songEnd, n.startTicks + std::max<long>(n.durationTicks, 1));
+    const long horizon = songEnd + bl;
+
+    long cur = 0;
+    size_t ci = 0;
+    TimeSignature sig = first;
+    long curLen = bl;
+    if (g.pickup > 0) {
+        g.starts.push_back(0);          // bar 0 = 弱起那一小截
+        g.sigs.push_back(first);
+        cur = g.pickup;
+    }
+    // 上限防止坏文件里「极小 barLen + 巨大 tick」把内存吃光
+    while (cur <= horizon && g.starts.size() < 20000) {
+        while (ci < changes.size() && changes[ci].tick <= cur) {
+            sig = changes[ci].sig;
+            curLen = lenOf(sig);
+            ci++;
+        }
+        g.starts.push_back(cur);
+        g.sigs.push_back(sig);
+        g.tailBarLen = curLen;
+        long nxt = cur + curLen;
+        // 0x58 应该落在小节线上，但导出器写歪的很常见：此时在当前小节中间
+        // 截断，让新拍号从事件 tick 起生效，比把它推迟一整节更接近作者意图。
+        if (ci < changes.size() && changes[ci].tick > cur && changes[ci].tick < nxt)
+            nxt = changes[ci].tick;
+        cur = nxt;
+    }
+    if (g.starts.empty()) { g.starts.push_back(0); g.sigs.push_back(first); }
     return g;
 }
 
@@ -494,6 +576,11 @@ long effectivePickupTicks(const MidiData& data) {
 
 long detectPickupTicks(const MidiData& data) {
     if (data.division <= 0 || data.notes.empty()) return 0;
+    // 拍号会变的曲子里，「末音 mod 小节长 = 弱起长度」这个公式根本不成立：
+    // 总长是各段小节长之和，不再是某个常量的整数倍。探针里 4/4→3/4→6/8
+    // 就被算成「弱起 4 拍」，网格又整体平移一次，错得比不改还离谱。
+    // 宁可不判（用户还能 --pickup 手动指定），也不能拿来路不明的弱起。
+    if (!meterChangesOf(data).empty()) return 0;
     double barLenD = data.timeSig.barLengthTicks(data.division);
     if (!(barLenD > 0)) return 0;
     long barLen = (long)std::llround(barLenD);
@@ -630,6 +717,10 @@ static std::string formatTrack(
         if ((int)bar == currentBar) return;
         if (currentBar >= 0) os << " |\n";
         currentBar = (int)bar;
+        // 变拍号处把新拍号印在谱面上（只印旋律轨，伴奏轨不重复）。
+        // 页眉的摘要说明「什么时候变」，这里说明「从哪一栏开始按新拍子数」。
+        if (chords && grid.meterChangedAt(bar))
+            os << "[" << grid.sigForBar(bar).toString() << "] ";
         // 和弦标记只标在旋律轨上，避免伴奏轨重复标注；
         // 连续小节是同一个和弦时不重复写——歌本里和弦只在变化处标注
         if (chords) {
@@ -756,7 +847,7 @@ std::string tempoSummary(const MidiData& data) {
 std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
     std::ostringstream os;
     os << keyDescription(key)
-       << "    " << data.timeSig.toString();
+       << "    " << meterSummary(data);
     std::string tempo = tempoSummary(data);
     if (!tempo.empty()) os << "    " << tempo;
     std::string pickup = pickupLabel(data);
@@ -1096,16 +1187,19 @@ std::vector<LyricLine> parseLrcLines(const std::string& lrcPath, int division, i
 //
 // 窗口取法跟着拍号走：4/4 取半小节、6/8 取附点四分、3/4 取整小节。
 // 相邻窗口同名就合并，所以和声不变的地方不会多出标记。
-long chordWindowTicks(const MidiData& data) {
-    double barLen = data.timeSig.barLengthTicks(data.division);
-    if (!(barLen > 0)) barLen = data.division * 4.0;
+static long chordWindowFor(const TimeSignature& sig, int division) {
+    double barLen = sig.barLengthTicks(division);
+    if (!(barLen > 0)) barLen = division * 4.0;
     long barLenI = std::max<long>(1, (long)std::llround(barLen));
-
-    int beats = data.timeSig.numerator > 0 ? data.timeSig.numerator : 4;
+    int beats = sig.numerator > 0 ? sig.numerator : 4;
     // 偶数拍（4/4、6/8、12/8）折半：和弦常在第三拍或第二个附点四分处换。
     // 奇数拍（3/4、3/8）本来就是一小节一个和声，再细分只会放大噪声。
     int k = (beats % 2 == 0) ? 2 : 1;
     return std::max<long>(1, barLenI / k);
+}
+
+long chordWindowTicks(const MidiData& data) {
+    return chordWindowFor(data.timeSig, data.division);
 }
 
 std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key) {
@@ -1120,13 +1214,17 @@ std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key
 
     // 和声窗的起点要跟着小节网格走。弱起曲目若还按 `tick / win` 切窗，
     // 每个窗都错开半拍，小节开头的和弦会被算到上一个窗里，
-    // 谱面上第一个和弦就往左挪了一拍。
+    // 谱面上第一个和弦就往左挪了一拍。变拍号曲目还要按该小节的拍号取窗长，
+    // 否则 3/4 段的和弦会被 4/4 的半小节窗切碎。
     auto windowOf = [&](long tick) -> long {
-        if (grid.pickup > 0) {
-            if (tick < grid.pickup) return 0;
-            return grid.pickup + ((tick - grid.pickup) / win) * win;
-        }
-        return (tick / win) * win;
+        const long bar = grid.barIndex(tick);
+        if (grid.pickup > 0 && bar == 0) return 0;    // 弱起整段算一个窗
+        const long bs = grid.barStart(bar);
+        const long w = grid.hasMeterChange()
+                     ? chordWindowFor(grid.sigForBar(bar), data.division) : win;
+        long local = tick - bs;
+        if (local < 0) local = 0;
+        return bs + (local / w) * w;
     };
 
     std::map<long, std::map<int, int>> winPitch;  // 窗口起点 -> 音级 -> 次数
