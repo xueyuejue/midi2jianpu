@@ -103,7 +103,41 @@ struct MidiData {
     // `1,, #4,, #6,,` 这种垃圾，并且会因为音符数最多而抢走「旋律轨」身份。
     // 所以解析阶段就丢弃，这里只留下数量供 CLI 提示用户。
     int drumNotesSkipped = 0;
+
+    // 弱起（anacrusis）小节长度，单位 tick；-1 表示自动判定（见 notation.hpp
+    // 的 detectPickupTicks），0 表示明确没有弱起。
+    //
+    // 大量歌本里的曲子是从弱拍进唱的（「| 5 5 | 1 - - - 」的 5 5），MIDI 里这些
+    // 音就从 tick 0 开始，第一小节天然不满。若照 `tick / barLen` 划小节线，
+    // 整条网格会整体左移，谱面上每一小节的重音都落到第 4 拍，小节线也全部错位。
+    long pickupTicks = -1;
 };
+
+// ---- 小节网格 ----
+// 有弱起时，bar 0 是那半截不完整的小节，完整小节从 1 起算；没有弱起时
+// bar 0 就是第 1 小节。所有「tick -> 小节」的换算都必须走这三个函数，
+// 否则弱起谱面会一半对一半错。
+inline long barIndexAt(long tick, long barLen, long pickupTicks) {
+    if (barLen <= 0) return 0;
+    if (tick <= 0) return 0;
+    if (pickupTicks <= 0) return tick / barLen;
+    if (tick < pickupTicks) return 0;
+    return 1 + (tick - pickupTicks) / barLen;
+}
+
+inline long barStartTick(long bar, long barLen, long pickupTicks) {
+    if (bar <= 0) return 0;
+    if (pickupTicks > 0) return pickupTicks + (bar - 1) * barLen;
+    return bar * barLen;
+}
+
+inline long barEndTick(long bar, long barLen, long pickupTicks) {
+    if (pickupTicks > 0) {
+        if (bar <= 0) return pickupTicks;
+        return pickupTicks + bar * barLen;
+    }
+    return (bar + 1) * barLen;
+}
 
 bool loadMidiFile(const std::string& path, MidiData& out);
 

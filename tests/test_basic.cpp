@@ -607,6 +607,90 @@ int main() {
         }
     }
 
+    std::cout << "\n测试弱起 (anacrusis) 网格\n";
+    {
+        // 素材：弱起 1 拍 + 两个完整小节，末音正好收在小节线上。
+        // 这是歌本里最常见的形状（`| 5 | 1' 7 6 5 |`），也是 tk/小节长 会错位的典型。
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        auto addNote = [&](long tick, long dur, int pitch) {
+            NoteEvent n;
+            n.pitch = pitch;
+            n.startTicks = tick;
+            n.durationTicks = dur;
+            n.track = 0;
+            n.channel = 0;
+            d.notes.push_back(n);
+        };
+        addNote(0, 480, 67);                                        // 弱起 5
+        const int mel[8] = {72, 71, 69, 67, 64, 65, 67, 72};        // 1' 7 6 5 | 3 4 5 1'
+        for (int i = 0; i < 8; i++) addNote(480 + i * 480L, 480, mel[i]);
+
+        long pk = detectPickupTicks(d);
+        check(pk == 480, "1 拍弱起判出 480 tick, 实际: " + std::to_string(pk));
+
+        BarGrid g = barGridOf(d);
+        check(g.pickup == 480, "网格带上弱起, 实际: " + std::to_string(g.pickup));
+        check(g.barIndex(0) == 0 && g.barIndex(479) == 0,
+              "弱起小节自身是 bar 0");
+        check(g.barIndex(480) == 1 && g.barIndex(2399) == 1 && g.barIndex(2400) == 2,
+              "第一个完整小节从 480 起算, 实际: "
+                  + std::to_string(g.barIndex(480)) + "/" + std::to_string(g.barIndex(2400)));
+        check(g.barStart(1) == 480 && g.barEnd(1) == 2400 && g.barStart(2) == 2400,
+              "小节边界随弱起平移, 实际: " + std::to_string(g.barStart(1))
+                  + "/" + std::to_string(g.barEnd(1)));
+        check(g.barSpan(0) == 480 && g.barSpan(1) == 1920, "弱起小节只有 480 tick");
+        check(g.measureNumber(1) == 1 && g.measureNumber(2) == 2,
+              "弱起小节不编号, 第一个完整小节才是 1");
+        check(pickupLabel(d) == "弱起 1 拍", "页眉写弱起 1 拍, 实际: " + pickupLabel(d));
+
+        KeyEstimate c{0, true};
+        std::string s = formatJianpu(d, c);
+        check(s.find("弱起 1 拍") != std::string::npos, "文本谱头标注弱起");
+        // 弱起小节自成一行：`5  |` 后面才是完整小节
+        check(s.find("5  |\n1' 7 6 5  |") != std::string::npos,
+              "弱起小节单独成栏, 实际: " + s.substr(s.find('\n', 40) + 1));
+    }
+    {
+        // 开头有前奏休止（不是从 tick 0 起唱）时不能判成弱起
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        NoteEvent n;
+        n.pitch = 60; n.track = 0; n.channel = 0;
+        for (int i = 0; i < 9; i++) {
+            n.startTicks = 1920 + i * 480L;
+            n.durationTicks = 480;
+            d.notes.push_back(n);
+        }
+        check(detectPickupTicks(d) == 0, "前奏休止不被误判成弱起");
+    }
+    {
+        // 一个 6 拍长音停在第二小节第 2 拍：末音位置凑巧是「2 拍弱起」的收尾，
+        // 但下一小节强拍上并没有音起，所以不成立。早先的实现会在这里误判。
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        NoteEvent n;
+        n.pitch = 60; n.track = 0; n.channel = 0;
+        n.startTicks = 0;
+        n.durationTicks = 6 * 480;
+        d.notes.push_back(n);
+        check(detectPickupTicks(d) == 0, "末音停在小节中间时不判弱起");
+    }
+    {
+        // 手动覆盖优先于自动判定
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.pickupTicks = 960;
+        BarGrid g = barGridOf(d);
+        check(g.pickup == 960 && g.barStart(1) == 960, "手动 --pickup 覆盖自动判定");
+        d.pickupTicks = 0;
+        check(barGridOf(d).pickup == 0, "--no-pickup 关掉弱起");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

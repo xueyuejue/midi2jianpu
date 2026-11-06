@@ -297,6 +297,55 @@ def build_harmony() -> bytes:
     return header + t0.render() + t1.render() + t2.render()
 
 
+# ---------------------------------------------------------------------------
+# 第六份素材：弱起（anacrusis）。
+#
+# 歌本里大量曲子是从弱拍进唱的：`| 5 | 1' 7 6 5 |`。MIDI 里这个 5 就从 tick 0
+# 开始，于是第一小节天然不满四拍。若照 `tick / 小节长` 划小节线，整条网格会
+# 整体左移一拍——谱面上每一小节的重音都落到第 4 拍，小节线全部错位。
+#
+# 正确结果：首小节单独成一栏且不编号（弱起 1 拍），后面两个完整小节编号 1、2；
+# 和弦也要按新网格切窗，弱起小节是 G，第一个完整小节才是 C。
+# ---------------------------------------------------------------------------
+PICKUP_BARS = 2
+
+
+def build_pickup() -> bytes:
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))    # 120BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))         # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))                # C 大调
+
+    # 旋律：弱起 1 拍（G5），然后两个完整小节的四分音符，末音正好收在小节线上
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    t1.program(0, 0, 0)
+    t1.note(0, 67, 90, 0, DIV)                                   # 弱起：5
+    off = DIV
+    for p in (72, 71, 69, 67, 64, 65, 67, 72):                   # 1' 7 6 5 | 3 4 5 1'
+        t1.note(0, p, 90, off, DIV)
+        off += DIV
+
+    # 伴奏：弱起小节配属和弦 G，第一个完整小节才是主和弦 C —— 弱起进主和弦
+    t2 = Track()
+    t2.add(0, meta(0x03, b"Piano"))
+    t2.program(1, 0, 0)
+    for p in (43, 47, 50):                                        # G
+        t2.note(1, p, 70, 0, DIV)
+    for p in (48, 52, 55):                                        # C
+        t2.note(1, p, 70, DIV, 2 * DIV)
+    for p in (45, 48, 52):                                        # Am
+        t2.note(1, p, 70, DIV + 2 * DIV, 2 * DIV)
+    for p in (41, 45, 48):                                        # F
+        t2.note(1, p, 70, BAR + DIV, 2 * DIV)
+    for p in (43, 47, 50):                                        # G
+        t2.note(1, p, 70, BAR + 3 * DIV, 2 * DIV)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 3, DIV)
+    return header + t0.render() + t1.render() + t2.render()
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -340,6 +389,13 @@ def main() -> None:
         hdata2 = build_harmony()
         f.write(hdata2)
     print(f"wrote {hmid2} ({len(hdata2)} bytes)")
+
+    # 弱起（第一小节不满）的素材
+    pmid = os.path.join(here, "pickup.mid")
+    with open(pmid, "wb") as f:
+        pdata = build_pickup()
+        f.write(pdata)
+    print(f"wrote {pmid} ({len(pdata)} bytes)")
 
 
 if __name__ == "__main__":

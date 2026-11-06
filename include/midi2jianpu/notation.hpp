@@ -131,6 +131,46 @@ int pickMelodyTrack(const MidiData& data, const std::vector<LyricLine>* lyrics =
 // 速度摘要（变速曲目会列出每次变化及其小节）
 std::string tempoSummary(const MidiData& data);
 
+// ---- 小节网格 ----
+// 「tick -> 小节」的换算分散在文本 / HTML / MusicXML 三个输出里，弱起一进来
+// 就得三处同时改，否则谱面一半对一半错。统一收进这个结构体。
+struct BarGrid {
+    long barLen = 1920;   // 一小节多少 tick
+    long pickup = 0;      // 弱起小节长度 tick（0 = 没有弱起）
+    int beatsPerBar = 4;  // 每小节拍数（拍号分子）
+
+    long barIndex(long tick) const { return barIndexAt(tick, barLen, pickup); }
+    long barStart(long bar) const { return barStartTick(bar, barLen, pickup); }
+    long barEnd(long bar) const { return barEndTick(bar, barLen, pickup); }
+
+    // 谱面上印出的小节号：弱起小节不编号，第一个完整小节才是 1。
+    int measureNumber(long bar) const { return pickup > 0 ? (int)bar : (int)bar + 1; }
+
+    // 一小节的实际 tick 数（弱起小节比正常小节短）
+    long barSpan(long bar) const { return barEnd(bar) - barStart(bar); }
+};
+
+BarGrid barGridOf(const MidiData& data);
+
+// 弱起（anacrusis）小节长度，单位 tick；0 表示判不出弱起。
+//
+// 判定只用硬证据，宁可漏判也不误判——判错的代价是整份谱子的小节线全错，
+// 而漏判时用户还能用 --pickup N 手动指定：
+//   1) 曲子必须从 tick 0 直接起唱。开头若干小节空白是前奏休止，不是弱起；
+//   2) 全曲最后一个音的收尾必须落在小节线上。弱起的总长是 P + N*小节长，
+//      于是「末音位置 mod 小节长」就是弱起长度，四舍五入到整拍；
+//   3) 弱起之后那一拍必须真有音起，否则只是长音停在小节中间（最常见的误判）。
+// 三条都成立时，弱起长度没有第二种解释，才敢用。
+long detectPickupTicks(const MidiData& data);
+
+// 实际要用的弱起长度：data.pickupTicks >= 0 时直接用它（手动覆盖），
+// 否则走 detectPickupTicks（自动）。
+long effectivePickupTicks(const MidiData& data);
+
+// 弱起的人类可读说明，如 "弱起 1 拍"；没有弱起时返回空串。
+// 文本谱头与 HTML 页眉共用，判错了用户一眼能看出来并去改 --pickup。
+std::string pickupLabel(const MidiData& data);
+
 // 和声窗长度（tick）：4/4 半小节、6/8 附点四分、3/4 整小节
 long chordWindowTicks(const MidiData& data);
 

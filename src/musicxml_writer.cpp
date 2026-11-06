@@ -117,9 +117,8 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key) {
     xml << "  </part-list>\n";
 
     // 小节长度（tick）。拍号缺失或非法时回退到 4/4，
-    // 否则后面所有除法都会炸。
-    double barLen = data.timeSig.barLengthTicks(division);
-    if (!(barLen > 0)) barLen = division * 4.0;
+    // 否则后面所有除法都会炸。弱起曲目的整套换算走 BarGrid。
+    const BarGrid grid = barGridOf(data);
 
     const bool flat = prefersFlats(key);
     const int fifths = keyFifths(key);
@@ -145,8 +144,8 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key) {
             bool firstPart = true;
 
             while (start < end) {
-                int bar = (int)(start / barLen);
-                long barEnd = (long)((bar + 1) * barLen);
+                int bar = (int)grid.barIndex(start);
+                long barEnd = grid.barEnd(bar);
                 long segEnd = std::min(end, barEnd);
                 // 防御：若换算出的小节末尾没有推进，直接吃到音符结束，避免死循环
                 if (segEnd <= start) segEnd = end;
@@ -227,14 +226,18 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key) {
             }
         };
 
+        // 弱起小节要标 implicit="yes"，否则 MuseScore 会把它当成一个完整小节，
+        // 并要求补齐 4 拍；小节号也从 0 起算，第一个完整小节显示成 1。
         auto openMeasure = [&](int bar) {
-            xml << "    <measure number=\"" << (bar + 1) << "\">\n";
+            xml << "    <measure number=\"" << grid.measureNumber(bar) << "\"";
+            if (grid.pickup > 0 && bar == 0) xml << " implicit=\"yes\"";
+            xml << ">\n";
             emitAttributes();
-            writtenUpTo = (long)(bar * barLen);
+            writtenUpTo = grid.barStart(bar);
         };
 
         auto closeMeasure = [&]() {
-            long barEndTick = (long)((curBar + 1) * barLen);
+            long barEndTick = grid.barEnd(curBar);
             if (writtenUpTo < barEndTick) emitRest(writtenUpTo, barEndTick);
             xml << "    </measure>\n";
         };
@@ -245,10 +248,15 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key) {
 
                 // 补齐中间完全空的小节，否则小节编号会跳号
                 for (int b = curBar + 1; b < seg.bar; b++) {
-                    xml << "    <measure number=\"" << (b + 1) << "\">\n";
+                    xml << "    <measure number=\"" << grid.measureNumber(b) << "\"";
+                    // 弱起小节在别的声部里是空小节，同样要标 implicit，
+                    // 否则各声部的小节号与 MuseScore 的编号对不上
+                    if (grid.pickup > 0 && b == 0) xml << " implicit=\"yes\"";
+                    xml << ">\n";
                     emitAttributes();   // 开头就是空小节时，属性要写在这里
                     xml << "      <note><rest measure=\"yes\"/><duration>"
-                        << (long)barLen << "</duration><voice>1</voice><type>whole</type></note>\n"
+                        << grid.barSpan(b) << "</duration><voice>1</voice>"
+                        << "<type>whole</type></note>\n"
                         << "    </measure>\n";
                 }
 
