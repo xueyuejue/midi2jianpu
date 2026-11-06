@@ -11,6 +11,13 @@
 static std::string g_result;
 static std::string g_lyrics;  // 歌词文本(LRC格式)
 static std::string g_title;   // 谱面标题（网页传文件名进来）
+static bool g_useMidiLyrics = true;  // 是否使用 MIDI 自带的 0x05 歌词
+
+// 网页上那个「使用 MIDI 自带歌词」复选框。清空事件表而不是只跳过渲染：
+// 歌词事件同时参与旋律轨判定，关掉就得连证据一起去掉。
+static void applyMidiLyricOption(m2j::MidiData& data) {
+    if (!g_useMidiLyrics) data.midiLyrics.clear();
+}
 
 extern "C" {
 
@@ -32,6 +39,7 @@ const char* midi2jianpu_parse(const uint8_t* midiData, int size, int keyPitch, i
         return g_result.c_str();
     }
 
+    applyMidiLyricOption(data);
     m2j::quantizeTiming(data);
 
     m2j::KeyEstimate key;
@@ -60,6 +68,7 @@ const char* midi2jianpu_html(const uint8_t* midiData, int size, int keyPitch, in
         return g_result.c_str();
     }
 
+    applyMidiLyricOption(data);
     m2j::quantizeTiming(data);
 
     m2j::KeyEstimate key;
@@ -107,6 +116,19 @@ void midi2jianpu_set_title(const char* title) {
     g_title = title ? title : "";
 }
 
+// 查询文件自带的可唱音节数，供网页在用户还没贴 LRC 时提示「无需另找歌词」。
+// 只是读文件，不受「忽略内置歌词」开关影响；解析失败返回 0。
+int midi2jianpu_midi_lyric_count(const uint8_t* midiData, int size) {
+    m2j::MidiData data;
+    if (!m2j::loadMidiFromMemory(midiData, size, data)) return 0;
+    return (int)m2j::normalizeMidiLyrics(data).size();
+}
+
+// 网页版「使用 MIDI 自带歌词」开关：0 = 忽略，非 0 = 自动加载（默认）。
+void midi2jianpu_set_use_midi_lyrics(int on) {
+    g_useMidiLyrics = (on != 0);
+}
+
 // 获取MIDI音符数据(JSON格式, 用于播放)
 const char* midi2jianpu_get_notes_json(const uint8_t* midiData, int size) {
     m2j::MidiData data;
@@ -137,6 +159,7 @@ const char* midi2jianpu_musicxml(const uint8_t* midiData, int size, int keyPitch
         g_result = "<error>无法解析MIDI</error>";
         return g_result.c_str();
     }
+    applyMidiLyricOption(data);
     m2j::quantizeTiming(data);
 
     m2j::KeyEstimate key;

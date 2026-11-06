@@ -130,6 +130,47 @@ LyricAssignment assignLyrics(const MidiData& data,
                              const std::vector<LyricLine>& lines,
                              int mainTrack);
 
+// ---- MIDI 内置歌词（0x05 lyric meta） ----
+// 和 LRC 是两种东西：LRC 只有「一行词从哪一刻开始」，字要靠行内音数均分；
+// 内置歌词每个事件自带精确 tick，通常一个事件就是一个音节。把它转成 LyricLine
+// 再走 assignLyrics，会把这份精确对齐抹平，还会把相邻音节粘成一个词。
+// 所以单开一条通路，最终仍产出 LyricAssignment，输出层不必区分来源。
+struct MidiSyllable {
+    long tick = 0;
+    std::string text;   // 已规整的单个音节（中文单字 / 英文单词）
+    long spanEnd = 0;   // 本批音节共享的右端；0 = 直到曲终
+};
+
+// 规整 0x05 事件流。各家 DAW / 卡拉 OK 文件的事实约定：
+//   "-"、"_"、空串、纯空白      一字多音的延续，不产生新音节（前一个字自然拖长）
+//   "/"、"\"、CR/LF             换行或分隔，不产生新音节
+//   "@" 开头                    @KMIDI / @TITLE 这类文件元数据，跳过
+//   "+" 前缀                    续行标记，去掉后保留内容
+// 中文按字拆、连续 ASCII 字母按词拆（"Hello" 是一个音节而不是五个），
+// 标点与空白不占音节。同 tick 的多个事件合成一批，共享 spanEnd。
+std::vector<MidiSyllable> normalizeMidiLyrics(const MidiData& data);
+
+// 按精确 tick 对齐：一批音节吸附到 [tick, spanEnd) 内真实存在的旋律音头，
+// 单音节批次就覆盖整段（这正是一字多音），多字批次在段内均分。
+LyricAssignment assignMidiLyrics(const MidiData& data, int mainTrack);
+
+// 内置歌词事件所在的轨道（format 1 且事件全在同一条有音符的轨上才可信）。
+// format 0 只有一条轨、歌词分散在多轨、或歌词轨没有音符时都返回 -1。
+int midiLyricTrack(const MidiData& data);
+
+enum class LyricSource { None, External, Midi };
+LyricSource lyricSourceOf(const MidiData& data, const std::vector<LyricLine>* external);
+
+// 页眉/控制台用的来源说明，如 "歌词：MIDI 内置（12 字）"；无词时返回空串。
+std::string lyricSourceLabel(const MidiData& data,
+                             const std::vector<LyricLine>* external);
+
+// 三个输出层唯一入口：显式给的 LRC 优先，没有就自动回退到 MIDI 内置歌词。
+// 用户把 data.midiLyrics 清空（CLI 的 --no-midi-lyrics）即可彻底关掉回退。
+LyricAssignment resolveLyrics(const MidiData& data,
+                              const std::vector<LyricLine>* external,
+                              int mainTrack);
+
 // 和弦标记
 struct ChordMark {
     long startTick;

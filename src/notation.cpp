@@ -830,6 +830,17 @@ std::vector<TrackProfile> profileTracks(const MidiData& data,
     double barLen = data.timeSig.barLengthTicks(data.division);
     if (!(barLen > 0)) barLen = data.division * 4.0;
 
+    // 内置歌词事件所在的轨是文件作者明确标出来的「人声轨」，比按音符数、
+    // 单音率猜都可靠。format 0 或歌词分散在多轨时退回软证据：把歌词 tick
+    // 当作行首，走下面原有的对齐打分。
+    const int builtinLyricTrack = midiLyricTrack(data);
+    std::vector<LyricLine> hints;
+    if (lyrics && !lyrics->empty()) {
+        hints = *lyrics;
+    } else if (!data.midiLyrics.empty()) {
+        for (const auto& s : normalizeMidiLyrics(data)) hints.push_back({s.tick, s.text});
+    }
+
     for (auto& kv : byTrack) {
         const auto& ns = kv.second;
         TrackProfile p;
@@ -855,9 +866,9 @@ std::vector<TrackProfile> profileTracks(const MidiData& data,
 
         // 歌词对齐：歌词行首的 tick 落在该轨某个音符的半个小节内，算命中一行。
         // LRC 的时间戳精度只到 10ms，且常与 MIDI 有几十毫秒偏差，容差不能太紧。
-        if (lyrics && !lyrics->empty()) {
+        if (!hints.empty()) {
             size_t hit = 0;
-            for (const auto& line : *lyrics) {
+            for (const auto& line : hints) {
                 for (const auto* n : ns) {
                     if (std::fabs((double)n->startTicks - (double)line.startTick) <= barLen * 0.5) {
                         hit++;
@@ -865,7 +876,7 @@ std::vector<TrackProfile> profileTracks(const MidiData& data,
                     }
                 }
             }
-            p.lyricAligned = hit * 2 >= lyrics->size();
+            p.lyricAligned = hit * 2 >= hints.size();
         }
 
         double s = std::log((double)p.noteCount + 1.0);
@@ -874,6 +885,7 @@ std::vector<TrackProfile> profileTracks(const MidiData& data,
         int range = p.maxPitch - p.minPitch;
         s += (range >= 12) ? 1.0 : range / 12.0;              // 音域
         if (p.lyricAligned) s += 4.0;
+        if (p.track == builtinLyricTrack) s += 5.0;   // 文件自己标的人声轨，最强证据
         if (p.avgPitch < 48) s -= 1.5;                        // 低音区多半是贝斯
         p.score = s;
         out.push_back(p);
@@ -1258,6 +1270,206 @@ LyricAssignment assignLyrics(const MidiData& data,
         }
     }
     return out;
+}
+
+// ---- MIDI 内置歌词（0x05 lyric meta） ----
+
+// 拆成「可唱单位」：中文一个汉字、英文一个连续单词。
+// assignLyrics 用的 splitUtf8 是按字节序列逐字拆的，套到英文歌词上会把
+// "Hello" 拆成 5 个音节；英文 .mid 里一个单词通常就是一个 lyric 事件。
+static std::vector<std::string> splitMidiSyllables(const std::string& s) {
+    std::vector<std::string> out;
+    auto isWordChar = [](unsigned char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+               (c >= '0' && c <= '9') || c == '\'';
+    };
+    static const std::set<std::string> kPunct = {
+        "，", "。", "！", "？", "、", "；", "：", "“", "”", "‘", "’",
+        "（", "）", "【", "】", "…", "—", "～", "·", "《", "》", "「", "」"
+    };
+    for (size_t i = 0; i < s.size();) {
+        unsigned char c = (unsigned char)s[i];
+        if (c < 0x80) {
+            if (isWordChar(c)) {
+                size_t j = i;
+                while (j < s.size() && isWordChar((unsigned char)s[j])) j++;
+                out.push_back(s.substr(i, j - i));
+                i = j;
+            } else {
+                i++;   // 空格、ASCII 标点、'-' '_' '/' 一律不占音节
+            }
+            continue;
+        }
+        int len = 1;
+        if ((c & 0xE0) == 0xC0) len = 2;
+        else if ((c & 0xF0) == 0xE0) len = 3;
+        else if ((c & 0xF8) == 0xF0) len = 4;
+        if (i + len > s.size()) break;        // 截断的多字节序列，丢掉比拆碎好
+        std::string u = s.substr(i, len);
+        if (!kPunct.count(u)) out.push_back(u);
+        i += len;
+    }
+    return out;
+}
+
+std::vector<MidiSyllable> normalizeMidiLyrics(const MidiData& data) {
+    std::vector<MidiSyllable> out;
+    if (data.midiLyrics.empty()) return out;
+
+    std::vector<const LyricEvent*> evs;
+    evs.reserve(data.midiLyrics.size());
+    for (const auto& e : data.midiLyrics) evs.push_back(&e);
+    // 稳定排序：同一 tick 上多个事件的先后由文件顺序决定，不能打乱歌词次序
+    std::stable_sort(evs.begin(), evs.end(),
+                     [](const LyricEvent* a, const LyricEvent* b) { return a->tick < b->tick; });
+
+    struct Batch { long tick; std::vector<std::string> syls; };
+    std::vector<Batch> batches;
+    for (const auto* e : evs) {
+        std::string text;
+        for (char ch : e->text) {
+            if (ch != '\r' && ch != '\n') text.push_back(ch);
+        }
+        // trim 首尾空白（"Hello " / " 你" 都很常见）
+        size_t b = 0, z = text.size();
+        while (b < z && (text[b] == ' ' || text[b] == '\t')) b++;
+        while (z > b && (text[z - 1] == ' ' || text[z - 1] == '\t')) z--;
+        text = text.substr(b, z - b);
+
+        if (text.empty() || text[0] == '@') continue;   // @KMIDI / @TITLE 等元数据
+        if (text[0] == '+') {                           // 续行标记
+            text.erase(0, 1);
+            if (text.empty()) continue;
+        }
+        // "-" / "_" / "/" / "\" 组成的事件是延续或换行，不产生新音节。
+        // 跳过之后，前一个字的 spanEnd 自然延长到下一个有效事件 —— 这正是
+        // 简谱里「一个字拖过几个音」要画连音线的地方。
+        bool onlyMarks = true;
+        for (char ch : text) {
+            if (ch != '-' && ch != '_' && ch != '/' && ch != '\\' &&
+                ch != ' ' && ch != '\t') { onlyMarks = false; break; }
+        }
+        if (onlyMarks) continue;
+
+        auto syls = splitMidiSyllables(text);
+        if (syls.empty()) continue;
+        if (!batches.empty() && batches.back().tick == e->tick) {
+            auto& last = batches.back().syls;
+            last.insert(last.end(), syls.begin(), syls.end());
+        } else {
+            batches.push_back({e->tick, syls});
+        }
+    }
+
+    for (size_t i = 0; i < batches.size(); i++) {
+        // 末批 spanEnd = 0，由 assignMidiLyrics 填「曲终之后」
+        const long right = (i + 1 < batches.size()) ? batches[i + 1].tick : 0;
+        for (const auto& s : batches[i].syls)
+            out.push_back({batches[i].tick, s, right});
+    }
+    return out;
+}
+
+LyricAssignment assignMidiLyrics(const MidiData& data, int mainTrack) {
+    LyricAssignment out;
+    const std::vector<MidiSyllable> syls = normalizeMidiLyrics(data);
+    if (mainTrack < 0 || syls.empty()) return out;
+
+    std::vector<long> onsets;
+    long songEnd = 0;
+    for (const auto& n : data.notes) {
+        if (n.track != mainTrack) continue;
+        onsets.push_back(n.startTicks);
+        songEnd = std::max(songEnd, n.startTicks + std::max<long>(n.durationTicks, 1));
+    }
+    if (onsets.empty()) return out;
+    std::sort(onsets.begin(), onsets.end());
+    onsets.erase(std::unique(onsets.begin(), onsets.end()), onsets.end());
+
+    // 同 tick 的几个音节是一批（一个事件里写了多个字），共享覆盖区间
+    for (size_t i = 0; i < syls.size();) {
+        size_t j = i;
+        while (j < syls.size() && syls[j].tick == syls[i].tick) j++;
+        const long from = syls[i].tick;
+        const long to = (syls[i].spanEnd > from) ? syls[i].spanEnd : songEnd + 1;
+        const size_t m = j - i;
+
+        std::vector<long> inLine;
+        for (long t : onsets) if (t >= from && t < to) inLine.push_back(t);
+        if (inLine.empty()) {
+            // 歌词事件偶尔写在音符前一两 tick，或挤在末音之后。宁可挂到
+            // 最近的下一个音头，也不要整段歌词凭空消失。
+            auto it = std::lower_bound(onsets.begin(), onsets.end(), from);
+            if (it != onsets.end()) inLine.push_back(*it);
+        }
+        if (!inLine.empty()) {
+            const size_t n = inLine.size();
+            auto startOf = [&](size_t k) -> size_t {
+                if (k >= m) return n;
+                if (m == 1) return 0;          // 单音节：整段都归它唱
+                size_t v = (size_t)((unsigned long long)k * n / m);
+                return v < n ? v : n - 1;
+            };
+            for (size_t k = 0; k < m; k++) {
+                size_t a = startOf(k);
+                if (a >= n) break;
+                size_t b = startOf(k + 1);
+                if (b <= a) b = a + 1;
+                if (b > n) b = n;
+
+                LyricPlacement pl;
+                pl.text = syls[i + k].text;
+                pl.tick = inLine[a];
+                pl.noteCount = (int)(b - a);
+                pl.lastNoteTick = inLine[b - 1];
+                pl.spanEnd = (b < n) ? inLine[b] : to;
+                if (pl.spanEnd <= pl.tick) pl.spanEnd = pl.tick + 1;
+                if (out.at.count(pl.tick)) continue;   // 同音头不重复挂词
+                out.at[pl.tick] = pl;
+                if (pl.noteCount >= 2) out.melismas.push_back(pl);
+            }
+        }
+        i = j;
+    }
+    return out;
+}
+
+int midiLyricTrack(const MidiData& data) {
+    // 只有元数据 / 延续符的文件（例如拿 0x05 存段落标记）没有可唱音节，
+    // 这种「歌词轨」不能拿来给旋律轨加分。
+    if (normalizeMidiLyrics(data).empty()) return -1;
+    std::set<int> noteTracks;
+    for (const auto& n : data.notes) noteTracks.insert(n.track);
+    // format 0 只有一条轨，歌词轨号不携带任何信息
+    if (noteTracks.size() < 2) return -1;
+    const int t = data.midiLyrics.front().track;
+    if (t < 0 || !noteTracks.count(t)) return -1;
+    for (const auto& e : data.midiLyrics) if (e.track != t) return -1;
+    return t;
+}
+
+LyricSource lyricSourceOf(const MidiData& data, const std::vector<LyricLine>* external) {
+    if (external && !external->empty()) return LyricSource::External;
+    if (!normalizeMidiLyrics(data).empty()) return LyricSource::Midi;
+    return LyricSource::None;
+}
+
+std::string lyricSourceLabel(const MidiData& data,
+                             const std::vector<LyricLine>* external) {
+    switch (lyricSourceOf(data, external)) {
+        case LyricSource::External: return "歌词：外部 LRC";
+        case LyricSource::Midi:
+            return "歌词：MIDI 内置（" +
+                   std::to_string(normalizeMidiLyrics(data).size()) + " 音节）";
+        default: return std::string();
+    }
+}
+
+LyricAssignment resolveLyrics(const MidiData& data,
+                              const std::vector<LyricLine>* external,
+                              int mainTrack) {
+    if (external && !external->empty()) return assignLyrics(data, *external, mainTrack);
+    return assignMidiLyrics(data, mainTrack);
 }
 
 } // namespace m2j

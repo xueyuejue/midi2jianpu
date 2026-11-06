@@ -65,9 +65,14 @@ struct PitchBendPoint {
 };
 
 // 歌词事件（从 MIDI 0x05 lyric 解析）
+//
+// track 记下事件所在的轨道：format 1 的卡拉 OK 文件通常把歌词放在人声轨上，
+// 这是「哪条轨是旋律」最硬的证据（比按音符数/单音率猜可靠得多）。
+// format 0 只有一个轨道，这个字段恒为 0，下游要先确认存在多条轨才敢用。
 struct LyricEvent {
     long tick;
     std::string text;
+    int track = -1;
 };
 
 // 文本事件（从 MIDI 0x01 text 解析）

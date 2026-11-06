@@ -736,6 +736,118 @@ int main() {
         check(assignLyrics(d, lines, 7).empty(), "歌词不会挂到不存在的轨道上");
     }
 
+    // ---- MIDI 内置歌词（0x05 lyric meta） ----
+    // 与 LRC 是两条通路：每个事件自带精确 tick，且流里混着元数据、延续符、
+    // 换行标记、英文单词。这里锁住「规整 -> 精确对齐 -> 来源优先级」全链路。
+    {
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        NoteEvent n;
+        n.track = 1; n.channel = 0; n.durationTicks = 480;
+        for (int i = 0; i < 8; i++) {
+            n.startTicks = (long)i * 480;
+            n.pitch = 60 + i;
+            d.notes.push_back(n);
+        }
+        // 伴奏轨：柱式和弦，音符多、复音率高，专门用来干扰旋律轨判定
+        NoteEvent a;
+        a.track = 2; a.channel = 1; a.durationTicks = 1920;
+        for (int bar = 0; bar < 2; bar++)
+            for (int p : {48, 52, 55}) {
+                a.startTicks = (long)bar * 1920;
+                a.pitch = p;
+                d.notes.push_back(a);
+            }
+
+        d.midiLyrics = {
+            {0,    "@KMIDI KARAOKE FILE", 1},   // 元数据，跳过
+            {0,    "你", 1},
+            {480,  "-", 1},                     // 延续，前一个字自然拖长
+            {960,  "好，", 1},                   // 中文标点不占音节
+            {1440, "_", 1},
+            {1920, "/", 1},                     // 换行
+            {1920, "+世界", 1},                  // 续行前缀 + 同 tick 两个字
+            {2880, "Hello ", 1},                // 英文单词 + 尾随空格
+            {3360, "-", 1},
+        };
+
+        auto syls = normalizeMidiLyrics(d);
+        check(syls.size() == 5, "内置歌词规整出 5 个音节（元数据/延续/换行已滤掉）");
+        std::string joined;
+        for (const auto& s : syls) joined += s.text;
+        check(joined == "你好世界Hello", "词序正确、标点被跳过、英文未被拆成字母");
+        check(syls[0].spanEnd == 960 && syls[1].spanEnd == 1920,
+              "延续符让前一个字的区间延长到下一个有效事件");
+        check(syls[2].tick == 1920 && syls[3].tick == 1920 &&
+              syls[2].spanEnd == 2880 && syls[3].spanEnd == 2880,
+              "同一 tick 的多个字合成一批并共享右端");
+        check(syls[4].spanEnd == 0, "末批右端留给对齐阶段填「曲终之后」");
+
+        LyricAssignment m = assignMidiLyrics(d, 1);
+        check(m.at.size() == 5, "5 个音节各挂到一个真实音头");
+        check(m.at.count(0) && m.at[0].text == "你" && m.at[0].noteCount == 2 &&
+              m.at[0].lastNoteTick == 480, "「你」拖过 0/480 两个音");
+        check(m.at.count(960) && m.at[960].text == "好" && m.at[960].noteCount == 2,
+              "「好」拖过 960/1440 两个音");
+        check(m.at.count(1920) && m.at[1920].text == "世" &&
+              m.at[1920].noteCount == 1 && m.at.count(2400) && m.at[2400].text == "界",
+              "同批的「世」「界」在区间内均分，各唱一个音");
+        check(m.at.count(2880) && m.at[2880].text == "Hello" &&
+              m.at[2880].noteCount == 2, "「Hello」拖到曲终两个音");
+        check(m.melismas.size() == 3, "只有 3 组一字多音");
+        check(m.groupAt(480) == 1 && m.groupAt(3360) == 3 && m.groupAt(3841) == 0,
+              "groupAt 覆盖延长音与末组，曲终之后出界");
+        check(assignMidiLyrics(d, -1).empty(), "轨道号无效时结果为空");
+
+        check(midiLyricTrack(d) == 1, "歌词事件所在轨被识别为人声轨");
+        check(pickMelodyTrack(d) == 1, "有柱式和弦伴奏干扰时仍选 Vocal 轨");
+        double sVocal = -1e9, sPiano = -1e9;
+        for (const auto& p : profileTracks(d)) {
+            if (p.track == 1) sVocal = p.score;
+            if (p.track == 2) sPiano = p.score;
+        }
+        check(sVocal > sPiano, "人声轨得分高于伴奏轨（内置歌词轨证据生效）");
+
+        check(lyricSourceOf(d, nullptr) == LyricSource::Midi, "未给 LRC 时来源是 MIDI 内置");
+        check(lyricSourceLabel(d, nullptr).find("MIDI 内置") != std::string::npos,
+              "页眉标注歌词来源");
+        check(resolveLyrics(d, nullptr, 1).at.size() == 5, "统一入口回退到内置歌词");
+
+        std::vector<LyricLine> ext = {{0, "甲乙"}};
+        LyricAssignment e = resolveLyrics(d, &ext, 1);
+        check(lyricSourceOf(d, &ext) == LyricSource::External, "显式 LRC 优先于内置歌词");
+        check(e.at.count(0) && e.at[0].text == "甲" && !e.at.count(960),
+              "优先级切换后按 LRC 规则分配，不再用内置 tick");
+
+        MidiData d2 = d;
+        d2.midiLyrics.clear();
+        check(lyricSourceOf(d2, nullptr) == LyricSource::None &&
+              resolveLyrics(d2, nullptr, 1).empty(),
+              "--no-midi-lyrics 清空事件后彻底无词");
+
+        // format 0（只有一条有音符的轨）与歌词分散在多轨时，轨号不可信
+        MidiData d3 = d;
+        d3.notes.erase(std::remove_if(d3.notes.begin(), d3.notes.end(),
+                                      [](const NoteEvent& x) { return x.track == 2; }),
+                       d3.notes.end());
+        check(midiLyricTrack(d3) == -1, "只有一条有音符的轨时不采信歌词轨号");
+        MidiData d4 = d;
+        d4.midiLyrics[1].track = 2;
+        check(midiLyricTrack(d4) == -1, "歌词分散在多轨时不采信歌词轨号");
+
+        MidiData d5;
+        d5.midiLyrics = {{0, "  ", 1}, {0, "- -", 1}, {0, "/", 1}, {0, "！", 1}};
+        check(normalizeMidiLyrics(d5).empty(), "纯空白/延续符/换行/标点不产生音节");
+        check(normalizeMidiLyrics(MidiData()).empty(), "没有内置歌词时规整结果为空");
+        NoteEvent v;
+        v.track = 1; v.channel = 0; v.startTicks = 0; v.durationTicks = 480; v.pitch = 60;
+        d5.notes.push_back(v);
+        NoteEvent w = v; w.track = 2;
+        d5.notes.push_back(w);
+        check(midiLyricTrack(d5) == -1, "只有元数据/延续符时不采信歌词轨号");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

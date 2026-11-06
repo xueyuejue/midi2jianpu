@@ -143,17 +143,17 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
     if (data.tempo > 0) bpm = 60000000.0 / data.tempo;
     else if (!data.tempoChanges.empty() && data.tempoChanges[0].bpm > 0) bpm = data.tempoChanges[0].bpm;
 
-    // 歌词只挂旋律轨。判定要用同一套 pickMelodyTrack（有 LRC 时「行首能否
-    // 对齐」是最强证据），否则词会被写到音符最多的伴奏轨上。
-    const int mainTrack = (lyricLines && !lyricLines->empty())
-                        ? pickMelodyTrack(data, lyricLines) : -1;
+    // 歌词只挂旋律轨。来源可能是 --lyrics 给的 LRC，也可能是 MIDI 自带的
+    // 0x05 歌词；两者都走同一套 pickMelodyTrack（内置歌词还会给出人声轨证据）。
+    const bool hasLyrics = lyricSourceOf(data, lyricLines) != LyricSource::None;
+    const int mainTrack = hasLyrics ? pickMelodyTrack(data, lyricLines) : -1;
 
     partIdx = 1;
     for (auto& [t, ns] : byTrack) {
         if (ns.empty()) { partIdx++; continue; }
 
         const LyricAssignment lyrics = (t == mainTrack)
-                                     ? assignLyrics(data, *lyricLines, t)
+                                     ? resolveLyrics(data, lyricLines, t)
                                      : LyricAssignment();
 
         // ---- 1. 展开成片段：跨小节的音符在此切开 ----
