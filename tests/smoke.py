@@ -331,10 +331,10 @@ def main():
     rc2, _, _ = run(exe, hm, "--html", hh)
     html = open(hh, encoding="utf-8").read()
     check(rc2 == 0, "HTML 导出成功")
-    check(html.count("class='chord'") == 8,
-          "标记行里有 8 个起点和弦，实际 %d" % html.count("class='chord'"))
-    check(html.count("class='chordx'") == 8,
-          "音符上方有 8 个第三拍和弦，实际 %d" % html.count("class='chordx'"))
+    # 和弦一律浮在它所管的那个音符上方（标记行是从左往右排的，写在那里
+    # 会被速度标记顶右移，和第 3 拍的和弦糊成一团），8 小节 x 2 = 16 个
+    check(html.count("class='chordx'") == 16,
+          "16 个和弦全部挂在音符上方，实际 %d" % html.count("class='chordx'"))
     check(html.count("class='tempo'") == 2,
           "速度标记只印 2 个（第1、5小节），不是每轨各印一遍，实际 %d"
           % html.count("class='tempo'"))

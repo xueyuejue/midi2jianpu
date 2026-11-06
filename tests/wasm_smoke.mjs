@@ -227,8 +227,8 @@ if (existsSync(harmonyPath)) {
     '页眉写出中途变速', hText && hText.slice(0, 160));
 
   const hHtml = h.call('midi2jianpu_html', -1, 1);
-  check(hHtml && (hHtml.match(/class='chordx'/g) || []).length === 8,
-    'HTML 有 8 个第三拍和弦');
+  check(hHtml && (hHtml.match(/class='chordx'/g) || []).length === 16,
+    'HTML 有 16 个和弦（8 小节 x 2），全部挂在音符上方');
   check(hHtml && (hHtml.match(/class='tempo'/g) || []).length === 2,
     'HTML 只印 2 个速度标记（每轨各印一遍会变 4 个）');
 } else {
