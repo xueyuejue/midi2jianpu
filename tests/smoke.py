@@ -519,6 +519,77 @@ def main():
         check("<lyric" not in xs and "<slur" not in xs,
               "无内置歌词的素材仍导出无词 MusicXML")
 
+    print("\n[18] 中途变拍号 + 变速 + 鼓轨 + 内置歌词（混合压力素材）")
+    import xml.etree.ElementTree as ET
+    meter = os.path.join(FIXTURES, "meter.mid")
+    if not os.path.exists(meter):
+        check(False, "素材 meter.mid 存在（先跑 make_fixture.py）")
+    else:
+        mh = os.path.join(tmp, "meter.html")
+        mx = os.path.join(tmp, "meter.xml")
+        rc, out, err = run(exe, meter, "--html", mh, "--musicxml", mx)
+        check(rc == 0, "混合素材能正常转换", err)
+        check("拍号=4/4 → 3/4(第3小节) → 6/8(第5小节)" in out,
+              "控制台报出完整拍号摘要，而不是只报最后一个 6/8")
+        check("拍号变化 2 处" in out, "控制台提示按段划分小节线")
+        check("弱起" not in out and "弱起" not in open(mh, encoding="utf-8").read(),
+              "不再误判出「弱起 4 拍」")
+        check("已跳过 6 个打击乐音符" in out, "鼓轨仍被正确丢弃")
+
+        txt = out
+        check("[3/4]" in txt and "[6/8]" in txt,
+              "文本谱在变化小节印出新拍号")
+        check(txt.count("|") >= 6, "谱面按 6 个小节划分", str(txt.count("|")))
+
+        h = open(mh, encoding="utf-8").read()
+        check("4/4 → 3/4(第3小节) → 6/8(第5小节)" in h, "HTML 页眉写出拍号摘要")
+        check(h.count("class='meter'>") == 2 and
+              "class='meter'>3/4" in h and "class='meter'>6/8" in h,
+              "HTML 恰好两个拍号标签，且标在正确的小节")
+        check(h.count("class='tempo'>") == 2, "变速标记与拍号标记共存")
+        check(h.count("<span class='measure'>") == 12,
+              "两条轨各 6 小节，没有跳号或补错", str(h.count("<span class='measure'>")))
+        check(h.count("歌词：MIDI 内置（24 音节）") == 1 and h.count("class='sgrp'") == 2,
+              "变拍号下内置歌词仍能对齐，且只有 2 组一字多音")
+
+        root = ET.parse(mx).getroot()
+        parts = root.findall("part")
+        check(len(parts) == 2, "MusicXML 两个声部（鼓轨已丢弃）", str(len(parts)))
+        p1 = parts[0].findall("measure")
+        check(len(p1) == 6, "6 个小节", str(len(p1)))
+        durs = [sum(int(n.find("duration").text) for n in m.findall("note")
+                    if n.find("chord") is None) for m in p1]
+        check(durs == [1920, 1920, 1440, 1440, 1440, 1440],
+              "每小节时长跟着拍号变（4/4=1920、3/4=6/8=1440）", str(durs))
+        times = [(m.get("number"),
+                  (m.find("attributes/time").findtext("beats") + "/" +
+                   m.find("attributes/time").findtext("beat-type"))
+                  if m.find("attributes/time") is not None else None)
+                 for m in p1]
+        check([t for _, t in times if t] == ["4/4", "3/4", "6/8"] and
+              [n for n, t in times if t] == ["1", "3", "5"],
+              "只在第 1/3/5 小节重写 <time>，值分别是 4/4、3/4、6/8", str(times))
+        lyr = "".join(n.findtext("lyric/text") or ""
+                      for n in p1[0].iter("note") if n.find("lyric") is not None)
+        check(lyr == "春风又", "MusicXML 第一小节歌词正确", lyr)
+        sl = [x.get("type") for x in parts[0].iter("slur")]
+        check(sl.count("start") == 2 and sl.count("stop") == 2,
+              "2 对 slur 起止配对", str(sl))
+
+        # 单拍号素材不受影响
+        sh = os.path.join(tmp, "sample_meter_reg.html")
+        sx = os.path.join(tmp, "sample_meter_reg.xml")
+        run(exe, os.path.join(FIXTURES, "sample.mid"), "--html", sh, "--musicxml", sx)
+        shs = open(sh, encoding="utf-8").read()
+        check("class='meter'>" not in shs and "拍号变化" not in shs,
+              "单拍号素材不出现拍号标签")
+        sroot = ET.parse(sx).getroot()
+        per_part = [sum(1 for m in p.findall("measure")
+                        if m.find("attributes/time") is not None)
+                    for p in sroot.findall("part")]
+        check(per_part and all(v == 1 for v in per_part),
+              "单拍号 MusicXML 每个声部只写一次 <time>", str(per_part))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

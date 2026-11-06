@@ -236,10 +236,15 @@ int main(int argc, char** argv) {
     }
 
     std::string jianpu = m2j::formatJianpu(data, key);
+    const std::string meter = m2j::meterSummary(data);
     std::string header = "\n共提取 " + std::to_string(data.notes.size())
               + " 个音符 (division=" + std::to_string(data.division)
-              + ", 拍号=" + data.timeSig.toString() + ") " + keySource + "\n\n";
+              + ", 拍号=" + meter + ") " + keySource + "\n\n";
     std::cout << header << jianpu;
+    const auto meterChanges = m2j::meterChangesOf(data);
+    if (!meterChanges.empty())
+        std::cout << "\n拍号变化 " << meterChanges.size()
+                  << " 处，小节线已按各段拍号分别划分\n";
 
     if (!txtOut.empty()) {
         std::ofstream f(txtOut);
