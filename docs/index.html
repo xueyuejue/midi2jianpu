@@ -76,6 +76,7 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     </optgroup>
   </select>
   <label class="hint"><input type="checkbox" id="usePentatonic" checked> 五声调式宫音校正</label>
+  <label class="hint"><input type="checkbox" id="useDynamics" checked> 力度与演奏法</label>
 </div>
 
 <details class="lyrics">
@@ -87,7 +88,7 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     <label class="hint"><input type="checkbox" id="useMidiLyrics" checked> 使用 MIDI 自带歌词</label>
     <span class="hint" id="midiLyricHint"></span>
   </div>
-  <div class="hint">歌词会按时间戳对齐到音符，只显示在旋律轨上；一字多音会画连音线，下载 MusicXML 也带词。文件自带歌词时无需再找 LRC，粘贴的 LRC 优先级更高。中途变拍号、弱起、变速、转调会自动识别：前三者按段划分小节线，转调则按段重算唱名。中国民歌/古风曲若只用五声音阶，自动识别会按宫音定 1（如 G 徵调式记 1=C 而不是 1=G），关掉上方复选框可回到大小调判定。LRC 的 [mm:ss.xx] 会按曲中变速分段换算成谱面位置，也支持 [offset:±毫秒] 与一行多个时间戳。</div>
+  <div class="hint">歌词会按时间戳对齐到音符，只显示在旋律轨上；一字多音会画连音线，下载 MusicXML 也带词。文件自带歌词时无需再找 LRC，粘贴的 LRC 优先级更高。中途变拍号、弱起、变速、转调会自动识别：前三者按段划分小节线，转调则按段重算唱名。中国民歌/古风曲若只用五声音阶，自动识别会按宫音定 1（如 G 徵调式记 1=C 而不是 1=G），关掉上方复选框可回到大小调判定。LRC 的 [mm:ss.xx] 会按曲中变速分段换算成谱面位置，也支持 [offset:±毫秒] 与一行多个时间戳。文件里的力度（CC11）、note-on 力度、弯音与段落标记会自动转成谱面上的 mf/渐强/断音/滑音/段落名，三个导出通道同步；不想要这些记号可关掉「力度与演奏法」。</div>
   <input type="file" id="lyricsFile" accept=".lrc" style="display:none">
 </details>
 
@@ -174,6 +175,10 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
         hints.push('检测到 ' + names[fin] + ' ' + (modes[md] || '') + '调式，1=' + names[gong] + ' 按宫音校正');
       }
     }
+    if (wasmMod._midi2jianpu_expression_count) {
+      var ex = wasmMod._midi2jianpu_expression_count(p, midiBytes.length);
+      if (ex > 0) hints.push('检测到 ' + ex + ' 处演奏表情（力度/断音/滑音/段落）');
+    }
     wasmMod._free(p);
     box.textContent = hints.join(' · ');
   }
@@ -211,6 +216,7 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
   var lyricsArea = $('lyricsText');
   var useMidiBox = $('useMidiLyrics');
   var usePentBox = $('usePentatonic');
+  var useDynBox = $('useDynamics');
   useMidiBox.onchange = function () {
     if (midiBytes && wasmReady) convert();
   };
@@ -218,6 +224,11 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     // 五声开关同时影响「提示」和「渲染」两侧，先推到 wasm 再刷新
     if (wasmMod && wasmMod._midi2jianpu_set_use_pentatonic)
       wasmMod._midi2jianpu_set_use_pentatonic(usePentBox.checked ? 1 : 0);
+    if (midiBytes && wasmReady) { updateFileHints(); convert(); }
+  };
+  useDynBox.onchange = function () {
+    if (wasmMod && wasmMod._midi2jianpu_set_use_dynamics)
+      wasmMod._midi2jianpu_set_use_dynamics(useDynBox.checked ? 1 : 0);
     if (midiBytes && wasmReady) { updateFileHints(); convert(); }
   };
   $('lyricsBtn').onclick = function () { $('lyricsFile').click(); };
@@ -270,6 +281,9 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     }
     if (wasmMod._midi2jianpu_set_use_pentatonic) {
       wasmMod._midi2jianpu_set_use_pentatonic(usePentBox.checked ? 1 : 0);
+    }
+    if (wasmMod._midi2jianpu_set_use_dynamics) {
+      wasmMod._midi2jianpu_set_use_dynamics(useDynBox.checked ? 1 : 0);
     }
 
     // 标题同理，每次重置，避免换了文件还顶着上一首的歌名
@@ -454,8 +468,11 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
         osc.type = 'triangle';
         var start = t0 + n.time;
         var dur = Math.max(n.duration, 0.12);
+        // note-on 力度现在真的从 MIDI 传出来了，播放时按力度给音量，
+        // 以前所有音都是同一个 0.22，强弱完全听不出来。
+        var vel = Math.max(0.35, Math.min(1.25, (n.velocity || 96) / 96));
         gain.gain.setValueAtTime(0.0001, start);
-        gain.gain.linearRampToValueAtTime(0.22, start + 0.02);
+        gain.gain.linearRampToValueAtTime(0.22 * vel, start + 0.02);
         gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
         osc.connect(gain);
         gain.connect(audioCtx.destination);

@@ -170,7 +170,8 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
     pos += (hdrLen - 6);
 
     int trackIdx = 0;
-    std::unordered_map<uint64_t, long> active;
+    // value = (note-on tick, velocity)。力度要跟着音符走，演奏法分析要用。
+    std::unordered_map<uint64_t, std::pair<long, int>> active;
 
     // ---- 逐轨 ----
     while (pos + 8 <= size && std::memcmp(d + pos, "MTrk", 4) == 0) {
@@ -211,13 +212,15 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
                     uint64_t key = ((uint64_t)channel << 24) |
                                    ((uint64_t)note << 8) | (uint64_t)trackIdx;
                     if (type == 0x90u && vel > 0) {
-                        active[key] = absTick;
+                        active[key] = {absTick, (int)vel};
                     } else {
                         auto it = active.find(key);
                         if (it != active.end()) {
                             NoteEvent ne;
-                            ne.startTicks = it->second;
-                            ne.durationTicks = absTick - it->second;
+                            ne.startTicks = it->second.first;
+                            ne.durationTicks = absTick - it->second.first;
+                            ne.velocity = it->second.second;
+                            ne.rawDurationTicks = ne.durationTicks;
                             ne.pitch = note;
                             ne.channel = channel;
                             ne.track = trackIdx;
@@ -320,6 +323,14 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
                   if (a.startTicks != b.startTicks) return a.startTicks < b.startTicks;
                   return a.pitch < b.pitch;
               });
+    // format 1 里各轨是按文件顺序解析的：conductor 轨若排在最后，它携带的
+    // 力度 / 弯音事件就会全部堆在数组尾部。下游按 tick 推进游标时要求升序，
+    // 所以这三张表都要像 tempo / 拍号 / 调号一样在收齐后统一排序。
+    // 用 stable_sort：同 tick 保持「文件里后写覆盖先写」的解析顺序。
+    auto byTickStable = [](const auto& a, const auto& b) { return a.tick < b.tick; };
+    std::stable_sort(out.dynamics.begin(), out.dynamics.end(), byTickStable);
+    std::stable_sort(out.pitchBends.begin(), out.pitchBends.end(), byTickStable);
+    std::stable_sort(out.markers.begin(), out.markers.end(), byTickStable);
     normalizeMeterMap(out);
     normalizeKeyMap(out);
     recomputeSeconds(out);

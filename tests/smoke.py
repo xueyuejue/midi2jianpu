@@ -724,8 +724,9 @@ def main():
         check(fifths == ["0", "0"],
               "XML 按宫音写 C 大调调号（每个声部一次）", str(fifths))
         words = [w.text for w in xroot.iter("words")]
-        check(words == ["G 徵调式（宫音 C）"],
-              "XML 谱头写出调式文字标记", str(words))
+        # v1.20 起 0x06 marker 也写成 <words>，所以这里不再要求列表只剩一项
+        check("G 徵调式（宫音 C）" in words and "Pentatonic" in words,
+              "XML 谱头写出调式文字标记与 0x06 段落名", str(words))
         m1 = xroot.find("part/measure")
         tags = [c.tag for c in m1]
         check("direction" in tags and tags.index("attributes") < tags.index("direction"),
@@ -789,6 +790,79 @@ def main():
             os.path.join(FIXTURES, "sample.lrc"), "plain")
         check(any(b for b in bars_plain),
               "单调速素材的 LRC 仍能正常出词", str(bars_plain))
+
+    # ---- [22] 演奏表情：解析层早就有的数据要真正落到三个输出层 ----
+    # expression.mid 把 CC11 渐强/渐弱、note-on 力度重音、等间隔断奏、
+    # 弯音上滑/下滑/颤音、0x06 段落标记全混在一条等间隔旋律上。
+    print("\n[22] 力度与演奏法三层输出同步")
+    import xml.etree.ElementTree as ETex
+    exm = os.path.join(FIXTURES, "expression.mid")
+    if not os.path.exists(exm):
+        check(False, "素材 expression.mid 存在（先跑 make_fixture.py）")
+    else:
+        exh = os.path.join(tmp, "expression.html")
+        exx = os.path.join(tmp, "expression.xml")
+        rc, out, err = run(exe, exm, "--html", exh, "--musicxml", exx)
+        check(rc == 0, "导出表情素材的 HTML / MusicXML", err[:200])
+        check("演奏表情: 力度 11" in out and "渐强 1" in out and
+              "渐弱 1" in out and "滑音/颤音 3" in out and "段落 2" in out,
+              "CLI 汇总各类表情计数", out[:300])
+        check("[Verse]" in out and "[Chorus]" in out and
+              "[cresc.]" in out and "[dim.]" in out,
+              "文本谱写出段落名与渐强渐弱")
+        check("▼" in out and "·" in out and "↗" in out and
+              "↘" in out and "tr" in out and "4>" in out,
+              "文本谱写出断奏/重音/上滑/下滑/颤音")
+        piano = out.split("[Piano]")[-1] if "[Piano]" in out else ""
+        check("↘" not in piano and "↗" not in piano and "tr" not in piano,
+              "伴奏轨不继承旋律的弯音记号（按通道索引）", piano[:200])
+
+        body = open(exh, encoding="utf-8").read()
+        for cls, label in (("section", "段落名"), ("wedge", "渐强渐弱"),
+                           ("dyn", "力度"), ("artic", "演奏法")):
+            check(f"class='{cls}'>" in body, f"HTML 写出{label}标记")
+        check("Verse" in body and "Chorus" in body, "HTML 段落名内容正确")
+        check("渐强 1" in body and "段落 2" in body, "HTML 页眉写出表情摘要")
+        check(body.count("class='artic'>") == 9,
+              "HTML 演奏法记号共 9 处（4 重音 + 2 断奏 + 3 弯音）",
+              str(body.count("class='artic'>")))
+
+        root = ETex.parse(exx).getroot()
+        dyns = [c.tag for d in root.iter("dynamics") for c in d]
+        check("p" in dyns and "ff" in dyns, "MusicXML 写出 <dynamics>")
+        check([w.get("type") for w in root.iter("wedge")] ==
+              ["crescendo", "stop", "diminuendo", "stop"],
+              "MusicXML 渐强渐弱的 start/stop 成对")
+        words = [w.text for w in root.iter("words")]
+        check("Verse" in words and "Chorus" in words, "MusicXML 写出段落名")
+        arts = [c.tag for a in root.iter("articulations") for c in a]
+        check("staccatissimo" in arts and "staccato" in arts and
+              arts.count("accent") == 4, "MusicXML 断奏与 4 个重音", str(arts))
+        check(len(list(root.iter("slide"))) == 4 and
+              len(list(root.iter("trill-mark"))) == 1,
+              "MusicXML 上滑/下滑用 slide 成对，颤音用 trill-mark")
+        sounds = [s.get("dynamics") for s in root.iter("sound")
+                  if s.get("dynamics")]
+        check(bool(sounds) and all(0 < int(s) <= 100 for s in sounds),
+              "MusicXML 试听力度百分比合法", str(sounds))
+
+        # 关掉开关后三层必须一起静默，不能只关掉其中一两个
+        oh = os.path.join(tmp, "ex_off.html")
+        ox = os.path.join(tmp, "ex_off.xml")
+        rc2, out2, _ = run(exe, exm, "--no-dynamics", "--html", oh, "--musicxml", ox)
+        offbody = open(oh, encoding="utf-8").read()
+        offroot = ETex.parse(ox).getroot()
+        check(rc2 == 0 and "演奏表情:" not in out2,
+              "--no-dynamics 关闭控制台摘要")
+        check("class='section'" not in offbody and "class='artic'" not in offbody
+              and "class='wedge'" not in offbody,
+              "--no-dynamics 的 HTML 无表情标记")
+        check(not list(offroot.iter("dynamics")) and
+              not list(offroot.iter("wedge")) and
+              not list(offroot.iter("articulations")),
+              "--no-dynamics 的 MusicXML 无表情元素")
+        _, help_out, _ = run(exe, "--help")
+        check("--no-dynamics" in help_out, "帮助列出 --no-dynamics")
 
     print("\n" + "-" * 48)
     if failures:

@@ -17,6 +17,13 @@ struct NoteEvent {
     int pitch;
     int channel;
     int track;
+
+    // note-on 力度与「量化前」的原始发声时长。
+    // 演奏法（断音 / 重音）要靠这两个量判定：断音是 note-off 明显早于下一个
+    // 音头，而 quantizeTiming() 会把门限衰减补回满时值；重音是力度显著高于
+    // 邻音。两者都必须在量化之前留下的原始读数，否则谱面全变成连奏。
+    int velocity = 96;        // 1..127
+    long rawDurationTicks = 0;
 };
 
 // 拍号（从 MIDI 0x58 meta 事件解析）
@@ -147,6 +154,10 @@ struct MidiData {
     // 只影响没有 0x59 调号、需要自动猜调的文件；CLI --no-pentatonic 关掉它，
     // 网页上是同名复选框。事件表本身不受影响。
     bool usePentatonic = true;
+
+    // 是否把力度 / 断音 / 滑音 / 段落标记写进谱面。CLI --no-dynamics 关掉，
+    // 网页上是「力度与演奏法」复选框。关掉只影响输出层，事件表仍完整保留。
+    bool useDynamics = true;
 };
 
 // ---- 时间轴（tick <-> 秒）----

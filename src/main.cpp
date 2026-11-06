@@ -28,6 +28,7 @@ static void printHelp() {
         "  midi2jianpu <input.mid> --no-key-changes 忽略中途转调(全曲按一个调记谱)\n"
         "  midi2jianpu <input.mid> --gong C        手动指定五声调式的宫音(简谱 1)\n"
         "  midi2jianpu <input.mid> --no-pentatonic  关闭五声调式宫音自动校正\n"
+        "  midi2jianpu <input.mid> --no-dynamics   不写力度/断音/滑音/段落等演奏记号\n"
         "  midi2jianpu <input.mid> --no-quantize    关闭时值量化(保留 MIDI 原始时长)\n"
         "  midi2jianpu --version\n"
         "  midi2jianpu --help\n";
@@ -92,6 +93,7 @@ int main(int argc, char** argv) {
     bool noMidiLyrics = false;
     bool noKeyChanges = false;
     bool noPentatonic = false;
+    bool noDynamics = false;
     double pickupBeats = -1;   // <0 表示没指定（走自动判定）
     bool noPickup = false;
     for (int i = 1; i < argc; i++) {
@@ -105,6 +107,7 @@ int main(int argc, char** argv) {
         else if (a == "--key" && i + 1 < argc) { keyArg = argv[++i]; }
         else if (a == "--gong" && i + 1 < argc) { gongArg = argv[++i]; }
         else if (a == "--no-pentatonic") { noPentatonic = true; }
+        else if (a == "--no-dynamics") { noDynamics = true; }
         else if (a == "--output" && i + 1 < argc) { txtOut = argv[++i]; }
         else if (a == "--musicxml" && i + 1 < argc) { xmlOut = argv[++i]; }
         else if (a == "--lyrics" && i + 1 < argc) { lyricsPath = argv[++i]; }
@@ -145,6 +148,8 @@ int main(int argc, char** argv) {
     if (noKeyChanges) data.applyKeyChanges = false;
     // 五声校正只在没有 0x59 调号、走自动猜调时起作用；关掉后完全回到 KS。
     if (noPentatonic) data.usePentatonic = false;
+    // 演奏表情只影响输出层：事件表保留，调性/旋律轨判定不受影响。
+    if (noDynamics) data.useDynamics = false;
 
     // 鼓轨的提示写在谱面头部（formatJianpu 里），这里只管「只剩鼓」这种致命情况
     if (data.notes.empty()) {
@@ -243,6 +248,11 @@ int main(int argc, char** argv) {
         std::cout << "五声调式: " << key.scaleLabel
                   << "，首调 1=" << m2j::keyName(key)
                   << "（--no-pentatonic 可关闭自动校正）\n";
+
+    const m2j::ExpressionMap expr(data);
+    if (!expr.summary().empty())
+        std::cout << "演奏表情: " << expr.summary()
+                  << "（--no-dynamics 可关闭）\n";
 
     // 歌词只解析一次，HTML 谱面和 MusicXML 共用同一份 LRC 行。
     // 早先解析写在 --html 分支里，导 MusicXML 时整份歌词都丢了。

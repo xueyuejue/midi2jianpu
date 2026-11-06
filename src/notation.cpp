@@ -585,13 +585,9 @@ QuantizeReport quantizeTiming(MidiData& data) {
     return rep;
 }
 
-// 查询某 tick 位置、某通道的当前力度（从 dynamics 曲线），映射为简谱动态标记
-// 旧实现不看通道，会把伴奏的力度标到旋律上
-static std::string dynAt(long tick, int channel, const MidiData& data) {    int val = -1;
-    for (const auto& dp : data.dynamics) {
-        if (dp.tick > tick) break;
-        if (dp.channel == channel) val = dp.value;
-    }
+// CC11 / note velocity 的取值 -> 六档简谱力度记号。
+// ExpressionMap 与三个输出层共用这一张表，避免 HTML 写一套、文本写一套。
+static std::string dynamicLevel(int val) {
     if (val < 0) return "";
     if (val < 20) return "pp";
     if (val < 40) return "p";
@@ -824,7 +820,7 @@ std::string pickupLabel(const MidiData& data) {
 
 // 输出一个音符记号：延长线拆成独立 token，读起来是 "1 - -" 而不是 "1--"
 static void emitNoteToken(std::ostringstream& os, const std::string& head,
-                          const std::string& dur) {
+                          const std::string& dur, const std::string& art = "") {
     os << head;
     bool onlyDashes = !dur.empty() &&
                       dur.find_first_not_of('-') == std::string::npos;
@@ -833,7 +829,8 @@ static void emitNoteToken(std::ostringstream& os, const std::string& head,
     } else {
         os << dur;
     }
-    os << " ";
+    // 演奏法记号紧跟数字，不插空格：文本谱里 `5·` 才看得出是这一个音断奏。
+    os << art << " ";
 }
 
 // ---- 调性 map（中途转调） ----
@@ -913,7 +910,7 @@ std::string KeyMap::summary(const BarGrid& grid) const {
 // 输出单个轨的简谱，返回该轨输出文本
 static std::string formatTrack(
     const std::vector<NoteEvent>& notes,
-    const KeyMap& keys, const MidiData& data,
+    const KeyMap& keys, const MidiData& data, const ExpressionMap& expr,
     const std::map<long, std::string>* chords = nullptr) {
 
     std::ostringstream os;
@@ -977,6 +974,15 @@ static std::string formatTrack(
         // [C] 和弦区分开，纯文本里也不会看混。
         if (chords && keys.keyChangedAtBar(bar, grid))
             os << "[转" << ("1=" + keyName(keys.keyAtBar(bar, grid))) << "] ";
+        // 段落名与渐强渐弱：和力度一样属于「谱面标记」，只印旋律轨。
+        // inRange 按小节取，marker 落在小节中间时归到所在小节的开头。
+        if (chords) {
+            for (const auto& m : expr.inRange(grid.barStart(bar), grid.barEnd(bar))) {
+                if (!m.section.empty()) os << "[" << m.section << "] ";
+                if (m.wedge > 0) os << "[cresc.] ";
+                else if (m.wedge < 0) os << "[dim.] ";
+            }
+        }
         // 和弦标记只标在旋律轨上，避免伴奏轨重复标注；
         // 连续小节是同一个和弦时不重复写——歌本里和弦只在变化处标注
         if (chords) {
@@ -987,7 +993,7 @@ static std::string formatTrack(
             }
             lastChordTick = std::max(lastChordTick, grid.barStart(bar));
         }
-        std::string d = dynAt(atTick, channel, data);
+        std::string d = expr.dynamicAt(atTick, channel);
         if (!d.empty() && d != lastDyn) {
             os << "[" << d << "] ";
             lastDyn = d;
@@ -1048,13 +1054,15 @@ static std::string formatTrack(
 
         // 三连音组内的音符不标时值后缀（"3(...)" 已表达节奏）
         std::string head = pitchToJianpu(n.pitch, keys.at(n.startTicks));
+        // 断音 / 重音 / 滑音 / 颤音只挂在真实音头上，延续段的 "-" 不带记号。
+        const std::string art = expr.noteAt(n.startTicks, n.channel).symbol();
         long noteEnd = n.startTicks + n.durationTicks;
         long barEnd = grid.barEnd(barOf(n.startTicks));
         if (triplets[idx] || noteEnd <= barEnd) {
-            emitNoteToken(os, head, triplets[idx] ? "" : durationSuffix(n.durationTicks, data.division));
+            emitNoteToken(os, head, triplets[idx] ? "" : durationSuffix(n.durationTicks, data.division), art);
         } else {
             // 长音跨小节：先写满本小节，再逐小节用延长线续上
-            emitNoteToken(os, head, durationSuffix(barEnd - n.startTicks, data.division));
+            emitNoteToken(os, head, durationSuffix(barEnd - n.startTicks, data.division), art);
             long t = barEnd;
             while (t < noteEnd) {
                 long bar = barOf(t);
@@ -1103,6 +1111,7 @@ std::string tempoSummary(const MidiData& data) {
 std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
     const KeyMap keys(data, key);
     const BarGrid grid = barGridOf(data);
+    const ExpressionMap expr(data);
     std::ostringstream os;
     os << keys.summary(grid)
        << "    " << meterSummary(data);
@@ -1110,6 +1119,8 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
     if (!tempo.empty()) os << "    " << tempo;
     std::string pickup = pickupLabel(data);
     if (!pickup.empty()) os << "    " << pickup;
+    const std::string exprSum = expr.summary();
+    if (!exprSum.empty()) os << "    " << exprSum;
     // 鼓轨被丢弃这件事必须让用户看见，否则会以为谱子漏了内容。
     // 写进谱面头部而不是只打在命令行，网页版（WASM）才同样能看到。
     if (data.drumNotesSkipped > 0) {
@@ -1164,7 +1175,8 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
             os << " · 和弦: " << distinctChordCount(chordByBar) << " 个";
         }
         os << "\n";
-        os << formatTrack(ns, keys, data, (t == mainTrack) ? &chordByBar : nullptr);
+        os << formatTrack(ns, keys, data, expr,
+                          (t == mainTrack) ? &chordByBar : nullptr);
     }
     return os.str();
 }
@@ -1889,6 +1901,338 @@ LyricAssignment resolveLyrics(const MidiData& data,
                               int mainTrack) {
     if (external && !external->empty()) return assignLyrics(data, *external, mainTrack);
     return assignMidiLyrics(data, mainTrack);
+}
+
+// ---------------------------------------------------------------------------
+// 演奏表情分析
+// ---------------------------------------------------------------------------
+
+std::string NoteExpression::symbol() const {
+    std::string s;
+    if (staccatissimo) s += "▼";
+    else if (staccato) s += "·";
+    if (accent) s += ">";
+    switch (bend) {
+        case BendMark::SlideUp:   s += "↗"; break;
+        case BendMark::SlideDown: s += "↘"; break;
+        case BendMark::Trill:     s += "tr"; break;
+        default: break;
+    }
+    return s;
+}
+
+int dynamicToMidiVolume(const std::string& dyn) {
+    if (dyn == "pp") return 30;
+    if (dyn == "p")  return 45;
+    if (dyn == "mp") return 60;
+    if (dyn == "mf") return 75;
+    if (dyn == "f")  return 95;
+    if (dyn == "ff") return 100;  // <sound dynamics> 按百分比，上限 100
+    return 80;
+}
+
+static std::string trimSectionText(const std::string& s) {
+    size_t a = 0, b = s.size();
+    while (a < b && (unsigned char)s[a] <= ' ') a++;
+    while (b > a && (unsigned char)s[b - 1] <= ' ') b--;
+    return s.substr(a, b - a);
+}
+
+// 从某个音的弯音事件序列里判断滑音 / 颤音。
+//
+// 现有三个输出层都把弯音「取平均后改音高」，那是给没有弯音记号时的兜底；
+// 这里不改音高，只判断形状：单调爬升/下降是滑音，来回穿越是颤音。
+// 判据故意收紧（>=3 个点、幅度 >=0.4 半音），宁可漏标也不能把普通的
+// vibrato 尾巴或校正用的回中事件当装饰音。
+static BendMark bendMarkFor(const NoteEvent& n, const MidiData& data,
+                            const std::vector<PitchBendPoint>& bends) {
+    long raw = n.rawDurationTicks > 0 ? n.rawDurationTicks : n.durationTicks;
+    long end = n.startTicks + std::max<long>(raw, 1);
+    std::vector<double> offs;
+    for (const auto& pb : bends) {
+        if (pb.tick > end) break;             // bends 已按 tick 排序
+        if (pb.channel == n.channel && pb.tick >= n.startTicks)
+            offs.push_back((pb.value - 8192) / 8192.0 * data.bendRange);
+    }
+    if (offs.size() < 3) return BendMark::None;
+
+    double lo = offs[0], hi = offs[0];
+    for (double v : offs) { lo = std::min(lo, v); hi = std::max(hi, v); }
+    const double span = hi - lo;
+    if (span < 0.4) return BendMark::None;
+
+    int flips = 0, lastSign = 0;
+    for (size_t i = 1; i < offs.size(); i++) {
+        double d = offs[i] - offs[i - 1];
+        if (std::abs(d) < 0.08) continue;     // 平台期不算方向变化
+        int sg = d > 0 ? 1 : -1;
+        if (lastSign != 0 && sg != lastSign) flips++;
+        lastSign = sg;
+    }
+    if (flips >= 2) return BendMark::Trill;
+
+    const double net = offs.back() - offs.front();
+    if (flips <= 1 && std::abs(net) >= 0.4)
+        return net > 0 ? BendMark::SlideUp : BendMark::SlideDown;
+    return BendMark::None;
+}
+
+ExpressionMap::ExpressionMap(const MidiData& data) {
+    if (!data.useDynamics) return;
+    enabled_ = true;
+
+    const int div = data.division > 0 ? data.division : 480;
+
+    // 解析层已经按 tick 排过序，但单元测试直接构造 MidiData 时不保证有序，
+    // 这里再排一次（stable：同 tick 后写覆盖的语义不变）。
+    dyn_ = data.dynamics;
+    std::stable_sort(dyn_.begin(), dyn_.end(),
+                     [](const DynPoint& a, const DynPoint& b) { return a.tick < b.tick; });
+    std::vector<PitchBendPoint> bends = data.pitchBends;
+    std::stable_sort(bends.begin(), bends.end(),
+                     [](const PitchBendPoint& a, const PitchBendPoint& b) { return a.tick < b.tick; });
+    std::vector<MarkerEvent> markers = data.markers;
+    std::stable_sort(markers.begin(), markers.end(),
+                     [](const MarkerEvent& a, const MarkerEvent& b) { return a.tick < b.tick; });
+
+    // ---- 1. CC11 Expression：档位变化 + 单调渐变段 ----
+    // 力度是按通道的：伴奏轨的渐强不能标到旋律谱上。
+    std::map<int, std::vector<DynPoint>> byChannel;
+    for (const auto& p : dyn_) byChannel[p.channel].push_back(p);
+    for (auto& [ch, v] : byChannel) {
+        (void)ch;
+        std::vector<DynPoint> u;
+        for (const auto& p : v) {
+            if (!u.empty() && u.back().tick == p.tick) u.back().value = p.value;
+            else u.push_back(p);
+        }
+        // 跨档才写一次力度记号；同档内的小抖动不产生噪音。
+        std::string prevLevel;
+        for (const auto& p : u) {
+            const std::string lv = dynamicLevel(p.value);
+            if (lv != prevLevel) {
+                ExpressionMark m;
+                m.tick = p.tick;
+                m.dynamic = lv;
+                marks_.push_back(m);
+                nDynamic_++;
+                prevLevel = lv;
+            }
+        }
+        // 连续 >=3 个点、同向、跨度 >=24（约一档）才叫渐强/渐弱。
+        size_t i = 0;
+        while (i + 2 < u.size()) {
+            int dir = 0;
+            size_t j = i + 1;
+            for (; j < u.size(); j++) {
+                int d = u[j].value - u[j - 1].value;
+                if (d == 0) continue;
+                int sg = d > 0 ? 1 : -1;
+                if (dir == 0) dir = sg;
+                else if (sg != dir) break;
+            }
+            size_t last = j - 1;
+            if (last - i + 1 >= 3 && std::abs(u[last].value - u[i].value) >= 24 &&
+                u[last].tick > u[i].tick) {
+                ExpressionMark a;
+                a.tick = u[i].tick;
+                a.wedge = dir;
+                ExpressionMark b;
+                b.tick = u[last].tick;
+                b.wedgeStop = true;
+                marks_.push_back(a);
+                marks_.push_back(b);
+                if (dir > 0) nCresc_++; else nDim_++;
+                i = last + 1;
+            } else {
+                i++;
+            }
+        }
+    }
+
+    // ---- 2. 0x06 marker：段落名 ----
+    for (const auto& mk : markers) {
+        std::string text = trimSectionText(mk.text);
+        if (text.empty()) continue;
+        if (text.size() > 40) text = text.substr(0, 40);
+        ExpressionMark m;
+        m.tick = mk.tick;
+        m.section = text;
+        marks_.push_back(m);
+        nSection_++;
+    }
+
+    // 同一 tick 的多个事件并成一个标记行条目，避免输出层各写各的。
+    std::stable_sort(marks_.begin(), marks_.end(),
+                     [](const ExpressionMark& a, const ExpressionMark& b) {
+                         return a.tick < b.tick;
+                     });
+    std::vector<ExpressionMark> merged;
+    for (const auto& m : marks_) {
+        if (!merged.empty() && merged.back().tick == m.tick) {
+            ExpressionMark& b = merged.back();
+            if (!m.dynamic.empty()) b.dynamic = m.dynamic;
+            if (m.wedge != 0) b.wedge = m.wedge;
+            b.wedgeStop = b.wedgeStop || m.wedgeStop;
+            if (!m.section.empty()) b.section = m.section;
+        } else {
+            merged.push_back(m);
+        }
+    }
+    marks_.swap(merged);
+
+    // ---- 3. 音头上的演奏法 ----
+    // 力度方差太小说明这份 MIDI 是「一个 velocity 写到底」的合成文件，
+    // 此时不判重音：否则每个稍微响一点的音都会被印上 `>`。
+    int minVel = 127, maxVel = 0;
+    for (const auto& n : data.notes) {
+        minVel = std::min(minVel, n.velocity);
+        maxVel = std::max(maxVel, n.velocity);
+    }
+    const bool velVar = (maxVel - minVel) >= 24;
+
+    std::map<int, std::vector<const NoteEvent*>> byTrack;
+    for (const auto& n : data.notes) byTrack[n.track].push_back(&n);
+
+    for (auto& [tr, ns] : byTrack) {
+        (void)tr;
+        std::stable_sort(ns.begin(), ns.end(),
+                         [](const NoteEvent* a, const NoteEvent* b) {
+                             return a->startTicks < b->startTicks;
+                         });
+
+        // ---- 断奏判据：相对该轨的「常态门限」----
+        // ratio = 原始发声时长 / 到下一个音头的间隔。真实录音 MIDI 里
+        // DAW 会有统一门限（常见 0.85 左右），断奏音是明显低于这个常态的
+        // 少数派。绝对阈值不行：句尾「八分音符 + 八分休止」的 ratio 也有
+        // 0.5，会被整首标满 `▼`；相对中位数则把这类普通短音符排除掉。
+        std::vector<long> onsets, rawMax;
+        for (const NoteEvent* p : ns) {
+            const long r = p->rawDurationTicks > 0
+                         ? p->rawDurationTicks : p->durationTicks;
+            if (onsets.empty() || onsets.back() != p->startTicks) {
+                onsets.push_back(p->startTicks);
+                rawMax.push_back(r);
+            } else {
+                rawMax.back() = std::max(rawMax.back(), r);
+            }
+        }
+        std::vector<double> ratios(onsets.size(), 1.0), samples;
+        std::map<long, int> gapHist;
+        for (size_t k = 0; k < onsets.size(); k++) {
+            const long ioi = (k + 1 < onsets.size())
+                           ? onsets[k + 1] - onsets[k]
+                           : std::max<long>(rawMax[k], div);
+            if (k + 1 < onsets.size()) gapHist[ioi]++;
+            if (ioi >= div / 4) {
+                ratios[k] = (double)rawMax[k] / (double)ioi;
+                samples.push_back(ratios[k]);
+            }
+        }
+        double base = 1.0;
+        if (samples.size() >= 6) {
+            std::sort(samples.begin(), samples.end());
+            base = samples[samples.size() / 2];
+            if (base < 0.35 || base > 1.1) base = 1.0;  // 样本异常时退回绝对判据
+        }
+        // 最后一道、也是最关键的一道闸门：只在「等间隔音符流」里判断奏。
+        //
+        // MIDI 没有任何显式的 staccato 事件，短 note-off 既可能是断奏，
+        // 也可能只是「八分音符 + 休止」——信息上无法区分。但整轨音头
+        // 间隔几乎一致时，谱面上不存在休止，短 gate 就只剩断奏一种解释。
+        // 真实人声 MIDI 的间隔是 0.5/1/1.5/2 拍混合，这里会整轨拒绝，
+        // 于是不会像早期版本那样每小节冒出一个假的 `▼`。
+        bool uniform = false;
+        if (!gapHist.empty() && onsets.size() >= 6) {
+            int best = 0;
+            for (const auto& [gap, cnt] : gapHist) {
+                (void)gap;
+                best = std::max(best, cnt);
+            }
+            uniform = best * 10 >= (int)(onsets.size() - 1) * 9;  // >= 90%
+        }
+
+        for (size_t k = 0; k < ns.size(); k++) {
+            const NoteEvent& n = *ns[k];
+            auto oit = std::lower_bound(onsets.begin(), onsets.end(), n.startTicks);
+            const size_t oi = (size_t)(oit - onsets.begin());
+            const double ratio = (oi < ratios.size()) ? ratios[oi] : 1.0;
+            const double rel = base > 0 ? ratio / base : 1.0;
+
+            NoteExpression e;
+            // 三道闸门：等间隔流 + 相对常态足够短 + 绝对门限也确实短。
+            if (uniform && rel <= 0.30 && ratio <= 0.40) e.staccatissimo = true;
+            else if (uniform && rel <= 0.55 && ratio <= 0.60) e.staccato = true;
+
+            if (velVar && n.velocity >= 90) {
+                double sum = 0; int cnt = 0;
+                const size_t lo = k > 4 ? k - 4 : 0;
+                const size_t hi = std::min(ns.size(), k + 5);
+                for (size_t q = lo; q < hi; q++) {
+                    if (q == k) continue;
+                    sum += ns[q]->velocity;
+                    cnt++;
+                }
+                if (cnt > 0 && n.velocity - sum / cnt >= 24.0) e.accent = true;
+            }
+            e.bend = bendMarkFor(n, data, bends);
+
+            if (e.any()) {
+                NoteExpression& dst = notes_[{n.startTicks, n.channel}];
+                dst.staccato = dst.staccato || e.staccato;
+                dst.staccatissimo = dst.staccatissimo || e.staccatissimo;
+                dst.accent = dst.accent || e.accent;
+                if (dst.bend == BendMark::None) dst.bend = e.bend;
+            }
+        }
+    }
+    for (const auto& kv : notes_) {
+        const NoteExpression& e = kv.second;
+        if (e.staccato || e.staccatissimo || e.accent) nArtic_++;
+        if (e.bend != BendMark::None) nBend_++;
+    }
+}
+
+std::string ExpressionMap::dynamicAt(long tick, int channel) const {
+    if (!enabled_) return "";
+    int val = -1;
+    for (const auto& dp : dyn_) {
+        if (dp.tick > tick) break;
+        if (dp.channel == channel) val = dp.value;
+    }
+    return dynamicLevel(val);
+}
+
+NoteExpression ExpressionMap::noteAt(long tick, int channel) const {
+    auto it = notes_.find({tick, channel});
+    return it == notes_.end() ? NoteExpression{} : it->second;
+}
+
+std::vector<ExpressionMark> ExpressionMap::inRange(long from, long to) const {
+    std::vector<ExpressionMark> out;
+    for (const auto& m : marks_)
+        if (m.tick >= from && m.tick < to) out.push_back(m);
+    return out;
+}
+
+std::string ExpressionMap::summary() const {
+    if (!enabled_ || totalCount() == 0) return "";
+    std::vector<std::string> parts;
+    auto add = [&](int n, const char* label) {
+        if (n > 0) parts.push_back(std::string(label) + " " + std::to_string(n));
+    };
+    add(nDynamic_, "力度");
+    add(nCresc_, "渐强");
+    add(nDim_, "渐弱");
+    add(nArtic_, "断音/重音");
+    add(nBend_, "滑音/颤音");
+    add(nSection_, "段落");
+    std::string out;
+    for (size_t i = 0; i < parts.size(); i++) {
+        if (i) out += " · ";
+        out += parts[i];
+    }
+    return out;
 }
 
 } // namespace m2j
