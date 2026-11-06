@@ -60,6 +60,8 @@ def main():
     check("3(5 5 5" in out, "三连音标记 3(5 5 5)")
     check("1' -" in out, "同音重复合并成延音（1' -）")
     check("[p]" in out and "[ff]" in out, "力度记号 p / ff")
+    # C 和弦与紧接的 G 和弦共用一个 5：同音合并不该把分属两个和弦的 5 并掉
+    check("5, - 5, -" in out, "分属两个和弦的同音不被误合并（m3 两个 5 都在）")
 
     print("\n[2] 手动调性 --key G（八度基准回归）")
     rc, out, _ = run(exe, mid, "--key", "G")

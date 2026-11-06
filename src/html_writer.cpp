@@ -14,6 +14,7 @@
 #include "midi2jianpu/notation.hpp"
 #include "midi2jianpu/version.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <sstream>
@@ -98,6 +99,43 @@ static std::string noteColumn(const std::string& numText, int highDots, int lowD
     os << "</span>";
 
     // 歌词：始终占位，保证同一行音符底部对齐
+    os << "<span class='lyric'>" << htmlEscape(lyric) << "</span>";
+    os << "</span>";
+    return os.str();
+}
+
+// 生成和弦列：同一时刻发声的多个音竖向叠写，共用一个时值线。
+//
+// 简谱里和弦就是上下对齐的几行数字。若不叠排而顺序输出，一个三音和弦会被
+// 画成三个连续音符（4/4 小节看着像有 12 拍），完全误导。
+static std::string chordColumn(const std::vector<std::pair<std::string, std::pair<int, int>>>& tones,
+                               double beats, const std::string& lyric) {
+    DurStyle ds = durStyleOf(beats);
+
+    std::ostringstream os;
+    os << "<span class='note chordcol " << ds.cls << "'";
+    if (ds.extLines > 0) os << " style='--n:" << ds.extLines << "'";
+    os << "><span class='core'><span class='stack'>";
+
+    for (const auto& tn : tones) {
+        os << "<span class='tone'>";
+        os << "<span class='oct'>";
+        for (int i = 0; i < tn.second.first; i++) os << "<i></i>";
+        os << "</span>";
+        os << "<span class='num'>" << htmlEscape(tn.first) << "</span>";
+        os << "<span class='oct low'>";
+        for (int i = 0; i < tn.second.second; i++) os << "<i></i>";
+        os << "</span>";
+        os << "</span>";
+    }
+
+    os << "</span>";
+    if (ds.extLines > 0) {
+        os << "<span class='exts'>";
+        for (int i = 0; i < ds.extLines; i++) os << "<span class='ext'>-</span>";
+        os << "</span>";
+    }
+    os << "</span>";
     os << "<span class='lyric'>" << htmlEscape(lyric) << "</span>";
     os << "</span>";
     return os.str();
@@ -191,13 +229,25 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
 
         // ---- 同音合并：连续同音且首尾相接时并成一个长音 ----
         // 不合并的话同音重复会被画成 `5 - 5 -`，而简谱规范应写成 `5 - - -`。
+        //
+        // 但这里必须排除多声部：C 和弦的 5 和下一个 G 和弦的 5 音高相同、
+        // 时间也相接，合并后 G 和弦就少了一个音。只在「该时刻只有一个音」时
+        // 才允许合并。
         auto triplets0 = detectTriplets(ns, data.division);
+        std::map<long, int> onsetCount;
+        for (const auto& n : ns) onsetCount[n.startTicks]++;
+        auto isSingle = [&](long tick) {
+            auto cit = onsetCount.find(tick);
+            return cit == onsetCount.end() || cit->second <= 1;
+        };
+
         std::vector<NoteEvent> merged;
         std::vector<bool> trip;
         for (size_t i = 0; i < ns.size(); i++) {
             if (i > 0 && !triplets0[i] && !triplets0[i - 1] && !merged.empty() &&
                 ns[i].pitch == merged.back().pitch &&
-                ns[i].startTicks == merged.back().startTicks + merged.back().durationTicks) {
+                ns[i].startTicks == merged.back().startTicks + merged.back().durationTicks &&
+                isSingle(ns[i].startTicks) && isSingle(merged.back().startTicks)) {
                 merged.back().durationTicks += ns[i].durationTicks;
                 merged.back().durationSeconds += ns[i].durationSeconds;
                 continue;
@@ -236,11 +286,25 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             }
         }
 
+        // ---- 同拍分组：同一 startTicks 的音符属于同一个和弦 ----
+        std::vector<std::vector<const HNote*>> groups;
+        for (const auto& s : seq) {
+            if (!groups.empty()) {
+                const HNote* prev = groups.back().back();
+                if (s.cont == prev->cont && s.n.startTicks == prev->n.startTicks) {
+                    groups.back().push_back(&s);
+                    continue;
+                }
+            }
+            groups.push_back({&s});
+        }
+
         int curBar = -1;
         long prevEnd = 0;
         std::string lastDyn;
         bool inTriplet = false;
 
+        // 开一个小节：写小节号、和弦标记、力度记号
         auto openBar = [&](int bar, long firstTick, int channel) {
             long barStart = (long)(bar * barLen);
             if (prevEnd < barStart) prevEnd = barStart;
@@ -275,21 +339,22 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         };
 
         bool firstNote = true;
-        for (size_t idx = 0; idx < seq.size(); idx++) {
-            const NoteEvent& n = seq[idx].n;
-            const bool cont = seq[idx].cont;
+        for (size_t gi = 0; gi < groups.size(); gi++) {
+            const auto& grp = groups[gi];
+            const NoteEvent& n = grp[0]->n;
+            const bool cont = grp[0]->cont;
             int bar = (int)(n.startTicks / barLen);
 
             if (bar != curBar) {
                 if (curBar >= 0) body << "</span>";   // 收尾上一个小节
                 curBar = bar;
                 openBar(bar, n.startTicks, n.channel);
-            } else if (inTriplet && !seq[idx].trip) {
+            } else if (inTriplet && !grp[0]->trip) {
                 inTriplet = false;
             }
 
             // 三连音组的标记
-            if (seq[idx].trip && !inTriplet) {
+            if (grp[0]->trip && !inTriplet) {
                 body << "<span class='trip'>3</span>";
                 inTriplet = true;
             }
@@ -302,15 +367,17 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 body << noteColumn("0", 0, 0, restBeats, "");
             }
 
-            double beats = (double)n.durationTicks / data.division;
+            // 整组的时值取最长那个音
+            long durTicks = 0;
+            for (const auto* h : grp) durTicks = std::max(durTicks, h->n.durationTicks);
+            double beats = (double)durTicks / data.division;
 
             if (cont) {
-                // 延续段：一拍一个 `-`，与前一音只隔一个小节线
+                // 延续段：一拍一个 `-`
                 int cnt = (int)std::llround(beats);
                 if (cnt < 1) cnt = 1;
                 for (int k = 0; k < cnt; k++) body << noteColumn("-", 0, 0, 1.0, "");
-            } else {
-                // 解析简谱串里的八度标记
+            } else if (grp.size() == 1) {
                 std::string jp = pitchToJianpu(n.pitch, key);
                 int highDots = 0, lowDots = 0;
                 std::string num;
@@ -322,9 +389,30 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 std::string syl = (isMain && lyricLines && n.pitch != 0 && !firstNote)
                                   ? lyricForNote(n.startTicks) : std::string();
                 body << noteColumn(num, highDots, lowDots, beats, syl);
+            } else {
+                // 多声部：竖向叠写。按音高降序，高音在上、低音在下，
+                // 与五线谱的视觉方向一致（反过来看会很不习惯）。
+                std::vector<NoteEvent> sorted;
+                for (const auto* h : grp) sorted.push_back(h->n);
+                std::sort(sorted.begin(), sorted.end(),
+                          [](const NoteEvent& a, const NoteEvent& b) { return a.pitch > b.pitch; });
+
+                std::vector<std::pair<std::string, std::pair<int, int>>> tones;
+                for (const auto& t : sorted) {
+                    std::string jp = pitchToJianpu(t.pitch, key);
+                    int hi = 0, lo = 0;
+                    std::string num;
+                    for (char c : jp) {
+                        if (c == '\'') hi++;
+                        else if (c == ',') lo++;
+                        else num += c;
+                    }
+                    tones.push_back({num, {hi, lo}});
+                }
+                body << chordColumn(tones, beats, "");
             }
 
-            prevEnd = n.startTicks + n.durationTicks;
+            for (const auto* h : grp) prevEnd = std::max(prevEnd, h->n.startTicks + h->n.durationTicks);
             firstNote = false;
         }
 
@@ -372,6 +460,18 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
       display:flex;white-space:nowrap}
 .ext{font-size:26px;line-height:1;margin-left:7px;color:#222}
 .lyric{font-size:14px;color:#666;margin-top:3px;min-height:18px;line-height:1.2;white-space:nowrap}
+
+/* 和弦：同一时刻的多个音竖向叠写，共用一个时值线。
+   行高比单音列高，所以整行会被撑高——这是简谱表示和弦的固有代价。 */
+.chordcol .core{display:inline-block}
+/* 和弦的延音线对齐整个和弦的底部（最低音那一行），而不是垂直居中：
+   居中的话看起来像只有中间那个音在延长。 */
+.chordcol .exts{top:auto;bottom:2px;transform:none}
+.stack{display:flex;flex-direction:column;align-items:center}
+.tone{display:flex;flex-direction:column;align-items:center;margin:-5px 0}
+.tone .oct{height:8px;gap:1px}
+.tone .oct i{width:4px;height:4px}
+.tone .num{font-size:24px;line-height:1.05}
 
 /* 减时线：八分 1 条、十六分 2 条、三十二分 3 条 */
 .eighth .num,.sixteenth .num,.thirtysecond .num{border-bottom:2px solid #222;padding-bottom:1px}
