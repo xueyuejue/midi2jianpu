@@ -731,6 +731,65 @@ def main():
         check("direction" in tags and tags.index("attributes") < tags.index("direction"),
               "direction 排在 attributes 之后", str(tags))
 
+    # ---- [21] LRC × tempo map：变速曲目的歌词不能整体错位 ----
+    # tempolrc.mid 前 4 小节 120BPM、后 4 小节 60BPM，LRC 时间戳写真实秒。
+    # 旧解析器按曲首 120BPM 换算：12 秒 -> tick 11520（差一整小节），
+    # 16 / 20 秒甚至超出曲终，后半段歌词直接消失。
+    print("\n[21] LRC 时间轴按 tempo map 分段对齐")
+    import xml.etree.ElementTree as ETlrc
+    tlm = os.path.join(FIXTURES, "tempolrc.mid")
+    tll = os.path.join(FIXTURES, "tempolrc.lrc")
+    if not (os.path.exists(tlm) and os.path.exists(tll)):
+        check(False, "素材 tempolrc.mid / tempolrc.lrc 存在（先跑 make_fixture.py）")
+    else:
+        expect = ["春风又绿", "江南岸边", "明月何时", "照我还乡",
+                  "小楼昨夜", "又东风起", "故国不堪", "回首月中"]
+
+        def bar_lyrics(exe, mid, lrc, tag):
+            xmlp = os.path.join(tmp, f"tl_{tag}.xml")
+            rc, out, err = run(exe, mid, "--musicxml", xmlp, "--lyrics", lrc)
+            if rc != 0:
+                return [], out, err
+            root = ETlrc.parse(xmlp).getroot()
+            return [''.join((ly.findtext("text") or "")
+                            for ly in m.iter("lyric"))
+                    for m in root.find("part").findall("measure")], out, err
+
+        bars, out, err = bar_lyrics(exe, tlm, tll, "main")
+        check(len(bars) == 8, "MusicXML 导出 8 个小节", str(len(bars)))
+        check(bars == expect,
+              "8 小节歌词逐节落在正确位置（后半段没有跑偏/丢失）", str(bars))
+        check("LRC 时间轴: 检测到 1 处变速" in out,
+              "控制台提示歌词秒数已按 tempo map 分段换算", out[:300])
+        check("♩=120 → 60(第5小节)" in out, "页眉写出变速摘要", out[:300])
+
+        ob = os.path.join(FIXTURES, "tempolrc_offset.lrc")
+        bars_off, _, _ = bar_lyrics(exe, tlm, ob, "offset")
+        check(bars_off == expect,
+              "[offset:-2000] + 大写 OFFSET/元数据 与主 LRC 等价", str(bars_off))
+
+        mb = os.path.join(FIXTURES, "tempolrc_multi.lrc")
+        bars_multi, _, _ = bar_lyrics(exe, tlm, mb, "multi")
+        check(len(bars_multi) == 8 and bars_multi[0] == "重复一句"
+              and bars_multi[4].startswith("重"),
+              "一行两个时间戳时，副歌重复句在 0 秒与 8 秒各出现一次",
+              str(bars_multi))
+
+        th = os.path.join(tmp, "tempolrc.html")
+        run(exe, tlm, "--html", th, "--lyrics", tll)
+        body = open(th, encoding="utf-8").read()
+        # HTML 里每个字是独立的 <span class='lyric'>，整句不会连成字符串
+        words = re.findall(r"class='lyric'>([^<]*)<", body)
+        check(''.join(words) == ''.join(expect),
+              "HTML 谱面逐字写出变速后的完整 32 个歌词字", ''.join(words))
+
+        # 单调速素材零回归：sample.mid 的 LRC 行为不能因为换了解析器而变
+        bars_plain, _, _ = bar_lyrics(
+            exe, os.path.join(FIXTURES, "sample.mid"),
+            os.path.join(FIXTURES, "sample.lrc"), "plain")
+        check(any(b for b in bars_plain),
+              "单调速素材的 LRC 仍能正常出词", str(bars_plain))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

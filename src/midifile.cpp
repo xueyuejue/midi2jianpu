@@ -2,6 +2,7 @@
 #include "midi2jianpu/midifile.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <unordered_map>
@@ -27,6 +28,66 @@ static uint32_t readVarLen(const uint8_t* data, size_t size, size_t& pos) {
     return value;
 }
 
+// ---- TempoTimeline ----
+// 构造时把 set_tempo 序列编译成分段表。输入允许多轨重复声明 / 乱序，
+// 这里统一排序、同 tick 后写覆盖、丢弃非法 BPM，下游拿到的表一定是干净的。
+TempoTimeline::TempoTimeline(const std::vector<TempoPoint>& changes, int division) {
+    division_ = division > 0 ? division : 480;
+    std::vector<TempoPoint> v = changes;
+    std::sort(v.begin(), v.end(),
+              [](const TempoPoint& a, const TempoPoint& b) { return a.tick < b.tick; });
+    std::vector<TempoPoint> uniq;
+    for (const auto& p : v) {
+        if (p.bpm <= 0 || p.tick < 0) continue;
+        if (!uniq.empty() && uniq.back().tick == p.tick) uniq.back() = p;
+        else uniq.push_back(p);
+    }
+
+    segments_.clear();
+    segments_.push_back({0, 0.0, 500000.0});  // MIDI 规范默认 120 BPM
+    double sec = 0.0;
+    long cur = 0;
+    for (const auto& p : uniq) {
+        sec += (double)(p.tick - cur) * segments_.back().usPerQuarter / 1e6 / division_;
+        cur = p.tick;
+        const double us = 60000000.0 / p.bpm;
+        if (segments_.back().tick == cur) {
+            // tick 0 的 set_tempo：改曲首段的速度，秒数仍从 0 起
+            segments_.back().usPerQuarter = us;
+        } else {
+            segments_.push_back({cur, sec, us});
+        }
+    }
+}
+
+TempoTimeline::TempoTimeline(const MidiData& data)
+    : TempoTimeline(data.tempoChanges, data.division) {}
+
+double TempoTimeline::tickToSeconds(long tick) const {
+    const TempoSegment& head = segments_.front();
+    if (tick <= head.tick)  // 负 tick 按曲首速度线性外推
+        return head.seconds + (double)(tick - head.tick) * head.usPerQuarter / 1e6 / division_;
+    size_t lo = 0, hi = segments_.size();
+    while (lo + 1 < hi) {
+        const size_t mid = lo + (hi - lo) / 2;
+        if (segments_[mid].tick <= tick) lo = mid; else hi = mid;
+    }
+    const TempoSegment& s = segments_[lo];
+    return s.seconds + (double)(tick - s.tick) * s.usPerQuarter / 1e6 / division_;
+}
+
+long TempoTimeline::secondsToTick(double seconds) const {
+    size_t lo = 0;
+    // 线性扫就够：一个曲子的变速点最多几十个，二分反而容易在相等秒数上出错
+    for (size_t i = 1; i < segments_.size(); i++) {
+        if (segments_[i].seconds <= seconds) lo = i; else break;
+    }
+    const TempoSegment& s = segments_[lo];
+    const double t = (double)s.tick
+                   + (seconds - s.seconds) * 1e6 * division_ / s.usPerQuarter;
+    return (long)std::llround(t);
+}
+
 // 按 set_tempo 分段，把 tick 精确映射为秒。
 //
 // 旧实现是在解析过程中用一个可变的 tempo 变量即时换算（tick2sec 闭包），
@@ -34,50 +95,20 @@ static uint32_t readVarLen(const uint8_t* data, size_t size, size_t& pos) {
 //   1) 变速曲目里，早期的音符会用到最后一次 set_tempo 的速度；
 //   2) format 1 文件的 set_tempo 通常在独立的 conductor 轨（track 0），
 //      如果它排在音符轨之后被解析，整份谱子的秒数全部错位。
-// 现在解析阶段只记录 tick，等所有事件收齐后统一重算。
+// 现在与 LRC 歌词共用同一张 TempoTimeline，不会再出现「音符对、歌词错」。
 static void recomputeSeconds(MidiData& out) {
-    const double div = out.division > 0 ? (double)out.division : 480.0;
-
-    // 按 tick 排序；同一 tick 上的多次 set_tempo 以最后一个为准
     std::sort(out.tempoChanges.begin(), out.tempoChanges.end(),
               [](const TempoPoint& a, const TempoPoint& b) { return a.tick < b.tick; });
 
-    struct Seg { long tick; double sec; double usPerQn; };
-    std::vector<Seg> segs;
-    segs.push_back({0, 0.0, 500000.0});   // MIDI 规范的默认速度：120 BPM
-
-    {
-        double us = 500000.0;
-        double sec = 0.0;
-        long curTick = 0;
-        for (const auto& p : out.tempoChanges) {
-            if (p.bpm <= 0) continue;
-            sec += (p.tick - curTick) * us / 1e6 / div;
-            curTick = p.tick;
-            us = 60000000.0 / p.bpm;
-            if (segs.back().tick == curTick) segs.back().usPerQn = us;
-            else segs.push_back({curTick, sec, us});
-        }
-    }
-
-    auto tick2sec = [&](long t) -> double {
-        size_t lo = 0, hi = segs.size();
-        while (lo + 1 < hi) {
-            size_t mid = (lo + hi) / 2;
-            if (segs[mid].tick <= t) lo = mid; else hi = mid;
-        }
-        const Seg& s = segs[lo];
-        return s.sec + (double)(t - s.tick) * s.usPerQn / 1e6 / div;
-    };
-
+    const TempoTimeline tl(out.tempoChanges, out.division);
     for (auto& n : out.notes) {
-        double s = tick2sec(n.startTicks);
+        double s = tl.tickToSeconds(n.startTicks);
         n.startSeconds = s;
-        n.durationSeconds = tick2sec(n.startTicks + n.durationTicks) - s;
+        n.durationSeconds = tl.tickToSeconds(n.startTicks + n.durationTicks) - s;
         if (n.durationSeconds < 0.02) n.durationSeconds = 0.02;
     }
 
-    // out.tempo 只用来推导 BPM（歌词 LRC 的时间轴换算），取曲首速度而不是最后一个
+    // out.tempo 只用来推导曲首 BPM（兼容旧接口），不是时间轴的权威来源
     out.tempo = 500000.0;
     for (const auto& p : out.tempoChanges) {
         if (p.bpm > 0) { out.tempo = 60000000.0 / p.bpm; break; }

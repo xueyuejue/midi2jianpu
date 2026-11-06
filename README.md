@@ -44,18 +44,20 @@
 - [x] **HTML 谱面导出**：自包含网页，浏览器打开即可打印 PDF，含和弦标记、小节号、和弦竖向叠写；小节号/力度/速度独占标记行，和弦则挂在它管的那个音符正上方（标记行是从左往右排的，写在那里会被别的标记顶偏），三层互不侵入
 - [x] **MusicXML 导出**：`--musicxml out.xml`，符合 3.1 规范（整数 `duration`、`<chord/>`、`<tie>` 跨小节延音、正确 `<fifths>`/`<clef>`/速度标记）；配合 `--lyrics` 还会写出 `<lyric>`（syllabic begin/middle/end）与一字多音的 `<slur>`，导进 MuseScore 有词可看
 - [x] **歌词写入**：`--lyrics lyrics.lrc` 支持 LRC 格式，按时间戳精确对齐；一行词跨多小节、旋律音数多于字数（一字多音）时按行内音数铺开，不会全挤在第一小节，并在这些音上方画出连音线弧线
+- [x] **LRC 按变速分段对齐**：`[mm:ss.xx]` 是真实秒，新的 `TempoTimeline` 按 `set_tempo` map 逐段反解成 tick，变速曲目的后半段歌词不再整体错位（120→60 BPM 时旧版能差出整整一小节）；同时支持 `[offset:±毫秒]` 整体平移与一行多个时间戳（副歌重复句），CLI / 网页版 / HTML / MusicXML 共用同一个解析器
 - [x] 文本输出到文件：`--output out.txt`（含和弦标记）
 - [x] 多轨选择：`--track 0`
 - [x] `--version` 打印版本号
 - [x] **在线 Demo**：WASM 核心，浏览器内运行 C++ 代码
 - [x] **减时线按拍连通**：一拍内的八分/十六分音符共用一条横线（十六分再叠平行线），而不是每个音各画一小段；和弦的减时线只画在最下面那个音上
-- [x] 254 项单元测试 + 20 组端到端冒烟测试 + WASM 产物一致性检查
+- [x] 286 项单元测试 + 21 组端到端冒烟测试 + WASM 产物一致性检查
 
 ## 在线 Demo 功能
 
 - 拖入 MIDI 文件即转简谱（文件不上传，全部在浏览器内解析）
 - 25 种调性可选（自动识别 + 12 大调 + 12 小调）
 - 歌词：文件自带 `0x05` 歌词时自动识别并提示「此文件自带 N 个歌词音节」；也可粘贴 LRC 文本或选择 `.lrc` 文件（优先级更高），并有「使用 MIDI 自带歌词」开关
+- 曲中有变速时会提示「检测到 N 处变速，LRC 已按 tempo map 分段对齐」；`[offset:]` 与多时间戳同样生效
 - 在线播放（Web Audio API 合成）
 - 自动识别中途变拍号、中途转调、弱起、变速与鼓轨，无需任何开关；文件含转调时会提示「检测到 N 处转调，唱名已按段换算」
 - 纯五声旋律会提示「检测到 G 徵调式，1=C 按宫音校正」，另有「五声调式宫音校正」复选框可切回大小调判定
@@ -250,6 +252,28 @@ Windows 产物在 `build\Release\midi2jianpu.exe`。详细说明、WASM 编译�
 > **两个取舍**：一是大小调之间的切换（`0x59` 第二字节变化而升降数不变）不单独标注，因为首调的 `1` 和唱名都没变，简谱歌本也不另行换调号；二是等音按最简写法归一（7 个升号的 `C#` 记作 `1=Db`）。文件里完全没有 `0x59` 事件时无从检测转调，此时用 `--key` 指定曲首、或按单一调性记谱即可。`--no-key-changes` 可一键关掉整条调号 map（事件表仍保留，曲首调号还要用来判调性）。
 
 
+## 时间轴与 LRC 歌词
+
+MIDI 里同时存在两套坐标：谱面用 **tick**（每四分音符 `division` 个），LRC 用 **真实秒**。变速时两者不再是固定比例——`♩=120 → 60` 之后一拍从 0.5 秒变成 1 秒。旧解析器把整首歌当成曲首速度，用 `秒 / (60/bpm) × division` 一把换算：
+
+| LRC 时间戳（`tempolrc.mid`，第 5 小节起 60 BPM） | 固定 120 BPM | tempo map | 实际位置 |
+| --- | --- | --- | --- |
+| `[00:12.00]` | tick 11520 | **tick 9600** | 第 6 小节起点 |
+| `[00:16.00]` | tick 15360（曲终，词丢失） | **tick 11520** | 第 7 小节起点 |
+| `[00:20.00]` | tick 19200（曲终外，词丢失） | **tick 13440** | 第 8 小节起点 |
+
+也就是说，副歌一变速，后半首的歌词会整段挂到错误的小节，甚至直接消失。这类问题在看谱时很容易被误当成「LRC 文件本来就不准」。
+
+`TempoTimeline` 把 `0x51 set_tempo` 序列编译成分段表（tick / 该点真实秒 / 本段每四分音符微秒数），提供 `tickToSeconds()` 与 `secondsToTick()`。音符秒数（`recomputeSeconds`）与 LRC 歌词现在共用这一张表，不会再出现「音符对、歌词错」。构造时统一排序、同 tick 后写覆盖、丢弃非法 BPM，越过末段时间按末段速度线性外推。
+
+| LRC 写法 | 处理 |
+| --- | --- |
+| `[mm:ss.xx]歌词` | 秒叠上 offset 后由 tempo map 反解成 tick |
+| `[offset:-2000]` | 所有时间戳整体平移（正值=歌词延后），大小写不敏感；多个取最后一个 |
+| `[00:00.00][00:08.00]副歌` | 展开成两行，按 tick 稳定排序（副歌重复句不用抄两遍） |
+| `[ti:]` / `[ar:]` / `[al:]` | 元数据行跳过 |
+
+新增 `parseLrcText(text, data)` / `parseLrcLines(path, data)` / `parseLrc(path, data)` 三个重载；旧的 `(division, bpm)` 签名保留，内部按曲首单速构造一条等价时间轴，现有调用方零改动。WASM 版关闭了 C++ 异常，数字解析仍走手写的不抛异常版本，畸形 LRC 不会让页面崩掉。
 ## 五声音阶与民族调式
 
 Krumhansl-Schmuckler 用七声大/小调轮廓打分。纯五声旋律 `C D E G A`、终止音落在 G 时，相关度最高的是 **G 大调**，于是谱子写成 `1=G`；而中国民歌里这是 **G 徵调式**，宫音是 C，简谱应该写 `1=C`（G 记作 `5`）。终止音不是宫音在民歌 / 古风曲里是常态，硬套大小调主音会让整份谱子的唱名全错。
@@ -281,7 +305,7 @@ Krumhansl-Schmuckler 用七声大/小调轮廓打分。纯五声旋律 `C D E G 
 - 调性识别：**Krumhansl-Schmuckler** 算法（音乐信息检索标准）；无调号时再由**宫商角徵羽五声调式**判定校正宫音
 - 和弦检测：按和声窗（半小节 / 附点四分 / 整小节）统计音级频率，匹配 9 种和弦类型
 - 输出：文本 + 自包含 HTML（内联 CSS）+ MusicXML 3.1
-- 测试：内置断言 254 项单元测试，另有 `tests/smoke.py` 20 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式与七声对照素材 `pentatonic.mid`）
+- 测试：内置断言 286 项单元测试，另有 `tests/smoke.py` 21 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC）
 
 ## 路线图
 
@@ -300,9 +324,10 @@ Krumhansl-Schmuckler 用七声大/小调轮廓打分。纯五声旋律 `C D E G 
 - [x] 一字多音连音线弧线（HTML 画弧线；MusicXML 同步写出 `<lyric>` / `<slur>`）
 - [x] MIDI 内置歌词（`0x05` lyric meta）自动加载 + 旋律轨证据 + 手动忽略开关
 - [x] 中途变拍号（拍号 map）：逐小节网格 + 三个输出层同步
-- [x] 更多真实 MIDI 样本校验：新增 `meter.mid` 混合压力素材（变拍号 + 变速 + 鼓轨 + 内置歌词 + 伴奏和弦），配合 10 份合成 fixture 与真实人声 MIDI 做回归；五轮迭代里发现的边界全部锁进单元测试
+- [x] 更多真实 MIDI 样本校验：新增 `meter.mid` 混合压力素材（变拍号 + 变速 + 鼓轨 + 内置歌词 + 伴奏和弦），配合 11 份合成 fixture 与真实人声 MIDI 做回归；五轮迭代里发现的边界全部锁进单元测试
 - [x] 中途转调（`0x59` 调号 map）：逐段首调换算 + 文本 / HTML / MusicXML 同步 + `--key` 相对平移；新增 `modulation.mid` 混合压力素材（转调 + 变速 + 鼓轨 + 内置歌词 + 降号调和弦）
 - [x] 五声音阶／民族调式宫音判定：`detectPentatonic` + `keyFromGong`，KS 误判的宫音自动校正，三个输出层与网页同步；新增 `pentatonic.mid`（宫/商/角/徵/羽 + 六声偏音 + 七声对照组）
+- [x] LRC 时间轴接入 tempo map：抽出 `TempoTimeline`，变速歌词的秒→tick 逐段反解，补 `[offset:]` 与多时间戳；新增 `tempolrc.mid` + 3 份 LRC 对照素材
 
 ## 为什么开源
 
@@ -320,7 +345,7 @@ Issue / PR 都欢迎。尤其欢迎：
 提交前请跑一遍：
 
 ```bash
-cd build && ctest --output-on-failure                  # 254 项单元测试
+cd build && ctest --output-on-failure                  # 286 项单元测试
 python tests/smoke.py build/Release/midi2jianpu.exe    # 端到端冒烟（含鼓轨场景）
 node tests/wasm_smoke.mjs                              # WASM 产物与源码是否同步
 ```

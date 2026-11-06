@@ -2,8 +2,9 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 10 份素材：sample / humanized / drums /
-melisma / harmony / pickup / karaoke / meter / modulation / pentatonic。
+随时重建素材、复现问题。共生成 11 份 .mid 素材：sample / humanized / drums /
+melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
+tempolrc（另配 3 份 LRC 歌词）。
 meter 是把变拍号、变速、鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」，
 modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五声调式
 （C 宫、G 徵调式，故意不写 0x59 逼自动猜调暴露宫音判错）。
@@ -618,6 +619,67 @@ def build_pentatonic() -> bytes:
     return header + t0.render() + t1.render() + t2.render() + t3.render()
 
 
+# ---- LRC × tempo map 素材 ----
+# 8 小节 4/4：前 4 小节 120 BPM（每小节 2 秒），第 5 小节起 60 BPM
+# （每小节 4 秒）。每小节 4 个四分音符，LRC 每行 4 个字，时间戳写的是
+# **真实秒**，正好落在各小节起点：0 / 2 / 4 / 6 / 8 / 12 / 16 / 20 秒。
+#
+# 旧解析器按曲首 120 BPM 一把换算：12 秒被算成 tick 11520（应为 9600，
+# 整整差一小节），16 / 20 秒甚至超出曲终，后半段歌词直接消失。
+# 所以这份素材能一眼看出「tempo map 到底接没接上」。
+TEMPOLRC_LINES = [
+    (0.0, "春风又绿"), (2.0, "江南岸边"),
+    (4.0, "明月何时"), (6.0, "照我还乡"),
+    (8.0, "小楼昨夜"), (12.0, "又东风起"),
+    (16.0, "故国不堪"), (20.0, "回首月中"),
+]
+
+
+def _fmt_lrc_ts(sec: float) -> str:
+    mm = int(sec // 60)
+    rest = sec - mm * 60
+    return f"[{mm:02d}:{rest:05.2f}]"
+
+
+def build_tempolrc_lrc() -> str:
+    return "\n".join(_fmt_lrc_ts(s) + w for s, w in TEMPOLRC_LINES) + "\n"
+
+
+def build_tempolrc_offset_lrc() -> str:
+    # 每个时间戳 +2 秒、再用 [offset:-2000] 拉回来，产物必须与主 LRC 等价。
+    # 负 offset、大小写、元数据混排都在这一份里覆盖。
+    head = "[ti:变速歌词]\n[OFFSET:-2000]\n"
+    return head + "\n".join(_fmt_lrc_ts(s + 2.0) + w
+                            for s, w in TEMPOLRC_LINES) + "\n"
+
+
+def build_tempolrc_multi_lrc() -> str:
+    # 一行两个时间戳：同一句词在 0 秒和 8 秒各出现一次（副歌重复）。
+    return ("[00:00.00][00:08.00]重复一句\n"
+            "[00:02.00]第二段词\n")
+
+
+def build_tempolrc() -> bytes:
+    """8 小节 4/4，tick 7680（第 5 小节）把 120 BPM 降到 60 BPM。"""
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 500000us -> 120BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # 0 升降号 -> C 大调
+    t0.add(4 * BAR, meta(0x51, bytes([0x0F, 0x42, 0x40])))  # 1000000us -> 60BPM
+    t0.add(4 * BAR, meta(0x06, b"Ritardando"))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    t1.program(0, 54, 0)
+    scale = [60, 62, 64, 65, 67, 69, 71, 72]
+    for i in range(32):                 # 8 小节 × 4 个四分音符
+        t1.note(0, scale[i % len(scale)], 90, i * DIV, DIV)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + t1.render()
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -696,6 +758,22 @@ def main() -> None:
         pentdata = build_pentatonic()
         f.write(pentdata)
     print(f"wrote {pentmid} ({len(pentdata)} bytes)")
+
+    # LRC 时间轴 × tempo map：一份 .mid 配三份 .lrc
+    tlmid = os.path.join(here, "tempolrc.mid")
+    with open(tlmid, "wb") as f:
+        tldata = build_tempolrc()
+        f.write(tldata)
+    print(f"wrote {tlmid} ({len(tldata)} bytes)")
+    for name, content in (
+        ("tempolrc.lrc", build_tempolrc_lrc()),
+        ("tempolrc_offset.lrc", build_tempolrc_offset_lrc()),
+        ("tempolrc_multi.lrc", build_tempolrc_multi_lrc()),
+    ):
+        path = os.path.join(here, name)
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(content)
+        print(f"wrote {path}")
 
 
 if __name__ == "__main__":

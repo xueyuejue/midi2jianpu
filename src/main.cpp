@@ -252,14 +252,21 @@ int main(int argc, char** argv) {
         size_t dot = lyricsPath.find_last_of(".");
         std::string ext = (dot != std::string::npos) ? lyricsPath.substr(dot) : "";
         if (ext == ".lrc" || ext == ".LRC") {
-            int bpm = (data.tempo > 0) ? (int)(60000000.0 / data.tempo) : 120;
-            lyricLines = m2j::parseLrcLines(lyricsPath, data.division, bpm);
+            // LRC 时间戳是真实秒，必须按 tempo map 分段反解成 tick；
+            // 用曲首 BPM 一把梭会让变速后的歌词整体错位。
+            lyricLines = m2j::parseLrcLines(lyricsPath, data);
         } else {
             // JSON 格式：每个字自成一行
             auto syls = m2j::parseLyrics(lyricsPath, data.division);
             for (const auto& s : syls) lyricLines.push_back({s.tick, s.text});
         }
         std::cout << "歌词已加载: " << lyricLines.size() << " 行\n";
+        if (ext == ".lrc" || ext == ".LRC") {
+            const int tc = m2j::tempoChangeCount(data);
+            if (tc > 0)
+                std::cout << "LRC 时间轴: 检测到 " << tc
+                          << " 处变速，歌词秒数已按 tempo map 分段换算\n";
+        }
         if (!lyricLines.empty()) {
             lyricPtr = &lyricLines;
             if (!data.midiLyrics.empty())

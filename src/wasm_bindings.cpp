@@ -86,11 +86,7 @@ const char* midi2jianpu_html(const uint8_t* midiData, int size, int keyPitch, in
     // WASM 版默认关闭 C++ 异常，用户贴一段畸形 LRC 就会 abort 崩掉整页。
     // 现在统一走 notation.cpp 里的共享实现（同样不抛异常）。
     std::vector<m2j::LyricLine> lyricLines;
-    if (!g_lyrics.empty()) {
-        int bpm = (data.tempo > 0) ? (int)(60000000.0 / data.tempo) : 120;
-        if (bpm <= 0) bpm = 120;
-        lyricLines = m2j::parseLrcText(g_lyrics, data.division, bpm);
-    }
+    if (!g_lyrics.empty()) lyricLines = m2j::parseLrcText(g_lyrics, data);
 
     g_result = m2j::renderHtml(data, key, g_title.empty() ? "简谱" : g_title,
                               lyricLines.empty() ? nullptr : &lyricLines);
@@ -158,6 +154,14 @@ int midi2jianpu_key_change_count(const uint8_t* midiData, int size) {
     return (int)m2j::keyChangesOf(data).size();
 }
 
+// 实质变速点数。网页贴了 LRC 时提示「已按 tempo map 分段对齐」，否则
+// 用户看不出「后半段歌词为什么没跑偏」是刻意做的还是碰巧。
+int midi2jianpu_tempo_change_count(const uint8_t* midiData, int size) {
+    m2j::MidiData data;
+    if (!m2j::loadMidiFromMemory(midiData, size, data)) return 0;
+    return m2j::tempoChangeCount(data);
+}
+
 // 获取MIDI音符数据(JSON格式, 用于播放)
 const char* midi2jianpu_get_notes_json(const uint8_t* midiData, int size) {
     m2j::MidiData data;
@@ -203,9 +207,7 @@ const char* midi2jianpu_musicxml(const uint8_t* midiData, int size, int keyPitch
     std::vector<m2j::LyricLine> lyricLines;
     const std::vector<m2j::LyricLine>* lyricPtr = nullptr;
     if (!g_lyrics.empty()) {
-        int bpm = (data.tempo > 0) ? (int)(60000000.0 / data.tempo) : 120;
-        if (bpm <= 0) bpm = 120;
-        lyricLines = m2j::parseLrcText(g_lyrics, data.division, bpm);
+        lyricLines = m2j::parseLrcText(g_lyrics, data);
         if (!lyricLines.empty()) lyricPtr = &lyricLines;
     }
     g_result = m2j::renderMusicXml(data, key, lyricPtr);

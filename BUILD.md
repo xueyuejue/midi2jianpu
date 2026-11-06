@@ -33,7 +33,7 @@ cmake --build build --config Release
 
 ## 测试
 
-### 单元测试（254 项）
+### 单元测试（286 项）
 
 ```bash
 cd build && ctest --output-on-failure
@@ -41,16 +41,16 @@ cd build && ctest --output-on-failure
 ./build/test_basic
 ```
 
-成功时输出 `共 254 项，失败 0 项 -> 全部通过`。
+成功时输出 `共 286 项，失败 0 项 -> 全部通过`。
 
-覆盖范围：调性识别、各调八度基准、升降号书写（含降号调）、时值后缀、三连音、同音合并、和弦检测、移调、MusicXML 小节时长与 `<chord/>`，以及九组解析层回归——**鼓轨过滤**、**旋律轨判定**、**变速 tempo map 秒数换算**、**弱起小节网格**、**歌词分配与一字多音区间**、**MIDI 内置歌词规整与精确对齐**、**拍号 map 与逐小节网格**、**调号 map（中途转调 / KeyMap）**、**五声调式宫音判定（宫商角徵羽 / 六声偏音 / 七声拒绝 / 歧义拒绝 / `--gong` 手工指定）**（都在内存里现构造最小 SMF，不依赖 fixture 文件）。
+覆盖范围：调性识别、各调八度基准、升降号书写（含降号调）、时值后缀、三连音、同音合并、和弦检测、移调、MusicXML 小节时长与 `<chord/>`，以及十组解析层回归——**鼓轨过滤**、**旋律轨判定**、**变速 tempo map 秒数换算**、**弱起小节网格**、**歌词分配与一字多音区间**、**MIDI 内置歌词规整与精确对齐**、**拍号 map 与逐小节网格**、**调号 map（中途转调 / KeyMap）**、**五声调式宫音判定**、**TempoTimeline 与 LRC 变速对齐（tick/秒往返、乱序去重、offset、多时间戳、旧签名对照）**（都在内存里现构造最小 SMF，不依赖 fixture 文件）。
 
 ### 冒烟测试（端到端，验证 README 承诺的每个参数）
 
 需要 Python 3（只用标准库）：
 
 ```bash
-python tests/fixtures/make_fixture.py     # 生成 sample / humanized / drums / melisma / harmony / pickup / karaoke / meter / modulation / pentatonic 十份素材
+python tests/fixtures/make_fixture.py     # 生成 11 份 .mid 素材（含 tempolrc）+ 3 份变速 LRC
 python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2jianpu.exe
 ```
 
@@ -72,7 +72,9 @@ python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2ji
 
 `pentatonic.mid` 是**五声调式对照素材**：8 小节全用 C 宫五声 `C D E G A`，终止音落在 G，且文件**故意不写 `0x59`**。KS 会把它判成 G 大调（`1=G`），校正后必须是 `1=C 大调 · G 徵调式（宫音 C）`，第一小节记作 `1 2 3 5`；`--no-pentatonic` 回到 `1=G`，`--gong F` 强制 `1=F`。另有两个对照轨分别塞进一个偏音（六声，仍应检出）和两个偏音（七声，必须交回 KS）。
 
-路线图里的「更多真实 MIDI 样本校验」由这几份混合素材配合 `die_yi_sui_xue_vocal.mid`（真实人声录音导出）完成：每次发布都用它做一次带 LRC 的全链路回归渲染，确认新的网格 / 调号 map / 调式校正没有改变已有曲目的输出（v1.18.0 的真实曲目谱面与 v1.17.0 逐字节一致，只多一条调式文字标注与版本号）。
+`tempolrc.mid` 是**变速歌词素材**：8 小节 4/4，前 4 小节 120 BPM、第 5 小节起 60 BPM，每小节 4 个四分音符。`tempolrc.lrc` 用真实秒写 8 行词（0 / 2 / 4 / 6 / 8 / 12 / 16 / 20 秒），正好落在各小节起点；逐小节校验 MusicXML 的 `<lyric>` 能同时证明「前半段没变、后半段没跑偏」。旧解析器会把 12 秒算成 tick 11520（差一整小节），16 / 20 秒更是超出曲终导致歌词消失。`tempolrc_offset.lrc` 把每个时间戳 +2 秒再用 `[offset:-2000]` 拉回，断言与主 LRC 完全等价；`tempolrc_multi.lrc` 用一行两个时间戳验证副歌重复句。
+
+路线图里的「更多真实 MIDI 样本校验」由这些混合素材配合 `die_yi_sui_xue_vocal.mid`（真实人声录音导出）完成：每次发布都用它做一次带 LRC 的全链路回归渲染，确认新的网格 / 调号 map / 调式校正 / 时间轴没有改变已有曲目的输出（v1.19.0 的真实曲目 HTML 与 MusicXML 与 v1.18.0 **逐字节一致**）。
 
 ### WASM 冒烟测试（校验提交进 docs/wasm/ 的产物是否与源码同步）
 
@@ -205,7 +207,7 @@ cp build-wasm/midi2jianpu.wasm docs/wasm/
 >   src/wasm_bindings.cpp src/midifile.cpp src/notation.cpp \
 >   src/html_writer.cpp src/musicxml_writer.cpp \
 >   -o build-wasm/midi2jianpu.js \
->   -sEXPORTED_FUNCTIONS='["_malloc","_free","_midi2jianpu_parse","_midi2jianpu_html","_midi2jianpu_musicxml","_midi2jianpu_result_len","_midi2jianpu_copy_result","_midi2jianpu_set_lyrics","_midi2jianpu_set_title","_midi2jianpu_set_use_midi_lyrics","_midi2jianpu_midi_lyric_count","_midi2jianpu_key_change_count","_midi2jianpu_set_use_pentatonic","_midi2jianpu_pentatonic_info","_midi2jianpu_get_notes_json"]' \
+>   -sEXPORTED_FUNCTIONS='["_malloc","_free","_midi2jianpu_parse","_midi2jianpu_html","_midi2jianpu_musicxml","_midi2jianpu_result_len","_midi2jianpu_copy_result","_midi2jianpu_set_lyrics","_midi2jianpu_set_title","_midi2jianpu_set_use_midi_lyrics","_midi2jianpu_midi_lyric_count","_midi2jianpu_key_change_count","_midi2jianpu_tempo_change_count","_midi2jianpu_set_use_pentatonic","_midi2jianpu_pentatonic_info","_midi2jianpu_get_notes_json"]' \
 >   -sEXPORTED_RUNTIME_METHODS='["UTF8ToString","lengthBytesUTF8","stringToUTF8","HEAPU8"]' \
 >   -sMODULARIZE=1 -sEXPORT_NAME=createMidi2Jianpu \
 >   -sALLOW_MEMORY_GROWTH=1 -sENVIRONMENT=web,node
