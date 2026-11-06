@@ -186,7 +186,34 @@ check(Array.isArray(notes) && notes.length > 0, '音符 JSON 合法且非空', n
 check(notes && notes.length && typeof notes[0].time === 'number',
   '音符 JSON 字段 time/pitch 完整', notes && JSON.stringify(notes[0]));
 
-// ---- 8. 坏数据不能把整页搞崩 ----
+// ---- 8. 打击乐轨：网页叫谱面里不能出现鼓 ----
+// 鼓轨音符数远超旋律时，旧的"音符最多即旋律轨"逻辑会把鼓当旋律转出来，
+// 谱面变成 `1,, #4,, #6,,` 的垃圾，和弦与歌词也跟着挂错。CLI 与网页共用
+// 同一份解析代码，这里兜住网页侧。
+const drumsPath = path.join(FIXTURES, 'drums.mid');
+if (existsSync(drumsPath)) {
+  const d = makeCaller(mod);
+  d.setMidi(readFileSync(drumsPath));
+  d.setLyrics('');
+  const drumsText = d.call('midi2jianpu_parse', -1, 1);
+  check(drumsText && /已跳过 192 个打击乐音符/.test(drumsText),
+    '鼓轨音符被跳过并提示用户', drumsText && drumsText.slice(0, 200));
+  check(drumsText && !/\[Drums\]/.test(drumsText), '文本谱面里没有鼓轨', drumsText);
+  check(drumsText && !/1,,/.test(drumsText), '鼓的音高没有混进简谱', drumsText);
+
+  const drumsHtml = d.call('midi2jianpu_html', -1, 1);
+  check(drumsHtml && !drumsHtml.includes('Drums'), 'HTML 谱面里没有鼓轨');
+  check(drumsHtml && drumsHtml.includes('已跳过鼓轨'), 'HTML 页眉标注已跳过鼓轨');
+
+  // 播放用的音符也不能有鼓，否则网页会拿合成器去"弹"军鼓
+  const drumsNotes = JSON.parse(d.call('midi2jianpu_get_notes_json', -1, 1) || 'null');
+  check(Array.isArray(drumsNotes) && drumsNotes.length === 32,
+    '播放音符只剩旋律与钢琴（32 个），实际: ' + (Array.isArray(drumsNotes) ? drumsNotes.length : 'null'));
+} else {
+  check(false, '素材 drums.mid 存在（先跑 make_fixture.py）');
+}
+
+// ---- 9. 坏数据不能把整页搞崩 ----
 c.setMidi(new Uint8Array([1, 2, 3, 4, 5]));
 const bad = c.call('midi2jianpu_parse', -1, 1);
 check(typeof bad === 'string' && bad.length > 0, '非法 MIDI 返回错误文本而非崩溃', bad);

@@ -1,10 +1,79 @@
 // test_basic.cpp - 核心逻辑单元测试
 // 覆盖：音高->简谱、八度基准、升降号、时值后缀、三连音、调性识别、
-//       和弦检测、同音合并、MusicXML 相关的基础数据结构。
+//       和弦检测、同音合并、MusicXML 相关的基础数据结构、
+//       鼓轨过滤、旋律轨判定、变速（tempo map）换算。
 #include "midi2jianpu/notation.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <iostream>
 #include <string>
+#include <utility>
+#include <vector>
+
+// ---------------------------------------------------------------------------
+// 最小 SMF 构造器：只用来喂给解析器做回归测试，不追求功能完整。
+// 用内存构造而不是读 .mid 文件，单元测试才能不依赖 fixture 生成脚本。
+// ---------------------------------------------------------------------------
+static void put32(std::vector<uint8_t>& v, uint32_t x) {
+    v.push_back(uint8_t(x >> 24)); v.push_back(uint8_t(x >> 16));
+    v.push_back(uint8_t(x >> 8));  v.push_back(uint8_t(x));
+}
+static void put16(std::vector<uint8_t>& v, uint16_t x) {
+    v.push_back(uint8_t(x >> 8)); v.push_back(uint8_t(x));
+}
+static void putVlq(std::vector<uint8_t>& v, uint32_t n) {
+    uint8_t buf[4];
+    int i = 0;
+    buf[i++] = (uint8_t)(n & 0x7F);
+    while ((n >>= 7) != 0) buf[i++] = (uint8_t)((n & 0x7F) | 0x80);
+    while (i--) v.push_back(buf[i]);
+}
+
+static std::vector<uint8_t> ev(std::initializer_list<int> bytes) {
+    std::vector<uint8_t> v;
+    for (int b : bytes) v.push_back((uint8_t)b);
+    return v;
+}
+
+struct SmfTrack {
+    std::vector<std::pair<long, std::vector<uint8_t>>> events;
+    void at(long tick, std::vector<uint8_t> bytes) { events.push_back({tick, std::move(bytes)}); }
+};
+
+static std::vector<uint8_t> buildSmf(int ntrks, int division, std::vector<SmfTrack> tracks) {
+    std::vector<uint8_t> out;
+    const char hdr[] = {'M','T','h','d'};
+    out.insert(out.end(), hdr, hdr + 4);
+    put32(out, 6);
+    put16(out, 1);
+    put16(out, (uint16_t)ntrks);
+    put16(out, (uint16_t)division);
+
+    for (auto& tr : tracks) {
+        std::stable_sort(tr.events.begin(), tr.events.end(),
+                         [](const std::pair<long, std::vector<uint8_t>>& a,
+                            const std::pair<long, std::vector<uint8_t>>& b) {
+                             return a.first < b.first;
+                         });
+        std::vector<uint8_t> body;
+        long last = 0;
+        for (auto& e : tr.events) {
+            putVlq(body, (uint32_t)(e.first - last));
+            body.insert(body.end(), e.second.begin(), e.second.end());
+            last = e.first;
+        }
+        putVlq(body, 0);
+        body.push_back(0xFF); body.push_back(0x2F); body.push_back(0x00);
+
+        const char trk[] = {'M','T','r','k'};
+        out.insert(out.end(), trk, trk + 4);
+        put32(out, (uint32_t)body.size());
+        out.insert(out.end(), body.begin(), body.end());
+    }
+    return out;
+}
 
 static int failures = 0;
 static int total = 0;
@@ -372,6 +441,97 @@ int main() {
     std::cout << "\n测试降号调性 (F大调)\n";
     check(pitchToJianpu(65, fMajor) == "1", "F大调F4(65) -> 1");
     check(pitchToJianpu(53, fMajor) == "1,", "F大调F3(53) -> 1, 低八度主音, 实际: " + pitchToJianpu(53, fMajor));
+
+    // ---- 鼓轨过滤 ----
+    // 通道 10（index 9）的音高是鼓件编号，不是音级。真实编曲工程里鼓轨音符
+    // 往往最多，不过滤就会变成「旋律轨」，把和弦标记和歌词全抢走。
+    std::cout << "\n测试鼓轨过滤 (MIDI 通道 10)\n";
+    {
+        SmfTrack melody;
+        for (int i = 0; i < 4; i++) {
+            long t = i * 480L;
+            melody.at(t, ev({0x90, 60 + i * 2, 90}));
+            melody.at(t + 480, ev({0x80, 60 + i * 2, 0}));
+        }
+        SmfTrack drums;
+        for (int i = 0; i < 16; i++) {
+            drums.at(i * 120L, ev({0x99, 42, 100}));          // 通道 9 = 踩镲
+            drums.at(i * 120L + 60, ev({0x89, 42, 0}));
+        }
+        auto bytes = buildSmf(2, 480, {melody, drums});
+        MidiData d;
+        bool ok = loadMidiFromMemory(bytes.data(), bytes.size(), d);
+        check(ok, "带鼓轨的 MIDI 可以解析");
+        check(d.drumNotesSkipped == 16,
+              "鼓轨 16 个音符被跳过, 实际: " + std::to_string(d.drumNotesSkipped));
+        check(d.notes.size() == 4,
+              "只剩 4 个旋律音符, 实际: " + std::to_string(d.notes.size()));
+        std::string s = formatJianpu(d, KeyEstimate{0, true});
+        check(s.find("[和") == std::string::npos && s.find("Drums") == std::string::npos,
+              "谱面里没有鼓轨");
+    }
+
+    // ---- 旋律轨判定 ----
+    // 旧实现取「音符最多的轨」，这里伴奏有 24 个音、旋律只有 8 个，
+    // 但它必须是柱式和弦（复音数 3），旋律轨应判给单声部那一条。
+    std::cout << "\n测试旋律轨判定\n";
+    {
+        MidiData d;
+        d.division = 480;
+        d.timeSig = TimeSignature{4, 2, true};
+        for (int i = 0; i < 8; i++) {
+            NoteEvent n;
+            n.track = 0; n.channel = 0; n.pitch = 60 + i * 2;
+            n.startTicks = i * 480L; n.durationTicks = 480;
+            d.notes.push_back(n);
+        }
+        for (int i = 0; i < 8; i++)
+            for (int p : {48, 52, 55}) {
+                NoteEvent n;
+                n.track = 1; n.channel = 1; n.pitch = p;
+                n.startTicks = i * 480L; n.durationTicks = 480;
+                d.notes.push_back(n);
+            }
+        int m = pickMelodyTrack(d, nullptr);
+        check(m == 0,
+              "单声部的 0 号轨胜过音符更多的柱式和弦轨, 实际: " + std::to_string(m));
+    }
+
+    // ---- 变速曲目的秒数换算 ----
+    // conductor 轨故意放在音符轨之后：format 1 文件里 set_tempo 几乎都在
+    // 独立的 track 0，旧实现边解析边换算，会拿最后一次 tempo 去算全部音符。
+    std::cout << "\n测试变速 (tempo map) 秒数换算\n";
+    {
+        SmfTrack notes;
+        notes.at(0,    ev({0x90, 60, 90}));
+        notes.at(480,  ev({0x80, 60, 0}));
+        notes.at(2400, ev({0x90, 62, 90}));
+        notes.at(2880, ev({0x80, 62, 0}));
+
+        SmfTrack cond;   // 排在后面
+        cond.at(0,    ev({0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20}));   // 500000us = 120BPM
+        cond.at(1920, ev({0xFF, 0x51, 0x03, 0x0F, 0x42, 0x40}));   // 1000000us = 60BPM
+
+        auto bytes = buildSmf(2, 480, {notes, cond});
+        MidiData d;
+        bool ok = loadMidiFromMemory(bytes.data(), bytes.size(), d);
+        check(ok, "变速 MIDI 可以解析");
+        check(d.notes.size() == 2,
+              "两个音符, 实际: " + std::to_string(d.notes.size()));
+        if (d.notes.size() == 2) {
+            // 120BPM：一拍(480tick) = 0.5 秒
+            check(std::fabs(d.notes[0].durationSeconds - 0.5) < 0.01,
+                  "120BPM 下四分音符 = 0.5s, 实际: " +
+                      std::to_string(d.notes[0].durationSeconds));
+            // tick 0..1920 @120BPM = 2.0s，再走 480tick @60BPM = 1.0s -> 3.0s
+            check(std::fabs(d.notes[1].startSeconds - 3.0) < 0.02,
+                  "变速点之后的音符起始于 3.0s, 实际: " +
+                      std::to_string(d.notes[1].startSeconds));
+            check(std::fabs(d.notes[1].durationSeconds - 1.0) < 0.02,
+                  "60BPM 下四分音符 = 1.0s, 实际: " +
+                      std::to_string(d.notes[1].durationSeconds));
+        }
+    }
 
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "

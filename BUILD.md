@@ -33,7 +33,7 @@ cmake --build build --config Release
 
 ## 测试
 
-### 单元测试（71 项）
+### 单元测试（81 项）
 
 ```bash
 cd build && ctest --output-on-failure
@@ -41,20 +41,22 @@ cd build && ctest --output-on-failure
 ./build/test_basic
 ```
 
-成功时输出 `共 71 项，失败 0 项 -> 全部通过`。
+成功时输出 `共 81 项，失败 0 项 -> 全部通过`。
 
-覆盖范围：调性识别、各调八度基准、升降号书写（含降号调）、时值后缀、三连音、同音合并、和弦检测、移调、MusicXML 小节时长与 `<chord/>`。
+覆盖范围：调性识别、各调八度基准、升降号书写（含降号调）、时值后缀、三连音、同音合并、和弦检测、移调、MusicXML 小节时长与 `<chord/>`，以及三组解析层回归——**鼓轨过滤**、**旋律轨判定**、**变速 tempo map 秒数换算**（这三组在内存里现构造最小 SMF，不依赖 fixture 文件）。
 
 ### 冒烟测试（端到端，验证 README 承诺的每个参数）
 
 需要 Python 3（只用标准库）：
 
 ```bash
-python tests/fixtures/make_fixture.py     # 生成 tests/fixtures/sample.mid
+python tests/fixtures/make_fixture.py     # 生成 sample.mid / humanized.mid / drums.mid
 python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2jianpu.exe
 ```
 
 覆盖 `--key` / `--track` / `--transpose` / `--musicxml` / `--html` / `--lyrics` / `--output` / `--help` / `--version` 全部参数，并校验导出的 XML 里 `duration` 为整数、和弦音带 `<chord/>`。
+
+其中 `drums.mid` 专测打击乐轨：鼓轨有 192 个音符（远超旋律的 8 个），谱面里不能出现 `[Drums]`、不能出现鼓的音高，旋律轨必须判给单声部的 Vocal。
 
 ### WASM 冒烟测试（校验提交进 docs/wasm/ 的产物是否与源码同步）
 
@@ -142,6 +144,28 @@ source ./emsdk_env.sh         # Windows: emsdk_env.bat
 emcc -v                       # 应打印 6.0.x / clang 24
 ```
 
+**Windows 上更省事的做法**：不要进 Git Bash 调 `emcc.bat`（MSYS 会把参数里的路径
+改写掉），把命令写进一个 `.cmd` 再执行：
+
+```bat
+@echo off
+setlocal
+set "EMSDK=E:\path\to\emsdk"
+set "EM_CONFIG=%EMSDK%\.emscripten"
+set "PATH=%EMSDK%;%EMSDK%\upstream\emscripten;%EMSDK%\node\24.19.0_64bit;%PATH%"
+emcc --version
+```
+
+`EM_CONFIG` 指向 `emsdk activate` 生成的 `.emscripten`，不设它 emcc 会去找
+`%USERPROFILE%\.emscripten` 并报找不到配置。
+
+**`emsdk install` 在沙箱/受限环境里会在最后一步失败**（`OSError: SHFileOperationW 失败: 0x78`）：
+文件其实已经解压好了，只是清理下载缓存时把 `os.remove` 重定向到回收站，而无桌面
+会话时回收站不可用。两个解决办法：
+
+- 加 `EMSDK_KEEP_DOWNLOADS=1` 重跑 `install`，跳过删除缓存的步骤；
+- 或者直接重跑 `install`（缓存 zip 还在，会复用），完成后 `activate` 就能通过。
+
 ### 二、编译
 
 ```bash
@@ -208,6 +232,7 @@ _midi2jianpu_parse          解析 MIDI，返回结果长度
 _midi2jianpu_html           生成 HTML 谱面
 _midi2jianpu_musicxml       生成 MusicXML
 _midi2jianpu_set_lyrics     注入 LRC 歌词
+_midi2jianpu_set_title      设置谱面标题（网页传文件名）
 _midi2jianpu_get_notes_json 取音符数组（供在线播放）
 _midi2jianpu_result_len     结果长度
 _midi2jianpu_copy_result    拷出结果
@@ -221,6 +246,16 @@ _midi2jianpu_copy_result    拷出结果
 
 **MSVC 报 `crtdbg.h` 找不到**
 `vcvars` 环境里的 `WindowsSDKVersion` 为空时会漏掉 SDK 的 ucrt 路径。用 `x64 Native Tools Command Prompt for VS 2022` 打开命令行，或重新安装 Windows 10/11 SDK。
+
+如果当前环境里 `reg.exe` 不可用（沙箱、部分 CI 容器），`vcvars64.bat` 查不到 SDK 版本，同样是这个报错。此时手工把 SDK 路径并进环境变量即可，不必改系统配置：
+
+```bat
+call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
+set "SDK=C:\Program Files (x86)\Windows Kits\10"
+set "SDKV=10.0.26100.0"
+set "INCLUDE=%SDK%\Include\%SDKV%\ucrt;%SDK%\Include\%SDKV%\um;%SDK%\Include\%SDKV%\shared;%INCLUDE%"
+set "LIB=%SDK%\Lib\%SDKV%\ucrt\x64;%SDK%\Lib\%SDKV%\um\x64;%LIB%"
+```
 
 **链接时报 `LNK2019: 无法解析的外部符号`**
 确认源文件列表包含全部四个核心文件：`midifile.cpp`、`notation.cpp`、`html_writer.cpp`、`musicxml_writer.cpp`。手写编译脚本时容易漏掉后两个。

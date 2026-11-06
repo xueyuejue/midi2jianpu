@@ -165,6 +165,57 @@ def build_humanized() -> bytes:
     return header + t0.render() + t1.render()
 
 
+# ---------------------------------------------------------------------------
+# 第三份素材：带打击乐轨的编曲工程（几乎每首歌的 MIDI 都是这个形状）。
+#
+# 通道 10（index 9）是 GM 规定的打击乐通道，音高是鼓件编号不是音级。这份素材
+# 里鼓的音符数（192）远超旋律（8），旧实现会把鼓当成"旋律轨"，谱面变成
+# `1,, #4,, #6,,` 的垃圾，和弦标记和歌词也跟着挂错地方。
+#
+# 正确结果：鼓音符全被丢弃、旋律轨判给单声部的 Vocal、Piano 仍是伴奏。
+# ---------------------------------------------------------------------------
+DRUM_BARS = 8
+
+
+def build_drums() -> bytes:
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))    # 120BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))         # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))                # C 大调
+
+    # 旋律：单声部，8 个四分音符
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    t1.program(0, 0, 0)
+    for i, p in enumerate([60, 62, 64, 65, 67, 69, 71, 72]):
+        t1.note(0, p, 90, i * BAR, BAR)
+
+    # 钢琴：柱式和弦，每小节 3 个音（复音数 3，明显不是旋律）
+    t2 = Track()
+    t2.add(0, meta(0x03, b"Piano"))
+    t2.program(1, 0, 0)
+    for bar in range(DRUM_BARS):
+        for p in (48, 52, 55):
+            t2.note(1, p, 70, bar * BAR, BAR)
+
+    # 鼓：通道 9，十六分音符踩镲 + 底鼓 + 军鼓，音符数远超旋律
+    t3 = Track()
+    t3.add(0, meta(0x03, b"Drums"))
+    t3.program(9, 0, 0)
+    for bar in range(DRUM_BARS):
+        for k in range(16):
+            st = bar * BAR + k * 120
+            t3.note(9, 42 if k % 2 == 0 else 46, 100, st, 60)   # 踩镲
+            if k % 4 == 0:
+                t3.note(9, 36, 110, st, 120)                    # 底鼓
+            if k % 4 == 2:
+                t3.note(9, 38, 110, st, 120)                    # 军鼓
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 4, DIV)
+    return header + t0.render() + t1.render() + t2.render() + t3.render()
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -183,6 +234,13 @@ def main() -> None:
         hdata = build_humanized()
         f.write(hdata)
     print(f"wrote {hmid} ({len(hdata)} bytes)")
+
+    # 带打击乐轨的素材
+    dmid = os.path.join(here, "drums.mid")
+    with open(dmid, "wb") as f:
+        ddata = build_drums()
+        f.write(ddata)
+    print(f"wrote {dmid} ({len(ddata)} bytes)")
 
 
 if __name__ == "__main__":

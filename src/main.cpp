@@ -104,7 +104,15 @@ int main(int argc, char** argv) {
         std::cerr << "错误: 无法读取或解析 MIDI 文件: " << input << "\n";
         return 2;
     }
-    if (data.notes.empty()) { std::cerr << "未提取到音符。\n"; return 3; }
+    // 鼓轨的提示写在谱面头部（formatJianpu 里），这里只管「只剩鼓」这种致命情况
+    if (data.notes.empty()) {
+        if (data.drumNotesSkipped > 0) {
+            std::cerr << "未提取到旋律音符：文件里只有打击乐（简谱不支持鼓谱）。\n";
+        } else {
+            std::cerr << "未提取到音符。\n";
+        }
+        return 3;
+    }
 
     // --track 过滤指定轨道
     if (trackFilter >= 0) {

@@ -26,7 +26,9 @@ const char* midi2jianpu_parse(const uint8_t* midiData, int size, int keyPitch, i
         return g_result.c_str();
     }
     if (data.notes.empty()) {
-        g_result = "错误: 未提取到音符";
+        g_result = data.drumNotesSkipped > 0
+                       ? "错误: 文件里只有打击乐轨，简谱没有鼓谱记法"
+                       : "错误: 未提取到音符";
         return g_result.c_str();
     }
 
@@ -52,7 +54,9 @@ const char* midi2jianpu_html(const uint8_t* midiData, int size, int keyPitch, in
         return g_result.c_str();
     }
     if (data.notes.empty()) {
-        g_result = "<p>错误: 未提取到音符</p>";
+        g_result = data.drumNotesSkipped > 0
+                       ? "<p>错误: 文件里只有打击乐轨，简谱没有鼓谱记法</p>"
+                       : "<p>错误: 未提取到音符</p>";
         return g_result.c_str();
     }
 

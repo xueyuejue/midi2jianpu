@@ -222,6 +222,33 @@ def main():
         check("<mode>minor</mode>" in body, "调式写成 minor")
         check("<time><beats>4</beats>" in body, "拍号已写出")
 
+    print("\n[12] 打击乐轨（MIDI 通道 10）")
+    drums = os.path.join(FIXTURES, "drums.mid")
+    if not os.path.exists(drums):
+        check(False, "素材 drums.mid 存在（先跑 make_fixture.py）")
+    else:
+        rc, out, err = run(exe, drums)
+        check(rc == 0, "带鼓轨的文件能正常转换", err)
+        check("192 个打击乐音符" in out, "提示跳过了 192 个打击乐音符", out[:200])
+        check("[Drums]" not in out, "谱面里没有鼓轨")
+        # 鼓的最低音是底鼓 36 -> 简谱 1,, ；旋律最低是 C4 -> 1，
+        # 出现 1,, 就说明鼓的音高混进谱面了
+        check("1,," not in out, "鼓的音高没有混进简谱")
+        # 旋律轨必须是单声部的 Vocal，而不是音符更多的 Piano 或鼓
+        check("[Vocal] (8 音符) · 和弦" in out,
+              "旋律轨判给单声部的 Vocal（而不是音符更多的伴奏/鼓）", out[:400])
+        # 和弦标记：连续同一和弦只标一次，8 小节全是 C 时只出现一次
+        check(out.count("[C]") == 1,
+              f"连续相同和弦只标一次，实际出现 {out.count('[C]')} 次")
+
+        hx = os.path.join(tmp, "drums.html")
+        rc2, _, _ = run(exe, drums, "--html", hx)
+        html = open(hx, encoding="utf-8").read()
+        check(rc2 == 0 and "已跳过鼓轨" in html, "HTML 页眉标注已跳过鼓轨")
+        check("Drums" not in html, "HTML 里没有鼓轨")
+        # 鼓的音高若漏进来，会以极低八度的 1,, 形式出现
+        check("1,,</span>" not in html, "HTML 里没有鼓的音高")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

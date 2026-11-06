@@ -27,20 +27,23 @@
 - [x] 时值标注：全/二分/四分/八分/十六分/三十二分音符及附点，延长线 `-`
 - [x] 同音延音合并（`1 1 1` → `1 - -`）
 - [x] 多轨分离（优先用 MIDI 内置轨道名）
+- [x] **打击乐轨自动跳过**：MIDI 通道 10 的音高是鼓件编号而不是音级，转成简谱只会得到 `1,, #4,,` 的垃圾，解析阶段直接丢弃并在谱面头部说明
+- [x] **旋律轨智能判定**：按「歌词能否对齐 / 单音率 / 音域 / 音高丰富度」打分，不再拿「音符最多的轨」当旋律（那通常是鼓或柱式和弦伴奏）
+- [x] 变速曲目：按 `set_tempo` 分段累积换算秒数，format 1 的 conductor 轨排在哪都不影响
 - [x] 休止符 `0`（按时长显示时值线）
 - [x] 高低八度点、升降号 `#`/`b`（降号调自动优先写 `b`）
 - [x] 强弱记号（从 MIDI Expression 解析：pp/p/mp/mf/f/ff，按通道隔离）
 - [x] 三连音自动识别（按 1/3 拍体系判定时值，八分音符连奏不会被误判）
 - [x] 弯音轮修正（Pitch Bend 平均偏移 ±0.5 半音以上修正音高）
 - [x] **和弦检测**：自动识别伴奏轨和弦进行（C/Am/G7 等9种类型）
-- [x] **HTML 谱面导出**：自包含网页，浏览器打开即可打印 PDF，含和弦标记、小节号、和弦竖向叠写
+- [x] **HTML 谱面导出**：自包含网页，浏览器打开即可打印 PDF，含和弦标记、小节号、和弦竖向叠写；小节号/和弦/力度独占标记行，不再和音符挤在一条基线上
 - [x] **MusicXML 导出**：`--musicxml out.xml`，符合 3.1 规范（整数 `duration`、`<chord/>`、`<tie>` 跨小节延音、正确 `<fifths>`/`<clef>`/速度标记）
 - [x] **歌词写入**：`--lyrics lyrics.lrc` 支持 LRC 格式，按时间戳精确对齐
 - [x] 文本输出到文件：`--output out.txt`（含和弦标记）
 - [x] 多轨选择：`--track 0`
 - [x] `--version` 打印版本号
 - [x] **在线 Demo**：WASM 核心，浏览器内运行 C++ 代码
-- [x] 71 项单元测试 + 12 组端到端冒烟测试 + WASM 产物一致性检查
+- [x] 81 项单元测试 + 13 组端到端冒烟测试 + WASM 产物一致性检查
 
 ## 在线 Demo 功能
 
@@ -131,7 +134,7 @@ Windows 产物在 `build\Release\midi2jianpu.exe`。详细说明、WASM 编译�
 - 调性识别：**Krumhansl-Schmuckler** 算法（音乐信息检索标准）
 - 和弦检测：基于音级出现频率匹配（9种和弦类型）
 - 输出：文本 + 自包含 HTML（内联 CSS）+ MusicXML 3.1
-- 测试：内置断言 71 项单元测试，另有 `tests/smoke.py` 12 组端到端冒烟（含真实录音特征素材 `humanized.mid`）
+- 测试：内置断言 81 项单元测试，另有 `tests/smoke.py` 13 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`）
 
 ## 路线图
 
@@ -143,6 +146,9 @@ Windows 产物在 `build\Release\midi2jianpu.exe`。详细说明、WASM 编译�
 - [x] 和弦检测与标记显示
 - [x] 移调功能（--transpose）
 - [x] 在线播放（Web Audio API）
+- [x] 打击乐轨跳过（通道 10）
+- [x] 旋律轨智能判定（歌词 / 单音率 / 音域打分）
+- [x] 变速曲目的 tempo map 换算
 - [ ] 延音线弧线（当前用 `-` 符号，后续加弧线视觉）
 - [ ] 更多真实 MIDI 样本校验
 
@@ -162,8 +168,8 @@ Issue / PR 都欢迎。尤其欢迎：
 提交前请跑一遍：
 
 ```bash
-cd build && ctest --output-on-failure                  # 71 项单元测试
-python tests/smoke.py build/Release/midi2jianpu.exe    # 端到端冒烟（55 项断言）
+cd build && ctest --output-on-failure                  # 81 项单元测试
+python tests/smoke.py build/Release/midi2jianpu.exe    # 端到端冒烟（含鼓轨场景）
 node tests/wasm_smoke.mjs                              # WASM 产物与源码是否同步
 ```
 

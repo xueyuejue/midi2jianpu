@@ -2,6 +2,7 @@
 // notation.hpp - 调性识别与音高->简谱转换
 #include "midi2jianpu/midifile.hpp"
 #include <string>
+#include <vector>
 
 namespace m2j {
 
@@ -96,6 +97,36 @@ struct ChordMark {
     long startTick;
     std::string name;  // 如 "C", "Am", "G7"
 };
+
+// 单条轨道的特征，供旋律轨判定使用
+struct TrackProfile {
+    int track = -1;
+    size_t noteCount = 0;
+    size_t onsetCount = 0;        // 不同音头的个数
+    double polyphony = 1.0;       // 每个音头的平均发声音数（1 表示单声部）
+    size_t distinctPitches = 0;
+    int minPitch = 0;
+    int maxPitch = 0;
+    double avgPitch = 0;
+    bool lyricAligned = false;    // 歌词行首能否落在该轨的音符上
+    double score = 0;
+};
+
+// 统计每条轨道的特征
+std::vector<TrackProfile> profileTracks(const MidiData& data,
+                                       const std::vector<LyricLine>* lyrics = nullptr);
+
+// 判定哪条轨道是旋律轨。
+//
+// 旧实现在四个地方各自写了一遍"音符最多的轨就是旋律轨"。真实编曲工程里音符最多
+// 的那条轨几乎永远是鼓或柱式和弦伴奏，于是歌词和和弦标记全挂到伴奏上，主旋律
+// 反而被当成伴奏。现在改成按证据强弱打分：
+//   1) 歌词行首与音符对齐（最强证据）
+//   2) 单音率——旋律是单声部，柱式和弦的复音数远大于 1
+//   3) 音高丰富度与音域——贝斯也是单声部，但音域窄、音高种类少
+//   4) 音符数只作微调
+// 返回 -1 表示没有可用轨道。
+int pickMelodyTrack(const MidiData& data, const std::vector<LyricLine>* lyrics = nullptr);
 
 // 从MIDI数据中检测和弦(按小节)
 std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key);
