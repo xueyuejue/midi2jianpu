@@ -139,6 +139,7 @@ const html = c.call('midi2jianpu_html', -1, 1);
 check(html && html.includes('class=\'staff\''), 'HTML 含谱面容器');
 check(html && html.includes('class=\'measure\''), 'HTML 含小节');
 check(html && html.includes('class=\'row\''), 'HTML 含行分组（每行固定小节数）');
+check(html && html.includes('class=\'bgrp'), 'HTML 含连成一体的减时线组');
 
 // ---- 4. MusicXML（本次重点）----
 const xml = c.call('midi2jianpu_musicxml', -1, 1);

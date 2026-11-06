@@ -216,6 +216,39 @@ def build_drums() -> bytes:
     return header + t0.render() + t1.render() + t2.render() + t3.render()
 
 
+# ---------------------------------------------------------------------------
+# 第四份素材：一行歌词跨两小节，而旋律音数多于字数。
+#
+# 这是真实歌曲的常态（衬腔、走句、一字多音）：LRC 一行 4 个字，旋律在两小节里
+# 唱 8 个音。早先按「第 k 个音领第 k 个字」顺序发，4 个字全被第一小节吃完，
+# 第二小节一个词都没有——看上去像漏词。正确行为是按行内音数铺开，两小节都
+# 应该有字。
+# ---------------------------------------------------------------------------
+MELISMA_LRC = """[ti:一字多音]
+[ar:xueyuejue]
+[00:00.00]一二三四
+[00:04.00]五六七八
+"""
+
+
+def build_melisma() -> bytes:
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))    # 120BPM，一小节 2 秒
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))         # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))                # C 大调
+
+    # 每小节 4 个四分音符，两小节 8 个音；歌词一行只有 4 个字
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    t1.program(0, 0, 0)
+    for i, p in enumerate([60, 62, 64, 65, 67, 69, 71, 72]):
+        t1.note(0, p, 90, i * (BAR // 4), BAR // 4)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + t1.render()
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -241,6 +274,17 @@ def main() -> None:
         ddata = build_drums()
         f.write(ddata)
     print(f"wrote {dmid} ({len(ddata)} bytes)")
+
+    # 一字多音（歌词跨小节分配）的素材
+    mmid = os.path.join(here, "melisma.mid")
+    with open(mmid, "wb") as f:
+        mdata = build_melisma()
+        f.write(mdata)
+    mlrc = os.path.join(here, "melisma.lrc")
+    with open(mlrc, "w", encoding="utf-8") as f:
+        f.write(MELISMA_LRC)
+    print(f"wrote {mmid} ({len(mdata)} bytes)")
+    print(f"wrote {mlrc}")
 
 
 if __name__ == "__main__":

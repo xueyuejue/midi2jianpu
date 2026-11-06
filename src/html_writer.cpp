@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <sstream>
 #include <vector>
@@ -33,34 +34,46 @@ static std::string htmlEscape(const std::string& s) {
     return out;
 }
 
-// 时值 -> CSS class + 延音线条数
+// 时值 -> CSS class + 延音线条数 + 减时线条数
 struct DurStyle {
     const char* cls;
     bool dotted;
     int extLines;   // 延音线数量：二分 1 条、附点二分 2 条、全音符 3 条
+    int beams;      // 减时线数量：八分 1 条、十六分 2 条、三十二分 3 条
 };
 
 static DurStyle durStyleOf(double beats) {
     static const struct { double beats; DurStyle st; } table[] = {
-        {0.125, {"thirtysecond", false, 0}},
-        {0.25,  {"sixteenth",    false, 0}},
-        {0.375, {"sixteenth",    true,  0}},
-        {0.5,   {"eighth",       false, 0}},
-        {0.75,  {"eighth",       true,  0}},
-        {1.0,   {"quarter",      false, 0}},
-        {1.5,   {"quarter",      true,  0}},
-        {2.0,   {"half",         false, 1}},
-        {3.0,   {"half",         true,  2}},
-        {4.0,   {"whole",        false, 3}},
-        {6.0,   {"whole",        true,  5}},
+        {0.125, {"thirtysecond", false, 0, 3}},
+        {0.25,  {"sixteenth",    false, 0, 2}},
+        {0.375, {"sixteenth",    true,  0, 2}},
+        {0.5,   {"eighth",       false, 0, 1}},
+        {0.75,  {"eighth",       true,  0, 1}},
+        {1.0,   {"quarter",      false, 0, 0}},
+        {1.5,   {"quarter",      true,  0, 0}},
+        {2.0,   {"half",         false, 1, 0}},
+        {3.0,   {"half",         true,  2, 0}},
+        {4.0,   {"whole",        false, 3, 0}},
+        {6.0,   {"whole",        true,  5, 0}},
     };
     double best = 1e9;
-    DurStyle out{"quarter", false, 0};
+    DurStyle out{"quarter", false, 0, 0};
     for (auto& t : table) {
         double d = std::abs(beats - t.beats);
         if (d < best) { best = d; out = t.st; }
     }
     return out;
+}
+
+// 三连音的时值不能按普通时值表取近似值。
+// 三连音八分是 1/3 拍，而时值表里最近的档位是 0.375（附点十六分），
+// 于是一个「三连八分」被画成附点十六分——两条减时线外加一个附点，
+// 懂简谱的人一眼就看出错。三连音的真实档位只有 1/3、1/6、1/12 拍。
+static DurStyle tripletStyleOf(double beats) {
+    double r = beats * 3.0;      // 1/3 拍 -> 1.0，1/6 拍 -> 0.5，1/12 拍 -> 0.25
+    if (r < 0.34) return {"thirtysecond", false, 0, 3};
+    if (r < 0.75) return {"sixteenth",    false, 0, 2};
+    return {"eighth", false, 0, 1};
 }
 
 // 生成一个音符的 HTML 列。
@@ -70,8 +83,9 @@ static DurStyle durStyleOf(double beats) {
 // 否则 `1 - - -` 的低八度点会飘到整个音符的正中，偏离数字好远。
 static std::string noteColumn(const std::string& numText, int highDots, int lowDots,
                               double beats, const std::string& lyric,
-                              const std::string& extraClass = "") {
-    DurStyle ds = durStyleOf(beats);
+                              const std::string& extraClass = "",
+                              const DurStyle* overrideStyle = nullptr) {
+    DurStyle ds = overrideStyle ? *overrideStyle : durStyleOf(beats);
 
     std::ostringstream os;
     os << "<span class='note " << ds.cls << extraClass << "'";
@@ -174,27 +188,11 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         }
     }
 
-    int curLineIdx = -1;
-    int curCharIdx = 0;
+    // 歌词分配表：tick -> 音节。需要先知道旋律轨才能建，见下方 pickMelodyTrack 之后。
+    std::map<long, std::string> lyricAt;
     auto lyricForNote = [&](long tick) -> std::string {
-        if (lineSyls.empty()) return "";
-        int bestLine = -1;
-        for (int i = 0; i < (int)lineSyls.size(); i++) {
-            if (lineSyls[i].first <= tick) bestLine = i;
-            else break;
-        }
-        if (bestLine < 0) return "";
-        if (bestLine != curLineIdx) {
-            // 上一行还剩一两个字没分配完时继续给它，避免歌词丢字
-            if (curLineIdx >= 0 && curCharIdx < (int)lineSyls[curLineIdx].second.size()) {
-                int remaining = (int)lineSyls[curLineIdx].second.size() - curCharIdx;
-                if (remaining <= 2) return lineSyls[curLineIdx].second[curCharIdx++];
-            }
-            curLineIdx = bestLine;
-            curCharIdx = 0;
-        }
-        if (curCharIdx >= (int)lineSyls[curLineIdx].second.size()) return "";
-        return lineSyls[curLineIdx].second[curCharIdx++];
+        auto lit = lyricAt.find(tick);
+        return lit == lyricAt.end() ? std::string() : lit->second;
     };
 
     // 弯音修正（只统计同通道）
@@ -221,6 +219,48 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
     // 有歌词时「LRC 行首能否对齐」是最强证据，比"音符最多"可靠得多
     // （音符最多的那条轨在真实工程里通常是鼓或柱式和弦伴奏）。
     int mainTrack = pickMelodyTrack(data, lyricLines);
+
+    // ---- 歌词对齐 ----
+    // 一行 LRC 常常跨两小节，而旋律音数往往多于字数（衬腔、走句、装饰音）。
+    // 早先按「第 k 个音领第 k 个字」顺序发，7 个字在第一小节就被一口气用完，
+    // 第二小节整段空着——看起来像漏词，也不像能照着唱的谱子。
+    //
+    // 改为按行内音数均匀分布：第 i 个字落在该行第 floor(i*n/m) 个音上，
+    // 让一行词铺满它自己的时间跨度。n <= m（音数不多于字数）时保持顺序分配，
+    // 行为与原来一致。
+    if (lyricLines && !lineSyls.empty() && mainTrack >= 0) {
+        auto mit = byTrack.find(mainTrack);
+        if (mit != byTrack.end()) {
+            std::vector<long> onsets;
+            onsets.reserve(mit->second.size());
+            for (const auto& n : mit->second) onsets.push_back(n.startTicks);
+            std::sort(onsets.begin(), onsets.end());
+            onsets.erase(std::unique(onsets.begin(), onsets.end()), onsets.end());
+
+            const long kInf = std::numeric_limits<long>::max();
+            for (size_t li = 0; li < lineSyls.size(); li++) {
+                long from = lineSyls[li].first;
+                long to = (li + 1 < lineSyls.size()) ? lineSyls[li + 1].first : kInf;
+                std::vector<long> inLine;
+                for (long t : onsets)
+                    if (t >= from && t < to) inLine.push_back(t);
+
+                const auto& syls = lineSyls[li].second;
+                const size_t n = inLine.size(), m = syls.size();
+                if (n == 0 || m == 0) continue;
+
+                if (n > m) {
+                    for (size_t i = 0; i < m; i++) {
+                        size_t idx = (size_t)((unsigned long long)i * n / m);
+                        if (idx >= n) idx = n - 1;
+                        lyricAt[inLine[idx]] = syls[i];
+                    }
+                } else {
+                    for (size_t i = 0; i < n; i++) lyricAt[inLine[i]] = syls[i];
+                }
+            }
+        }
+    }
 
     for (auto& [t, ns] : byTrack) {
         const bool isMain = (t == mainTrack);
@@ -358,6 +398,32 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             body << "</span><span class='notes'>";   // 标记行结束，音符行开始
         };
 
+        // ---- 减时线连通（beam）----
+        // 简谱的减时线按「拍」连通：一拍里的两个八分音符共用一条横线，
+        // 不是各画一小段。早先每个 .num 各带一条 border-bottom，被音符间距
+        // 切开，八分音符看起来像一串断线，三连音更是三个孤立的短线。
+        //
+        // 做法：把能连成一条线的音符先攒进 beamBuf，遇到断点（换小节、休止、
+        // 长音、三连音组结束）才一次性包进 <span class='bgrp'>。
+        std::vector<std::string> beamBuf;
+        int beamLevel = 0;
+        long beamPrevEnd = -1;
+        long beamBeat = -1;
+        int beamBar = -1;
+        bool beamTrip = false;
+
+        auto flushBeam = [&]() {
+            if (beamBuf.empty()) return;
+            body << "<span class='bgrp";
+            if (beamLevel > 1) body << " b" << beamLevel;
+            body << "'>";
+            for (const auto& h : beamBuf) body << h;
+            body << "</span>";
+            beamBuf.clear();
+            beamLevel = 0;
+            beamPrevEnd = -1;
+        };
+
         bool firstNote = true;
         for (size_t gi = 0; gi < groups.size(); gi++) {
             const auto& grp = groups[gi];
@@ -366,6 +432,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             int bar = (int)(n.startTicks / barLen);
 
             if (bar != curBar) {
+                flushBeam();                                  // 小节线截断减时线
                 if (curBar >= 0) body << "</span></span>";   // 收尾上一个小节的音符行与小节
 
                 // 补齐开头与中间完全空的小节。
@@ -392,6 +459,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
 
             // 三连音组的标记
             if (grp[0]->trip && !inTriplet) {
+                flushBeam();
                 body << "<span class='trip'>3</span>";
                 inTriplet = true;
             }
@@ -400,6 +468,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             // 导致乐曲开头的休止符（第一个音不在 tick 0）永远不显示。
             long gap = n.startTicks - prevEnd;
             if (gap >= data.division / 2) {
+                flushBeam();          // 休止符打断减时线
                 double restBeats = (double)gap / data.division;
                 body << noteColumn("0", 0, 0, restBeats, "");
             }
@@ -411,6 +480,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
 
             if (cont) {
                 // 延续段：一拍一个 `-`
+                flushBeam();          // 长音打断减时线
                 int cnt = (int)std::llround(beats);
                 if (cnt < 1) cnt = 1;
                 for (int k = 0; k < cnt; k++) body << noteColumn("-", 0, 0, 1.0, "");
@@ -428,8 +498,37 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 // 变成"风霜染尽客行"+下一小节的"袍"）。
                 std::string syl = (isMain && lyricLines && n.pitch != 0)
                                   ? lyricForNote(n.startTicks) : std::string();
-                body << noteColumn(num, highDots, lowDots, beats, syl);
+                // 三连音走单独的时值档位，避免 1/3 拍被当成附点十六分
+                DurStyle ds = grp[0]->trip ? tripletStyleOf(beats) : durStyleOf(beats);
+                std::string col = noteColumn(num, highDots, lowDots, beats, syl, "", &ds);
+
+                // 能否接上上一条减时线：同小节、首尾相接、减时线条数相同，
+                // 且同属一拍（三连音组例外，它本来就跨拍）。
+                long beatLen = beatsPerBar > 0 ? (long)std::llround(barLen / beatsPerBar)
+                                               : (long)data.division;
+                long curBeat = beatLen > 0 ? n.startTicks / beatLen : 0;
+                long endTick = n.startTicks + std::max<long>(n.durationTicks, 1);
+                bool join = ds.beams > 0 && ds.beams == beamLevel && !beamBuf.empty() &&
+                            bar == beamBar && n.startTicks == beamPrevEnd &&
+                            grp[0]->trip == beamTrip &&
+                            (beamTrip || curBeat == beamBeat);
+
+                if (ds.beams > 0) {
+                    if (!join) {
+                        flushBeam();
+                        beamLevel = ds.beams;
+                        beamBar = bar;
+                        beamBeat = curBeat;
+                        beamTrip = grp[0]->trip;
+                    }
+                    beamBuf.push_back(col);
+                    beamPrevEnd = endTick;
+                } else {
+                    flushBeam();
+                    body << col;
+                }
             } else {
+                flushBeam();          // 和弦自成一列，不与单音连线
                 // 多声部：竖向叠写。按音高降序，高音在上、低音在下，
                 // 与五线谱的视觉方向一致（反过来看会很不习惯）。
                 std::vector<NoteEvent> sorted;
@@ -456,6 +555,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             firstNote = false;
         }
 
+        flushBeam();   // 收尾：把最后一条减时线画完再闭合小节
         body << "</span></span><span class='final-bar'></span></div></div></div>";
     }
 
@@ -522,6 +622,26 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
 .eighth .num,.sixteenth .num,.thirtysecond .num{border-bottom:2px solid #222;padding-bottom:1px}
 .sixteenth .num{box-shadow:0 4px 0 #222}
 .thirtysecond .num{box-shadow:0 4px 0 #222,0 8px 0 #222}
+
+/* 连成一条的减时线：一拍内的同组音符共用一条横线，而不是各自一小段。
+   .bgrp 里取消逐音符的短线，改用一条跨全组的绝对定位线；十六分/三十二分
+   再向下每 4px 叠一条平行线。line 的纵向位置 = 八度点区(12px) + 数字行高，
+   与 .num 的 border-bottom 原本所在的位置对齐。 */
+.bgrp{position:relative;display:inline-flex;align-items:flex-start}
+.bgrp>.note{margin:0 4px}
+.bgrp .num{border-bottom:none;box-shadow:none}
+.bgrp::after{content:"";position:absolute;left:1px;right:1px;
+             top:calc(12px + 1.15em - 1px);height:2px;background:#222}
+.bgrp.b2::after{box-shadow:0 4px 0 #222}
+.bgrp.b3::after{box-shadow:0 4px 0 #222,0 8px 0 #222}
+
+/* 和弦的减时线只画在最下面那个音上：叠写的每个音各画一条，看起来像十六分音符 */
+.chordcol .tone .num{border-bottom:none;box-shadow:none}
+.chordcol.eighth .tone:last-child .num,
+.chordcol.sixteenth .tone:last-child .num,
+.chordcol.thirtysecond .tone:last-child .num{border-bottom:2px solid #222;padding-bottom:1px}
+.chordcol.sixteenth .tone:last-child .num{box-shadow:0 4px 0 #222}
+.chordcol.thirtysecond .tone:last-child .num{box-shadow:0 4px 0 #222,0 8px 0 #222}
 .dotted .num::after{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;
                     background:#222;margin-left:4px;vertical-align:middle}
 

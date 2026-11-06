@@ -35,6 +35,30 @@ def run(exe, *args):
     return p.returncode, p.stdout or "", p.stderr or ""
 
 
+def inner_span(html, marker):
+    """取出 html 里第一个含 marker 的 <span> 的内部内容（按标签配平）。
+
+    比正则可靠：span 是嵌套的，非贪婪正则会提前停在某个内层闭合处。
+    """
+    i = html.find(marker)
+    if i < 0:
+        return ""
+    j = html.find(">", i) + 1
+    depth, pos = 1, j
+    while depth > 0 and pos < len(html):
+        a = html.find("<span", pos)
+        b = html.find("</span>", pos)
+        if b < 0:
+            return ""
+        if 0 <= a < b:
+            depth += 1
+            pos = a + 5
+        else:
+            depth -= 1
+            pos = b + 7
+    return html[j:pos - 7]
+
+
 def main():
     exe = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
         ROOT, "build",
@@ -248,6 +272,44 @@ def main():
         check("Drums" not in html, "HTML 里没有鼓轨")
         # 鼓的音高若漏进来，会以极低八度的 1,, 形式出现
         check("1,,</span>" not in html, "HTML 里没有鼓的音高")
+
+    print("\n[13] 减时线连通与歌词跨小节")
+    # 同一拍里的八分/十六分音符，减时线应连成一条，而不是每个音各画一小段。
+    # 三连音尤其明显：1/3 拍的三连八分必须是「一条线 + 一个 3」，
+    # 早先按时值表取最近档位会画成附点十六分——两条线外加一个附点。
+    bh = os.path.join(tmp, "beam.html")
+    rc, _, err = run(exe, os.path.join(FIXTURES, "sample.mid"), "--html", bh,
+                     "--lyrics", os.path.join(FIXTURES, "sample.lrc"))
+    html = open(bh, encoding="utf-8").read()
+    check(rc == 0, "示例文件能导出 HTML", err)
+    check("class='bgrp'" in html, "同一拍的音符共用一个减时线组")
+    tip = html.find("class='trip'")
+    check(tip > 0, "三连音标记仍在")
+    if tip > 0:
+        grp = inner_span(html[tip:], "class='bgrp'")
+        check(grp.count("class='note eighth'") == 3, "三连八分用一条减时线（eighth）",
+              grp[:300])
+        check("dotted" not in grp, "三连音没有多余的附点", grp[:300])
+        check(grp.count("class='note") == 3, "三个音共用一个减时线组", grp[:300])
+
+    # 一字多音：一行词跨两小节、音数多于字数时，两小节都应该有词。
+    # 早先按「第 k 个音领第 k 个字」顺序发，四个字会被第一小节一次吃完。
+    mel = os.path.join(FIXTURES, "melisma.mid")
+    if not os.path.exists(mel):
+        check(False, "素材 melisma.mid 存在（先跑 make_fixture.py）")
+    else:
+        mh = os.path.join(tmp, "melisma.html")
+        rc, _, err = run(exe, mel, "--html", mh,
+                         "--lyrics", os.path.join(FIXTURES, "melisma.lrc"))
+        mhtml = open(mh, encoding="utf-8").read()
+        measures = mhtml.split("<span class='measure'>")[1:]
+        per_bar = []
+        for seg in measures:
+            per_bar.append([x for x in re.findall(r"<span class='lyric'>([^<]*)</span>", seg) if x])
+        check(rc == 0 and len(per_bar) == 2, "素材渲染成两小节", err)
+        check(all(len(b) > 0 for b in per_bar), "两小节都有歌词（不再全挤在第一小节）",
+              str(per_bar))
+        check(sum(len(b) for b in per_bar) == 4, "四个字一个不丢", str(per_bar))
 
     print("\n" + "-" * 48)
     if failures:
