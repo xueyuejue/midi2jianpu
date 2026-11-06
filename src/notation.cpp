@@ -532,40 +532,83 @@ static std::string formatTrack(
     auto triplets = detectTriplets(merged, data.division);
     bool inTriplet = false;
 
+    // ---- 小节线推进 ----
+    // 关键：小节线只能由「拍子位置」决定，不能只在音符音头处切换。
+    // 否则整段前奏（没有任何音符）会全部堆进第 1 小节，挤出一串十几个 '-'
+    // 而丢掉 3 条小节线；跨小节的长音同样会溢出到下一小节之外。
+    auto barOf = [&](long tick) -> long { return tick / barLenI; };
+    auto switchToBar = [&](long bar, long atTick, int channel) {
+        if ((int)bar == currentBar) return;
+        if (currentBar >= 0) os << " |\n";
+        currentBar = (int)bar;
+        // 和弦标记只标在旋律轨上，避免伴奏轨重复标注
+        if (chords) {
+            auto it = chords->find(bar * barLenI);
+            if (it != chords->end()) os << "[" << it->second << "] ";
+        }
+        std::string d = dynAt(atTick, channel, data);
+        if (!d.empty() && d != lastDyn) {
+            os << "[" << d << "] ";
+            lastDyn = d;
+        }
+    };
+    // 跨小节时，后段用延长线续写：整拍输出 "-"，不足一拍带时值后缀
+    auto emitHeld = [&](long segTicks) {
+        if (segTicks <= 0) return;
+        if (segTicks % data.division == 0) {
+            for (long k = 0; k < segTicks / data.division; ++k) os << "- ";
+        } else {
+            emitNoteToken(os, "-", durationSuffix(segTicks, data.division));
+        }
+    };
+
     for (size_t idx = 0; idx < merged.size(); idx++) {
         const auto& n = merged[idx];
-        int bar = (int)(n.startTicks / barLen);
-        if (bar != currentBar) {
-            if (currentBar >= 0) os << " |\n";
-            currentBar = bar;
-            // 和弦标记只标在旋律轨上，避免伴奏轨重复标注
-            if (chords) {
-                long barStart = bar * (long)barLen;
-                auto it = chords->find(barStart);
-                if (it != chords->end()) {
-                    os << "[" << it->second << "] ";
-                }
-            }
-            std::string d = dynAt(n.startTicks, n.channel, data);
-            if (!d.empty() && d != lastDyn) {
-                os << "[" << d << "] ";
-                lastDyn = d;
-            }
-        }
-        // 三连音边界
-        if (triplets[idx] && !inTriplet) { os << "3("; inTriplet = true; }
+
+        // 右括号必须先于休止输出，否则 3(5 5 5 0 ) 会把休止吞进三连音组
         if (!triplets[idx] && inTriplet) { os << ") "; inTriplet = false; }
 
+        // 休止：同样按小节切开，长前奏才能写成每小节一个 "0 - - -"
         long gap = n.startTicks - prevEnd;
         bool hasRest = (gap >= data.division / 2) && (started || n.startTicks > 0);
         if (hasRest) {
-            emitNoteToken(os, "0", durationSuffix(gap, data.division));
+            long t = prevEnd;
+            while (t < n.startTicks) {
+                long bar = barOf(t);
+                switchToBar(bar, t, n.channel);
+                long seg = std::min(n.startTicks, (bar + 1) * barLenI) - t;
+                if (seg <= 0) break;                    // 防御：避免死循环
+                emitNoteToken(os, "0", durationSuffix(seg, data.division));
+                t += seg;
+            }
         }
+
+        switchToBar(barOf(n.startTicks), n.startTicks, n.channel);
+
+        // 左括号放在小节线之后，否则 "3(" 会留在上一行末
+        if (triplets[idx] && !inTriplet) { os << "3("; inTriplet = true; }
+
         // 三连音组内的音符不标时值后缀（"3(...)" 已表达节奏）
-        std::string dur = triplets[idx] ? "" : durationSuffix(n.durationTicks, data.division);
-        emitNoteToken(os, pitchToJianpu(n.pitch, key), dur);
+        std::string head = pitchToJianpu(n.pitch, key);
+        long noteEnd = n.startTicks + n.durationTicks;
+        long barEnd = (barOf(n.startTicks) + 1) * barLenI;
+        if (triplets[idx] || noteEnd <= barEnd) {
+            emitNoteToken(os, head, triplets[idx] ? "" : durationSuffix(n.durationTicks, data.division));
+        } else {
+            // 长音跨小节：先写满本小节，再逐小节用延长线续上
+            emitNoteToken(os, head, durationSuffix(barEnd - n.startTicks, data.division));
+            long t = barEnd;
+            while (t < noteEnd) {
+                long bar = barOf(t);
+                switchToBar(bar, t, n.channel);
+                long seg = std::min(noteEnd, (bar + 1) * barLenI) - t;
+                if (seg <= 0) break;                    // 防御：避免死循环
+                emitHeld(seg);
+                t += seg;
+            }
+        }
         started = true;
-        prevEnd = n.startTicks + n.durationTicks;
+        prevEnd = noteEnd;
     }
     if (inTriplet) os << ")";
     os << " |\n";

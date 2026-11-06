@@ -48,5 +48,6 @@ if(M2J_BUILD_WASM)
     "-sMODULARIZE=1"
     "-sEXPORT_NAME=createMidi2Jianpu"
     "-sALLOW_MEMORY_GROWTH=1"
-    "-sENVIRONMENT=web")
+    # web 供浏览器；node 供 CI/命令行冒烟测试（tests/wasm_smoke.mjs）
+    "-sENVIRONMENT=web,node")
 endif()

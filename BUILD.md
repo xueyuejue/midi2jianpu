@@ -33,7 +33,7 @@ cmake --build build --config Release
 
 ## 测试
 
-### 单元测试（58 项）
+### 单元测试（71 项）
 
 ```bash
 cd build && ctest --output-on-failure
@@ -41,7 +41,7 @@ cd build && ctest --output-on-failure
 ./build/test_basic
 ```
 
-成功时输出 `PASS=58 FAIL=0`。
+成功时输出 `共 71 项，失败 0 项 -> 全部通过`。
 
 覆盖范围：调性识别、各调八度基准、升降号书写（含降号调）、时值后缀、三连音、同音合并、和弦检测、移调、MusicXML 小节时长与 `<chord/>`。
 
@@ -56,12 +56,28 @@ python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2ji
 
 覆盖 `--key` / `--track` / `--transpose` / `--musicxml` / `--html` / `--lyrics` / `--output` / `--help` / `--version` 全部参数，并校验导出的 XML 里 `duration` 为整数、和弦音带 `<chord/>`。
 
+### WASM 冒烟测试（校验提交进 docs/wasm/ 的产物是否与源码同步）
+
+```bash
+node tests/wasm_smoke.mjs                                  # 默认测 docs/wasm/
+node tests/wasm_smoke.mjs build-wasm/midi2jianpu.js        # 或测新编的
+```
+
+需要 Node 18+。它走的是 `docs/index.html` 里 `callWasm()` 的同一条调用路径，
+逐项检查网页每个按钮背后的导出符号是否存在、返回内容是否合法、坏数据会不会崩。
+
+**这个测试的存在理由**：仓库曾出现「源码加了 `_midi2jianpu_musicxml`，但
+`docs/wasm/` 里还是旧产物」的静默回归——CLI 测试全绿，网页按钮点了没反应。
+CLI 测试永远发现不了这类问题，只能由它兜住。改了 `src/` 一定要重编 wasm 并跑一遍。
+
 ## 输出示例
 
 ```text
-共提取 30 个音符 (division=480, 拍号=4/4) (MIDI调号)
+时值量化: 修正 1 个音符 (网格 20 tick, 门限 1)
 
-1 = C 大调    4/4    ♩=120
+共提取 32 个音符 (division=480, 拍号=4/4) (MIDI调号)
+
+1=C 大调    4/4    ♩=120
 ----------------------------------------
 [Vocal] (15 音符) · 和弦: 4 个
 [C] [p] 1 2 3 4  |
@@ -71,7 +87,15 @@ python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2ji
 [Piano] (15 音符)
 1, - - - 3, - - - 5, - - -  |
 4, - - - 6, - - - 1 - - -  |
+1, - 3, - 5, - 5, - 7, - 2 -  |
+4, - - - 6, - - - 1 - - -  |
+[Pad] (2 音符)
+0 - - 1, -  |
+0 1 - - -  |
 ```
+
+调性一律按**首调**记谱：小调写成 `1=关系大调`，主音落在 `6`。
+上面这份 fixture 是大调，所以直接是 `1=C 大调`；换成 a 小调会显示 `1=C 小调 (A小调, 主音=6)`。
 
 ## 记谱约定
 
@@ -122,11 +146,18 @@ source ./emsdk_env.sh         # Windows: emsdk_env.bat
 ```bash
 emcmake cmake -B build-wasm -S . -DM2J_BUILD_WASM=ON
 cmake --build build-wasm
+
+# 先验证产物齐全，再覆盖到文档目录
+node tests/wasm_smoke.mjs build-wasm/midi2jianpu.js
+
 cp build-wasm/midi2jianpu.js   docs/wasm/
 cp build-wasm/midi2jianpu.wasm docs/wasm/
 ```
 
 产物 `midi2jianpu.js` + `midi2jianpu.wasm`，`docs/index.html` 直接加载这两个文件。
+`-sENVIRONMENT=web,node` 是特意留的：`web` 供浏览器，`node` 让上面的冒烟测试
+能在命令行跑；若只留 `web`，Node 里加载会直接报环境不支持。
+
 用 `file://` 打开会因浏览器跨域策略拒绝加载 `.wasm`，本地预览请起一个 HTTP 服务：
 
 ```bash
