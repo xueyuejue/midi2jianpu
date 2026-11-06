@@ -1177,4 +1177,87 @@ std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key
     return chords;
 }
 
+// UTF-8 按「字」拆开：中文三字节、英文一字节都算一个音节。
+// 按字节切会把一个汉字拆成三个音节，歌词数直接翻三倍。
+static std::vector<std::string> splitUtf8(const std::string& s) {
+    std::vector<std::string> out;
+    for (size_t i = 0; i < s.size();) {
+        unsigned char c = (unsigned char)s[i];
+        int len = 1;
+        if ((c & 0xE0) == 0xC0) len = 2;
+        else if ((c & 0xF0) == 0xE0) len = 3;
+        else if ((c & 0xF8) == 0xF0) len = 4;
+        if (i + len > s.size()) break;      // 截断的多字节序列，丢掉比拆碎好
+        out.push_back(s.substr(i, len));
+        i += len;
+    }
+    return out;
+}
+
+LyricAssignment assignLyrics(const MidiData& data,
+                             const std::vector<LyricLine>& lines,
+                             int mainTrack) {
+    LyricAssignment out;
+    if (mainTrack < 0 || lines.empty()) return out;
+
+    // 只统计旋律轨的音头。伴奏的和弦音也在同一 tick 上，混进来会让「一字
+    // 多音」的组数翻倍——柱式伴奏三个音就是三个 onset（去重后虽仍是一个，
+    // 但换轨会让歌词挂到错误的声部上）。
+    std::vector<long> onsets;
+    long songEnd = 0;
+    for (const auto& n : data.notes) {
+        if (n.track != mainTrack) continue;
+        onsets.push_back(n.startTicks);
+        songEnd = std::max(songEnd, n.startTicks + std::max<long>(n.durationTicks, 1));
+    }
+    if (onsets.empty()) return out;
+    std::sort(onsets.begin(), onsets.end());
+    onsets.erase(std::unique(onsets.begin(), onsets.end()), onsets.end());
+
+    for (size_t li = 0; li < lines.size(); li++) {
+        const long from = lines[li].startTick;
+        // 最后一行的右端取「全曲最后一个音之后」，保证末字也能覆盖到尾音
+        const long to = (li + 1 < lines.size()) ? lines[li + 1].startTick : songEnd + 1;
+        std::vector<long> inLine;
+        for (long t : onsets) if (t >= from && t < to) inLine.push_back(t);
+
+        const auto syls = splitUtf8(lines[li].text);
+        const size_t n = inLine.size(), m = syls.size();
+        if (n == 0 || m == 0) continue;
+
+        // 第 i 个字覆盖的音符区间是 [startOf(i), startOf(i+1))。
+        // n > m 时按 floor(i*n/m) 均匀分布，让一行词铺满自己的时间跨度；
+        // 早先「第 k 个音领第 k 个字」会把 7 个字在第一小节一口气用完。
+        auto startOf = [&](size_t i) -> size_t {
+            if (i >= m) return n;
+            if (n > m) {
+                size_t v = (size_t)((unsigned long long)i * n / m);
+                return v < n ? v : n - 1;
+            }
+            return i < n ? i : n;
+        };
+
+        for (size_t i = 0; i < m; i++) {
+            size_t a = startOf(i);
+            if (a >= n) break;                  // 音不够，剩下的字没地方挂
+            size_t b = startOf(i + 1);
+            if (b <= a) b = a + 1;
+            if (b > n) b = n;
+
+            LyricPlacement pl;
+            pl.text = syls[i];
+            pl.tick = inLine[a];
+            pl.noteCount = (int)(b - a);
+            pl.lastNoteTick = inLine[b - 1];
+            // 右端不能越过下一行歌词的起点，否则连音线会拖进下一句
+            pl.spanEnd = (b < n) ? inLine[b] : to;
+            if (pl.spanEnd <= pl.tick) pl.spanEnd = pl.tick + 1;
+
+            out.at[pl.tick] = pl;
+            if (pl.noteCount >= 2) out.melismas.push_back(pl);
+        }
+    }
+    return out;
+}
+
 } // namespace m2j

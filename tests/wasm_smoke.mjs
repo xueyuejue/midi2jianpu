@@ -257,7 +257,27 @@ if (existsSync(pickupPath)) {
   check(false, '素材 pickup.mid 存在（先跑 make_fixture.py）');
 }
 
-// ---- 11. 坏数据不能把整页搞崩 ----
+// ---- 11. 一字多音：网页 HTML 弧线 + 网页导出的 MusicXML 歌词 ----
+// 网页版不经过 main.cpp，若只给 CLI 接上歌词，用户下载 MusicXML 仍然没词。
+const melismaPath = path.join(FIXTURES, 'melisma.mid');
+if (existsSync(melismaPath)) {
+  const m = makeCaller(mod);
+  m.setMidi(readFileSync(melismaPath));
+  m.setLyrics('[00:00.00]一二三四\n[00:04.00]五六七八\n');
+  const mHtml = m.call('midi2jianpu_html', -1, 1);
+  check(mHtml && (mHtml.match(/class='sgrp'/g) || []).length === 4,
+    'HTML 给四个字各画一条连音线弧线');
+  check(mHtml && mHtml.includes("class='staff hasslur'"), '连音线轨抬高和弦带');
+  const mXml = m.call('midi2jianpu_musicxml', -1, 1);
+  check(mXml && mXml.includes('<lyric') && mXml.includes('<text>一</text>'),
+    '网页导出的 MusicXML 带歌词');
+  check(mXml && (mXml.match(/<slur type="start"/g) || []).length === 4,
+    '网页导出的 MusicXML 有 4 个连音线起点');
+} else {
+  check(false, '素材 melisma.mid 存在（先跑 make_fixture.py）');
+}
+
+// ---- 12. 坏数据不能把整页搞崩 ----
 c.setMidi(new Uint8Array([1, 2, 3, 4, 5]));
 const bad = c.call('midi2jianpu_parse', -1, 1);
 check(typeof bad === 'string' && bad.length > 0, '非法 MIDI 返回错误文本而非崩溃', bad);

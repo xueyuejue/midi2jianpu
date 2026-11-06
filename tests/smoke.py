@@ -402,6 +402,62 @@ def main():
         check(all(all(x[1] == 1920 for x in d[1:]) for d in durs),
               "之后的完整小节仍是 4 拍", str(durs[:1]))
 
+    print("\n[16] 一字多音：HTML 连音线 + MusicXML 歌词")
+    # 8 个音、一行 4 个字 -> 每个字拖两个音。HTML 要给每个字画一条弧线，
+    # MusicXML 要写 syllabic=begin/end 加成对的 <slur>；两边共用 assignLyrics。
+    mel = os.path.join(FIXTURES, "melisma.mid")
+    mlrc = os.path.join(FIXTURES, "melisma.lrc")
+    if not os.path.exists(mel) or not os.path.exists(mlrc):
+        check(False, "素材 melisma.mid / melisma.lrc 存在")
+    else:
+        mh = os.path.join(tmp, "melisma_slur.html")
+        mx = os.path.join(tmp, "melisma_lyric.xml")
+        rc, _, err = run(exe, mel, "--html", mh, "--musicxml", mx, "--lyrics", mlrc)
+        h = open(mh, encoding="utf-8").read()
+        x = open(mx, encoding="utf-8").read()
+        check(rc == 0, "HTML 与 MusicXML 同一次导出都成功", err)
+        check("class='staff hasslur'" in h, "有连音线时旋律轨抬高和弦带")
+        check(h.count("class='sgrp'") == 4, "四个字各一条连音线弧线",
+              str(h.count("class='sgrp'")))
+
+        # 每条弧线必须正好圈住两个音符，不能只圈一个、也不能把整小节圈进去
+        sizes, pos = [], 0
+        while True:
+            i = h.find("class='sgrp'", pos)
+            if i < 0:
+                break
+            sizes.append(inner_span(h[i:], "class='sgrp'").count("class='note "))
+            pos = i + 1
+        check(sizes == [2, 2, 2, 2], "每条弧线正好跨两个音符", str(sizes))
+
+        import xml.etree.ElementTree as ET3
+        root = ET3.fromstring(x)      # 顺便验证 XML 良构
+        texts = [n.findtext("lyric/text") for n in root.iter("note")
+                 if n.find("lyric") is not None and n.findtext("lyric/text")]
+        check("".join(texts) == "一二三四", "MusicXML 歌词完整且顺序正确", str(texts))
+        syl = [n.findtext("lyric/syllabic") for n in root.iter("note")
+               if n.find("lyric") is not None]
+        check(syl == ["begin", "end"] * 4, "每字写成 begin/end 一对", str(syl))
+        starts = len(root.findall(".//slur[@type='start']"))
+        stops = len(root.findall(".//slur[@type='stop']"))
+        check(starts == 4 and stops == 4, "slur 起止各 4 个且配对", f"{starts}/{stops}")
+        first = next(iter(root.iter("note")), None)
+        tags = [c.tag for c in first] if first is not None else []
+        check("notations" in tags and "lyric" in tags
+              and tags.index("notations") < tags.index("lyric"),
+              "notations 写在 lyric 之前（MusicXML 子元素顺序）", str(tags))
+        durs = [sum(int(n.find("duration").text) for n in m.findall("note")
+                    if n.find("chord") is None)
+                for m in root.iter("measure")]
+        check(all(v == 1920 for v in durs), "带歌词后每小节仍是 4 拍", str(durs))
+
+        # 不给 --lyrics 要完全回到旧格式
+        mx0 = os.path.join(tmp, "melisma_nolyric.xml")
+        run(exe, mel, "--musicxml", mx0)
+        x0 = open(mx0, encoding="utf-8").read()
+        check("<lyric" not in x0 and "<slur" not in x0,
+              "不带 --lyrics 的 MusicXML 保持旧格式")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

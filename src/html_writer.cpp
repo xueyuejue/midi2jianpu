@@ -185,30 +185,13 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
     std::map<long, std::string> chordAt;
     for (const auto& c : chords) chordAt[c.startTick] = c.name;
 
-    // 歌词按行拆成单字
-    std::vector<std::pair<long, std::vector<std::string>>> lineSyls;
-    if (lyricLines) {
-        for (const auto& ll : *lyricLines) {
-            std::vector<std::string> syls;
-            for (size_t i = 0; i < ll.text.size(); ) {
-                unsigned char c = ll.text[i];
-                int charLen = 1;
-                if ((c & 0xE0) == 0xC0) charLen = 2;
-                else if ((c & 0xF0) == 0xE0) charLen = 3;
-                else if ((c & 0xF8) == 0xF0) charLen = 4;
-                if (i + charLen > ll.text.size()) break;
-                syls.push_back(ll.text.substr(i, charLen));
-                i += charLen;
-            }
-            lineSyls.push_back({ll.startTick, syls});
-        }
-    }
-
-    // 歌词分配表：tick -> 音节。需要先知道旋律轨才能建，见下方 pickMelodyTrack 之后。
-    std::map<long, std::string> lyricAt;
+    // 歌词分配：HTML 的连音线弧线和 MusicXML 的 syllabic/slur 共用同一份结果。
+    // 早先这里自己拆字、自己算「第几个音领第几个字」，导出 MusicXML 时整份
+    // 歌词就丢了；现在统一走 notation.cpp 的 assignLyrics。
+    LyricAssignment lyrics;
     auto lyricForNote = [&](long tick) -> std::string {
-        auto lit = lyricAt.find(tick);
-        return lit == lyricAt.end() ? std::string() : lit->second;
+        auto lit = lyrics.at.find(tick);
+        return lit == lyrics.at.end() ? std::string() : lit->second.text;
     };
 
     // 弯音修正（只统计同通道）
@@ -237,46 +220,11 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
     int mainTrack = pickMelodyTrack(data, lyricLines);
 
     // ---- 歌词对齐 ----
-    // 一行 LRC 常常跨两小节，而旋律音数往往多于字数（衬腔、走句、装饰音）。
-    // 早先按「第 k 个音领第 k 个字」顺序发，7 个字在第一小节就被一口气用完，
-    // 第二小节整段空着——看起来像漏词，也不像能照着唱的谱子。
-    //
-    // 改为按行内音数均匀分布：第 i 个字落在该行第 floor(i*n/m) 个音上，
-    // 让一行词铺满它自己的时间跨度。n <= m（音数不多于字数）时保持顺序分配，
-    // 行为与原来一致。
-    if (lyricLines && !lineSyls.empty() && mainTrack >= 0) {
-        auto mit = byTrack.find(mainTrack);
-        if (mit != byTrack.end()) {
-            std::vector<long> onsets;
-            onsets.reserve(mit->second.size());
-            for (const auto& n : mit->second) onsets.push_back(n.startTicks);
-            std::sort(onsets.begin(), onsets.end());
-            onsets.erase(std::unique(onsets.begin(), onsets.end()), onsets.end());
-
-            const long kInf = std::numeric_limits<long>::max();
-            for (size_t li = 0; li < lineSyls.size(); li++) {
-                long from = lineSyls[li].first;
-                long to = (li + 1 < lineSyls.size()) ? lineSyls[li + 1].first : kInf;
-                std::vector<long> inLine;
-                for (long t : onsets)
-                    if (t >= from && t < to) inLine.push_back(t);
-
-                const auto& syls = lineSyls[li].second;
-                const size_t n = inLine.size(), m = syls.size();
-                if (n == 0 || m == 0) continue;
-
-                if (n > m) {
-                    for (size_t i = 0; i < m; i++) {
-                        size_t idx = (size_t)((unsigned long long)i * n / m);
-                        if (idx >= n) idx = n - 1;
-                        lyricAt[inLine[idx]] = syls[i];
-                    }
-                } else {
-                    for (size_t i = 0; i < n; i++) lyricAt[inLine[i]] = syls[i];
-                }
-            }
-        }
-    }
+    // 一行 LRC 常常跨两小节，而旋律音数往往多于字数（衬腔、走句、装饰音），
+    // 均匀铺开后一个字会拖着好几个音唱——这就是一字多音。assignLyrics 除了
+    // 给出「哪个音领哪个字」，还会给出每个字的覆盖区间，下面据此画连音线。
+    if (lyricLines && !lyricLines->empty() && mainTrack >= 0)
+        lyrics = assignLyrics(data, *lyricLines, mainTrack);
 
     for (auto& [t, ns] : byTrack) {
         const bool isMain = (t == mainTrack);
@@ -317,11 +265,15 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             trip.push_back(triplets0[i]);
         }
 
+        // 只有旋律轨、且真的存在一字多音时才抬高和弦带：其余谱面的行距
+        // 保持原样，不因为一个新功能把整页撑高。
+        const bool hasSlur = (isMain && !lyrics.melismas.empty());
         body << "<div class='track'><h3>";
         auto it = data.trackNames.find(t);
         if (it != data.trackNames.end() && !it->second.empty()) body << htmlEscape(it->second);
         else body << (isMain ? "旋律轨" : "伴奏轨 " + std::to_string(t));
-        body << " <small>(" << merged.size() << " 音符)</small></h3><div class='staff'><div class='row'>";
+        body << " <small>(" << merged.size() << " 音符)</small></h3><div class='staff"
+             << (hasSlur ? " hasslur" : "") << "'><div class='row'>";
 
         // 每行放多少小节：按 16 拍折算（4/4 即 4 小节一行），与简谱歌本的习惯一致。
         // 原来靠 flex 自动换行，每行 3~4 小节不等，整页行宽参差。
@@ -441,6 +393,38 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             body << "</span><span class='notes'>";   // 标记行结束，音符行开始
         };
 
+        // ---- 一字多音的连音线（slur）----
+        // 一个字拖着好几个音唱时，简谱要在这些音上方画一条弧线。做法是
+        // 把「同组且连续输出」的音符列攒进 slurBuf，组结束（换字、换小节、
+        // 休止）时一次性包进 <span class='sgrp'>，用 ::before 画一条跨全组的
+        // 弧线——和减时线组 bgrp 是同一个思路。
+        //
+        // 不能给每个音符各画一段弧：那样得到的是一串波浪而不是一条连音线；
+        // 也不能用 JS 量坐标：HTML 要能离线打开、直接打印。
+        std::vector<std::string> slurBuf;
+        int curSlur = 0;
+        auto flushSlur = [&]() {
+            if (slurBuf.empty()) return;
+            // 单个音画不出弧线（跨小节被切断时就剩一列），直接吐出去
+            if (slurBuf.size() >= 2) {
+                body << "<span class='sgrp'>";
+                for (const auto& h : slurBuf) body << h;
+                body << "</span>";
+            } else {
+                body << slurBuf.front();
+            }
+            slurBuf.clear();
+        };
+        auto emitWithGroup = [&](const std::string& colHtml, int g) {
+            if (g != curSlur) { flushSlur(); curSlur = g; }
+            if (g > 0) slurBuf.push_back(colHtml);
+            else body << colHtml;
+        };
+        // forceBreak 给休止符用：歌词拖过休止时不把「0」也圈进连音线
+        auto emit = [&](const std::string& colHtml, long tick, bool forceBreak = false) {
+            emitWithGroup(colHtml, (hasSlur && !forceBreak) ? lyrics.groupAt(tick) : 0);
+        };
+
         // ---- 减时线连通（beam）----
         // 简谱的减时线按「拍」连通：一拍里的两个八分音符共用一条横线，
         // 不是各画一小段。早先每个 .num 各带一条 border-bottom，被音符间距
@@ -450,6 +434,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         // 长音、三连音组结束）才一次性包进 <span class='bgrp'>。
         std::vector<std::string> beamBuf;
         int beamLevel = 0;
+        int beamGroup = 0;      // 减时线组所属的一字多音组，避免一条线跨两个字
         long beamPrevEnd = -1;
         long beamBeat = -1;
         int beamBar = -1;
@@ -457,13 +442,16 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
 
         auto flushBeam = [&]() {
             if (beamBuf.empty()) return;
-            body << "<span class='bgrp";
-            if (beamLevel > 1) body << " b" << beamLevel;
-            body << "'>";
-            for (const auto& h : beamBuf) body << h;
-            body << "</span>";
+            std::ostringstream g;
+            g << "<span class='bgrp";
+            if (beamLevel > 1) g << " b" << beamLevel;
+            g << "'>";
+            for (const auto& h : beamBuf) g << h;
+            g << "</span>";
+            emitWithGroup(g.str(), beamGroup);
             beamBuf.clear();
             beamLevel = 0;
+            beamGroup = 0;
             beamPrevEnd = -1;
         };
 
@@ -476,6 +464,8 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
 
             if (bar != curBar) {
                 flushBeam();                                  // 小节线截断减时线
+                flushSlur();                                  // 小节线同样截断连音线
+                curSlur = 0;                                  // 跨小节的组各画各的一段弧
                 if (curBar >= 0) body << "</span></span>";   // 收尾上一个小节的音符行与小节
 
                 // 补齐开头与中间完全空的小节。
@@ -509,6 +499,8 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             // 三连音组的标记
             if (grp[0]->trip && !inTriplet) {
                 flushBeam();
+                flushSlur();          // 「3」是独立标记，不能混进连音线组
+                curSlur = 0;
                 body << "<span class='trip'>3</span>";
                 inTriplet = true;
             }
@@ -519,8 +511,8 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             if (gap >= data.division / 2) {
                 flushBeam();          // 休止符打断减时线
                 double restBeats = (double)gap / data.division;
-                body << withChord(noteColumn("0", 0, 0, restBeats, ""),
-                                  chordMarkFor(prevEnd));
+                emit(withChord(noteColumn("0", 0, 0, restBeats, ""),
+                               chordMarkFor(prevEnd)), prevEnd, true);
             }
 
             // 整组的时值取最长那个音
@@ -535,7 +527,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 if (cnt < 1) cnt = 1;
                 for (int k = 0; k < cnt; k++) {
                     long tk = n.startTicks + (long)k * data.division;
-                    body << withChord(noteColumn("-", 0, 0, 1.0, ""), chordMarkFor(tk));
+                    emit(withChord(noteColumn("-", 0, 0, 1.0, ""), chordMarkFor(tk)), tk);
                 }
             } else if (grp.size() == 1) {
                 std::string jp = pitchToJianpu(n.pitch, key);
@@ -556,22 +548,25 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 std::string col = withChord(
                     noteColumn(num, highDots, lowDots, beats, syl, "", &ds),
                     chordMarkFor(n.startTicks));
+                const int g = hasSlur ? lyrics.groupAt(n.startTicks) : 0;
 
                 // 能否接上上一条减时线：同小节、首尾相接、减时线条数相同，
                 // 且同属一拍（三连音组例外，它本来就跨拍）。
+                // 还要同属一个一字多音组：一条减时线跨两个字会把连音线切断。
                 long beatLen = beatsPerBar > 0 ? (long)std::llround(barLen / beatsPerBar)
                                                : (long)data.division;
                 long curBeat = beatLen > 0 ? n.startTicks / beatLen : 0;
                 long endTick = n.startTicks + std::max<long>(n.durationTicks, 1);
                 bool join = ds.beams > 0 && ds.beams == beamLevel && !beamBuf.empty() &&
                             bar == beamBar && n.startTicks == beamPrevEnd &&
-                            grp[0]->trip == beamTrip &&
+                            grp[0]->trip == beamTrip && g == beamGroup &&
                             (beamTrip || curBeat == beamBeat);
 
                 if (ds.beams > 0) {
                     if (!join) {
                         flushBeam();
                         beamLevel = ds.beams;
+                        beamGroup = g;
                         beamBar = bar;
                         beamBeat = curBeat;
                         beamTrip = grp[0]->trip;
@@ -580,7 +575,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                     beamPrevEnd = endTick;
                 } else {
                     flushBeam();
-                    body << col;
+                    emitWithGroup(col, g);
                 }
             } else {
                 flushBeam();          // 和弦自成一列，不与单音连线
@@ -603,7 +598,8 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                     }
                     tones.push_back({num, {hi, lo}});
                 }
-                body << withChord(chordColumn(tones, beats, ""), chordMarkFor(n.startTicks));
+                emit(withChord(chordColumn(tones, beats, ""), chordMarkFor(n.startTicks)),
+                     n.startTicks);
             }
 
             for (const auto* h : grp) prevEnd = std::max(prevEnd, h->n.startTicks + h->n.durationTicks);
@@ -611,6 +607,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         }
 
         flushBeam();   // 收尾：把最后一条减时线画完再闭合小节
+        flushSlur();   // 连音线同理，否则最后一组会整段消失
         body << "</span></span><span class='final-bar'></span></div></div></div>";
     }
 
@@ -657,6 +654,18 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
         line-height:1;white-space:nowrap;pointer-events:none}
 .trip{font-size:12px;color:#666;align-self:flex-start;margin-right:2px;line-height:1.6}
 .notes{display:flex;align-items:flex-start;padding-top:18px}
+
+/* 一字多音的连音线：每个字拖着唱的那几个音共一条弧线。
+   谱面上方从下到上分三层：数字 / 连音线 / 和弦字母。存在连音线时把
+   .notes 的上留白从 18px 抬到 36px，和弦浮标相应抬高，弧线落在中间
+   那 12px 里；三者各占一层，弧线不会压到高八度点，也不会和和弦粘连。
+   只给有连音线的那一轨加 hasslur，其余谱面行距保持原样。 */
+.hasslur .notes{padding-top:36px}
+.hasslur .chordx{bottom:calc(100% + 22px)}
+.sgrp{position:relative;display:inline-flex;align-items:flex-start}
+.sgrp::before{content:"";position:absolute;left:3px;right:3px;top:-13px;height:9px;
+              border-top:1.5px solid #555;border-radius:50% 50% 0 0 / 100% 100% 0 0;
+              pointer-events:none}
 
 /* ---- 音符列 ----
    .note 的宽度只由数字决定：延音线用绝对定位挂在 .core 右侧，并通过 --n

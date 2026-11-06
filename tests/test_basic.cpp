@@ -691,6 +691,51 @@ int main() {
         check(barGridOf(d).pickup == 0, "--no-pickup 关掉弱起");
     }
 
+    // ---- 歌词分配与一字多音 ----
+    // HTML 的连音线弧线和 MusicXML 的 syllabic/slur 都从这一份结果出发。
+    // 这里锁住「哪个字唱哪几个音、区间到哪里结束」的全部边界。
+    {
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        NoteEvent n;
+        n.track = 1; n.channel = 0; n.durationTicks = 480;
+        for (int i = 0; i < 8; i++) {
+            n.startTicks = (long)i * 480;
+            n.pitch = 60 + i;
+            d.notes.push_back(n);
+        }
+        std::vector<LyricLine> lines = {{0, "一二"}, {1920, "三四"}};
+        LyricAssignment a = assignLyrics(d, lines, 1);
+        check(a.at.size() == 4, "两行四个字各挂到一个音头");
+        check(a.melismas.size() == 4, "四个字各拖两个音 -> 4 个一字多音组");
+        check(a.at.count(0) && a.at[0].text == "一" && a.at[0].noteCount == 2,
+              "第一个字是「一」且覆盖 2 个音");
+        check(a.melismas[0].spanEnd == 960 && a.melismas[0].lastNoteTick == 480,
+              "首组区间 [0,960)，末音落在 480");
+        check(a.groupAt(0) == 1 && a.groupAt(480) == 1 && a.groupAt(960) == 2,
+              "groupAt 用区间而非音头集合，延长段也归进同一组");
+        check(a.groupAt(1920) == 3 && a.groupAt(3840) == 4 && a.groupAt(3841) == 0,
+              "第二行自成新组，末组覆盖到全曲末音之后才结束");
+        check(a.melismas[1].spanEnd <= 1920, "连音线不越过下一行歌词起点");
+        check(a.melismas[3].lastNoteTick == 3360, "末组收在全曲最后一个音上");
+
+        // 一音一字不该凭空冒出连音线
+        std::vector<LyricLine> one = {{0, "一二三四五六七八"}};
+        LyricAssignment b = assignLyrics(d, one, 1);
+        check(b.at.size() == 8 && b.melismas.empty(), "一音一字不画连音线");
+        check(b.at[0].noteCount == 1 && b.at[0].text == "一", "一音一字仍是独立音节");
+
+        // UTF-8：一个三字节汉字只能算一个音节，不能按字节拆成三个
+        std::vector<LyricLine> utf = {{0, "啊"}};
+        LyricAssignment u = assignLyrics(d, utf, 1);
+        check(u.at.size() == 1 && u.at[0].text == "啊", "UTF-8 汉字不被按字节拆开");
+
+        check(assignLyrics(d, {}, 1).empty(), "没有歌词时结果为空");
+        check(assignLyrics(d, lines, -1).empty(), "轨道号无效时结果为空");
+        check(assignLyrics(d, lines, 7).empty(), "歌词不会挂到不存在的轨道上");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

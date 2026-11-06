@@ -38,14 +38,14 @@
 - [x] 弯音轮修正（Pitch Bend 平均偏移 ±0.5 半音以上修正音高）
 - [x] **和弦检测**：自动识别伴奏轨和弦进行（C/Am/G7 等9种类型）；按「和声窗」而不是整小节判定（4/4 半小节、6/8 附点四分、3/4 整小节），`| C  Am |` 这种一小节两个和弦能分别标出，相邻同名自动合并
 - [x] **HTML 谱面导出**：自包含网页，浏览器打开即可打印 PDF，含和弦标记、小节号、和弦竖向叠写；小节号/力度/速度独占标记行，和弦则挂在它管的那个音符正上方（标记行是从左往右排的，写在那里会被别的标记顶偏），三层互不侵入
-- [x] **MusicXML 导出**：`--musicxml out.xml`，符合 3.1 规范（整数 `duration`、`<chord/>`、`<tie>` 跨小节延音、正确 `<fifths>`/`<clef>`/速度标记）
-- [x] **歌词写入**：`--lyrics lyrics.lrc` 支持 LRC 格式，按时间戳精确对齐；一行词跨多小节、旋律音数多于字数（一字多音）时按行内音数铺开，不会全挤在第一小节
+- [x] **MusicXML 导出**：`--musicxml out.xml`，符合 3.1 规范（整数 `duration`、`<chord/>`、`<tie>` 跨小节延音、正确 `<fifths>`/`<clef>`/速度标记）；配合 `--lyrics` 还会写出 `<lyric>`（syllabic begin/middle/end）与一字多音的 `<slur>`，导进 MuseScore 有词可看
+- [x] **歌词写入**：`--lyrics lyrics.lrc` 支持 LRC 格式，按时间戳精确对齐；一行词跨多小节、旋律音数多于字数（一字多音）时按行内音数铺开，不会全挤在第一小节，并在这些音上方画出连音线弧线
 - [x] 文本输出到文件：`--output out.txt`（含和弦标记）
 - [x] 多轨选择：`--track 0`
 - [x] `--version` 打印版本号
 - [x] **在线 Demo**：WASM 核心，浏览器内运行 C++ 代码
 - [x] **减时线按拍连通**：一拍内的八分/十六分音符共用一条横线（十六分再叠平行线），而不是每个音各画一小段；和弦的减时线只画在最下面那个音上
-- [x] 102 项单元测试 + 15 组端到端冒烟测试 + WASM 产物一致性检查
+- [x] 116 项单元测试 + 16 组端到端冒烟测试 + WASM 产物一致性检查
 
 ## 在线 Demo 功能
 
@@ -92,6 +92,8 @@ Windows 产物在 `build\Release\midi2jianpu.exe`。详细说明、WASM 编译�
 
 # 导出MusicXML（可在MuseScore中编辑）
 ./build/midi2jianpu 你的歌.mid --key Em --musicxml 谱.xml
+# 同时把歌词写进 MusicXML（一字多音会自动带连音线）
+./build/midi2jianpu 你的歌.mid --musicxml 带词谱.xml --lyrics lyrics.lrc
 
 # 只看某个轨道 / 看版本
 ./build/midi2jianpu 你的歌.mid --track 0
@@ -145,13 +147,29 @@ Windows 产物在 `build\Release\midi2jianpu.exe`。详细说明、WASM 编译�
 
 > **跨小节切分**：小节线只由拍子位置决定，不由音符音头决定。所以整段前奏会老老实实写成 4 行 `0 - - -`，而不是把十几个 `-` 挤进第 1 小节；长音跨小节时也在小节线处断开，后段用 `-` 续写（6 拍长音 → `1 - - -` | `- -`）。
 
+### 一字多音（melisma）怎么记
+
+一行词往往只有几个字，旋律却唱了一串音（衬腔、拖腔、走句）。歌词按行内音数均匀铺开后，一个字会覆盖好几个音；简谱要在这些音上方画一条连音线，唱的人才能看出「这一个字拖过这几个音」，而不是每个音各唱一遍这个字。
+
+三个输出层共用 `assignLyrics()` 给出的「字 → 覆盖区间」结果，不再各写一套分配逻辑：
+
+| 输出 | 一字多音的表现 |
+| --- | --- |
+| HTML / 网页版 | 同组且连续的音符列包进一个 `.sgrp`，用 CSS 画一条跨全组的弧线；遇到小节线、休止符就断开，各段独立成弧 |
+| MusicXML | 首音 `<syllabic>begin</syllabic>` + `<slur type="start"/>`，中间音 `middle`（带 `<extend/>`），末音 `end` + `<slur type="stop"/>`；一音一字则写 `single` |
+| 文本简谱 | 只输出歌词字，不画弧线（纯文本没有排版能力） |
+
+弧线不能和和弦字母、高八度点挤在一起：有连音线时把音符行的上留白从 18px 抬到 36px，自下而上依次是「数字 → 连音线 → 和弦字母」，三者互不侵入。只抬高存在连音线的那一轨，其余谱面行距不变。
+
+> **没有歌词时行为不变**：`--musicxml` 不带 `--lyrics` 时不会写出任何 `<lyric>` / `<slur>`，网页版同理。
+
 ## 技术选型
 
 - 核心：**C++17**，手写 SMF 二进制解析，无第三方库依赖，便于编译成 WASM
 - 调性识别：**Krumhansl-Schmuckler** 算法（音乐信息检索标准）
 - 和弦检测：按和声窗（半小节 / 附点四分 / 整小节）统计音级频率，匹配 9 种和弦类型
 - 输出：文本 + 自包含 HTML（内联 CSS）+ MusicXML 3.1
-- 测试：内置断言 102 项单元测试，另有 `tests/smoke.py` 15 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`）
+- 测试：内置断言 116 项单元测试，另有 `tests/smoke.py` 16 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`）
 
 ## 路线图
 
@@ -167,7 +185,7 @@ Windows 产物在 `build\Release\midi2jianpu.exe`。详细说明、WASM 编译�
 - [x] 旋律轨智能判定（歌词 / 单音率 / 音域打分）
 - [x] 变速曲目的 tempo map 换算
 - [x] 弱起小节（anacrusis）：自动判定 + `--pickup` 手动覆盖
-- [ ] 延音线弧线（当前用 `-` 符号，后续加弧线视觉）
+- [x] 一字多音连音线弧线（HTML 画弧线；MusicXML 同步写出 `<lyric>` / `<slur>`）
 - [ ] 更多真实 MIDI 样本校验
 
 ## 为什么开源
@@ -186,7 +204,7 @@ Issue / PR 都欢迎。尤其欢迎：
 提交前请跑一遍：
 
 ```bash
-cd build && ctest --output-on-failure                  # 102 项单元测试
+cd build && ctest --output-on-failure                  # 116 项单元测试
 python tests/smoke.py build/Release/midi2jianpu.exe    # 端到端冒烟（含鼓轨场景）
 node tests/wasm_smoke.mjs                              # WASM 产物与源码是否同步
 ```
