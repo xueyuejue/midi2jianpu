@@ -217,10 +217,10 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         byTrack[n.track].push_back(n);
     }
 
-    // 音符最多的轨道视作旋律轨：和弦标记与歌词都只给它
-    int mainTrack = -1; size_t maxN = 0;
-    for (auto& [t, ns] : byTrack)
-        if (ns.size() > maxN) { maxN = ns.size(); mainTrack = t; }
+    // 旋律轨：和弦标记与歌词都只给它。判定见 notation.cpp 的 pickMelodyTrack——
+    // 有歌词时「LRC 行首能否对齐」是最强证据，比"音符最多"可靠得多
+    // （音符最多的那条轨在真实工程里通常是鼓或柱式和弦伴奏）。
+    int mainTrack = pickMelodyTrack(data, lyricLines);
 
     for (auto& [t, ns] : byTrack) {
         const bool isMain = (t == mainTrack);
@@ -313,21 +313,29 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         int curBar = -1;
         long prevEnd = 0;
         std::string lastDyn;
+        std::string lastChord;
         bool inTriplet = false;
 
-        // 开一个小节：写小节号、和弦标记、力度记号
+        // 开一个小节：上面一行放标记（小节号 / 和弦 / 力度），下面才是音符。
+        //
+        // 早先把这三样直接塞进音符的 flex 流里，结果它们全挤在音符基线上：
+        // 「Cmaj7 ff 1̇」看起来像一个词的三个字母，和弦与力度根本分不开。
+        // 分成上下两层后，标记有固定的 17px 高度，各小节音符行也随之顶部对齐。
         auto openBar = [&](int bar, long firstTick, int channel) {
             long barStart = (long)(bar * barLen);
             if (prevEnd < barStart) prevEnd = barStart;
-            body << "<span class='measure'>";
+            body << "<span class='measure'><span class='marks'>";
 
             // 小节号：长谱子靠它定位，从第 2 小节起显示
             if (bar > 0) body << "<span class='barno'>" << (bar + 1) << "</span>";
 
-            // 和弦标记只标旋律轨
+            // 和弦标记只标旋律轨；连续小节同一个和弦不重复标，
+            // 否则一段 8 小节的 C 和弦会在每小节左上角都印一个 C
             auto chordIt = chordByBar.find(barStart);
-            if (isMain && chordIt != chordByBar.end())
+            if (isMain && chordIt != chordByBar.end() && chordIt->second != lastChord) {
                 body << "<span class='chord'>" << htmlEscape(chordIt->second) << "</span>";
+                lastChord = chordIt->second;
+            }
 
             // 力度记号按通道取，变化时才写
             if (!data.dynamics.empty()) {
@@ -347,6 +355,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                     }
                 }
             }
+            body << "</span><span class='notes'>";   // 标记行结束，音符行开始
         };
 
         bool firstNote = true;
@@ -357,7 +366,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             int bar = (int)(n.startTicks / barLen);
 
             if (bar != curBar) {
-                if (curBar >= 0) body << "</span>";   // 收尾上一个小节
+                if (curBar >= 0) body << "</span></span>";   // 收尾上一个小节的音符行与小节
 
                 // 补齐开头与中间完全空的小节。
                 // 原来这里直接跳过，谱面第一小节标号是「5」、中途还会跳号，
@@ -365,9 +374,10 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 int from = (curBar >= 0) ? curBar + 1 : 0;
                 for (int b = from; b < bar; b++) {
                     if (b > 0 && b % measuresPerRow == 0) body << "</div><div class='row'>";
-                    body << "<span class='measure'>";
+                    body << "<span class='measure'><span class='marks'>";
                     if (b > 0) body << "<span class='barno'>" << (b + 1) << "</span>";
-                    body << noteColumn("0", 0, 0, beatsPerBar, "") << "</span>";
+                    body << "</span><span class='notes'>"
+                         << noteColumn("0", 0, 0, beatsPerBar, "") << "</span></span>";
                     prevEnd = std::max(prevEnd, (long)((b + 1) * barLen));
                 }
 
@@ -446,7 +456,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             firstNote = false;
         }
 
-        body << "</span><span class='final-bar'></span></div></div></div>";
+        body << "</span></span><span class='final-bar'></span></div></div></div>";
     }
 
     std::ostringstream html;
@@ -466,15 +476,20 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
 
 /* 谱面：每行固定若干小节，行内横排。原来用 flex 自动换行，行宽参差不齐。 */
 .staff{display:block;font-size:26px;padding:4px 0}
-.row{display:flex;align-items:flex-start;padding-top:15px}
-.measure{display:flex;align-items:flex-start;position:relative;border-left:1.5px solid #bbb;
-         padding:0 0 0 9px;margin:0 16px 0 0}
+.row{display:flex;align-items:flex-start;padding-top:10px}
 
-/* 小节号放在小节左上角外侧，不再插在音符流里挤占位置 */
-.barno{position:absolute;top:-13px;left:1px;font-size:10px;color:#c9c9c9;line-height:1}
-.chord{font-size:14px;font-weight:600;color:#b03030;align-self:flex-start;margin-right:6px;line-height:1.6}
-.dyn{font-size:14px;font-style:italic;color:#999;align-self:flex-start;margin-right:6px;line-height:1.6}
+/* 一个小节 = 上层标记行 + 下层音符行。
+   早先小节号/和弦/力度和音符挤在同一条 flex 基线上，"Cmaj7 ff 1̇" 看起来
+   像一个词的三个字母，和弦与力度根本分不开。分层后标记行高度固定 17px，
+   各小节的音符行也随之顶部对齐。 */
+.measure{display:flex;flex-direction:column;border-left:1.5px solid #bbb;
+         padding:0 0 0 9px;margin:0 16px 0 0}
+.marks{display:flex;align-items:flex-end;gap:8px;height:20px;line-height:1;white-space:nowrap}
+.barno{font-size:10px;color:#c9c9c9;line-height:1;align-self:flex-start}
+.chord{font-size:14px;font-weight:600;font-style:normal;color:#b03030;line-height:1}
+.dyn{font-size:14px;font-style:italic;color:#999;line-height:1}
 .trip{font-size:12px;color:#666;align-self:flex-start;margin-right:2px;line-height:1.6}
+.notes{display:flex;align-items:flex-start}
 
 /* ---- 音符列 ----
    .note 的宽度只由数字决定：延音线用绝对定位挂在 .core 右侧，并通过 --n
@@ -498,7 +513,7 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
    居中的话看起来像只有中间那个音在延长。 */
 .chordcol .exts{top:auto;bottom:2px;transform:none}
 .stack{display:flex;flex-direction:column;align-items:center}
-.tone{display:flex;flex-direction:column;align-items:center;margin:-5px 0}
+.tone{display:flex;flex-direction:column;align-items:center;margin:-7px 0}
 .tone .oct{height:8px;gap:1px}
 .tone .oct i{width:4px;height:4px}
 .tone .num{font-size:24px;line-height:1.05}
@@ -510,7 +525,8 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
 .dotted .num::after{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;
                     background:#222;margin-left:4px;vertical-align:middle}
 
-.final-bar{display:inline-block;width:2px;height:34px;background:#333;margin-left:10px;align-self:center;position:relative}
+.final-bar{display:inline-block;width:2px;height:34px;background:#333;margin-left:10px;
+           align-self:flex-start;margin-top:26px;position:relative}
 .final-bar::after{content:"";position:absolute;left:5px;top:0;width:4px;height:34px;background:#333}
 .footer{color:#bbb;font-size:12px;text-align:center;margin:24px 0 10px}
 
@@ -531,6 +547,7 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
          << htmlEscape(keyDescription(key))
          << " ｜ " << data.timeSig.toString()
          << " ｜ " << (data.keySig.valid ? "MIDI调号" : "自动猜测")
+         << (data.drumNotesSkipped > 0 ? " ｜ 已跳过鼓轨" : "")
          << "</div>" << body.str()
          << "<footer class='footer'>由 midi2jianpu v" M2J_VERSION " 生成</footer>"
          << "</body></html>";

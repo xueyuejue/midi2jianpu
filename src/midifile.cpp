@@ -27,6 +27,63 @@ static uint32_t readVarLen(const uint8_t* data, size_t size, size_t& pos) {
     return value;
 }
 
+// 按 set_tempo 分段，把 tick 精确映射为秒。
+//
+// 旧实现是在解析过程中用一个可变的 tempo 变量即时换算（tick2sec 闭包），
+// 有两个致命问题：
+//   1) 变速曲目里，早期的音符会用到最后一次 set_tempo 的速度；
+//   2) format 1 文件的 set_tempo 通常在独立的 conductor 轨（track 0），
+//      如果它排在音符轨之后被解析，整份谱子的秒数全部错位。
+// 现在解析阶段只记录 tick，等所有事件收齐后统一重算。
+static void recomputeSeconds(MidiData& out) {
+    const double div = out.division > 0 ? (double)out.division : 480.0;
+
+    // 按 tick 排序；同一 tick 上的多次 set_tempo 以最后一个为准
+    std::sort(out.tempoChanges.begin(), out.tempoChanges.end(),
+              [](const TempoPoint& a, const TempoPoint& b) { return a.tick < b.tick; });
+
+    struct Seg { long tick; double sec; double usPerQn; };
+    std::vector<Seg> segs;
+    segs.push_back({0, 0.0, 500000.0});   // MIDI 规范的默认速度：120 BPM
+
+    {
+        double us = 500000.0;
+        double sec = 0.0;
+        long curTick = 0;
+        for (const auto& p : out.tempoChanges) {
+            if (p.bpm <= 0) continue;
+            sec += (p.tick - curTick) * us / 1e6 / div;
+            curTick = p.tick;
+            us = 60000000.0 / p.bpm;
+            if (segs.back().tick == curTick) segs.back().usPerQn = us;
+            else segs.push_back({curTick, sec, us});
+        }
+    }
+
+    auto tick2sec = [&](long t) -> double {
+        size_t lo = 0, hi = segs.size();
+        while (lo + 1 < hi) {
+            size_t mid = (lo + hi) / 2;
+            if (segs[mid].tick <= t) lo = mid; else hi = mid;
+        }
+        const Seg& s = segs[lo];
+        return s.sec + (double)(t - s.tick) * s.usPerQn / 1e6 / div;
+    };
+
+    for (auto& n : out.notes) {
+        double s = tick2sec(n.startTicks);
+        n.startSeconds = s;
+        n.durationSeconds = tick2sec(n.startTicks + n.durationTicks) - s;
+        if (n.durationSeconds < 0.02) n.durationSeconds = 0.02;
+    }
+
+    // out.tempo 只用来推导 BPM（歌词 LRC 的时间轴换算），取曲首速度而不是最后一个
+    out.tempo = 500000.0;
+    for (const auto& p : out.tempoChanges) {
+        if (p.bpm > 0) { out.tempo = 60000000.0 / p.bpm; break; }
+    }
+}
+
 // 核心解析：从内存buffer解析MIDI
 static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
     if (size < 14) return false;
@@ -43,13 +100,8 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
     if (hdrLen < 6) return false;
     pos += (hdrLen - 6);
 
-    double tempo = out.tempo;
     int trackIdx = 0;
     std::unordered_map<uint64_t, long> active;
-
-    auto tick2sec = [&](long tick) {
-        return tick * tempo / 1000000.0 / out.division;
-    };
 
     // ---- 逐轨 ----
     while (pos + 8 <= size && std::memcmp(d + pos, "MTrk", 4) == 0) {
@@ -82,27 +134,27 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
             if (type == 0x90u || type == 0x80u) {
                 uint8_t note = d[pos++];
                 uint8_t vel = d[pos++];
-                uint64_t key = ((uint64_t)channel << 24) |
-                               ((uint64_t)note << 8) | (uint64_t)trackIdx;
-                if (type == 0x90u && vel > 0) {
-                    active[key] = absTick;
+                // 通道 10（index 9）是打击乐：音高是鼓件编号，不是音级。
+                // 简谱没有鼓谱记法，留着只会污染调性识别、和弦检测和旋律轨判定。
+                if (channel == 9) {
+                    if (type == 0x90u && vel > 0) out.drumNotesSkipped++;
                 } else {
-                    auto it = active.find(key);
-                    if (it != active.end()) {
-                        double start = tick2sec(it->second);
-                        double end = tick2sec(absTick);
-                        double dur = end - start;
-                        if (dur < 0.02) dur = 0.02;
-                        NoteEvent ne;
-                        ne.startSeconds = start;
-                        ne.durationSeconds = dur;
-                        ne.startTicks = it->second;
-                        ne.durationTicks = absTick - it->second;
-                        ne.pitch = note;
-                        ne.channel = channel;
-                        ne.track = trackIdx;
-                        out.notes.push_back(ne);
-                        active.erase(it);
+                    uint64_t key = ((uint64_t)channel << 24) |
+                                   ((uint64_t)note << 8) | (uint64_t)trackIdx;
+                    if (type == 0x90u && vel > 0) {
+                        active[key] = absTick;
+                    } else {
+                        auto it = active.find(key);
+                        if (it != active.end()) {
+                            NoteEvent ne;
+                            ne.startTicks = it->second;
+                            ne.durationTicks = absTick - it->second;
+                            ne.pitch = note;
+                            ne.channel = channel;
+                            ne.track = trackIdx;
+                            out.notes.push_back(ne);
+                            active.erase(it);
+                        }
                     }
                 }
             } else if (status == 0xFFu) {
@@ -114,9 +166,9 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
                     metaLen = (trkEnd > pos) ? (uint32_t)(trkEnd - pos) : 0;
                 }
                 if (metaType == 0x51u && metaLen >= 3) {  // set_tempo
-                    tempo = (double)((d[pos] << 16) | (d[pos+1] << 8) | d[pos+2]);
-                    double bpm = 60000000.0 / tempo;
-                    out.tempoChanges.push_back({absTick, bpm});
+                    // 只记下 tick 与 BPM，秒数在全部事件解析完后统一换算
+                    long us = (long)((d[pos] << 16) | (d[pos+1] << 8) | d[pos+2]);
+                    if (us > 0) out.tempoChanges.push_back({absTick, 60000000.0 / (double)us});
                 } else if (metaType == 0x58u && metaLen >= 4) {  // time signature
                     out.timeSig.numerator = d[pos];
                     out.timeSig.denomPow = d[pos+1];
@@ -184,9 +236,10 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
 
     std::sort(out.notes.begin(), out.notes.end(),
               [](const NoteEvent& a, const NoteEvent& b) {
-                  return a.startSeconds < b.startSeconds;
+                  if (a.startTicks != b.startTicks) return a.startTicks < b.startTicks;
+                  return a.pitch < b.pitch;
               });
-    out.tempo = tempo;
+    recomputeSeconds(out);
     return true;
 }
 

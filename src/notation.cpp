@@ -8,6 +8,7 @@
 #include <iterator>
 #include <iomanip>
 #include <map>
+#include <set>
 #include <sstream>
 
 namespace m2j {
@@ -41,11 +42,8 @@ KeyEstimate estimateKey(const MidiData& data) {
     }
 
     // 2) Krumhansl-Schmuckler 调性检测算法
-    // 只用旋律轨（音符最多的轨），避免伴奏和弦干扰
-    std::map<int, size_t> trackCount;
-    for (const auto& note : data.notes) trackCount[note.track]++;
-    int mainTrack = -1; size_t maxN = 0;
-    for (auto& [t, c] : trackCount) if (c > maxN) { maxN = c; mainTrack = t; }
+    // 只用旋律轨，避免伴奏和弦把音级分布拉平（判定逻辑见 pickMelodyTrack）
+    int mainTrack = pickMelodyTrack(data, nullptr);
 
     // Krumhansl-Schmuckler 特征轮廓 (C大调/C小调基准)
     static const double MAJOR_PROFILE[12] = {
@@ -537,14 +535,19 @@ static std::string formatTrack(
     // 否则整段前奏（没有任何音符）会全部堆进第 1 小节，挤出一串十几个 '-'
     // 而丢掉 3 条小节线；跨小节的长音同样会溢出到下一小节之外。
     auto barOf = [&](long tick) -> long { return tick / barLenI; };
+    std::string lastChord;
     auto switchToBar = [&](long bar, long atTick, int channel) {
         if ((int)bar == currentBar) return;
         if (currentBar >= 0) os << " |\n";
         currentBar = (int)bar;
-        // 和弦标记只标在旋律轨上，避免伴奏轨重复标注
+        // 和弦标记只标在旋律轨上，避免伴奏轨重复标注；
+        // 连续小节是同一个和弦时不重复写——歌本里和弦只在变化处标注
         if (chords) {
             auto it = chords->find(bar * barLenI);
-            if (it != chords->end()) os << "[" << it->second << "] ";
+            if (it != chords->end() && it->second != lastChord) {
+                os << "[" << it->second << "] ";
+                lastChord = it->second;
+            }
         }
         std::string d = dynAt(atTick, channel, data);
         if (!d.empty() && d != lastDyn) {
@@ -615,12 +618,24 @@ static std::string formatTrack(
     return os.str();
 }
 
+// 不同和弦名的个数（同一个小节反复出现的同一个和弦只算一个）
+static size_t distinctChordCount(const std::map<long, std::string>& byBar) {
+    std::set<std::string> names;
+    for (const auto& kv : byBar) names.insert(kv.second);
+    return names.size();
+}
+
 std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
     std::ostringstream os;
     os << keyDescription(key)
        << "    " << data.timeSig.toString();
     if (!data.tempoChanges.empty()) {
         os << "    ♩=" << (int)data.tempoChanges[0].bpm;
+    }
+    // 鼓轨被丢弃这件事必须让用户看见，否则会以为谱子漏了内容。
+    // 写进谱面头部而不是只打在命令行，网页版（WASM）才同样能看到。
+    if (data.drumNotesSkipped > 0) {
+        os << "    (已跳过 " << data.drumNotesSkipped << " 个打击乐音符)";
     }
     os << "\n----------------------------------------\n";
 
@@ -647,12 +662,8 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
         byTrack[n.track].push_back(n);
     }
 
-    // 找出音符最多的轨作为主旋律
-    int mainTrack = -1;
-    size_t maxNotes = 0;
-    for (auto& [t, ns] : byTrack) {
-        if (ns.size() > maxNotes) { maxNotes = ns.size(); mainTrack = t; }
-    }
+    // 选出旋律轨：和弦标记与歌词只给它
+    int mainTrack = pickMelodyTrack(data, nullptr);
 
     // 检测和弦(按小节)
     auto chords = detectChords(data, key);
@@ -672,12 +683,82 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
         }
         os << "[" << label << "] (" << ns.size() << " 音符)";
         if (t == mainTrack && !chordByBar.empty()) {
-            os << " · 和弦: " << chordByBar.size() << " 个";
+            os << " · 和弦: " << distinctChordCount(chordByBar) << " 个";
         }
         os << "\n";
         os << formatTrack(ns, key, data, (t == mainTrack) ? &chordByBar : nullptr);
     }
     return os.str();
+}
+
+// ---- 旋律轨判定 ----
+std::vector<TrackProfile> profileTracks(const MidiData& data,
+                                       const std::vector<LyricLine>* lyrics) {
+    std::vector<TrackProfile> out;
+    std::map<int, std::vector<const NoteEvent*>> byTrack;
+    for (const auto& n : data.notes) byTrack[n.track].push_back(&n);
+
+    double barLen = data.timeSig.barLengthTicks(data.division);
+    if (!(barLen > 0)) barLen = data.division * 4.0;
+
+    for (auto& kv : byTrack) {
+        const auto& ns = kv.second;
+        TrackProfile p;
+        p.track = kv.first;
+        p.noteCount = ns.size();
+
+        std::set<long> onsets;
+        std::set<int> pitches;
+        long sumPitch = 0;
+        p.minPitch = 127;
+        p.maxPitch = 0;
+        for (const auto* n : ns) {
+            onsets.insert(n->startTicks);
+            pitches.insert(n->pitch);
+            sumPitch += n->pitch;
+            p.minPitch = std::min(p.minPitch, n->pitch);
+            p.maxPitch = std::max(p.maxPitch, n->pitch);
+        }
+        p.onsetCount = onsets.size();
+        p.distinctPitches = pitches.size();
+        p.avgPitch = ns.empty() ? 0.0 : (double)sumPitch / (double)ns.size();
+        p.polyphony = onsets.empty() ? 1.0 : (double)ns.size() / (double)onsets.size();
+
+        // 歌词对齐：歌词行首的 tick 落在该轨某个音符的半个小节内，算命中一行。
+        // LRC 的时间戳精度只到 10ms，且常与 MIDI 有几十毫秒偏差，容差不能太紧。
+        if (lyrics && !lyrics->empty()) {
+            size_t hit = 0;
+            for (const auto& line : *lyrics) {
+                for (const auto* n : ns) {
+                    if (std::fabs((double)n->startTicks - (double)line.startTick) <= barLen * 0.5) {
+                        hit++;
+                        break;
+                    }
+                }
+            }
+            p.lyricAligned = hit * 2 >= lyrics->size();
+        }
+
+        double s = std::log((double)p.noteCount + 1.0);
+        s -= (p.polyphony - 1.0) * 4.0;                       // 复音惩罚
+        s += std::min<size_t>(p.distinctPitches, 12) * 0.25;  // 音高丰富度
+        int range = p.maxPitch - p.minPitch;
+        s += (range >= 12) ? 1.0 : range / 12.0;              // 音域
+        if (p.lyricAligned) s += 4.0;
+        if (p.avgPitch < 48) s -= 1.5;                        // 低音区多半是贝斯
+        p.score = s;
+        out.push_back(p);
+    }
+    return out;
+}
+
+int pickMelodyTrack(const MidiData& data, const std::vector<LyricLine>* lyrics) {
+    int best = -1;
+    double bestScore = -1e9;
+    for (const auto& p : profileTracks(data, lyrics)) {
+        if (p.score > bestScore) { bestScore = p.score; best = p.track; }
+    }
+    return best;
 }
 
 // 简单JSON歌词解析: 找"start_beat"和"text"字段
@@ -867,11 +948,8 @@ std::vector<LyricLine> parseLrcLines(const std::string& lrcPath, int division, i
 std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key) {
     std::vector<ChordMark> chords;
 
-    // 找伴奏轨（音符数第二多的轨，或者非旋律轨）
-    std::map<int, size_t> trackCount;
-    for (const auto& note : data.notes) trackCount[note.track]++;
-    int mainTrack = -1; size_t maxN = 0;
-    for (auto& [t, c] : trackCount) if (c > maxN) { maxN = c; mainTrack = t; }
+    // 找伴奏轨（除旋律轨以外的所有轨），旋律轨由 pickMelodyTrack 判定
+    int mainTrack = pickMelodyTrack(data, nullptr);
 
     // 按小节分组音符
     double barLen = data.timeSig.barLengthTicks(data.division);

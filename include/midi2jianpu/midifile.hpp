@@ -97,6 +97,12 @@ struct MidiData {
     std::vector<LyricEvent> midiLyrics;     // MIDI内置歌词(0x05 meta)
     std::vector<TextEvent> textEvents;      // 文本事件(0x01 meta)
     std::vector<MarkerEvent> markers;       // 标记事件(0x06 meta)
+
+    // MIDI 通道 10（channel index 9）是打击乐专用通道：音高代表底鼓/军鼓/踩镲
+    // 这些鼓件，而不是音级。简谱没有对应的记法，把它当旋律转出来只会得到
+    // `1,, #4,, #6,,` 这种垃圾，并且会因为音符数最多而抢走「旋律轨」身份。
+    // 所以解析阶段就丢弃，这里只留下数量供 CLI 提示用户。
+    int drumNotesSkipped = 0;
 };
 
 bool loadMidiFile(const std::string& path, MidiData& out);
