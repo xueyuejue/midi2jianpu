@@ -87,7 +87,7 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     <label class="hint"><input type="checkbox" id="useMidiLyrics" checked> 使用 MIDI 自带歌词</label>
     <span class="hint" id="midiLyricHint"></span>
   </div>
-  <div class="hint">歌词会按时间戳对齐到音符，只显示在旋律轨上；一字多音会画连音线，下载 MusicXML 也带词。文件自带歌词时无需再找 LRC，粘贴的 LRC 优先级更高。中途变拍号、弱起、变速、转调会自动识别：前三者按段划分小节线，转调则按段重算唱名。中国民歌/古风曲若只用五声音阶，自动识别会按宫音定 1（如 G 徵调式记 1=C 而不是 1=G），关掉上方复选框可回到大小调判定。</div>
+  <div class="hint">歌词会按时间戳对齐到音符，只显示在旋律轨上；一字多音会画连音线，下载 MusicXML 也带词。文件自带歌词时无需再找 LRC，粘贴的 LRC 优先级更高。中途变拍号、弱起、变速、转调会自动识别：前三者按段划分小节线，转调则按段重算唱名。中国民歌/古风曲若只用五声音阶，自动识别会按宫音定 1（如 G 徵调式记 1=C 而不是 1=G），关掉上方复选框可回到大小调判定。LRC 的 [mm:ss.xx] 会按曲中变速分段换算成谱面位置，也支持 [offset:±毫秒] 与一行多个时间戳。</div>
   <input type="file" id="lyricsFile" accept=".lrc" style="display:none">
 </details>
 
@@ -160,6 +160,10 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     if (wasmMod._midi2jianpu_key_change_count) {
       var k = wasmMod._midi2jianpu_key_change_count(p, midiBytes.length);
       if (k > 0) hints.push('检测到 ' + k + ' 处转调，唱名已按段换算');
+    }
+    if (wasmMod._midi2jianpu_tempo_change_count && $('lyricsText').value.trim()) {
+      var tc = wasmMod._midi2jianpu_tempo_change_count(p, midiBytes.length);
+      if (tc > 0) hints.push('检测到 ' + tc + ' 处变速，LRC 已按 tempo map 分段对齐');
     }
     if (wasmMod._midi2jianpu_pentatonic_info && $('key').value.indexOf('-1') === 0) {
       var pi = wasmMod._midi2jianpu_pentatonic_info(p, midiBytes.length);
@@ -237,6 +241,8 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
   lyricsArea.oninput = function () {
     if (!midiBytes) return;
     clearTimeout(lyricTimer);
+    // 变速提示只在「有粘贴歌词」时显示，输入变化时也要跟着刷新
+    if (wasmReady) updateFileHints();
     lyricTimer = setTimeout(convert, 500);
   };
 

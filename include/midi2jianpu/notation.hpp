@@ -130,6 +130,22 @@ std::vector<LyricLine> parseLrcLines(const std::string& lrcPath, int division, i
 // WASM 版没有文件系统，只能走这个入口。
 std::vector<LyricLine> parseLrcText(const std::string& lrc, int division, int bpm);
 
+// ---- 按 tempo map 对齐的 LRC 入口（推荐）----
+// LRC 的时间戳是真实秒，谱面用 tick。上面三个 (division, bpm) 版本把整首歌
+// 当成一个恒定速度，变速曲目的后半段歌词会整体错位（120→60 BPM 时能差出
+// 一整个小节）。新重载接收 MidiData，用 TempoTimeline 逐段反解秒 -> tick。
+// 旧签名保留给不关心变速的调用方，内部按曲首单速构造一条等价时间轴。
+//
+// 同时支持 LRC 的两项常见约定：
+//   [offset:±毫秒]              所有时间戳整体平移（正=延后）
+//   [mm:ss.xx][mm:ss.xx]同一行   一行词在多个时间点重复出现
+std::vector<LyricSyllable> parseLrc(const std::string& lrcPath, const MidiData& data);
+std::vector<LyricLine> parseLrcLines(const std::string& lrcPath, const MidiData& data);
+std::vector<LyricLine> parseLrcText(const std::string& lrc, const MidiData& data);
+
+// 实质变速点数（供 CLI / 网页提示「LRC 已按 N 处变速分段对齐」）。
+int tempoChangeCount(const MidiData& data);
+
 // ---- 歌词对齐结果 ----
 // 一个字落在哪个音上、以及它「唱」了几个音。noteCount >= 2 就是一字多音
 // （melisma）：HTML 要画连音线，MusicXML 要写 syllabic=begin/middle/end 与 <slur>。

@@ -3,7 +3,7 @@
 //       和弦检测、同音合并、MusicXML 相关的基础数据结构、
 //       鼓轨过滤、旋律轨判定、变速（tempo map）换算、内置歌词规整、
 //       拍号 map 与逐小节网格、调号 map（中途转调 / KeyMap）、
-//       五声调式（宫商角徵羽）宫音判定与校正。
+//       五声调式（宫商角徵羽）宫音判定与校正、tempo map 时间轴与 LRC 对齐。
 #include "midi2jianpu/notation.hpp"
 
 #include <algorithm>
@@ -1205,6 +1205,107 @@ int main() {
               "降号宫音写 Bb 而不是 A#: " + bbGong.scaleLabel);
         check(prefersFlats(bbGong) && keyFifths(bbGong) == -2,
               "降号宫音的等音写法与调号一致");
+    }
+
+    // ---- TempoTimeline：tick <-> 秒 ----
+    {
+        MidiData d;
+        d.division = 480;
+        d.timeSig = TimeSignature{4, 2, true};
+        d.tempoChanges = {{0, 120.0}, {7680, 60.0}};   // 第 5 小节起减半速
+        const TempoTimeline tl(d);
+        check(tl.changeCount() == 1 && tempoChangeCount(d) == 1,
+              "一处实质变速");
+        check(std::abs(tl.tickToSeconds(0) - 0.0) < 1e-9, "原点 0 tick = 0 秒");
+        check(std::abs(tl.tickToSeconds(7680) - 8.0) < 1e-9,
+              "120BPM 段 7680 tick = 8 秒");
+        check(std::abs(tl.tickToSeconds(9600) - 12.0) < 1e-9,
+              "60BPM 段 9600 tick = 12 秒");
+        check(tl.secondsToTick(12.0) == 9600, "12 秒反解回 9600 tick");
+        check(tl.secondsToTick(20.0) == 13440, "20 秒反解回 13440 tick");
+        check(tl.secondsToTick(24.0) == 15360, "越过末段按末段速度外推");
+        check(tl.secondsToTick(-1.0) == -960, "负秒按曲首速度线性外推");
+        bool roundTrip = true;
+        for (long t : {0L, 1920L, 7680L, 9600L, 13440L, 15360L})
+            if (tl.secondsToTick(tl.tickToSeconds(t)) != t) roundTrip = false;
+        check(roundTrip, "变速前后 tick/秒 往返无损");
+
+        const TempoTimeline messy({{7680, 60.0}, {0, 120.0}, {3840, 240.0}}, 480);
+        check(messy.changeCount() == 2, "乱序 set_tempo 先按 tick 排序");
+        check(std::abs(messy.tickToSeconds(3840) - 4.0) < 1e-9,
+              "乱序表第一段仍是 120BPM");
+        check(std::abs(messy.tickToSeconds(7680) - 6.0) < 1e-9,
+              "乱序表第二段按 240BPM 累积");
+        const TempoTimeline dup({{0, 120.0}, {3840, 60.0}, {3840, 240.0}}, 480);
+        check(dup.changeCount() == 1 && dup.segments().size() == 2,
+              "同 tick 重复声明只留一段");
+        const TempoTimeline head({{0, 60.0}}, 480);
+        check(head.changeCount() == 0 &&
+              std::abs(head.tickToSeconds(480) - 1.0) < 1e-9,
+              "曲首 set_tempo 生效但不算变速点");
+        MidiData plain;
+        plain.division = 480;
+        check(TempoTimeline(plain).changeCount() == 0,
+              "没有 0x51 事件时按 MIDI 默认 120BPM");
+        check(tempoChangeCount(plain) == 0, "单调速文件 tempoChangeCount = 0");
+    }
+
+    // ---- LRC 时间戳按 tempo map 反解，而不是固定 secPerBeat ----
+    {
+        MidiData d;
+        d.division = 480;
+        d.tempoChanges = {{0, 120.0}, {7680, 60.0}};
+        const std::string lrc =
+            "[ti:变速测试]\n"
+            "[00:00.00]春风又绿\n"
+            "[00:02.00]江南岸边\n"
+            "[00:12.00]又东风起\n"
+            "[00:20.00]回首月中\n";
+        const auto fixed = parseLrcText(lrc, 480, 120);   // 旧签名：曲首速度一把梭
+        const auto mapped = parseLrcText(lrc, d);          // 新签名：分段反解
+        check(fixed.size() == 4 && mapped.size() == 4, "两种签名都读出 4 行 LRC");
+        check(fixed[0].startTick == 0 && mapped[0].startTick == 0,
+              "曲首时间戳两种换算一致");
+        check(fixed[1].startTick == 1920 && mapped[1].startTick == 1920,
+              "变速前的时间戳两种换算一致");
+        check(fixed[2].startTick == 11520 && mapped[2].startTick == 9600,
+              "12 秒：固定 BPM 算 11520（错一小节），tempo map 算 9600");
+        check(fixed[3].startTick == 19200 && mapped[3].startTick == 13440,
+              "20 秒：固定 BPM 已超出曲终，tempo map 落在第 8 小节");
+        check(mapped[0].text == "春风又绿" && mapped[3].text == "回首月中",
+              "元数据行被跳过，歌词文本无损");
+
+        const auto offNeg = parseLrcText(
+            "[offset:-2000]\n[00:02.00]甲\n[00:14.00]乙\n", d);
+        // 14 秒 - 2 秒 = 12 秒，落在 60BPM 段 -> tick 9600
+        check(offNeg.size() == 2 && offNeg[0].startTick == 0 &&
+              offNeg[1].startTick == 9600, "负 [offset:] 把秒数拉回");
+        const auto offPos = parseLrcText(
+            "[OFFSET:2000]\n[00:00.00]甲\n", d);
+        check(offPos.size() == 1 && offPos[0].startTick == 1920,
+              "正 [offset:] 且标签大写也生效");
+        const auto offLast = parseLrcText(
+            "[offset:1000]\n[offset:-1000]\n[00:02.00]甲\n", d);
+        check(offLast.size() == 1 && offLast[0].startTick == 960,
+              "多个 [offset:] 取最后一个");
+
+        const auto multi = parseLrcText(
+            "[00:08.00][00:00.00]甲乙\n[00:02.00]丙丁\n", d);
+        check(multi.size() == 3, "一行两个时间戳产生两行词");
+        check(multi[0].startTick == 0 && multi[0].text == "甲乙",
+              "多时间戳结果按 tick 升序稳定排序");
+        check(multi[1].startTick == 1920 && multi[1].text == "丙丁",
+              "多时间戳不挤掉相邻行");
+        check(multi[2].startTick == 7680 && multi[2].text == "甲乙",
+              "8 秒处的重复句落在变速点");
+
+        check(!parseLrcText("乱码\n[ti:x]\n[\n[00:01.00]好\n", d).empty(),
+              "畸形 LRC 不崩且仍能读到正常行");
+        check(parseLrcText("[ar:某人]\n[al:专辑]\n", d).empty(),
+              "纯元数据 LRC 返回空");
+        check(parseLrcText("[00:01.00]甲\n", 0, 120).empty() &&
+              parseLrcText("[00:01.00]甲\n", 480, 0).empty(),
+              "非法 division / bpm 时旧签名安全返回空");
     }
 
     std::cout << "\n------------------------------------------------\n";

@@ -127,6 +127,7 @@ const REQUIRED = [
   '_midi2jianpu_result_len',
   '_midi2jianpu_copy_result',
   '_midi2jianpu_key_change_count', // 网页的转调提示
+  '_midi2jianpu_tempo_change_count', // 网页的「LRC 已按变速分段对齐」提示
   '_midi2jianpu_set_use_pentatonic', // 网页的五声校正开关
   '_midi2jianpu_pentatonic_info', // 网页的调式提示
   '_malloc',
@@ -468,7 +469,50 @@ if (existsSync(pentPath)) {
   check(false, '素材 pentatonic.mid 存在（先跑 make_fixture.py）');
 }
 
-// ---- 16. 坏数据不能把整页搞崩 ----
+// ---- 16. LRC 时间轴 × tempo map（网页版走的是同一套 C++ 解析器）----
+const tlPath = path.join(FIXTURES, 'tempolrc.mid');
+const tlLrcPath = path.join(FIXTURES, 'tempolrc.lrc');
+if (existsSync(tlPath) && existsSync(tlLrcPath)) {
+  const tlBytes = new Uint8Array(readFileSync(tlPath));
+  const tlLrc = readFileSync(tlLrcPath, 'utf8');
+  const tlOffLrc = readFileSync(path.join(FIXTURES, 'tempolrc_offset.lrc'), 'utf8');
+  const expect = '春风又绿江南岸边明月何时照我还乡小楼昨夜又东风起故国不堪回首月中';
+
+  const tq = mod._malloc(tlBytes.length);
+  mod.HEAPU8.set(tlBytes, tq);
+  check(mod._midi2jianpu_tempo_change_count(tq, tlBytes.length) === 1,
+    '变速点查询返回 1 处（120 -> 60 BPM）');
+  mod._free(tq);
+  const sq0 = mod._malloc(sampleMidi.length);
+  mod.HEAPU8.set(sampleMidi, sq0);
+  check(mod._midi2jianpu_tempo_change_count(sq0, sampleMidi.length) === 0,
+    '单调速素材不报变速');
+  mod._free(sq0);
+
+  const tc = makeCaller(mod);
+  tc.setMidi(tlBytes);
+  tc.setLyrics(tlLrc);
+  tc.setTitle('变速歌词测试');
+  const th = tc.call('midi2jianpu_html', -1, 1);
+  const htmlWords = th ? [...th.matchAll(/class='lyric'>([^<]*)</g)].map(m => m[1]).join('') : '';
+  check(htmlWords === expect,
+    'WASM HTML 逐字写出 32 个歌词字（后半段没跑偏）', htmlWords);
+
+  const tx = tc.call('midi2jianpu_musicxml', -1, 1);
+  const xmlWords = tx ? [...tx.matchAll(/<text>(.*?)<\/text>/g)].map(m => m[1]).join('') : '';
+  check(xmlWords === expect,
+    'WASM MusicXML 的 <lyric> 也是完整 32 字', xmlWords);
+
+  tc.setLyrics(tlOffLrc);
+  const thOff = tc.call('midi2jianpu_html', -1, 1);
+  const offWords = thOff ? [...thOff.matchAll(/class='lyric'>([^<]*)</g)].map(m => m[1]).join('') : '';
+  check(offWords === expect,
+    'WASM 版 [offset:-2000] 与主 LRC 等价', offWords);
+} else {
+  check(false, '素材 tempolrc.mid / tempolrc.lrc 存在（先跑 make_fixture.py）');
+}
+
+// ---- 17. 坏数据不能把整页搞崩 ----
 c.setMidi(new Uint8Array([1, 2, 3, 4, 5]));
 const bad = c.call('midi2jianpu_parse', -1, 1);
 check(typeof bad === 'string' && bad.length > 0, '非法 MIDI 返回错误文本而非崩溃', bad);

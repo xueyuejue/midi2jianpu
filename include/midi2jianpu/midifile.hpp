@@ -149,6 +149,39 @@ struct MidiData {
     bool usePentatonic = true;
 };
 
+// ---- 时间轴（tick <-> 秒）----
+// 一段恒定速度的区间：从 tick 起、该点对应的真实秒数、以及本段的
+// 每四分音符微秒数。按 tick 升序，segments[0].tick 恒为 0。
+struct TempoSegment {
+    long tick = 0;
+    double seconds = 0.0;
+    double usPerQuarter = 500000.0;
+};
+
+// 把 set_tempo 序列编译成一张可双向查询的时间轴。
+//
+// LRC 歌词的时间戳是「真实秒」，而谱面里一切都是 tick。原先 LRC 解析用
+// 固定的 `60/bpm` 做秒 -> tick，变速曲目的后半段会整体错位（120→60 BPM
+// 时两小节后能差出整整一小节）。音符秒数的换算早就按分段做了，但那段
+// 逻辑藏在 recomputeSeconds 的局部 lambda 里，外面复用不到。现在抽出来，
+// 让音符秒数、LRC 歌词、以及任何将来看时间的功能共用同一张表。
+class TempoTimeline {
+public:
+    TempoTimeline() = default;  // 120 BPM，division 480
+    TempoTimeline(const std::vector<TempoPoint>& changes, int division);
+    explicit TempoTimeline(const MidiData& data);
+
+    double tickToSeconds(long tick) const;   // 支持负 tick / 越过末段外推
+    long secondsToTick(double seconds) const;  // 反解，四舍五入到整数 tick
+    int changeCount() const { return (int)segments_.size() - 1; }  // 实质变速点数
+    int division() const { return division_; }
+    const std::vector<TempoSegment>& segments() const { return segments_; }
+
+private:
+    std::vector<TempoSegment> segments_{{0, 0.0, 500000.0}};
+    int division_ = 480;
+};
+
 // ---- 小节网格 ----
 // 有弱起时，bar 0 是那半截不完整的小节，完整小节从 1 起算；没有弱起时
 // bar 0 就是第 1 小节。所有「tick -> 小节」的换算都必须走这三个函数，
