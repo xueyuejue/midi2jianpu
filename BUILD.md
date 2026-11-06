@@ -139,6 +139,7 @@ cd emsdk
 ./emsdk install latest        # Windows: emsdk.bat install latest
 ./emsdk activate latest
 source ./emsdk_env.sh         # Windows: emsdk_env.bat
+emcc -v                       # 应打印 6.0.x / clang 24
 ```
 
 ### 二、编译
@@ -154,9 +155,29 @@ cp build-wasm/midi2jianpu.js   docs/wasm/
 cp build-wasm/midi2jianpu.wasm docs/wasm/
 ```
 
+> **Windows 上没有 ninja / make**：`emcmake cmake` 需要 Ninja 或 Make 生成器，
+> MSVC 的默认生成器驱动不了 emcc。装一个 ninja（或 `pip install ninja`、
+> `choco install ninja`）后用 `emcmake cmake -G Ninja -B build-wasm -S . -DM2J_BUILD_WASM=ON`；
+> 实在装不上就直接调 `em++`，参数与 CMakeLists 完全一致：
+>
+> ```bash
+> em++ -std=c++17 -O2 -Iinclude \
+>   src/wasm_bindings.cpp src/midifile.cpp src/notation.cpp \
+>   src/html_writer.cpp src/musicxml_writer.cpp \
+>   -o build-wasm/midi2jianpu.js \
+>   -sEXPORTED_FUNCTIONS='["_malloc","_free","_midi2jianpu_parse","_midi2jianpu_html","_midi2jianpu_musicxml","_midi2jianpu_result_len","_midi2jianpu_copy_result","_midi2jianpu_set_lyrics","_midi2jianpu_get_notes_json"]' \
+>   -sEXPORTED_RUNTIME_METHODS='["UTF8ToString","lengthBytesUTF8","stringToUTF8","HEAPU8"]' \
+>   -sMODULARIZE=1 -sEXPORT_NAME=createMidi2Jianpu \
+>   -sALLOW_MEMORY_GROWTH=1 -sENVIRONMENT=web,node
+> ```
+
 产物 `midi2jianpu.js` + `midi2jianpu.wasm`，`docs/index.html` 直接加载这两个文件。
-`-sENVIRONMENT=web,node` 是特意留的：`web` 供浏览器，`node` 让上面的冒烟测试
-能在命令行跑；若只留 `web`，Node 里加载会直接报环境不支持。
+两个链接参数有坑，改之前先看：
+
+- `-sENVIRONMENT=web,node`：`web` 供浏览器，`node` 让冒烟测试能在命令行跑；只留 `web` 时 Node 加载会直接报环境不支持。
+- `-sEXPORTED_RUNTIME_METHODS` 必须含 `HEAPU8`：新版 Emscripten 不再默认把内存视图挂到
+  Module 上，而网页正是用 `wasmMod.HEAPU8.set(bytes, ptr)` 把 MIDI 写进 wasm 内存的。
+  漏了它页面不报错、只是转换永远没结果——`wasm_smoke.mjs` 会先一步把这它测出来。
 
 用 `file://` 打开会因浏览器跨域策略拒绝加载 `.wasm`，本地预览请起一个 HTTP 服务：
 
@@ -194,7 +215,7 @@ _midi2jianpu_copy_result    拷出结果
 
 > **注意**：网页上的「下载 MusicXML」按钮做了能力探测——若 `docs/wasm/midi2jianpu.wasm`
 > 是在 `_midi2jianpu_musicxml` 导出加入之前编译的，会提示改用命令行版，而不是静默失败。
-> 重新编译并覆盖 `docs/wasm/` 后按钮即生效。
+> 当前仓库里的产物已包含该导出（Emscripten 6.0.13 编译）。
 
 ## 常见问题
 
