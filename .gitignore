@@ -1,0 +1,44 @@
+# --- 构建产物 ---
+build/
+out/
+cmake-build-*/
+*.o
+*.obj
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+*.exp
+Makefile
+CMakeCache.txt
+CMakeFiles/
+
+# --- 编辑器 / 系统 ---
+.vs/
+.vscode/
+.idea/
+*.user
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- 测试临时输出 ---
+tests/out/
+*.mid.tmp
+*.lrc.tmp
+
+# --- 敏感信息（绝不要提交） ---
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+.env
+.env.*
+
+# --- 绿色便携目录 ---
+# 它本来就在仓库外（githubinfo/portable/），这里是双保险：
+# 万一有人把它误拷进仓库，也不会被提交。
+portable/
+CREDENTIALS.md
+*.bak.*

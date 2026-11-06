@@ -211,6 +211,14 @@ document.getElementById('downloadPng').onclick = function() {
 // 下载MusicXML
 document.getElementById('downloadXml').onclick = function() {
   if (!wasmMod || !midiBytes) return;
+  // 能力探测：仓库里的 wasm 产物可能早于 MusicXML 功能编译，直接调用会抛
+  // "not a function"。这里给出可读提示，而不是让用户看到晦涩的异常。
+  if (typeof wasmMod._midi2jianpu_musicxml !== 'function') {
+    alert('当前网页版的 wasm 尚未包含 MusicXML 导出。\n\n' +
+          '请用命令行版：\n  midi2jianpu 你的歌.mid --musicxml out.xml\n\n' +
+          '（重新编译 wasm 的方法见 BUILD.md 的「WebAssembly」一节）');
+    return;
+  }
   try {
     const [keyPitch, isMajor] = document.getElementById('key').value.split(':').map(Number);
     const ptr = wasmMod._malloc(midiBytes.length);

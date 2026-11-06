@@ -39,6 +39,8 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
     pos += 2;                       // format
     pos += 2;                       // ntrks
     out.division = rd16(d + pos); pos += 2;
+    if (out.division == 0) out.division = 480;   // 防除零：非法 division 回退到 480
+    if (hdrLen < 6) return false;
     pos += (hdrLen - 6);
 
     double tempo = out.tempo;
@@ -57,6 +59,8 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
 
         long absTick = 0;
         uint8_t runningStatus = 0;
+        // RPN 状态必须是"每轨"的局部变量：曾用 static，导致跨轨/跨文件串味
+        int rpnMSB = -1, rpnLSB = -1;
 
         while (pos < trkEnd) {
             uint32_t delta = readVarLen(d, size, pos);
@@ -102,8 +106,13 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
                     }
                 }
             } else if (status == 0xFFu) {
+                if (pos >= trkEnd) break;
                 uint8_t metaType = d[pos++];
                 uint32_t metaLen = readVarLen(d, size, pos);
+                // 越界保护：损坏文件里 meta 长度可能超出轨道范围
+                if (pos + metaLen > trkEnd) {
+                    metaLen = (trkEnd > pos) ? (uint32_t)(trkEnd - pos) : 0;
+                }
                 if (metaType == 0x51u && metaLen >= 3) {  // set_tempo
                     tempo = (double)((d[pos] << 16) | (d[pos+1] << 8) | d[pos+2]);
                     double bpm = 60000000.0 / tempo;
@@ -145,10 +154,9 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
                 uint8_t ctrl = d[pos++];
                 uint8_t val = d[pos++];
                 if (ctrl == 0x0Bu) {  // Expression
-                    out.dynamics.push_back({absTick, (int)val});
+                    out.dynamics.push_back({absTick, (int)val, (int)channel});
                 }
                 // RPN跟踪: 0x65=RPN MSB, 0x64=RPN LSB, 0x06=Data Entry MSB
-                static int rpnMSB = -1, rpnLSB = -1;
                 if (ctrl == 0x65u) rpnMSB = val;
                 else if (ctrl == 0x64u) rpnLSB = val;
                 else if (ctrl == 0x06u && rpnMSB == 0 && rpnLSB == 0) {
@@ -159,8 +167,12 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
                 uint8_t lsb = d[pos++];
                 uint8_t msb = d[pos++];
                 int bend = (msb << 7) | lsb;
-                out.pitchBends.push_back({absTick, bend});
-            } else if (type == 0xC0u || type == 0xDu) {
+                out.pitchBends.push_back({absTick, bend, (int)channel});
+            } else if (status == 0xF0u || status == 0xF7u) {
+                // SysEx：按长度整体跳过，否则会把后续事件错位解析
+                uint32_t sxLen = readVarLen(d, size, pos);
+                pos += sxLen;
+            } else if (type == 0xC0u || type == 0xD0u) {
                 pos += 1;
             } else {
                 pos += 1;

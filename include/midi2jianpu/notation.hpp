@@ -11,13 +11,24 @@ struct KeyEstimate {
     bool isMajor = true;
 };
 
-// 根据 MIDI 数据估计调性（优先用内置调号，否则强拍加权猜测）
+// 根据 MIDI 数据估计调性（优先用内置调号，否则 Krumhansl-Schmuckler 相关度匹配）
 KeyEstimate estimateKey(const MidiData& data);
+
+// 调性名（自动选择升/降写法，如 "Bb" 而不是 "A#"）
+std::string keyName(const KeyEstimate& key);
+
+// 该调性是否习惯用降号记谱（调号含降号）
+bool prefersFlats(const KeyEstimate& key);
+
+// 调号升降数（-7..+7），供 MusicXML 等输出使用
+int keyFifths(const KeyEstimate& key);
 
 // 单个音高 -> 简谱片段（只含数字/升降/八度，不含时值）
 std::string pitchToJianpu(int pitch, const KeyEstimate& key);
 
-// 时值 tick -> 简谱时值后缀（延长线），如四分音符="", 二分音符="-", 全音符="--"
+// 时值 tick -> 简谱时值后缀（延长线/下划线）
+//   4拍="---" 3拍="--" 2拍="-" 附点四分="." 四分=""
+//   附点八分="_." 八分="_" 附点十六="=." 十六="=" 三十二="%%"
 std::string durationSuffix(long durationTicks, int division);
 
 // 把音符列表格式化成文本简谱（含拍号、小节线、时值）
