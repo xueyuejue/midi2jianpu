@@ -233,6 +233,9 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         // 但这里必须排除多声部：C 和弦的 5 和下一个 G 和弦的 5 音高相同、
         // 时间也相接，合并后 G 和弦就少了一个音。只在「该时刻只有一个音」时
         // 才允许合并。
+        //
+        // 也不能跨小节线合并：真实演奏里同音相邻几乎都是两次发音而不是延音，
+        // 合并会把小节线上的音吞掉（第 15 小节开头的 6 变成 `-`）。
         auto triplets0 = detectTriplets(ns, data.division);
         std::map<long, int> onsetCount;
         for (const auto& n : ns) onsetCount[n.startTicks]++;
@@ -247,7 +250,8 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             if (i > 0 && !triplets0[i] && !triplets0[i - 1] && !merged.empty() &&
                 ns[i].pitch == merged.back().pitch &&
                 ns[i].startTicks == merged.back().startTicks + merged.back().durationTicks &&
-                isSingle(ns[i].startTicks) && isSingle(merged.back().startTicks)) {
+                isSingle(ns[i].startTicks) && isSingle(merged.back().startTicks) &&
+                (long)(ns[i].startTicks / barLen) == (long)(merged.back().startTicks / barLen)) {
                 merged.back().durationTicks += ns[i].durationTicks;
                 merged.back().durationSeconds += ns[i].durationSeconds;
                 continue;
@@ -355,11 +359,23 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             int bar = (int)(n.startTicks / barLen);
 
             if (bar != curBar) {
-                if (curBar >= 0) {
-                    body << "</span>";                 // 收尾上一个小节
-                    // 每 measuresPerRow 个小节换一行
-                    if (bar % measuresPerRow == 0) body << "</div><div class='row'>";
+                if (curBar >= 0) body << "</span>";   // 收尾上一个小节
+
+                // 补齐开头与中间完全空的小节。
+                // 原来这里直接跳过，谱面第一小节标号是「5」、中途还会跳号，
+                // 和 MusicXML（那边是补齐的）对不上，也不像一份能照着唱的谱子。
+                int from = (curBar >= 0) ? curBar + 1 : 0;
+                for (int b = from; b < bar; b++) {
+                    if (b > 0 && b % measuresPerRow == 0) body << "</div><div class='row'>";
+                    body << "<span class='measure'>";
+                    if (b > 0) body << "<span class='barno'>" << (b + 1) << "</span>";
+                    body << noteColumn("0", 0, 0, beatsPerBar, "") << "</span>";
+                    prevEnd = std::max(prevEnd, (long)((b + 1) * barLen));
                 }
+
+                // 每 measuresPerRow 个小节换一行
+                if (bar > 0 && bar % measuresPerRow == 0) body << "</div><div class='row'>";
+
                 curBar = bar;
                 openBar(bar, n.startTicks, n.channel);
             } else if (inTriplet && !grp[0]->trip) {
