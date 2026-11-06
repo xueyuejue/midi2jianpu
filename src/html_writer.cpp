@@ -132,6 +132,17 @@ static std::string withChord(const std::string& col, const std::string& chord) {
            col.substr(p + 1);
 }
 
+// 断音 / 重音 / 滑音记号同样浮在音符列里、不占宽度。
+// 放在右上角而不是正中：上八度点占的是正中那 12px，两者会叠在一起。
+static std::string withArticulation(const std::string& col, const std::string& art) {
+    if (art.empty()) return col;
+    size_t p = col.find('>');
+    if (p == std::string::npos) return col;
+    return col.substr(0, p + 1) +
+           "<span class='artic'>" + htmlEscape(art) + "</span>" +
+           col.substr(p + 1);
+}
+
 // 生成和弦列：同一时刻发声的多个音竖向叠写，共用一个时值线。
 //
 // 简谱里和弦就是上下对齐的几行数字。若不叠排而顺序输出，一个三音和弦会被
@@ -182,6 +193,8 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
     // 调性也和网格一样是「按位置查表」：中途转调后同一个 MIDI 音高的唱名
     // 要随所在小节重算，页眉与谱面标记都由它给出。
     const KeyMap keys(data, key);
+    // 力度 / 渐强渐弱 / 断音 / 滑音 / 段落：三个输出层共用同一份判定结果。
+    const ExpressionMap expr(data);
 
     // 和弦检测。按「和声窗」而不是整小节（4/4 半小节、6/8 附点四分），
     // 所以索引键是准确的 tick，同一小节里可以有多个和弦。
@@ -387,22 +400,21 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             }
 
 
-            // 力度记号按通道取，变化时才写
-            if (!data.dynamics.empty()) {
-                int val = -1;
-                for (const auto& dp : data.dynamics) {
-                    if (dp.tick > firstTick) break;
-                    if (dp.channel == channel) val = dp.value;
-                }
-                if (val >= 0) {
-                    const char* dyn = "mf";
-                    if (val < 20) dyn = "pp"; else if (val < 40) dyn = "p";
-                    else if (val < 60) dyn = "mp"; else if (val < 80) dyn = "mf";
-                    else if (val < 100) dyn = "f"; else dyn = "ff";
-                    if (lastDyn != dyn) {
-                        body << "<span class='dyn'>" << dyn << "</span>";
-                        lastDyn = dyn;
-                    }
+            // 力度记号按通道取、变化时才写。分级表由 ExpressionMap 提供，
+            // 与文本谱、MusicXML 完全一致（旧版这里自己写了一套阈值）。
+            const std::string dyn = expr.dynamicAt(firstTick, channel);
+            if (!dyn.empty() && lastDyn != dyn) {
+                body << "<span class='dyn'>" << dyn << "</span>";
+                lastDyn = dyn;
+            }
+            // 段落名与渐强/渐弱是整份谱的事件，跟速度标记一样只印第一行谱，
+            // 否则每个伴奏轨都会重复一遍「副歌 / cresc.」。
+            if (showTempo) {
+                for (const auto& m : expr.inRange(grid.barStart(bar), grid.barEnd(bar))) {
+                    if (!m.section.empty())
+                        body << "<span class='section'>" << htmlEscape(m.section) << "</span>";
+                    if (m.wedge > 0) body << "<span class='wedge'>cresc.</span>";
+                    else if (m.wedge < 0) body << "<span class='wedge'>dim.</span>";
                 }
             }
             body << "</span><span class='notes'>";   // 标记行结束，音符行开始
@@ -496,6 +508,15 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                     if (keys.keyChangedAtBar(b, grid))
                         body << "<span class='keychg'>转 "
                              << "1=" << keyName(keys.keyAtBar(b, grid)) << "</span>";
+                    // 段落标记也可能落在纯休止的前奏小节上
+                    if (showTempo) {
+                        for (const auto& m : expr.inRange(grid.barStart(b), grid.barEnd(b))) {
+                            if (!m.section.empty())
+                                body << "<span class='section'>" << htmlEscape(m.section) << "</span>";
+                            if (m.wedge > 0) body << "<span class='wedge'>cresc.</span>";
+                            else if (m.wedge < 0) body << "<span class='wedge'>dim.</span>";
+                        }
+                    }
                     // 旋律还没进来、伴奏已经在走的前奏小节：和弦照标，
                     // 否则开头的 4 小节就是四块空白，看不出和声进行。
                     // 休止时值按本小节的实际长度算——弱起小节比正常小节短
@@ -565,9 +586,10 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                                   ? lyricForNote(n.startTicks) : std::string();
                 // 三连音走单独的时值档位，避免 1/3 拍被当成附点十六分
                 DurStyle ds = grp[0]->trip ? tripletStyleOf(beats) : durStyleOf(beats);
-                std::string col = withChord(
-                    noteColumn(num, highDots, lowDots, beats, syl, "", &ds),
-                    chordMarkFor(n.startTicks));
+                std::string col = withArticulation(
+                    withChord(noteColumn(num, highDots, lowDots, beats, syl, "", &ds),
+                              chordMarkFor(n.startTicks)),
+                    expr.noteAt(n.startTicks, n.channel).symbol());
                 const int g = hasSlur ? lyrics.groupAt(n.startTicks) : 0;
 
                 // 能否接上上一条减时线：同小节、首尾相接、减时线条数相同，
@@ -622,7 +644,9 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                     }
                     tones.push_back({num, {hi, lo}});
                 }
-                emit(withChord(chordColumn(tones, beats, ""), chordMarkFor(n.startTicks)),
+                emit(withArticulation(
+                         withChord(chordColumn(tones, beats, ""), chordMarkFor(n.startTicks)),
+                         expr.noteAt(n.startTicks, n.channel).symbol()),
                      n.startTicks);
             }
 
@@ -664,6 +688,13 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
        line-height:1;white-space:nowrap}
 .barno{font-size:10px;color:#c9c9c9;line-height:1;align-self:flex-start}
 .dyn{font-size:14px;font-style:italic;color:#999;line-height:1}
+/* 段落名（MIDI 0x06 marker）与渐强渐弱：和力度同在标记行，用颜色区分 */
+.section{font-size:11px;font-weight:700;color:#2f7a5a;line-height:1;
+         border:1px solid #cbe3d6;border-radius:3px;padding:1px 4px;background:#f3faf6}
+.wedge{font-size:12px;font-style:italic;color:#a36a2a;line-height:1}
+/* 断音/重音/滑音浮在音符列右上角：不占宽度，也不压住上八度点 */
+.artic{position:absolute;right:-8px;top:-3px;font-size:14px;line-height:1;
+       font-weight:700;color:#a33;white-space:nowrap;pointer-events:none}
 .tempo{font-size:11px;font-weight:600;color:#4a6fa5;line-height:1;
        border:1px solid #cdd8e8;border-radius:3px;padding:1px 4px;background:#f4f7fc}
 .meter{font-size:11px;font-weight:700;color:#8a5a2b;line-height:1;
@@ -778,6 +809,7 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
          << (pickupLabel(data).empty() ? "" : " ｜ " + pickupLabel(data))
          << (data.drumNotesSkipped > 0 ? " ｜ 已跳过鼓轨" : "")
          << (lyricLabel.empty() ? "" : " ｜ " + lyricLabel)
+         << (expr.summary().empty() ? "" : " ｜ " + expr.summary())
          << "</div>" << body.str()
          << "<footer class='footer'>由 midi2jianpu v" M2J_VERSION " 生成</footer>"
          << "</body></html>";

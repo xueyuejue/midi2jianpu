@@ -130,6 +130,8 @@ const REQUIRED = [
   '_midi2jianpu_tempo_change_count', // 网页的「LRC 已按变速分段对齐」提示
   '_midi2jianpu_set_use_pentatonic', // 网页的五声校正开关
   '_midi2jianpu_pentatonic_info', // 网页的调式提示
+  '_midi2jianpu_set_use_dynamics', // 网页的「力度与演奏法」开关
+  '_midi2jianpu_expression_count', // 网页的表情检出提示
   '_malloc',
   '_free',
 ];
@@ -518,6 +520,46 @@ const bad = c.call('midi2jianpu_parse', -1, 1);
 check(typeof bad === 'string' && bad.length > 0, '非法 MIDI 返回错误文本而非崩溃', bad);
 const badXml = c.call('midi2jianpu_musicxml', -1, 1);
 check(typeof badXml === 'string' && badXml.includes('<error>'), '非法 MIDI 的 MusicXML 返回 error 节点', badXml);
+
+// ---- 18. 演奏表情：网页开关、计数查询与三层输出 ----
+const exPath = path.join(FIXTURES, 'expression.mid');
+if (existsSync(exPath)) {
+  const exBytes = new Uint8Array(readFileSync(exPath));
+  const ep = mod._malloc(exBytes.length);
+  mod.HEAPU8.set(exBytes, ep);
+  check(mod._midi2jianpu_expression_count(ep, exBytes.length) === 24,
+    '表情计数查询返回 24 处（11 力度 + 2 渐变 + 6 演奏法 + 3 弯音 + 2 段落）',
+    mod._midi2jianpu_expression_count(ep, exBytes.length));
+  mod._midi2jianpu_set_use_dynamics(0);
+  check(mod._midi2jianpu_expression_count(ep, exBytes.length) === 0,
+    '关掉开关后表情计数返回 0（网页提示随之消失）');
+  mod._midi2jianpu_set_use_dynamics(1);
+  mod._free(ep);
+
+  const ec = makeCaller(mod);
+  ec.setMidi(exBytes);
+  ec.setTitle('表情测试');
+  const eh = ec.call('midi2jianpu_html', -1, 1) || '';
+  check(eh.includes("class='section'>Verse") && eh.includes("class='wedge'>cresc.") &&
+        eh.includes("class='artic'>↗"), 'WASM HTML 写出段落名 / 渐强 / 滑音');
+  const exml = ec.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(exml.includes('<staccatissimo/>') &&
+        exml.includes('<wedge type="crescendo"') &&
+        exml.includes('<trill-mark/>'), 'WASM MusicXML 写出断奏 / 渐强 / 颤音');
+  mod._midi2jianpu_set_use_dynamics(0);
+  const eoff = ec.call('midi2jianpu_html', -1, 1) || '';
+  check(!eoff.includes("class='section'>") && !eoff.includes("class='artic'>"),
+    'WASM 关掉开关后 HTML 无表情标记');
+  mod._midi2jianpu_set_use_dynamics(1);
+
+  const nj = ec.call('midi2jianpu_get_notes_json', -1, 1);
+  const n0 = JSON.parse(nj || '[]');
+  check(Array.isArray(n0) && n0.length > 0 && typeof n0[0].velocity === 'number',
+    '播放 JSON 带 note-on velocity（网页据此区分强弱）',
+    nj && nj.slice(0, 120));
+} else {
+  check(false, '素材 expression.mid 存在（先跑 make_fixture.py）');
+}
 
 console.log('');
 if (failures.length) {

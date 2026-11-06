@@ -2,9 +2,9 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 11 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 12 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
-tempolrc（另配 3 份 LRC 歌词）。
+tempolrc / expression（另配 3 份 LRC 歌词）。
 meter 是把变拍号、变速、鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」，
 modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五声调式
 （C 宫、G 徵调式，故意不写 0x59 逼自动猜调暴露宫音判错）。
@@ -680,6 +680,73 @@ def build_tempolrc() -> bytes:
     return header + t0.render() + t1.render()
 
 
+def build_expression() -> bytes:
+    """演奏表情压力素材：CC11 渐强/渐弱、note-on 力度重音、断奏、
+    弯音上滑/下滑/颤音、0x06 段落标记，全部混在同一条旋律上。
+
+    旋律刻意做成 32 个**等间隔四分音符**：MIDI 没有显式 staccato 事件，
+    短 note-off 既可能是断奏也可能是「短音符 + 休止」，只有在没有休止的
+    等间隔音符流里才能唯一判定，这正是 ExpressionMap 的判据前提。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120 BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调，避免五声校正干扰
+    t0.add(0, meta(0x06, b"Verse"))
+    t0.add(4 * BAR, meta(0x06, b"Chorus"))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    t1.program(0, 54, 0)
+    # CC11：第 1~2 小节渐强，第 5~6 小节渐弱；2400 的 95 把两段断开，
+    # 否则会被算法连成一整条单调链。
+    for tick, val in ((0, 30), (480, 45), (960, 60), (1440, 80), (1920, 100),
+                      (2400, 95),
+                      (7680, 110), (8160, 90), (8640, 70), (9120, 50), (9600, 25)):
+        t1.cc(0, 11, val, tick)
+
+    def bend(tick: int, value: int) -> None:
+        # 0xE0 的数据是 14 位：低 7 位在前、高 7 位在后
+        t1.add(tick, bytes([0xE0, value & 0x7F, (value >> 7) & 0x7F]))
+
+    # 上滑 / 下滑 / 颤音分别落在第 11、13、15 个音（tick 4800/5760/6720）
+    # 的发声区间内；回中事件刻意放到区间之外，免得把单调链折断。
+    for tick, v in ((4800, 8192), (4900, 9000), (5000, 10000), (5100, 11000)):
+        bend(tick, v)
+    bend(5250, 8192)
+    for tick, v in ((5760, 8192), (5860, 7400), (5960, 6600), (6060, 5800)):
+        bend(tick, v)
+    bend(6220, 8192)
+    for tick, v in ((6720, 8192), (6800, 10000), (6880, 6500),
+                    (6960, 10500), (7040, 6200), (7120, 10000)):
+        bend(tick, v)
+    bend(7250, 8192)
+
+    scale = ([60, 62, 64, 65, 67, 69, 71, 72,
+              72, 71, 69, 67, 65, 64, 62, 60] * 2)
+    for i, pitch in enumerate(scale):
+        tick = i * 480
+        vel = 120 if i % 8 == 3 else 80      # 每 8 个音一个重音
+        raw = 413                           # 0.86 门限，DAW 常见默认值
+        if i == 1:
+            raw = 120                       # 极短 -> 断奏（staccatissimo）
+        elif i == 2:
+            raw = 210                       # 偏短 -> 断奏（staccato）
+        t1.note(0, pitch, vel, tick, raw)
+
+    t2 = Track()
+    t2.add(0, meta(0x03, b"Piano"))
+    t2.program(1, 0, 0)
+    chords = [(48, 52, 55), (53, 57, 60), (55, 59, 62), (53, 57, 60)] * 2
+    for bar, chord in enumerate(chords):
+        for p in chord:
+            t2.note(1, p, 70, bar * BAR, BAR)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 3, DIV)
+    return header + t0.render() + t1.render() + t2.render()
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -774,6 +841,13 @@ def main() -> None:
         with open(path, "w", encoding="utf-8", newline="\n") as f:
             f.write(content)
         print(f"wrote {path}")
+
+    # 力度 / 渐强渐弱 / 断奏 / 重音 / 滑音 / 颤音 / 段落标记混合压力素材
+    exmid = os.path.join(here, "expression.mid")
+    with open(exmid, "wb") as f:
+        exdata = build_expression()
+        f.write(exdata)
+    print(f"wrote {exmid} ({len(exdata)} bytes)")
 
 
 if __name__ == "__main__":

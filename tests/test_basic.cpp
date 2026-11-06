@@ -1308,6 +1308,144 @@ int main() {
               "非法 division / bpm 时旧签名安全返回空");
     }
 
+    std::cout << "\n测试演奏表情分析 (ExpressionMap)\n";
+    {
+        MidiData d;
+        d.division = 480;
+        d.timeSig = TimeSignature{4, 2, true};
+        // 12 个等间隔四分音符：断奏只有在等间隔流里才可判定。
+        // rawDurationTicks 是量化前的门限，durationTicks 是量化后的记谱时值。
+        for (int i = 0; i < 12; i++) {
+            NoteEvent n;
+            n.startTicks = i * 480;
+            n.pitch = 60 + (i % 5);
+            n.track = 0;
+            n.channel = 0;
+            n.velocity = (i == 5 || i == 9) ? 122 : 80;
+            n.rawDurationTicks = (i == 1) ? 120 : ((i == 2) ? 210 : 413);
+            n.durationTicks = 480;
+            d.notes.push_back(n);
+        }
+        // 与旋律同 tick、不同通道的伴奏：不能继承旋律的断音/滑音
+        NoteEvent bass;
+        bass.startTicks = 480;
+        bass.durationTicks = 480;
+        bass.rawDurationTicks = 480;
+        bass.pitch = 48;
+        bass.track = 1;
+        bass.channel = 1;
+        bass.velocity = 70;
+        d.notes.push_back(bass);
+
+        d.dynamics = {{0, 30, 0}, {480, 45, 0}, {960, 60, 0},
+                      {1440, 80, 0}, {1920, 100, 0}, {2400, 95, 0},
+                      {2880, 110, 0}, {3360, 90, 0}, {3840, 70, 0},
+                      {4320, 50, 0}};
+        d.markers = {{0, "Verse"}, {2880, "Chorus"}};
+        // 上滑 / 下滑 / 颤音，回中事件刻意落在各音区间之外
+        d.pitchBends = {{0, 8192, 0}, {100, 9000, 0}, {200, 10000, 0},
+                        {300, 11000, 0}, {650, 8192, 0},
+                        {1920, 8192, 0}, {2000, 7400, 0}, {2100, 6600, 0},
+                        {2200, 5800, 0}, {2350, 8192, 0},
+                        {3360, 8192, 0}, {3420, 10000, 0}, {3480, 6500, 0},
+                        {3540, 10500, 0}, {3600, 6200, 0}, {3660, 10000, 0},
+                        {3800, 8192, 0}};
+
+        ExpressionMap e(d);
+        check(e.enabled(), "useDynamics 默认开启");
+        check(e.dynamicAt(0, 0) == "p" && e.dynamicAt(1920, 0) == "ff",
+              "CC11 按 tick 查当前力度档位");
+        check(e.dynamicAt(0, 1).empty(), "力度按通道隔离，伴奏不继承旋律曲线");
+        check(e.crescendoCount() == 1 && e.diminuendoCount() == 1,
+              "单调 CC11 序列各识别出 1 段渐强 / 渐弱");
+        check(e.sectionCount() == 2, "两个 0x06 marker 都成为段落名");
+        check(!e.marks().empty() && e.marks().front().section == "Verse",
+              "marks 按 tick 升序且同 tick 事件已合并");
+        check(e.inRange(2880, 3360).size() == 1, "inRange 只取该小节的标记");
+        check(e.noteAt(480, 0).staccatissimo, "极短门限判为断奏 staccatissimo");
+        check(e.noteAt(960, 0).staccato, "偏短门限判为断奏 staccato");
+        check(!e.noteAt(480, 1).any(), "伴奏轨不继承旋律的断音（按通道索引）");
+        check(e.noteAt(2400, 0).accent, "velocity 显著高于邻音判为重音");
+        check(!e.noteAt(1440, 0).accent, "普通力度不标重音");
+        check(e.noteAt(0, 0).bend == BendMark::SlideUp, "单调上行弯音判为上滑");
+        check(e.noteAt(1920, 0).bend == BendMark::SlideDown, "单调下行弯音判为下滑");
+        check(e.noteAt(3360, 0).bend == BendMark::Trill, "往复振荡弯音判为颤音");
+        check(e.noteAt(480, 0).symbol().find("\xE2\x96\xBC") != std::string::npos,
+              "symbol() 写出断奏记号");
+        check(e.noteAt(3360, 0).symbol() == "tr", "symbol() 写出颤音记号");
+        check(e.summary().find("渐强") != std::string::npos &&
+              e.summary().find("段落") != std::string::npos,
+              "summary 汇总各类表情");
+        check(e.totalCount() == e.dynamicCount() + e.crescendoCount() +
+                                e.diminuendoCount() + e.articulationCount() +
+                                e.bendCount() + e.sectionCount(),
+              "totalCount 与各项计数一致");
+        check(e.bendCount() == 3, "弯音记号共 3 个（上滑 / 下滑 / 颤音）");
+
+        // 力度档位表全档覆盖
+        MidiData lv;
+        lv.dynamics = {{0, 0, 0}, {10, 20, 0}, {20, 40, 0},
+                       {30, 60, 0}, {40, 80, 0}, {50, 100, 0}};
+        ExpressionMap le(lv);
+        check(le.dynamicAt(0, 0) == "pp" && le.dynamicAt(10, 0) == "p" &&
+              le.dynamicAt(20, 0) == "mp" && le.dynamicAt(30, 0) == "mf" &&
+              le.dynamicAt(40, 0) == "f" && le.dynamicAt(50, 0) == "ff",
+              "CC11 六档力度映射完整");
+        check(dynamicToMidiVolume("pp") == 30 && dynamicToMidiVolume("ff") == 100,
+              "MusicXML sound dynamics 百分比映射");
+
+        // 关掉开关：分析层整体静默，输出层不必各自判断
+        MidiData off = d;
+        off.useDynamics = false;
+        ExpressionMap z(off);
+        check(!z.enabled() && z.marks().empty() && z.dynamicAt(0, 0).empty() &&
+              !z.noteAt(480, 0).any() && z.summary().empty() && z.totalCount() == 0,
+              "--no-dynamics 让整张表情图为空");
+
+        // 等间隔闸门：节奏混合的音符流不判断奏
+        MidiData mixed = d;
+        mixed.notes.clear();
+        const long gaps[] = {0, 480, 960, 1680, 2400, 3600, 4080, 5040};
+        for (int i = 0; i < 8; i++) {
+            NoteEvent n;
+            n.startTicks = gaps[i];
+            n.durationTicks = 480;
+            n.rawDurationTicks = (i == 2) ? 100 : 413;
+            n.track = 0; n.channel = 0; n.velocity = 80; n.pitch = 60;
+            mixed.notes.push_back(n);
+        }
+        mixed.dynamics.clear(); mixed.markers.clear(); mixed.pitchBends.clear();
+        ExpressionMap me(mixed);
+        check(me.articulationCount() == 0,
+              "节奏混合的旋律里不误判断奏（宁可漏判也不污染谱面）");
+    }
+
+    std::cout << "\n测试解析层：velocity / 原始时值 / 事件排序\n";
+    {
+        // 轨 0 的 CC11 在 tick 500，轨 1 的在 tick 10：
+        // 按文件顺序解析会乱序，收齐后必须统一排序。
+        SmfTrack a, b;
+        a.at(0, ev({0x90, 60, 111}));
+        a.at(480, ev({0x80, 60, 0x40}));
+        a.at(500, ev({0xB0, 0x0B, 64}));
+        a.at(600, ev({0xFF, 0x06, 5, 'I', 'n', 't', 'r', 'o'}));
+        a.at(700, ev({0xE0, 0x00, 0x40}));
+        b.at(10, ev({0xB0, 0x0B, 32}));
+        auto bytes = buildSmf(2, 480, {a, b});
+        MidiData p;
+        check(loadMidiFromMemory(bytes.data(), bytes.size(), p), "解析两张轨的 SMF");
+        check(p.notes.size() == 1 && p.notes[0].velocity == 111,
+              "note-on velocity 存进 NoteEvent");
+        check(p.notes[0].rawDurationTicks == 480,
+              "量化前的原始发声时长独立保存");
+        check(p.dynamics.size() == 2 && p.dynamics[0].tick == 10 &&
+              p.dynamics[1].tick == 500, "多轨 CC11 事件按 tick 排序");
+        check(p.markers.size() == 1 && p.markers[0].text == "Intro",
+              "0x06 marker 解析为段落名");
+        check(p.pitchBends.size() == 1 && p.pitchBends[0].channel == 0,
+              "弯音事件带通道");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

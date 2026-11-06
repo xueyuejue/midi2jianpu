@@ -37,7 +37,7 @@
 - [x] **中途转调**：`1=C → 1=D → 1=F` 这类副歌升调 / 桥段转调的曲子，按 `0x59` 调号 map 逐段重算首调唱名（同一个 MIDI 音高在不同段落数字不同）；页眉写完整转调链，变化小节标 `转 1=D`，MusicXML 重写 `<key>`，和弦名的等音写法（Bb / A#）也跟着调走。`--key` 手工指定时转调链整体平移，`--no-key-changes` 可忽略
 - [x] 休止符 `0`（按时长显示时值线）
 - [x] 高低八度点、升降号 `#`/`b`（降号调自动优先写 `b`）
-- [x] 强弱记号（从 MIDI Expression 解析：pp/p/mp/mf/f/ff，按通道隔离）
+- [x] **力度与演奏法**：CC11 力度（pp/p/mp/mf/f/ff，按通道隔离）、渐强渐弱、段落标记（`0x06`）、note-on 重音、弯音上滑/下滑/颤音、等间隔断奏，统一由 `ExpressionMap` 判定后同步写进文本 / HTML / MusicXML；`--no-dynamics` 一键关闭，网页是「力度与演奏法」复选框
 - [x] 三连音自动识别（按 1/3 拍体系判定时值，八分音符连奏不会被误判），且按 1/3、1/6、1/12 拍单独取档位——三连八分只画一条减时线，不会被时值表最近的 0.375 档误判成附点十六分（两条线加一个点）
 - [x] 弯音轮修正（Pitch Bend 平均偏移 ±0.5 半音以上修正音高）
 - [x] **和弦检测**：自动识别伴奏轨和弦进行（C/Am/G7 等9种类型）；按「和声窗」而不是整小节判定（4/4 半小节、6/8 附点四分、3/4 整小节），`| C  Am |` 这种一小节两个和弦能分别标出，相邻同名自动合并
@@ -50,7 +50,7 @@
 - [x] `--version` 打印版本号
 - [x] **在线 Demo**：WASM 核心，浏览器内运行 C++ 代码
 - [x] **减时线按拍连通**：一拍内的八分/十六分音符共用一条横线（十六分再叠平行线），而不是每个音各画一小段；和弦的减时线只画在最下面那个音上
-- [x] 286 项单元测试 + 21 组端到端冒烟测试 + WASM 产物一致性检查
+- [x] 316 项单元测试 + 22 组端到端冒烟测试 + WASM 产物一致性检查
 
 ## 在线 Demo 功能
 
@@ -61,6 +61,7 @@
 - 在线播放（Web Audio API 合成）
 - 自动识别中途变拍号、中途转调、弱起、变速与鼓轨，无需任何开关；文件含转调时会提示「检测到 N 处转调，唱名已按段换算」
 - 纯五声旋律会提示「检测到 G 徵调式，1=C 按宫音校正」，另有「五声调式宫音校正」复选框可切回大小调判定
+- 文件里带力度 / 弯音 / 段落标记时提示「检测到 N 处演奏表情」，「力度与演奏法」复选框控制谱面记号的显示；在线播放按 note-on 力度区分音量
 - 下载 MusicXML（可用 MuseScore 继续编辑）
 - 下载 PNG 谱面
 - 复制简谱文本（一键复制到剪贴板）
@@ -130,6 +131,9 @@ Windows 产物在 `build\Release\midi2jianpu.exe`。详细说明、WASM 编译�
 
 # 关闭时值量化（保留 MIDI 里的原始时长，用于排查问题）
 ./build/midi2jianpu 你的歌.mid --no-quantize
+
+# 不想标力度 / 断音 / 滑音 / 段落名时（默认自动识别，无需参数）
+./build/midi2jianpu 你的歌.mid --no-dynamics --html 干净版.html
 ```
 
 打开 `简谱.html` 即可在浏览器查看、打印为 PDF。
@@ -299,13 +303,32 @@ Krumhansl-Schmuckler 用七声大/小调轮廓打分。纯五声旋律 `C D E G 
 | 文件带 `0x59` 调号 / 七声 / 偏音过多 | 以 MIDI 调号或 KS 为准，不做校正 |
 | 网页版 | 复选框「五声调式宫音校正」，提示「检测到 G 徵调式，1=C 按宫音校正」 |
 
+## 力度与演奏法
+
+解析层其实一直在读这些数据——CC11 Expression、note-on velocity、pitch bend、`0x06` marker——但除了 CC11 被文本谱和 HTML 各写了一遍粗糙的力度分级外，其余全部丢掉了，MusicXML 更是一点力度都没有。`ExpressionMap` 把判定收成唯一权威：构造一次，三个输出层只读结果，于是「网页上有 mf、导进 MuseScore 却什么都没有」这类半开半关的状态不复存在。
+
+| 数据源 | 判定 | 文本谱 | HTML | MusicXML |
+| --- | --- | --- | --- | --- |
+| CC11 (`0x0B`) | 六档力度 `pp`~`ff`，按通道隔离；跨档才标 | `[mf]` | `dyn` 标记 | `<direction><dynamics><mf/></dynamics><sound dynamics="75"/>` |
+| CC11 单调段 | 连续 ≥3 点、同向、跨度 ≥24 → 渐强 / 渐弱，起止成对 | `[cresc.]` / `[dim.]` | `cresc.` / `dim.` | `<wedge type="crescendo"/>` + `type="stop"` |
+| `0x06` marker | 段落名 | `[副歌]` | `section` 标记 | `<direction><words>副歌</words>` |
+| note-on velocity | 显著高于邻音（≥24）→ 重音 `>` | `5>` | 音符右上角 | `<articulations><accent/></articulations>` |
+| 弯音形状 | 单调 ≥3 点 → 上滑 `↗` / 下滑 `↘`；往复振荡 → 颤音 `tr` | `5↗` / `5tr` | 音符右上角 | `<slide>` 成对 / `<trill-mark/>` |
+| 音头门限 | 等间隔流里显著短于常态 → 断奏 `▼` / `·` | `5▼` | 音符右上角 | `<staccatissimo/>` / `<staccato/>` |
+
+**断奏为什么要加「等间隔」闸门。** MIDI 没有显式 staccato 事件，短 note-off 既可能是断奏，也可能只是「八分音符 + 休止」。绝对阈值会把真实人声 MIDI 里每小节末的短音全标成断奏（开发中实测误标 33 处）；改用「相对全轨门限中位数」能排掉大部分，但仍分不清 `0.25 拍音符 + 1.75 拍休止`。所以只在**音头间隔几乎一致**（≥90% 相同，即谱面上没有休止）时才判：此时短 gate 只剩断奏一种解释。节奏混合的旋律整轨拒绝判定——宁可漏判，也不给整份谱子撒上假的 `▼`。
+
+演奏法按 `(tick, channel)` 索引而不是只按 tick：旋律与伴奏常有同一 tick 的音头，按 tick 存会让伴奏「继承」旋律的滑音记号（压力素材里踩到过并修掉了）。段落名与渐强渐弱属于整份谱，只印在第一条声部／旋律轨；力度按通道各自写。播放用的音符 JSON 也补上了真实的 `velocity`，网页据此区分强弱。
+
+`--no-dynamics`（网页上是「力度与演奏法」复选框）让整张表情图为空，但事件表本身保留，调性与旋律轨判定不受影响。**没有任何表情数据的文件输出不变**：真实人声曲目《蝶衣碎雪》带 LRC 回归的 MusicXML 逐字节一致，HTML 谱面内容也逐字节一致（仅内联 CSS 多了几条定义）。
+
 ## 技术选型
 
 - 核心：**C++17**，手写 SMF 二进制解析，无第三方库依赖，便于编译成 WASM
 - 调性识别：**Krumhansl-Schmuckler** 算法（音乐信息检索标准）；无调号时再由**宫商角徵羽五声调式**判定校正宫音
 - 和弦检测：按和声窗（半小节 / 附点四分 / 整小节）统计音级频率，匹配 9 种和弦类型
 - 输出：文本 + 自包含 HTML（内联 CSS）+ MusicXML 3.1
-- 测试：内置断言 286 项单元测试，另有 `tests/smoke.py` 21 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC）
+- 测试：内置断言 316 项单元测试，另有 `tests/smoke.py` 22 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`）
 
 ## 路线图
 
@@ -328,6 +351,7 @@ Krumhansl-Schmuckler 用七声大/小调轮廓打分。纯五声旋律 `C D E G 
 - [x] 中途转调（`0x59` 调号 map）：逐段首调换算 + 文本 / HTML / MusicXML 同步 + `--key` 相对平移；新增 `modulation.mid` 混合压力素材（转调 + 变速 + 鼓轨 + 内置歌词 + 降号调和弦）
 - [x] 五声音阶／民族调式宫音判定：`detectPentatonic` + `keyFromGong`，KS 误判的宫音自动校正，三个输出层与网页同步；新增 `pentatonic.mid`（宫/商/角/徵/羽 + 六声偏音 + 七声对照组）
 - [x] LRC 时间轴接入 tempo map：抽出 `TempoTimeline`，变速歌词的秒→tick 逐段反解，补 `[offset:]` 与多时间戳；新增 `tempolrc.mid` + 3 份 LRC 对照素材
+- [x] 力度与演奏法：抽出 `ExpressionMap`，把已解析但闲置的 CC11 / note-on velocity / 弯音 / `0x06` marker 统一判定后同步写进文本 / HTML / MusicXML，补 CLI 与网页开关、播放力度；新增 `expression.mid` 混合压力素材，真实人声曲目零回归
 
 ## 为什么开源
 
@@ -345,7 +369,7 @@ Issue / PR 都欢迎。尤其欢迎：
 提交前请跑一遍：
 
 ```bash
-cd build && ctest --output-on-failure                  # 286 项单元测试
+cd build && ctest --output-on-failure                  # 316 项单元测试
 python tests/smoke.py build/Release/midi2jianpu.exe    # 端到端冒烟（含鼓轨场景）
 node tests/wasm_smoke.mjs                              # WASM 产物与源码是否同步
 ```

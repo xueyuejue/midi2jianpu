@@ -83,6 +83,7 @@ struct Segment {
     long dur = 0;          // 本段持续 tick
     int bar = 0;           // 所属小节（从 0 计）
     int pitch = 0;
+    int channel = 0;       // 演奏法按 (tick, channel) 查，不能只按 tick
     bool triplet = false;  // 属于三连音组，需要 <time-modification>
     bool tieStart = false; // 后面还有延续段 -> <tie type="start"/>
     bool tieEnd = false;   // 前面有被切开的段 -> <tie type="stop"/>
@@ -137,6 +138,9 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
     // 调号按小节查表：中途转调时 MuseScore 必须看到新的 <fifths>/<mode>，
     // 音符的升/降等音写法也跟着当前调走。
     const KeyMap keys(data, key);
+    // 演奏表情与文本谱、HTML 共用同一份判定。MusicXML 此前完全没写力度，
+    // 导进 MuseScore 后「网页上有 mf、谱上什么都没有」。
+    const ExpressionMap expr(data);
 
     // 速度：MIDI 里 tempo 是「每四分音符的微秒数」，取首个非零值
     double bpm = 120.0;
@@ -155,6 +159,11 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
         const LyricAssignment lyrics = (t == mainTrack)
                                      ? resolveLyrics(data, lyricLines, t)
                                      : LyricAssignment();
+
+        // CC11 是按通道的，一个 part 可能并非全是同一通道；取该声部第一个
+        // 音符的通道，与 HTML 的 openBar(firstTick, channel) 保持同一取值口径。
+        const int partChannel = ns.front().channel;
+        std::string lastDyn;
 
         // ---- 1. 展开成片段：跨小节的音符在此切开 ----
         auto triplets = detectTriplets(ns, division);
@@ -179,6 +188,7 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                 s.dur = segEnd - start;
                 s.bar = bar;
                 s.pitch = n.pitch;
+                s.channel = n.channel;
                 s.triplet = (i < triplets.size()) ? triplets[i] : false;
                 s.tieEnd = !firstPart;      // 前面被切过
                 s.tieStart = (segEnd < end); // 后面还有
@@ -279,6 +289,46 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             }
         };
 
+        // 演奏表情写进 <direction>：必须排在 <attributes> 之后、第一个
+        // <note> 之前，MuseScore 才会把它显示在小节上方而不是吞掉。
+        // 一个 part 一份 lastDyn，力度档位没变就不重复写。
+        auto emitDirections = [&](int bar) {
+            if (!expr.enabled()) return;
+            const long bs = grid.barStart(bar), be = grid.barEnd(bar);
+            const std::string dyn = expr.dynamicAt(bs, partChannel);
+            if (!dyn.empty() && dyn != lastDyn) {
+                xml << "      <direction placement=\"above\">\n"
+                    << "        <direction-type><dynamics><" << dyn
+                    << "/></dynamics></direction-type>\n"
+                    << "        <sound dynamics=\"" << dynamicToMidiVolume(dyn)
+                    << "\"/>\n"
+                    << "      </direction>\n";
+                lastDyn = dyn;
+            }
+            // 段落名 / 渐强渐弱属于整份谱，只在第一个 part 写一次；
+            // 力度按通道各自写（伴奏轨有自己的 CC11 曲线）。
+            if (partIdx == 1) {
+                for (const auto& m : expr.inRange(bs, be)) {
+                    if (!m.section.empty())
+                        xml << "      <direction placement=\"above\">\n"
+                            << "        <direction-type><words>"
+                            << xmlEscape(m.section) << "</words></direction-type>\n"
+                            << "      </direction>\n";
+                    if (m.wedge != 0)
+                        xml << "      <direction placement=\"above\">\n"
+                            << "        <direction-type><wedge type=\""
+                            << (m.wedge > 0 ? "crescendo" : "diminuendo")
+                            << "\" number=\"1\"/></direction-type>\n"
+                            << "      </direction>\n";
+                    if (m.wedgeStop)
+                        xml << "      <direction placement=\"above\">\n"
+                            << "        <direction-type><wedge type=\"stop\" "
+                            << "number=\"1\"/></direction-type>\n"
+                            << "      </direction>\n";
+                }
+            }
+        };
+
         // 弱起小节要标 implicit="yes"，否则 MuseScore 会把它当成一个完整小节，
         // 并要求补齐 4 拍；小节号也从 0 起算，第一个完整小节显示成 1。
         auto openMeasure = [&](int bar) {
@@ -286,6 +336,7 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             if (grid.pickup > 0 && bar == 0) xml << " implicit=\"yes\"";
             xml << ">\n";
             emitAttributes(bar);
+            emitDirections(bar);
             writtenUpTo = grid.barStart(bar);
         };
 
@@ -307,6 +358,7 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                     if (grid.pickup > 0 && b == 0) xml << " implicit=\"yes\"";
                     xml << ">\n";
                     emitAttributes(b);   // 开头就是空小节时，属性要写在这里
+                    emitDirections(b);  // 段落标记可能落在纯休止的前奏
                     xml << "      <note><rest measure=\"yes\"/><duration>"
                         << grid.barSpan(b) << "</duration><voice>1</voice>"
                         << "<type>whole</type></note>\n"
@@ -387,6 +439,26 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             if (seg.tieEnd)   notations += "<tied type=\"stop\"/>";
             if (seg.tieStart) notations += "<tied type=\"start\"/>";
             notations += slurXml;
+            // 断音 / 重音 / 滑音 / 颤音挂在真实音头上：和弦成员共用第一音的
+            // 记号，跨小节切出来的延续段 seg.start 不是音头，自然查不到。
+            if (!isChordMember) {
+                const NoteExpression ae = expr.noteAt(seg.start, seg.channel);
+                std::string arts;
+                if (ae.staccatissimo) arts += "<staccatissimo/>";
+                else if (ae.staccato) arts += "<staccato/>";
+                if (ae.accent) arts += "<accent/>";
+                if (!arts.empty())
+                    notations += "<articulations>" + arts + "</articulations>";
+                if (ae.bend == BendMark::Trill) {
+                    notations += "<ornaments><trill-mark/></ornaments>";
+                } else if (ae.bend == BendMark::SlideUp ||
+                           ae.bend == BendMark::SlideDown) {
+                    // 同一个音符内 start+stop 表示「音内滑音」，不需要跨小节配对。
+                    notations += "<slide line-type=\"solid\" number=\"2\" "
+                                 "type=\"start\"/><slide line-type=\"solid\" "
+                                 "number=\"2\" type=\"stop\"/>";
+                }
+            }
             if (!notations.empty()) xml << "<notations>" << notations << "</notations>";
             xml << lyricXml;
             xml << "</note>\n";

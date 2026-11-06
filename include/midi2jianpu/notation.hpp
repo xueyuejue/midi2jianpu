@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace m2j {
@@ -411,5 +412,88 @@ long chordWindowTicks(const MidiData& data);
 
 // 从MIDI数据中检测和弦（按和声窗，相邻同名合并）
 std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key);
+
+// ---- 演奏表情（力度 / 渐强渐弱 / 断音 / 重音 / 滑音 / 颤音 / 段落）----
+//
+// 这些数据在解析层早就有了（CC11、note-on velocity、pitch bend、0x06
+// marker），但只有 CC11 被文本谱和 HTML 各写了一遍粗糙的 dynAt()，
+// MusicXML 完全没有；velocity、弯音、marker 则一条都没进过谱面。
+// 三个输出层各写一套的后果是「网页有力度、导出 MuseScore 却没有」。
+//
+// ExpressionMap 把判定收成唯一权威：构造一次，三个输出层只读结果。
+// 判据全部是硬证据（数值阈值），且**只在真的检出事件时才输出**——
+// 一份什么表情数据都没有的合成 MIDI，谱面与上一版逐字节一致。
+enum class BendMark { None = 0, SlideUp = 1, SlideDown = 2, Trill = 3 };
+
+// 挂在谱面「标记行」的事件：力度档位、渐强/渐弱起止、段落名。
+struct ExpressionMark {
+    long tick = 0;
+    std::string dynamic;      // "pp"/"p"/"mp"/"mf"/"f"/"ff"，空 = 此处无变化
+    int wedge = 0;            // +1 渐强起点 / -1 渐弱起点 / 0 无
+    bool wedgeStop = false;   // 渐强渐弱的终点
+    std::string section;      // 0x06 marker 的原文
+
+    bool empty() const {
+        return dynamic.empty() && wedge == 0 && !wedgeStop && section.empty();
+    }
+};
+
+// 挂在单个音头上的演奏法。断音与重音可以同时成立，所以不用枚举。
+struct NoteExpression {
+    bool staccato = false;
+    bool staccatissimo = false;
+    bool accent = false;
+    BendMark bend = BendMark::None;
+
+    bool any() const {
+        return staccato || staccatissimo || accent || bend != BendMark::None;
+    }
+    std::string symbol() const;  // 文本谱用的紧凑标记，如 "▼>"、"↗"
+};
+
+class ExpressionMap {
+public:
+    ExpressionMap() = default;
+    explicit ExpressionMap(const MidiData& data);
+
+    bool enabled() const { return enabled_; }
+
+    // 某 tick、某通道当前生效的力度档位。沿用旧 dynAt 的六档阈值，
+    // 保证已有 CC11 素材的谱面不因这次重构而变样。
+    std::string dynamicAt(long tick, int channel) const;
+
+    // 某音头、某通道的演奏法；没有则返回全 false 的对象。
+    // 键里必须带通道：旋律和伴奏常有同一 tick 的音头，只按 tick 索引会让
+    // 伴奏「继承」旋律的滑音/断音记号（真实压力素材里踩到过）。
+    NoteExpression noteAt(long tick, int channel) const;
+
+    // 按 tick 升序的标记行事件；inRange 供 MusicXML 按小节取用。
+    const std::vector<ExpressionMark>& marks() const { return marks_; }
+    std::vector<ExpressionMark> inRange(long from, long to) const;
+
+    // "力度 3 · 渐强 1 · 断音 4 · 段落 2"；没有任何表情时返回空串。
+    std::string summary() const;
+
+    int dynamicCount() const      { return nDynamic_; }
+    int crescendoCount() const    { return nCresc_; }
+    int diminuendoCount() const   { return nDim_; }
+    int articulationCount() const { return nArtic_; }
+    int bendCount() const         { return nBend_; }
+    int sectionCount() const      { return nSection_; }
+    int totalCount() const {
+        return nDynamic_ + nCresc_ + nDim_ + nArtic_ + nBend_ + nSection_;
+    }
+
+private:
+    bool enabled_ = false;
+    std::vector<DynPoint> dyn_;
+    std::vector<ExpressionMark> marks_;
+    std::map<std::pair<long, int>, NoteExpression> notes_;
+    int nDynamic_ = 0, nCresc_ = 0, nDim_ = 0;
+    int nArtic_ = 0, nBend_ = 0, nSection_ = 0;
+};
+
+// 力度档位 -> MusicXML <sound dynamics> 的百分比（用于导出时给出试听力度）。
+int dynamicToMidiVolume(const std::string& dyn);
 
 } // namespace m2j

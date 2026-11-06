@@ -4,6 +4,7 @@
 #include "midi2jianpu/html_writer.hpp"
 #include "midi2jianpu/musicxml_writer.hpp"
 
+#include <cstdio>
 #include <cstring>
 #include <string>
 
@@ -13,6 +14,7 @@ static std::string g_lyrics;  // 歌词文本(LRC格式)
 static std::string g_title;   // 谱面标题（网页传文件名进来）
 static bool g_useMidiLyrics = true;  // 是否使用 MIDI 自带的 0x05 歌词
 static bool g_usePentatonic = true;  // 是否按五声调式校正宫音
+static bool g_useDynamics = true;    // 是否写出力度 / 演奏法 / 段落标记
 
 // 网页上的两个渲染开关。清空内置歌词事件表而不是只跳过渲染：歌词事件同时
 // 参与旋律轨判定，关掉就得连证据一起去掉。五声开关则直接落在 MidiData 上，
@@ -20,6 +22,7 @@ static bool g_usePentatonic = true;  // 是否按五声调式校正宫音
 static void applyRenderOptions(m2j::MidiData& data) {
     if (!g_useMidiLyrics) data.midiLyrics.clear();
     data.usePentatonic = g_usePentatonic;
+    data.useDynamics = g_useDynamics;
 }
 
 extern "C" {
@@ -162,6 +165,20 @@ int midi2jianpu_tempo_change_count(const uint8_t* midiData, int size) {
     return m2j::tempoChangeCount(data);
 }
 
+// 网页版「力度与演奏法」开关：0 = 谱面只留音符，非 0 = 写出表情（默认）。
+void midi2jianpu_set_use_dynamics(int on) {
+    g_useDynamics = (on != 0);
+}
+
+// 文件里实际检出的演奏表情记号总数，供网页提示「检测到 N 处表情」。
+// 只是读文件，不渲染；关掉开关时返回 0，网页就不必再自己判断复选框状态。
+int midi2jianpu_expression_count(const uint8_t* midiData, int size) {
+    if (!g_useDynamics) return 0;
+    m2j::MidiData data;
+    if (!m2j::loadMidiFromMemory(midiData, size, data)) return 0;
+    return m2j::ExpressionMap(data).totalCount();
+}
+
 // 获取MIDI音符数据(JSON格式, 用于播放)
 const char* midi2jianpu_get_notes_json(const uint8_t* midiData, int size) {
     m2j::MidiData data;
@@ -176,8 +193,11 @@ const char* midi2jianpu_get_notes_json(const uint8_t* midiData, int size) {
         if (!first) json += ",";
         first = false;
         char buf[256];
-        snprintf(buf, sizeof(buf), "{\"time\":%.3f,\"pitch\":%d,\"duration\":%.3f}",
-                 n.startSeconds, n.pitch, n.durationSeconds);
+        // velocity 是 note-on 的原始力度；网页播放据此给每个音不同音量，
+        // 以前注释里写了这个字段、实际却没输出。
+        snprintf(buf, sizeof(buf),
+                 "{\"time\":%.3f,\"pitch\":%d,\"duration\":%.3f,\"velocity\":%d}",
+                 n.startSeconds, n.pitch, n.durationSeconds, n.velocity);
         json += buf;
     }
     json += "]";
