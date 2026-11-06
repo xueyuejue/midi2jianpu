@@ -33,7 +33,7 @@ cmake --build build --config Release
 
 ## 测试
 
-### 单元测试（195 项）
+### 单元测试（254 项）
 
 ```bash
 cd build && ctest --output-on-failure
@@ -41,20 +41,20 @@ cd build && ctest --output-on-failure
 ./build/test_basic
 ```
 
-成功时输出 `共 195 项，失败 0 项 -> 全部通过`。
+成功时输出 `共 254 项，失败 0 项 -> 全部通过`。
 
-覆盖范围：调性识别、各调八度基准、升降号书写（含降号调）、时值后缀、三连音、同音合并、和弦检测、移调、MusicXML 小节时长与 `<chord/>`，以及八组解析层回归——**鼓轨过滤**、**旋律轨判定**、**变速 tempo map 秒数换算**、**弱起小节网格**、**歌词分配与一字多音区间**、**MIDI 内置歌词规整与精确对齐**、**拍号 map 与逐小节网格**、**调号 map（中途转调 / KeyMap）**（都在内存里现构造最小 SMF，不依赖 fixture 文件）。
+覆盖范围：调性识别、各调八度基准、升降号书写（含降号调）、时值后缀、三连音、同音合并、和弦检测、移调、MusicXML 小节时长与 `<chord/>`，以及九组解析层回归——**鼓轨过滤**、**旋律轨判定**、**变速 tempo map 秒数换算**、**弱起小节网格**、**歌词分配与一字多音区间**、**MIDI 内置歌词规整与精确对齐**、**拍号 map 与逐小节网格**、**调号 map（中途转调 / KeyMap）**、**五声调式宫音判定（宫商角徵羽 / 六声偏音 / 七声拒绝 / 歧义拒绝 / `--gong` 手工指定）**（都在内存里现构造最小 SMF，不依赖 fixture 文件）。
 
 ### 冒烟测试（端到端，验证 README 承诺的每个参数）
 
 需要 Python 3（只用标准库）：
 
 ```bash
-python tests/fixtures/make_fixture.py     # 生成 sample / humanized / drums / melisma / harmony / pickup / karaoke / meter / modulation 九份素材
+python tests/fixtures/make_fixture.py     # 生成 sample / humanized / drums / melisma / harmony / pickup / karaoke / meter / modulation / pentatonic 十份素材
 python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2jianpu.exe
 ```
 
-覆盖 `--key` / `--track` / `--transpose` / `--musicxml` / `--html` / `--lyrics` / `--no-midi-lyrics` / `--pickup` / `--no-pickup` / `--no-key-changes` / `--output` / `--help` / `--version` 全部参数，并校验导出的 XML 里 `duration` 为整数、和弦音带 `<chord/>`，带歌词时 `<lyric>` / `<slur>` 成对且 `<notations>` 排在 `<lyric>` 之前，变拍号时只有变化小节重写 `<time>`、转调时只在变化小节重写 `<key>`（每个声部 `0 / 2 / -1` 三个 `<fifths>`）。
+覆盖 `--key` / `--track` / `--transpose` / `--musicxml` / `--html` / `--lyrics` / `--no-midi-lyrics` / `--pickup` / `--no-pickup` / `--no-key-changes` / `--gong` / `--no-pentatonic` / `--output` / `--help` / `--version` 全部参数，并校验导出的 XML 里 `duration` 为整数、和弦音带 `<chord/>`，带歌词时 `<lyric>` / `<slur>` 成对且 `<notations>` 排在 `<lyric>` 之前，变拍号时只有变化小节重写 `<time>`、转调时只在变化小节重写 `<key>`（每个声部 `0 / 2 / -1` 三个 `<fifths>`）、五声调式时加一条 `<words>` 调式标记。
 
 其中 `drums.mid` 专测打击乐轨：鼓轨有 192 个音符（远超旋律的 8 个），谱面里不能出现 `[Drums]`、不能出现鼓的音高，旋律轨必须判给单声部的 Vocal。
 
@@ -70,7 +70,9 @@ python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2ji
 
 `modulation.mid` 是**转调混合压力素材**：12 小节 4/4，第 1/5/9 小节依次把 `0x59` 调号写成 `sf=0 / +2 / -1`（`1=C → 1=D → 1=F`），第 5 小节同时把 120 降成 90 BPM，伴奏轨在 tick 0 和第 5 小节重复声明调号，通道 10 放 12 个鼓点，Vocal 轨每个音头写一个 `0x05` 歌词事件（2 处 `-` 延续）。**三段旋律每小节第一个音都是同一个 C4=60**，所以断言可以直接锁住「三段分别记作 `1` / `#6,` / `5,`」——唱名不随调变就等于功能没生效。其余断言覆盖页眉转调链、`[转1=D]` / `转 1=D` 标记、`--key G` 时整条链平移成 `1=G → 1=A → 1=C`、`--no-key-changes` 时全曲一个调、每声部在第 1/5/9 小节写 `<fifths>` 为 `0/2/-1`、以及降号调里 Bb 和弦不写成 A#。
 
-路线图里的「更多真实 MIDI 样本校验」由这两份混合素材配合 `die_yi_sui_xue_vocal.mid`（真实人声录音导出）完成：每次发布都用它做一次带 LRC 的全链路回归渲染，确认新的网格与调号 map 没有改变单拍号 / 单调号曲目的输出（v1.17.0 的产物与 v1.16.0 逐字节一致，只多了新 CSS 与版本号）。
+`pentatonic.mid` 是**五声调式对照素材**：8 小节全用 C 宫五声 `C D E G A`，终止音落在 G，且文件**故意不写 `0x59`**。KS 会把它判成 G 大调（`1=G`），校正后必须是 `1=C 大调 · G 徵调式（宫音 C）`，第一小节记作 `1 2 3 5`；`--no-pentatonic` 回到 `1=G`，`--gong F` 强制 `1=F`。另有两个对照轨分别塞进一个偏音（六声，仍应检出）和两个偏音（七声，必须交回 KS）。
+
+路线图里的「更多真实 MIDI 样本校验」由这几份混合素材配合 `die_yi_sui_xue_vocal.mid`（真实人声录音导出）完成：每次发布都用它做一次带 LRC 的全链路回归渲染，确认新的网格 / 调号 map / 调式校正没有改变已有曲目的输出（v1.18.0 的真实曲目谱面与 v1.17.0 逐字节一致，只多一条调式文字标注与版本号）。
 
 ### WASM 冒烟测试（校验提交进 docs/wasm/ 的产物是否与源码同步）
 
@@ -203,7 +205,7 @@ cp build-wasm/midi2jianpu.wasm docs/wasm/
 >   src/wasm_bindings.cpp src/midifile.cpp src/notation.cpp \
 >   src/html_writer.cpp src/musicxml_writer.cpp \
 >   -o build-wasm/midi2jianpu.js \
->   -sEXPORTED_FUNCTIONS='["_malloc","_free","_midi2jianpu_parse","_midi2jianpu_html","_midi2jianpu_musicxml","_midi2jianpu_result_len","_midi2jianpu_copy_result","_midi2jianpu_set_lyrics","_midi2jianpu_set_title","_midi2jianpu_set_use_midi_lyrics","_midi2jianpu_midi_lyric_count","_midi2jianpu_key_change_count","_midi2jianpu_get_notes_json"]' \
+>   -sEXPORTED_FUNCTIONS='["_malloc","_free","_midi2jianpu_parse","_midi2jianpu_html","_midi2jianpu_musicxml","_midi2jianpu_result_len","_midi2jianpu_copy_result","_midi2jianpu_set_lyrics","_midi2jianpu_set_title","_midi2jianpu_set_use_midi_lyrics","_midi2jianpu_midi_lyric_count","_midi2jianpu_key_change_count","_midi2jianpu_set_use_pentatonic","_midi2jianpu_pentatonic_info","_midi2jianpu_get_notes_json"]' \
 >   -sEXPORTED_RUNTIME_METHODS='["UTF8ToString","lengthBytesUTF8","stringToUTF8","HEAPU8"]' \
 >   -sMODULARIZE=1 -sEXPORT_NAME=createMidi2Jianpu \
 >   -sALLOW_MEMORY_GROWTH=1 -sENVIRONMENT=web,node

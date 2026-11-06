@@ -127,6 +127,8 @@ const REQUIRED = [
   '_midi2jianpu_result_len',
   '_midi2jianpu_copy_result',
   '_midi2jianpu_key_change_count', // 网页的转调提示
+  '_midi2jianpu_set_use_pentatonic', // 网页的五声校正开关
+  '_midi2jianpu_pentatonic_info', // 网页的调式提示
   '_malloc',
   '_free',
 ];
@@ -418,7 +420,55 @@ if (existsSync(modulationPath)) {
   check(false, '素材 modulation.mid 存在（先跑 make_fixture.py）');
 }
 
-// ---- 15. 坏数据不能把整页搞崩 ----
+// ---- 15. 五声调式：宫音校正 + 调式查询 + 网页开关 ----
+const pentPath = path.join(FIXTURES, 'pentatonic.mid');
+if (existsSync(pentPath)) {
+  const pentBytes = new Uint8Array(readFileSync(pentPath));
+  const pq = mod._malloc(pentBytes.length);
+  mod.HEAPU8.set(pentBytes, pq);
+  const info = mod._midi2jianpu_pentatonic_info(pq, pentBytes.length);
+  mod._free(pq);
+  // final=G(7) * 100 + gong=C(0) * 10 + 徵(5) = 705
+  check(info === 705, '调式查询接口打包出 G 徵调式 / 宫音 C', String(info));
+
+  const sq2 = mod._malloc(sampleMidi.length);
+  mod.HEAPU8.set(sampleMidi, sq2);
+  const sigInfo = mod._midi2jianpu_pentatonic_info(sq2, sampleMidi.length);
+  mod._free(sq2);
+  check(sigInfo === 0, '自带 0x59 调号的文件不报五声校正（以调号为准）', String(sigInfo));
+
+  const pc = makeCaller(mod);
+  pc.setMidi(pentBytes);
+  pc.setTitle('五声调式测试');
+  const ph = pc.call('midi2jianpu_html', -1, 1);
+  check(ph && ph.includes('1=C 大调 · G 徵调式（宫音 C）'),
+    'WASM 版按宫音校正为 1=C 并写出调式名');
+  check(ph && ph.includes('五声宫音校正'), 'WASM 版页眉标明识别来源');
+  const pt = pc.call('midi2jianpu_parse', -1, 1);
+  check(pt && pt.includes('[C] 1 2 3 5'), 'WASM 版 G 记作 5 而不是 1', pt);
+  const px = pc.call('midi2jianpu_musicxml', -1, 1);
+  check(px && px.includes('<words>G 徵调式（宫音 C）</words>')
+    && px.includes('<fifths>0</fifths>'),
+    'WASM 版 MusicXML 写调式文字标记与 C 大调调号');
+
+  // 网页复选框关掉：回到 KS 的 1=G，查询接口也归零
+  mod._midi2jianpu_set_use_pentatonic(0);
+  const pOff = pc.call('midi2jianpu_html', -1, 1);
+  check(pOff && pOff.includes('1=G 大调') && !pOff.includes('G 徵调式'),
+    'WASM 版关闭五声校正后回到 1=G', (pOff || '').slice(0, 400));
+  const offQ = mod._malloc(pentBytes.length);
+  mod.HEAPU8.set(pentBytes, offQ);
+  check(mod._midi2jianpu_pentatonic_info(offQ, pentBytes.length) === 0,
+    '关闭开关后调式查询返回 0');
+  mod._free(offQ);
+  mod._midi2jianpu_set_use_pentatonic(1);
+  check(pc.call('midi2jianpu_html', -1, 1).includes('1=C 大调 · G 徵调式'),
+    '重新打开开关后恢复校正');
+} else {
+  check(false, '素材 pentatonic.mid 存在（先跑 make_fixture.py）');
+}
+
+// ---- 16. 坏数据不能把整页搞崩 ----
 c.setMidi(new Uint8Array([1, 2, 3, 4, 5]));
 const bad = c.call('midi2jianpu_parse', -1, 1);
 check(typeof bad === 'string' && bad.length > 0, '非法 MIDI 返回错误文本而非崩溃', bad);

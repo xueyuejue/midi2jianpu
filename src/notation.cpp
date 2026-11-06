@@ -131,7 +131,182 @@ KeyEstimate estimateKey(const MidiData& data) {
     KeyEstimate r;
     r.tonicPitchClass = bestTonic;
     r.isMajor = bestIsMajor;
+
+    // 3) 五声调式校正：KS 用的是七声轮廓，遇到纯五声会把宫音（简谱的 1）
+    // 判到终止音上。只在没有 0x59 调号、检测高置信、且宫音与 KS 结果冲突时
+    // 才改写；宫音一致时保留原大小调描述，只补一条调式说明——这样普通
+    // 流行歌和 a 小调式羽调旋律的唱名一个字都不会变。
+    if (data.usePentatonic) {
+        const PentatonicEstimate p = detectPentatonic(data);
+        if (p.detected) {
+            r.scaleLabel = p.label();
+            if (notationDoPitchClass(r) != p.gongPitchClass) {
+                r.tonicPitchClass = p.gongPitchClass;
+                r.isMajor = true;   // 按宫音记谱，do 才落在宫音上
+            }
+        }
+    }
     return r;
+}
+
+// ---- 五声调式（宫商角徵羽）----
+static const char* SHARP_PC[12] = {
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
+};
+static const char* FLAT_PC[12] = {
+    "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"
+};
+
+static std::string pitchClassName(int pc, bool flat) {
+    pc = ((pc % 12) + 12) % 12;
+    return flat ? FLAT_PC[pc] : SHARP_PC[pc];
+}
+
+std::string pentatonicModeName(PentatonicMode mode) {
+    switch (mode) {
+        case PentatonicMode::Gong:  return "宫";
+        case PentatonicMode::Shang: return "商";
+        case PentatonicMode::Jue:   return "角";
+        case PentatonicMode::Zhi:   return "徵";
+        case PentatonicMode::Yu:    return "羽";
+        default:                    return "";
+    }
+}
+
+static PentatonicMode modeOfFinal(int gong, int finalPc) {
+    switch (((finalPc - gong) % 12 + 12) % 12) {
+        case 0:  return PentatonicMode::Gong;
+        case 2:  return PentatonicMode::Shang;
+        case 4:  return PentatonicMode::Jue;
+        case 7:  return PentatonicMode::Zhi;
+        case 9:  return PentatonicMode::Yu;
+        default: return PentatonicMode::None;
+    }
+}
+
+static std::string makeScaleLabel(int gong, int finalPc, PentatonicMode mode) {
+    KeyEstimate k;
+    k.tonicPitchClass = ((gong % 12) + 12) % 12;
+    k.isMajor = true;
+    const bool flat = keyFifths(k) < 0;
+    std::ostringstream os;
+    os << pitchClassName(finalPc >= 0 ? finalPc : gong, flat)
+       << " " << pentatonicModeName(mode) << "调式（宫音 "
+       << pitchClassName(gong, flat) << "）";
+    return os.str();
+}
+
+std::string PentatonicEstimate::label() const {
+    if (!detected) return {};
+    return makeScaleLabel(gongPitchClass, finalPitchClass, mode);
+}
+
+// 旋律轨的音级时长分布。权重口径与 estimateKey 完全一致（终止音 ×5），
+// 两个判定看到的证据才不会互相打架。
+struct PitchProfile {
+    std::array<double, 12> weight{};
+    double total = 0;
+    int finalPc = -1;
+    int distinct = 0;
+};
+
+static PitchProfile melodyPitchProfile(const MidiData& data) {
+    PitchProfile r;
+    const int mainTrack = pickMelodyTrack(data, nullptr);
+    long lastTick = -1;
+    for (const auto& n : data.notes)
+        if (n.track == mainTrack && n.startTicks > lastTick) lastTick = n.startTicks;
+    if (lastTick < 0) return r;
+
+    // 终止音取最后一拍里最低的那个音：旋律落音通常是调式主音，柱式终止
+    // 和弦取最低音也符合歌本习惯。
+    int finalPitch = 1 << 30;
+    for (const auto& n : data.notes) {
+        if (n.track != mainTrack) continue;
+        double w = (n.durationSeconds > 0) ? n.durationSeconds : 1.0;
+        if (n.startTicks == lastTick) {
+            w *= 5.0;
+            if (n.pitch < finalPitch) {
+                finalPitch = n.pitch;
+                r.finalPc = ((n.pitch % 12) + 12) % 12;
+            }
+        }
+        r.weight[((n.pitch % 12) + 12) % 12] += w;
+        r.total += w;
+    }
+    if (r.total <= 0 || r.finalPc < 0) return r;
+    for (double w : r.weight)
+        if (w > r.total * 0.005) r.distinct++;
+    return r;
+}
+
+PentatonicEstimate detectPentatonic(const MidiData& data) {
+    PentatonicEstimate r;
+    const PitchProfile prof = melodyPitchProfile(data);
+    r.distinctPitchClasses = prof.distinct;
+    if (prof.distinct < 4 || prof.distinct > 6) return r;  // 音太少定不了调式；≥7 是七声
+    if (prof.finalPc < 0) return r;
+
+    static const int PENTA[5] = {0, 2, 4, 7, 9};  // 宫 商 角 徵 羽
+    // 六声里允许出现的偏音（相对宫音）：清角 4、闰 b7、变徵 #4、变宫 7
+    static const int BIAS[4] = {5, 10, 6, 11};
+
+    double bestCov = -1, secondCov = -1, bestOutside = 0;
+    int bestGong = -1;
+    for (int g = 0; g < 12; g++) {
+        bool in[12] = {};
+        for (int d : PENTA) in[(g + d) % 12] = true;
+        if (!in[prof.finalPc]) continue;   // 终止音必须是正音，否则不是这个宫系统
+
+        double outside = 0;
+        int outsidePc = -1, outsideCount = 0;
+        for (int i = 0; i < 12; i++) {
+            if (in[i]) continue;
+            outside += prof.weight[i];
+            if (prof.weight[i] > prof.total * 0.005) { outsideCount++; outsidePc = i; }
+        }
+        if (outsideCount > 1) continue;     // 两个以上偏音 = 七声，交回 KS
+        if (outsideCount == 1) {
+            const int rel = ((outsidePc - g) % 12 + 12) % 12;
+            bool allowed = false;
+            for (int b : BIAS) if (rel == b) allowed = true;
+            if (!allowed) continue;
+        }
+        const double cov = 1.0 - outside / prof.total;
+        if (cov < 0.92) continue;          // 偏音占比过高，不能算五声/六声
+        if (cov > bestCov) { secondCov = bestCov; bestCov = cov; bestGong = g; bestOutside = outside; }
+        else if (cov > secondCov) secondCov = cov;
+    }
+    if (bestGong < 0) return r;
+    // 只用四五个音级时可能有两个宫系统都完全覆盖（例如 C D G A 既像
+    // C 宫也像 F 宫）。宁可不报，也不要把 1 定错。
+    if (secondCov > 0 && bestCov - secondCov < 0.004) return r;
+
+    const PentatonicMode mode = modeOfFinal(bestGong, prof.finalPc);
+    if (mode == PentatonicMode::None) return r;
+    r.detected = true;
+    r.mode = mode;
+    r.gongPitchClass = bestGong;
+    r.finalPitchClass = prof.finalPc;
+    r.confidence = bestCov;
+    r.outsideWeight = bestOutside / prof.total;
+    return r;
+}
+
+KeyEstimate keyFromGong(const MidiData& data, int gongPitchClass) {
+    KeyEstimate k;
+    k.tonicPitchClass = ((gongPitchClass % 12) + 12) % 12;
+    k.isMajor = true;
+    const PitchProfile prof = melodyPitchProfile(data);
+    PentatonicMode mode = PentatonicMode::Gong;
+    int finalPc = -1;
+    if (prof.finalPc >= 0) {
+        finalPc = prof.finalPc;
+        const PentatonicMode m = modeOfFinal(k.tonicPitchClass, finalPc);
+        if (m != PentatonicMode::None) mode = m;
+    }
+    k.scaleLabel = makeScaleLabel(k.tonicPitchClass, finalPc, mode);
+    return k;
 }
 
 // 大调主音音级 -> 调号升降数（取绝对值最小的等音写法）
@@ -173,6 +348,7 @@ std::string keyDescription(const KeyEstimate& key) {
                                           : SHARP_NAMES[key.tonicPitchClass];
         os << " (" << n << "小调, 主音=6)";
     }
+    if (!key.scaleLabel.empty()) os << " · " << key.scaleLabel;
     return os.str();
 }
 

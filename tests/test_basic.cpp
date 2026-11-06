@@ -2,7 +2,8 @@
 // 覆盖：音高->简谱、八度基准、升降号、时值后缀、三连音、调性识别、
 //       和弦检测、同音合并、MusicXML 相关的基础数据结构、
 //       鼓轨过滤、旋律轨判定、变速（tempo map）换算、内置歌词规整、
-//       拍号 map 与逐小节网格、调号 map（中途转调 / KeyMap）。
+//       拍号 map 与逐小节网格、调号 map（中途转调 / KeyMap）、
+//       五声调式（宫商角徵羽）宫音判定与校正。
 #include "midi2jianpu/notation.hpp"
 
 #include <algorithm>
@@ -1069,6 +1070,141 @@ int main() {
             if (c.name.find("#") != std::string::npos) hasSharp = true;
         }
         check(hasBb && !hasSharp, "降号调里的 Bb 和弦不写成 A#");
+    }
+
+    // ---- 五声调式（宫商角徵羽）与宫音校正 ----
+    {
+        std::cout << "\n测试 五声调式宫音判定\n";
+        // 只用 C D E G A 五个音级，最后一个音换成指定的终止音。
+        // sixth 插一个变宫 B（六声），twoBias 再加一个清角 F（七声）。
+        auto melody = [](int finalPitch, bool sixth, bool twoBias) {
+            MidiData d;
+            d.division = 480;
+            d.timeSig = TimeSignature{4, 2, true};
+            const int scale[5] = {60, 62, 64, 67, 69};
+            std::vector<int> ps;
+            for (int rep = 0; rep < 3; rep++)
+                for (int i = 0; i < 5; i++) ps.push_back(scale[i]);
+            if (sixth) ps.insert(ps.begin() + 4, 71);
+            if (twoBias) ps.insert(ps.begin() + 8, 65);   // 插中间，别被末音覆盖
+            ps.back() = finalPitch;
+            for (size_t i = 0; i < ps.size(); i++) {
+                NoteEvent n;
+                n.track = 0; n.channel = 0; n.pitch = ps[i];
+                n.startTicks = (long)i * 480;
+                n.durationTicks = 480;
+                n.durationSeconds = 0.5;
+                d.notes.push_back(n);
+            }
+            return d;
+        };
+
+        struct ModeCase { int finalPitch; PentatonicMode mode; const char* label; };
+        const ModeCase cases[] = {
+            {60, PentatonicMode::Gong,  "C 宫调式"},
+            {62, PentatonicMode::Shang, "D 商调式"},
+            {64, PentatonicMode::Jue,   "E 角调式"},
+            {67, PentatonicMode::Zhi,   "G 徵调式"},
+            {69, PentatonicMode::Yu,    "A 羽调式"},
+        };
+        for (const auto& c : cases) {
+            const MidiData d = melody(c.finalPitch, false, false);
+            const PentatonicEstimate p = detectPentatonic(d);
+            check(p.detected, std::string("检出调式 ") + c.label);
+            check(p.mode == c.mode, std::string("调式判定正确 ") + c.label);
+            check(p.gongPitchClass == 0, std::string("宫音仍是 C ") + c.label);
+            check(p.finalPitchClass == c.finalPitch % 12,
+                  std::string("终止音记录正确 ") + c.label);
+            check(p.label().find(c.label) != std::string::npos,
+                  "调式名可读 " + p.label());
+            check(p.confidence > 0.999, "纯五声正音覆盖率接近 1");
+        }
+        check(pentatonicModeName(PentatonicMode::Zhi) == "徵", "调式名映射 徵");
+        check(pentatonicModeName(PentatonicMode::None).empty(), "未检出时调式名为空");
+        check(!PentatonicEstimate().detected &&
+              PentatonicEstimate().label().empty(), "默认结果未检出且无标签");
+
+        // 核心缺陷：KS 七声轮廓会把 G 徵调式判成 G 大调（1=G）
+        const MidiData zhi = melody(67, false, false);
+        const KeyEstimate kz = estimateKey(zhi);
+        check(kz.tonicPitchClass == 0 && kz.isMajor,
+              "G 徵调式按宫音校正为 1=C（而不是 1=G）");
+        check(!kz.scaleLabel.empty(), "校正后带上调式标注");
+        check(keyDescription(kz).find("G 徵调式（宫音 C）") != std::string::npos,
+              "页眉写出调式名: " + keyDescription(kz));
+        check(pitchToJianpu(67, kz) == "5", "终止音 G 记作 5 而不是 1");
+        check(pitchToJianpu(60, kz) == "1", "宫音 C 记作 1");
+        check(formatJianpu(zhi, kz).find("G 徵调式") != std::string::npos,
+              "文本谱页眉带调式名");
+
+        MidiData off = zhi;
+        off.usePentatonic = false;
+        const KeyEstimate ko = estimateKey(off);
+        check(ko.tonicPitchClass == 7, "--no-pentatonic 回到 KS 的 G 大调");
+        check(ko.scaleLabel.empty(), "关闭后不带调式标注");
+        check(pitchToJianpu(67, ko) == "1", "关闭后 G 被误记成 1（对照）");
+        check(keyDescription(ko) == "1=G 大调", "关闭后调性描述干净");
+
+        // 宫音与 KS 首调一致时只补标注，不改写大小调结果（零回归）
+        const MidiData yu = melody(69, false, false);
+        const KeyEstimate ky = estimateKey(yu);
+        check(ky.tonicPitchClass == 9 && !ky.isMajor,
+              "A 羽调式保留 a 小调判定（宫音一致）");
+        check(ky.scaleLabel.find("A 羽调式") != std::string::npos,
+              "仍补上调式标注: " + ky.scaleLabel);
+        check(pitchToJianpu(69, ky) == "6", "主音 A 仍记作 6");
+        check(keyDescription(ky).find("主音=6") != std::string::npos,
+              "原有小调说明不被覆盖");
+
+        // 文件自带 0x59 时以调号为准，不做五声校正
+        MidiData withSig = zhi;
+        withSig.keySig = KeySignature{1, false, true};   // G 大调
+        withSig.keySigChanges = {{0, KeySignature{1, false, true}}};
+        const KeyEstimate ks = estimateKey(withSig);
+        check(ks.tonicPitchClass == 7 && ks.scaleLabel.empty(),
+              "有 0x59 调号时不做五声校正");
+        check(detectPentatonic(withSig).detected,
+              "调号与检测互不影响，检测函数仍可单独查询");
+
+        // 六声（一个偏音）容忍；两个偏音 / 七声 / 终止音落偏音 / 宫音歧义都拒绝
+        const MidiData sixth = melody(69, true, false);
+        const PentatonicEstimate p6 = detectPentatonic(sixth);
+        check(p6.detected && p6.mode == PentatonicMode::Yu && p6.gongPitchClass == 0,
+              "六声（含一个变宫 B）仍判 A 羽调式");
+        check(p6.outsideWeight > 0 && p6.confidence < 1.0,
+              "六声记录偏音占比");
+        check(!detectPentatonic(melody(69, true, true)).detected,
+              "两个偏音（清角+变宫，七声）交回 KS");
+        check(!detectPentatonic(melody(66, false, false)).detected,
+              "终止音落在偏音上时拒绝判定");
+
+        MidiData ambiguous;
+        ambiguous.division = 480;
+        ambiguous.timeSig = TimeSignature{4, 2, true};
+        {
+            const int amb[4] = {60, 62, 67, 69};   // C D G A 既像 C 宫也像 F 宫
+            for (int i = 0; i < 16; i++) {
+                NoteEvent n;
+                n.track = 0; n.channel = 0; n.pitch = (i == 15) ? 67 : amb[i % 4];
+                n.startTicks = (long)i * 480; n.durationTicks = 480;
+                n.durationSeconds = 0.5;
+                ambiguous.notes.push_back(n);
+            }
+        }
+        check(!detectPentatonic(ambiguous).detected,
+              "宫音有歧义时宁可不报，也不把 1 定错");
+
+        // 手动指定宫音：--gong F / Bb
+        const KeyEstimate fGong = keyFromGong(zhi, 5);
+        check(fGong.tonicPitchClass == 5 && fGong.isMajor, "--gong F 定 1=F");
+        check(fGong.scaleLabel.find("G 商调式（宫音 F）") != std::string::npos,
+              "按终止音推出 G 商调式: " + fGong.scaleLabel);
+        check(pitchToJianpu(65, fGong) == "1", "F 记作 1");
+        const KeyEstimate bbGong = keyFromGong(zhi, 10);
+        check(bbGong.scaleLabel.find("宫音 Bb") != std::string::npos,
+              "降号宫音写 Bb 而不是 A#: " + bbGong.scaleLabel);
+        check(prefersFlats(bbGong) && keyFifths(bbGong) == -2,
+              "降号宫音的等音写法与调号一致");
     }
 
     std::cout << "\n------------------------------------------------\n";

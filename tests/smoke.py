@@ -680,6 +680,57 @@ def main():
               "→ 1=" not in open(sh, encoding="utf-8").read(),
               "单调号素材不出现任何转调标记")
 
+    # ---- [20] 五声调式：宫音校正 ----
+    # pentatonic.mid 故意不写 0x59，KS 七声轮廓会把它判成 G 大调（1=G），
+    # 但它是 C 宫系统的 G 徵调式，正确记法应是 1=C。
+    print("\n[20] 五声调式宫音校正（C 宫 / G 徵）")
+    pent = os.path.join(FIXTURES, "pentatonic.mid")
+    if not os.path.exists(pent):
+        check(False, "素材 pentatonic.mid 存在（先跑 make_fixture.py）")
+    else:
+        rc, out, err = run(exe, pent)
+        check(rc == 0, "五声素材正常转换", err)
+        check("1=C 大调 · G 徵调式（宫音 C）" in out,
+              "自动猜调按宫音校正为 1=C 并标出调式", out[:260])
+        check("[C] 1 2 3 5" in out,
+              "C D E G 记作 1 2 3 5（终止音 G 不是 1）", out[:400])
+        check("五声调式: G 徵调式（宫音 C）" in out, "控制台提示调式判定")
+
+        rc2, off, _ = run(exe, pent, "--no-pentatonic")
+        check("1=G 大调    4/4" in off and "调式" not in off,
+              "--no-pentatonic 回到 KS 的 1=G 且无调式标注", off[:260])
+        check("[C] 4, 5, 6, 1" in off,
+              "关闭后 G 被记成 1（对照，证明校正确实生效）", off[:400])
+
+        rc3, gong, _ = run(exe, pent, "--gong", "F")
+        check("1=F 大调 · G 商调式（宫音 F）" in gong,
+              "--gong F 手工指定宫音并按终止音推调式", gong[:260])
+        rc4, manual, _ = run(exe, pent, "--key", "C")
+        check("1=C 大调    4/4" in manual and "调式" not in manual,
+              "--key 手工指定时不附加调式标注", manual[:260])
+        rc5, helpout, _ = run(exe, "--help")
+        check("--gong" in helpout and "--no-pentatonic" in helpout,
+              "帮助列出五声调式参数")
+
+        ph = os.path.join(tmp, "pentatonic.html")
+        px = os.path.join(tmp, "pentatonic.xml")
+        rc6, _, _ = run(exe, pent, "--html", ph, "--musicxml", px)
+        check(rc6 == 0, "导出五声素材的 HTML / MusicXML")
+        body = open(ph, encoding="utf-8").read()
+        check("G 徵调式（宫音 C）" in body and "五声宫音校正" in body,
+              "HTML 页眉写出调式名与识别来源")
+        xroot = ET.parse(px).getroot()
+        fifths = [k.findtext("fifths") for k in xroot.iter("key")]
+        check(fifths == ["0", "0"],
+              "XML 按宫音写 C 大调调号（每个声部一次）", str(fifths))
+        words = [w.text for w in xroot.iter("words")]
+        check(words == ["G 徵调式（宫音 C）"],
+              "XML 谱头写出调式文字标记", str(words))
+        m1 = xroot.find("part/measure")
+        tags = [c.tag for c in m1]
+        check("direction" in tags and tags.index("attributes") < tags.index("direction"),
+              "direction 排在 attributes 之后", str(tags))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

@@ -142,6 +142,11 @@ struct MidiData {
     // 是否应用中途转调（0x59 map）。CLI 的 --no-key-changes 把它关掉，
     // 但事件表本身保留——调号还要用来判曲首调性，清空数据会把两件事搅在一起。
     bool applyKeyChanges = true;
+
+    // 是否启用「五声调式宫音校正」（见 notation.hpp 的 detectPentatonic）。
+    // 只影响没有 0x59 调号、需要自动猜调的文件；CLI --no-pentatonic 关掉它，
+    // 网页上是同名复选框。事件表本身不受影响。
+    bool usePentatonic = true;
 };
 
 // ---- 小节网格 ----

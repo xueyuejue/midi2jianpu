@@ -26,6 +26,8 @@ static void printHelp() {
         "  midi2jianpu <input.mid> --pickup 1       手动指定弱起小节长度(拍)\n"
         "  midi2jianpu <input.mid> --no-pickup      关闭弱起自动判定\n"
         "  midi2jianpu <input.mid> --no-key-changes 忽略中途转调(全曲按一个调记谱)\n"
+        "  midi2jianpu <input.mid> --gong C        手动指定五声调式的宫音(简谱 1)\n"
+        "  midi2jianpu <input.mid> --no-pentatonic  关闭五声调式宫音自动校正\n"
         "  midi2jianpu <input.mid> --no-quantize    关闭时值量化(保留 MIDI 原始时长)\n"
         "  midi2jianpu --version\n"
         "  midi2jianpu --help\n";
@@ -83,12 +85,13 @@ static bool parseBeats(const char* s, double& out) {
 int main(int argc, char** argv) {
     if (argc < 2) { printHelp(); return 1; }
 
-    std::string input, htmlOut, keyArg, txtOut, xmlOut, lyricsPath;
+    std::string input, htmlOut, keyArg, gongArg, txtOut, xmlOut, lyricsPath;
     int trackFilter = -1;
     int transpose = 0;
     bool quantize = true;
     bool noMidiLyrics = false;
     bool noKeyChanges = false;
+    bool noPentatonic = false;
     double pickupBeats = -1;   // <0 表示没指定（走自动判定）
     bool noPickup = false;
     for (int i = 1; i < argc; i++) {
@@ -100,6 +103,8 @@ int main(int argc, char** argv) {
         }
         else if (a == "--html" && i + 1 < argc) { htmlOut = argv[++i]; }
         else if (a == "--key" && i + 1 < argc) { keyArg = argv[++i]; }
+        else if (a == "--gong" && i + 1 < argc) { gongArg = argv[++i]; }
+        else if (a == "--no-pentatonic") { noPentatonic = true; }
         else if (a == "--output" && i + 1 < argc) { txtOut = argv[++i]; }
         else if (a == "--musicxml" && i + 1 < argc) { xmlOut = argv[++i]; }
         else if (a == "--lyrics" && i + 1 < argc) { lyricsPath = argv[++i]; }
@@ -138,6 +143,8 @@ int main(int argc, char** argv) {
     // 中途转调（0x59 map）默认生效。关掉时保留事件表本身：曲首调号还要
     // 用来判调性，清空数据会把「忽略转调」和「没有调号」混为一谈。
     if (noKeyChanges) data.applyKeyChanges = false;
+    // 五声校正只在没有 0x59 调号、走自动猜调时起作用；关掉后完全回到 KS。
+    if (noPentatonic) data.usePentatonic = false;
 
     // 鼓轨的提示写在谱面头部（formatJianpu 里），这里只管「只剩鼓」这种致命情况
     if (data.notes.empty()) {
@@ -208,7 +215,21 @@ int main(int argc, char** argv) {
 
     m2j::KeyEstimate key;
     std::string keySource;
-    if (!keyArg.empty() && parseKey(keyArg, key)) {
+    if (!gongArg.empty()) {
+        // --gong 优先于 --key：它同时决定「1 落在哪个音」和调式名。
+        m2j::KeyEstimate g;
+        if (parseKey(gongArg, g)) {
+            key = m2j::keyFromGong(data, g.tonicPitchClass);
+            keySource = "(手动指定宫音 " + gongArg + ")";
+            std::cout << "五声调式: " << key.scaleLabel
+                      << "，首调 1=" << m2j::keyName(key) << "\n";
+        } else {
+            std::cerr << "警告: 无法识别的宫音 \"" << gongArg
+                      << "\"，已改用自动识别（示例: C / F / Bb）\n";
+            key = m2j::estimateKey(data);
+            keySource = data.keySig.valid ? "(MIDI调号)" : "(自动猜测)";
+        }
+    } else if (!keyArg.empty() && parseKey(keyArg, key)) {
         keySource = "(手动指定 " + keyArg + ")";
     } else {
         if (!keyArg.empty()) {
@@ -218,6 +239,10 @@ int main(int argc, char** argv) {
         key = m2j::estimateKey(data);
         keySource = data.keySig.valid ? "(MIDI调号)" : "(自动猜测)";
     }
+    if (!key.scaleLabel.empty() && gongArg.empty())
+        std::cout << "五声调式: " << key.scaleLabel
+                  << "，首调 1=" << m2j::keyName(key)
+                  << "（--no-pentatonic 可关闭自动校正）\n";
 
     // 歌词只解析一次，HTML 谱面和 MusicXML 共用同一份 LRC 行。
     // 早先解析写在 --html 分支里，导 MusicXML 时整份歌词都丢了。

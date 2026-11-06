@@ -259,6 +259,15 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                         << "</metronome></direction-type>"
                         << "<sound tempo=\"" << (int)std::lround(bpm) << "\"/>\n"
                         << "      </direction>\n";
+                    // 民族调式在 MusicXML 里没有标准 <mode> 值，音高/调号仍按
+                    // 宫音记为大调，把「G 徵调式」作为文字标记写在谱头，导入
+                    // MuseScore 后能看见。label 由程序构造，不含 XML 特殊字符。
+                    if (!key.scaleLabel.empty()) {
+                        xml << "      <direction placement=\"above\">\n"
+                            << "        <direction-type><words>"
+                            << key.scaleLabel << "</words></direction-type>\n"
+                            << "      </direction>\n";
+                    }
                 }
             } else if (meterChanged || keyChanged) {
                 // attributes 的子元素有固定顺序：<key> 必须排在 <time> 前面，
