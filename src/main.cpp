@@ -201,6 +201,10 @@ int main(int argc, char** argv) {
         // 控制器悄悄改过时值 / 力度，不说明用户会以为「谱面和 MIDI 对不上」。
         const std::string cl = m2j::controllerLabel(data);
         if (!cl.empty()) std::cout << cl << "\n";
+        // 弯音轮推同样的量，不同通道 / 不同段落可以差出整整一个八度；
+        // 不点明用户会以为转谱把音高算错了。
+        const std::string br = m2j::bendRangeLabel(data);
+        if (!br.empty()) std::cout << br << "\n";
     }
 
     // --transpose 移调

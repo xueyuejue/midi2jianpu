@@ -1409,6 +1409,54 @@ def main():
     check(cdurs == [120, 120, 120, 1920],
           f"时值 1920 / 120 / 120 / 120，实际 {cdurs}")
 
+    def xml_pitches(path):
+        root = ETC.fromstring(open(path, encoding="utf-8").read())
+        return [(n.findtext("pitch/step"), n.findtext("pitch/octave"))
+                for n in root.iter("note")
+                if n.find("rest") is None and n.find("chord") is None
+                and n.find("pitch") is not None]
+
+    print("\n[38] RPN 弯音范围按通道隔离：不同通道不共用同一个 ±N")
+    bc = os.path.join(FIXTURES, "bendrange_channels.mid")
+    rc, out, err = run(exe, bc, "--no-pickup")
+    check(rc == 0, "双通道弯音文件解析成功", err[:200])
+    check("弯音范围：±12 半音，按通道与时间生效（1 处设定，1 条通道）" in out,
+          "CLI 写明只有一条通道设过 RPN")
+    bcx = os.path.join(tmp, "bendrange_channels.xml")
+    rc, _, err = run(exe, bc, "--no-pickup", "--musicxml", bcx)
+    check(rc == 0, "双通道弯音导出 MusicXML", err[:200])
+    pb = xml_pitches(bcx)
+    check(pb == [("C", "5"), ("D", "4")],
+          f"通道 0 升到 C5、通道 1 只升到 D4，实际 {pb}")
+    bch = os.path.join(tmp, "bendrange_channels.html")
+    rc, _, err = run(exe, bc, "--html", bch)
+    check(rc == 0, "双通道弯音导出 HTML", err[:200])
+    check("弯音范围：±12 半音" in open(bch, encoding="utf-8").read(),
+          "HTML 页眉写明弯音范围")
+
+    print("\n[39] RPN 中途改范围：不倒灌到之前的音")
+    bt = os.path.join(FIXTURES, "bendrange_timeline.mid")
+    rc, out, err = run(exe, bt, "--no-pickup")
+    check(rc == 0, "中途改范围文件解析成功", err[:200])
+    check("±2 / ±12" in out and "2 处设定" in out, "CLI 列出两种范围与 2 处设定")
+    btx = os.path.join(tmp, "bendrange_timeline.xml")
+    rc, _, err = run(exe, bt, "--no-pickup", "--musicxml", btx)
+    check(rc == 0, "中途改范围导出 MusicXML", err[:200])
+    pt = xml_pitches(btx)
+    check(pt == [("C", "5"), ("D", "4")],
+          f"前一段 ±12（C5）、后一段 ±2（D4），实际 {pt}")
+
+    print("\n[40] RPN 写在另一条轨：解析顺序不能决定时间顺序")
+    bx = os.path.join(FIXTURES, "bendrange_crosstrack.mid")
+    rc, out, err = run(exe, bx, "--no-pickup")
+    check(rc == 0, "跨轨 RPN 文件解析成功", err[:200])
+    check("弯音范围：±12 半音" in out, "跨轨 RPN 被识别")
+    bxx = os.path.join(tmp, "bendrange_crosstrack.xml")
+    rc, _, err = run(exe, bx, "--no-pickup", "--musicxml", bxx)
+    check(rc == 0, "跨轨 RPN 导出 MusicXML", err[:200])
+    px = xml_pitches(bxx)
+    check(px == [("C", "5")], f"setup 轨的 ±12 仍然生效，实际 {px}")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

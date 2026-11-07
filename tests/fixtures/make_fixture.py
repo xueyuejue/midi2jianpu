@@ -2,11 +2,12 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 27 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 30 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
-pedal / allnotesoff / cc7volume / pedal_channels
+pedal / allnotesoff / cc7volume / pedal_channels /
+bendrange_channels / bendrange_timeline / bendrange_crosstrack
 （另配 3 份 LRC 歌词）。
 meter 是把变拍号、变速、鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」，
 modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五声调式
@@ -19,7 +20,10 @@ aftertouch 在每个音中间插 0xA0（3 字节事件，读错就整轨崩）�
 还没抬手又按下，dangling 是轨尾只按不抬的悬挂音，twolyrics 则把两段词放在两条
 轨上（错开半拍，合并成一行就是乱码）。pedal 是踩着踏板只按 1/4 拍的钢琴和弦，
 allnotesoff 用 CC123 代替 note-off，cc7volume 只写 CC7 主音量做渐强，
-pedal_channels 则验证踏板不会给没踩的通道补时值。
+pedal_channels 则验证踏板不会给没踩的通道补时值。bendrange_channels 让通道 0
+设 ±12 半音、通道 1 保持默认 ±2，bendrange_timeline 在同一通道中途把 ±12 改回
+±2，bendrange_crosstrack 把 RPN 单独放在文件末尾的 setup 轨——三份都是弯音
+范围「每通道、且随时间变化」的回归闸门。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -68,6 +72,20 @@ class Track:
 
     def cc(self, ch: int, ctrl: int, val: int, tick: int) -> None:
         self.add(tick, bytes([0xB0 | ch, ctrl, val]))
+
+    def bend(self, ch: int, value: int, tick: int) -> None:
+        """弯音轮事件（14 位值，8192 居中，16383 为推到顶）。"""
+        self.add(tick, bytes([0xE0 | ch, value & 0x7F, (value >> 7) & 0x7F]))
+
+    def bend_range(self, ch: int, semitones: int, tick: int, cents=None) -> None:
+        """RPN 0x0000 弯音灵敏度；cents 为可选的 CC38 音分微调。"""
+        self.cc(ch, 101, 0, tick)
+        self.cc(ch, 100, 0, tick)
+        self.cc(ch, 6, semitones, tick)
+        if cents is not None:
+            self.cc(ch, 38, cents, tick)
+        self.cc(ch, 101, 127, tick)   # 退出 RPN 状态（真实导出器常见写法）
+        self.cc(ch, 100, 127, tick)
 
     def program(self, ch: int, prog: int, tick: int) -> None:
         self.add(tick, bytes([0xC0 | ch, prog]))
@@ -1275,6 +1293,83 @@ def build_pedal_channels() -> bytes:
     return header + t0.render() + t1.render() + t2.render()
 
 
+def build_bendrange_channels() -> bytes:
+    """RPN 弯音范围按通道隔离：通道 0 设 ±12，通道 1 仍是默认 ±2。
+
+    两个通道都把弯音轮推到顶（16383）。旧实现把范围压成一个全局量，
+    「最后一个 RPN 覆盖全曲」，通道 1 的 2 半音颤音被放大成 12 半音滑音。
+    预期 MusicXML 音高：C5（通道 0）、D4（通道 1）。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    lead = Track()
+    lead.add(0, meta(0x03, b"Lead"))
+    lead.bend_range(0, 12, 0)
+    lead.note(0, 60, 96, 0, DIV)
+    lead.bend(0, 16383, 0)
+    lead.bend(0, 8192, DIV + 1)
+
+    flute = Track()
+    flute.add(0, meta(0x03, b"Flute"))
+    flute.note(1, 60, 96, 2 * DIV, DIV)
+    flute.bend(1, 16383, 2 * DIV)
+    flute.bend(1, 8192, 3 * DIV + 1)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 3, DIV)
+    return header + t0.render() + lead.render() + flute.render()
+
+
+def build_bendrange_timeline() -> bytes:
+    """同一通道中途改范围：0 tick 设 ±12，960 tick 改回 ±2。
+
+    旧实现只存最终值 2，会把它之前的那个音也算成 +2 半音（倒灌）。
+    预期 MusicXML 音高：C5（前）、D4（后）。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    lead = Track()
+    lead.add(0, meta(0x03, b"Lead"))
+    lead.bend_range(0, 12, 0)
+    lead.note(0, 60, 96, 0, DIV)
+    lead.bend(0, 16383, 0)
+    lead.bend(0, 8192, DIV + 1)
+    lead.bend_range(0, 2, 2 * DIV)
+    lead.note(0, 60, 96, 2 * DIV, DIV)
+    lead.bend(0, 16383, 2 * DIV)
+    lead.bend(0, 8192, 3 * DIV + 1)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + lead.render()
+
+
+def build_bendrange_crosstrack() -> bytes:
+    """RPN 写在文件顺序靠后的 setup 轨上，弯音写在最前面的旋律轨里。
+
+    真实工程常把控制器集中在 setup / conductor 轨；按解析顺序即时套用
+    （或让 RPN 状态每轨重置）都会漏掉它。预期 MusicXML 音高仍为 C5。
+    """
+    lead = Track()
+    lead.add(0, meta(0x03, b"Lead"))
+    lead.note(0, 60, 96, 0, DIV)
+    lead.bend(0, 16383, 0)
+    lead.bend(0, 8192, DIV + 1)
+
+    setup = Track()
+    setup.add(0, meta(0x03, b"Setup"))
+    setup.bend_range(0, 12, 0)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + lead.render() + setup.render()
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -1453,6 +1548,18 @@ def main() -> None:
         tldata = build_twolyrics()
         f.write(tldata)
     print(f"wrote {tlmid} ({len(tldata)} bytes)")
+
+    # RPN 弯音范围素材（按通道隔离 / 中途改范围 / 跨轨设定）
+    for name, builder in (
+        ("bendrange_channels", build_bendrange_channels),
+        ("bendrange_timeline", build_bendrange_timeline),
+        ("bendrange_crosstrack", build_bendrange_crosstrack),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
 
     # 控制器语义素材（CC64 / CC123 / CC7）
     for name, builder in (

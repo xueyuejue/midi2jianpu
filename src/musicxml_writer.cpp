@@ -134,7 +134,7 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
         double sum = 0; int count = 0;
         for (const auto& pb : data.pitchBends) {
             if (pb.channel == channel && pb.tick >= start && pb.tick <= end) {
-                sum += (pb.value - 8192) / 8192.0 * data.bendRange;
+                sum += (pb.value - 8192) / 8192.0 * pb.range;
                 count++;
             }
         }

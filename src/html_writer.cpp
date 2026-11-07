@@ -227,7 +227,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         double sum = 0; int count = 0;
         for (const auto& pb : data.pitchBends) {
             if (pb.channel == channel && pb.tick >= start && pb.tick <= end) {
-                sum += (pb.value - 8192) / 8192.0 * data.bendRange;
+                sum += (pb.value - 8192) / 8192.0 * pb.range;
                 count++;
             }
         }
@@ -898,6 +898,7 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
          << (timeBaseLabel(data).empty() ? "" : " ｜ " + timeBaseLabel(data))
          << (formatLabel(data).empty() ? "" : " ｜ " + formatLabel(data))
          << (controllerLabel(data).empty() ? "" : " ｜ " + controllerLabel(data))
+         << (bendRangeLabel(data).empty() ? "" : " ｜ " + bendRangeLabel(data))
          << (data.drumNotesSkipped > 0 ? " ｜ 已跳过鼓轨" : "")
          << (lyricLabel.empty() ? "" : " ｜ " + lyricLabel)
          << (expr.summary().empty() ? "" : " ｜ " + expr.summary())

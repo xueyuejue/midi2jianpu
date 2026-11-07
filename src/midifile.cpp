@@ -8,6 +8,7 @@
 #include <set>
 #include <sstream>
 #include <unordered_map>
+#include <utility>
 
 namespace m2j {
 
@@ -160,6 +161,7 @@ static void normalizeFormat2(MidiData& out, bool keepAll) {
     };
     dropOtherChannel(out.dynamics);
     dropOtherChannel(out.pitchBends);
+    dropOtherChannel(out.bendRanges);
 
     for (auto it = out.trackNames.begin(); it != out.trackNames.end();) {
         if (it->first != keep) it = out.trackNames.erase(it);
@@ -172,6 +174,35 @@ static void normalizeFormat2(MidiData& out, bool keepAll) {
     out.midiLyrics.erase(std::remove_if(out.midiLyrics.begin(), out.midiLyrics.end(),
                                         [&](const LyricEvent& e) { return e.track != keep; }),
                          out.midiLyrics.end());
+}
+
+// RPN 变更表 → 每个弯音事件自己的范围。
+//
+// 必须在**所有轨都读完**、且 format 2 丢掉别的序列之后才做：RPN 常被写在
+// 文件末尾的 setup / conductor 轨上，弯音事件却在文件开头的旋律轨里；
+// 按解析顺序即时套用会把「后写但 tick 更早」的设定整个漏掉。
+static void resolveBendRanges(MidiData& out) {
+    auto& pts = out.bendRanges;
+    std::stable_sort(pts.begin(), pts.end(),
+                     [](const BendRangePoint& a, const BendRangePoint& b) {
+                         if (a.tick != b.tick) return a.tick < b.tick;
+                         return a.seq < b.seq;
+                     });
+    out.bendRangeEvents = (int)pts.size();
+    std::set<int> chans;
+    for (const auto& p : pts) chans.insert(p.channel);
+    out.bendRangeChannels = (int)chans.size();
+
+    for (auto& pb : out.pitchBends) {
+        double range = out.bendRange;
+        for (const auto& p : pts) {
+            if (p.tick > pb.tick) break;      // pts 已按 tick 升序
+            if (p.channel == pb.channel) range = p.semitones;
+        }
+        // 坏文件里出现过 0 / 127 这种离谱值：落回默认，别把音高甩到天上
+        if (!(range > 0.0) || range > 48.0) range = out.bendRange;
+        pb.range = range;
+    }
 }
 
 // 控制器语义不能「跳过去就算了」。0xB0 里有三件事直接决定谱面：
@@ -413,6 +444,17 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
     std::vector<DynPoint> volumeCc7;
     int ctrlSeq = 0;
 
+    // RPN 状态是**通道级**的，并且跨轨沿用（format 1 常把 RPN 写在 setup 轨、
+    // 音符写在另一条轨）。旧实现是「每轨一对局部 int」：同一条轨上两个通道
+    // 交错发 CC101/CC100/CC6 就会串味；也不能用 static，否则连续解析两份
+    // 文件会互相污染。这里是 parseBuffer 的局部数组，随一次解析一起生灭。
+    int rpnMSB[16], rpnLSB[16], rpnDataMSB[16], rpnLastSeq[16];
+    for (int i = 0; i < 16; i++) {
+        rpnMSB[i] = -1; rpnLSB[i] = -1; rpnDataMSB[i] = -1; rpnLastSeq[i] = -1;
+    }
+    int rpnSeq = 0;
+    std::vector<BendRangePoint> bendRanges;
+
     // 把一个按下的音在 endTick 收尾。key 里已经带了 通道/音高/轨号
     // （见下面的拼法），所以这里不必再传一遍。
     auto flushNote = [&](uint64_t key, long endTick) {
@@ -442,8 +484,6 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
 
         long absTick = 0;
         uint8_t runningStatus = 0;
-        // RPN 状态必须是"每轨"的局部变量：曾用 static，导致跨轨/跨文件串味
-        int rpnMSB = -1, rpnLSB = -1;
 
         while (pos < trkEnd) {
             uint32_t delta = readVarLen(d, size, pos);
@@ -558,12 +598,25 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                 } else if (ctrl == 0x78u || ctrl == 0x7Bu) {  // All Sound/Notes Off
                     allOffEvents.push_back({absTick, (int)channel, ctrlSeq++});
                 }
-                // RPN跟踪: 0x65=RPN MSB, 0x64=RPN LSB, 0x06=Data Entry MSB
-                if (ctrl == 0x65u) rpnMSB = val;
-                else if (ctrl == 0x64u) rpnLSB = val;
-                else if (ctrl == 0x06u && rpnMSB == 0 && rpnLSB == 0) {
-                    // RPN 0x00 0x00 = 弯音范围(半音数)
-                    out.bendRange = (double)val;
+                // ---- RPN 0x0000：弯音灵敏度（每通道、可中途改）----
+                // 标准序列 CC101(0x65)=0、CC100(0x64)=0、CC6(0x06)=半音数，
+                // 可选 CC38(0x26)=音分微调；很多导出器随后用 127/127 退出 RPN，
+                // 这里照收即可（MSB/LSB 变成 127 后 CC6 自然不再匹配）。
+                if (ctrl == 0x65u) rpnMSB[channel] = (int)val;
+                else if (ctrl == 0x64u) rpnLSB[channel] = (int)val;
+                else if (ctrl == 0x06u && rpnMSB[channel] == 0 && rpnLSB[channel] == 0) {
+                    rpnDataMSB[channel] = (int)val;
+                    rpnLastSeq[channel] = rpnSeq;
+                    bendRanges.push_back({absTick, (int)channel, (double)val, rpnSeq++});
+                } else if (ctrl == 0x26u && rpnMSB[channel] == 0 && rpnLSB[channel] == 0 &&
+                           rpnDataMSB[channel] >= 0 && rpnLastSeq[channel] >= 0) {
+                    // CC38 把上一次 CC6 精修到音分（100 音分 = 1 半音）。
+                    for (auto& p : bendRanges) {
+                        if (p.seq == rpnLastSeq[channel]) {
+                            p.semitones = (double)rpnDataMSB[channel] + (double)val / 100.0;
+                            break;
+                        }
+                    }
                 }
             } else if (type == 0xE0u) {
                 uint8_t lsb = d[pos++];
@@ -619,9 +672,11 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
     std::stable_sort(out.dynamics.begin(), out.dynamics.end(), byTickStable);
     std::stable_sort(out.pitchBends.begin(), out.pitchBends.end(), byTickStable);
     std::stable_sort(out.markers.begin(), out.markers.end(), byTickStable);
+    out.bendRanges = std::move(bendRanges);
     normalizeMeterMap(out);
     normalizeKeyMap(out);
     normalizeFormat2(out, keepAllFormat2);
+    resolveBendRanges(out);
     applyControllerSemantics(out, pedalEvents, allOffEvents, volumeCc7);
     applySmpteTimeBase(out);
     recomputeSeconds(out);
@@ -674,6 +729,27 @@ std::string controllerLabel(const MidiData& data) {
         out += parts[i];
     }
     return out;
+}
+
+std::string bendRangeLabel(const MidiData& data) {
+    if (data.bendRangeEvents <= 0) return "";
+    std::vector<double> vals;
+    for (const auto& p : data.bendRanges) {
+        const double v = std::round(p.semitones * 100.0) / 100.0;
+        if (std::find(vals.begin(), vals.end(), v) == vals.end()) vals.push_back(v);
+    }
+    std::sort(vals.begin(), vals.end());
+    std::ostringstream os;
+    os << "弯音范围：";
+    for (size_t i = 0; i < vals.size(); i++) {
+        if (i) os << " / ";
+        const long tenths = std::lround(vals[i] * 10.0);
+        if (tenths % 10 == 0) os << "±" << (tenths / 10);
+        else os << "±" << (tenths / 10) << "." << (tenths % 10);
+    }
+    os << " 半音，按通道与时间生效（" << data.bendRangeEvents << " 处设定，"
+       << data.bendRangeChannels << " 条通道）";
+    return os.str();
 }
 
 std::string formatLabel(const MidiData& data) {

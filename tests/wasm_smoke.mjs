@@ -910,6 +910,55 @@ const pageHtml2 = readFileSync(path.join(ROOT, 'docs', 'index.html'), 'utf8');
 check(/UTF8ToString\(\s*wasmMod\._midi2jianpu_controller_info/.test(pageHtml2),
   'docs/index.html 的 controller_info 用 UTF8ToString 取了字符串');
 
+// ---- 28. RPN 弯音范围：每通道、可中途改，网页三层输出必须与 CLI 一致 ----
+// 旧实现把范围压成一个全局量，最后一个 RPN 覆盖全曲，网页端会把通道 1 的
+// 2 半音颤音放大成 12 半音滑音。这里同时锁住导出符号、文件面板与 MusicXML 音高。
+function bendRangeInfo(bytes) {
+  if (!mod._midi2jianpu_bend_range_info) return '';
+  const ptr = mod._malloc(bytes.length);
+  mod.HEAPU8.set(bytes, ptr);
+  const s = mod.UTF8ToString(mod._midi2jianpu_bend_range_info(ptr, bytes.length));
+  mod._free(ptr);
+  return s || '';
+}
+check(typeof mod._midi2jianpu_bend_range_info === 'function',
+  'WASM 导出 _midi2jianpu_bend_range_info');
+const brcBytes = readFixture('bendrange_channels.mid');
+if (brcBytes) {
+  const info = bendRangeInfo(brcBytes);
+  check(/±12/.test(info) && /按通道与时间生效/.test(info),
+    `WASM 报出弯音范围，实际：${info}`);
+  const bc = makeCaller(mod);
+  bc.setMidi(brcBytes);
+  const bx = bc.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(/<step>C<\/step><octave>5<\/octave>/.test(bx) &&
+        /<step>D<\/step><octave>4<\/octave>/.test(bx),
+    '网页 MusicXML 两个通道分别升到 C5 / D4');
+  const bh = bc.call('midi2jianpu_html', -1, 1) || '';
+  check(bh.includes('弯音范围：±12'), '网页 HTML 页眉写明弯音范围');
+  const plainB = readFixture('sample.mid');
+  if (plainB) check(bendRangeInfo(plainB) === '',
+    '没有 RPN 的普通文件返回空串');
+}
+const brtBytes = readFixture('bendrange_timeline.mid');
+if (brtBytes) {
+  check(/±2 \/ ±12/.test(bendRangeInfo(brtBytes)),
+    'WASM 列出中途改过的两种范围');
+  const bt = makeCaller(mod);
+  bt.setMidi(brtBytes);
+  const bx2 = bt.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(/<step>C<\/step><octave>5<\/octave>/.test(bx2) &&
+        /<step>D<\/step><octave>4<\/octave>/.test(bx2),
+    '网页 MusicXML 中途改范围不倒灌到前一个音');
+}
+const brxBytes = readFixture('bendrange_crosstrack.mid');
+if (brxBytes) {
+  check(/±12/.test(bendRangeInfo(brxBytes)),
+    'WASM 认出写在另一条轨上的 RPN');
+}
+check(/UTF8ToString\(\s*wasmMod\._midi2jianpu_bend_range_info/.test(pageHtml2),
+  'docs/index.html 的 bend_range_info 用 UTF8ToString 取了字符串');
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

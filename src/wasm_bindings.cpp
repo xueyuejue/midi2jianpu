@@ -226,6 +226,16 @@ const char* midi2jianpu_controller_info(const uint8_t* midiData, int size) {
     return buf.c_str();
 }
 
+// 弯音范围：RPN 0x0000 可以逐通道、逐时刻设定，同一个弯音轮位置在不同通道
+// 会差出整整一个八度。网页文件提示里说一句，免得用户以为转谱算错了音高。
+const char* midi2jianpu_bend_range_info(const uint8_t* midiData, int size) {
+    static std::string buf;
+    m2j::MidiData data;
+    if (!m2j::loadMidiFromMemory(midiData, size, data)) { buf.clear(); return buf.c_str(); }
+    buf = m2j::bendRangeLabel(data);
+    return buf.c_str();
+}
+
 // 获取MIDI音符数据(JSON格式, 用于播放)
 const char* midi2jianpu_get_notes_json(const uint8_t* midiData, int size) {
     m2j::MidiData data;

@@ -103,11 +103,28 @@ struct AllNotesOffPoint {
     int seq;
 };
 
+// RPN 0x0000（弯音灵敏度）的变更点。
+//
+// MIDI 的弯音范围是**每通道、且可以中途改**的：通道 0 设 ±12 半音做大滑音，
+// 通道 1 仍用默认 ±2 做颤音，是最常见的编曲；同一通道前一段 ±12、后一段
+// 回到 ±2 也不罕见。旧实现只有一个全局 MidiData::bendRange，"最后一个 RPN
+// 覆盖全曲所有通道，还会倒灌到它之前的音"，两种情形都会把音高算错一个八度。
+// seq 是文件里的出现顺序：同一 tick、同一通道多次设定时后写覆盖先写。
+struct BendRangePoint {
+    long tick;
+    int channel;
+    double semitones;
+    int seq;
+};
+
 // 弯音轮事件（从 0xE0 解析，14位值，中心8192）
 struct PitchBendPoint {
     long tick;
     int value;          // 0-16383, 8192=无弯音
     int channel = 0;    // 所属通道，避免不同乐器互相干扰
+    // 这条弯音生效时的范围（半音）。解析层按 (通道, tick) 从
+    // MidiData::bendRanges 解算后写死，四个输出层一律读它，不再各自乘全局量。
+    double range = 2.0;
 };
 
 // 歌词事件（从 MIDI 0x05 lyric 解析）
@@ -165,7 +182,12 @@ struct MidiData {
     std::vector<TimeSigPoint> timeSigChanges;  // 0x58 全序列；timeSig = 曲首那一个
     std::vector<KeySigPoint> keySigChanges;    // 0x59 全序列；keySig = 曲首那一个
     std::vector<PitchBendPoint> pitchBends;
-    double bendRange = 2.0;  // 弯音范围(半音), 默认±2, 可被RPN 0x00改变
+    // 文件里没有任何 RPN 设定时的兜底范围（半音）。谱面计算一律读
+    // PitchBendPoint::range；手动构造 MidiData 时改这个字段仍会作为默认值生效。
+    double bendRange = 2.0;
+    std::vector<BendRangePoint> bendRanges;   // RPN 0x0000 变更序列（按 tick/seq 排序）
+    int bendRangeEvents = 0;                 // 设定次数
+    int bendRangeChannels = 0;              // 涉及的通道数
     std::map<int, std::string> trackNames;  // 轨道名称(0x03 meta)
     std::map<int, int> channelProgram;      // 通道 -> GM 音色号(0..127)，0xC0 解析得到
     std::vector<LyricEvent> midiLyrics;     // MIDI内置歌词(0x05 meta)
@@ -285,6 +307,9 @@ std::string timeBaseLabel(const MidiData& data);
 // 控制器语义提示：延音踏板 / 强制清音 / CC7 主音量各改了多少东西。
 // 没有触发任何一项时返回空串。
 std::string controllerLabel(const MidiData& data);
+// 弯音范围：RPN 0x0000 的设定次数、涉及的通道数与实际半音数。
+// 没有 RPN 时返回空串。
+std::string bendRangeLabel(const MidiData& data);
 
 std::string formatLabel(const MidiData& data);
 

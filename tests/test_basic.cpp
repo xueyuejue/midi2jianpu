@@ -2548,6 +2548,150 @@ int main() {
         check(controllerLabel(MidiData{}).empty(), "普通文件不输出控制器提示");
     }
 
+    // ---- RPN 0x0000 弯音范围：每通道、可中途改、可写在别的轨 ----
+    {
+        std::cout << "\n测试 RPN 弯音范围：通道隔离 / 时间轴 / 跨轨\n";
+        auto rpn = [](SmfTrack& t, int ch, long tick, int semis, int cents) {
+            t.at(tick, ev({0xB0 | ch, 101, 0}));
+            t.at(tick, ev({0xB0 | ch, 100, 0}));
+            t.at(tick, ev({0xB0 | ch, 6, semis}));
+            if (cents >= 0) t.at(tick, ev({0xB0 | ch, 38, cents}));
+            t.at(tick, ev({0xB0 | ch, 101, 127}));   // 退出 RPN 状态
+            t.at(tick, ev({0xB0 | ch, 100, 127}));
+        };
+        auto bend = [](SmfTrack& t, int ch, long tick, int value) {
+            t.at(tick, ev({0xE0 | ch, value & 0x7F, (value >> 7) & 0x7F}));
+        };
+        auto note = [](SmfTrack& t, int ch, long tick) {
+            t.at(tick, ev({0x90 | ch, 60, 96}));
+            t.at(tick + 480, ev({0x80 | ch, 60, 0x40}));
+        };
+        auto rangeOf = [](const MidiData& d, int ch, long tick) -> double {
+            for (const auto& pb : d.pitchBends)
+                if (pb.channel == ch && pb.tick == tick) return pb.range;
+            return -1.0;
+        };
+        auto parse = [](const std::vector<uint8_t>& bytes, MidiData& md) {
+            return loadMidiFromMemory(bytes.data(), bytes.size(), md);
+        };
+
+        // 1) 通道 0 设 ±12，通道 1 没设——通道 1 必须还是默认 ±2。
+        {
+            SmfTrack t;
+            rpn(t, 0, 0, 12, -1);
+            note(t, 0, 0);
+            note(t, 1, 960);
+            bend(t, 0, 0, 16383);
+            bend(t, 1, 960, 16383);
+            auto bytes = buildSmf(1, 480, {t});
+            MidiData md;
+            check(parse(bytes, md), "弯音范围文件解析成功");
+            check(md.bendRanges.size() == 1 && md.bendRanges[0].channel == 0 &&
+                  std::abs(md.bendRanges[0].semitones - 12.0) < 1e-9,
+                  "只记下通道 0 的一处 ±12 设定");
+            check(md.bendRangeEvents == 1 && md.bendRangeChannels == 1,
+                  "统计 1 处设定 / 1 条通道，实际 " +
+                      std::to_string(md.bendRangeEvents) + " / " +
+                      std::to_string(md.bendRangeChannels));
+            check(std::abs(rangeOf(md, 0, 0) - 12.0) < 1e-9,
+                  "通道 0 的弯音用 ±12");
+            check(std::abs(rangeOf(md, 1, 960) - 2.0) < 1e-9,
+                  "通道 1 没设 RPN，仍是默认 ±2（旧实现会被 ±12 污染）");
+            const std::string br = bendRangeLabel(md);
+            check(br.find("±12") != std::string::npos &&
+                  br.find("按通道与时间生效") != std::string::npos,
+                  "弯音范围提示可读，实际: " + br);
+            check(bendRangeLabel(MidiData{}).empty(), "普通文件不输出弯音范围提示");
+        }
+
+        // 2) 同一通道中途把 ±12 改回 ±2，前面的音不能被倒灌。
+        {
+            SmfTrack t;
+            rpn(t, 0, 0, 12, -1);
+            note(t, 0, 0);
+            bend(t, 0, 0, 16383);
+            rpn(t, 0, 960, 2, -1);
+            note(t, 0, 960);
+            bend(t, 0, 960, 16383);
+            auto bytes = buildSmf(1, 480, {t});
+            MidiData md;
+            parse(bytes, md);
+            check(md.bendRanges.size() == 2, "记下两处范围变更");
+            check(std::abs(rangeOf(md, 0, 0) - 12.0) < 1e-9 &&
+                  std::abs(rangeOf(md, 0, 960) - 2.0) < 1e-9,
+                  "中途改范围不倒灌到它之前的弯音");
+            const std::string br = bendRangeLabel(md);
+            check(br.find("±2") != std::string::npos &&
+                  br.find("±12") != std::string::npos,
+                  "两种范围都列进提示，实际: " + br);
+        }
+
+        // 3) RPN 写在文件顺序靠后的 setup 轨上，弯音在最前面的旋律轨里。
+        {
+            SmfTrack music, setup;
+            note(music, 0, 0);
+            bend(music, 0, 0, 16383);
+            rpn(setup, 0, 0, 12, -1);
+            auto bytes = buildSmf(2, 480, {music, setup});
+            MidiData md;
+            parse(bytes, md);
+            check(md.bendRanges.size() == 1 &&
+                  std::abs(rangeOf(md, 0, 0) - 12.0) < 1e-9,
+                  "RPN 在别的轨也照样生效（解析顺序不决定时间顺序）");
+        }
+
+        // 4) RPN 状态按通道隔离：ch0 选中 RPN 后，ch1 的裸 CC6 不能算设定。
+        {
+            SmfTrack t;
+            t.at(0, ev({0xB0, 101, 0}));
+            t.at(0, ev({0xB0, 100, 0}));
+            t.at(0, ev({0xB1, 6, 7}));
+            t.at(0, ev({0xB0, 6, 12}));
+            bend(t, 0, 0, 16383);
+            bend(t, 1, 0, 16383);
+            auto bytes = buildSmf(1, 480, {t});
+            MidiData md;
+            parse(bytes, md);
+            check(md.bendRanges.size() == 1 && md.bendRanges[0].channel == 0,
+                  "没选过 RPN 的通道不产生设定");
+            check(std::abs(rangeOf(md, 1, 0) - 2.0) < 1e-9,
+                  "通道 1 不被通道 0 的 RPN 状态串味");
+        }
+
+        // 5) CC38 音分微调；同 tick 后写覆盖先写；非法值落回默认。
+        {
+            SmfTrack cents;
+            rpn(cents, 0, 0, 12, 50);
+            bend(cents, 0, 0, 16383);
+            auto b1 = buildSmf(1, 480, {cents});
+            MidiData m1;
+            parse(b1, m1);
+            check(m1.bendRanges.size() == 1 &&
+                  std::abs(m1.bendRanges[0].semitones - 12.5) < 1e-9 &&
+                  std::abs(rangeOf(m1, 0, 0) - 12.5) < 1e-9,
+                  "CC38 把范围精修到 12.5 半音");
+
+            SmfTrack twice;
+            rpn(twice, 0, 0, 12, -1);
+            rpn(twice, 0, 0, 3, -1);
+            bend(twice, 0, 0, 16383);
+            auto b2 = buildSmf(1, 480, {twice});
+            MidiData m2;
+            parse(b2, m2);
+            check(std::abs(rangeOf(m2, 0, 0) - 3.0) < 1e-9,
+                  "同 tick 多次设定以后写的为准");
+
+            SmfTrack bad;
+            rpn(bad, 0, 0, 0, -1);
+            bend(bad, 0, 0, 16383);
+            auto b3 = buildSmf(1, 480, {bad});
+            MidiData m3;
+            parse(b3, m3);
+            check(std::abs(rangeOf(m3, 0, 0) - 2.0) < 1e-9,
+                  "范围 0 这种坏数据落回默认 ±2");
+        }
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

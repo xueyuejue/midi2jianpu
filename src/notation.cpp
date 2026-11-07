@@ -1399,7 +1399,7 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
         double sum = 0; int count = 0;
         for (const auto& pb : data.pitchBends) {
             if (pb.channel == channel && pb.tick >= start && pb.tick <= end) {
-                sum += (pb.value - 8192) / 8192.0 * data.bendRange;  // ±2半音范围
+                sum += (pb.value - 8192) / 8192.0 * pb.range;  // 该通道该时刻的范围
                 count++;
             }
         }
@@ -2426,7 +2426,7 @@ static BendMark bendMarkFor(const NoteEvent& n, const MidiData& data,
     for (const auto& pb : bends) {
         if (pb.tick > end) break;             // bends 已按 tick 排序
         if (pb.channel == n.channel && pb.tick >= n.startTicks)
-            offs.push_back((pb.value - 8192) / 8192.0 * data.bendRange);
+            offs.push_back((pb.value - 8192) / 8192.0 * pb.range);
     }
     if (offs.size() < 3) return BendMark::None;
 
