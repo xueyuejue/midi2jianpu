@@ -441,7 +441,15 @@ static const double NOTATABLE_BEATS[] = {
 static double snapBeats(double beats) {
     if (beats <= 0) return NOTATABLE_BEATS[0];
     const int n = (int)(sizeof(NOTATABLE_BEATS) / sizeof(NOTATABLE_BEATS[0]));
-    if (beats >= NOTATABLE_BEATS[n - 1]) return NOTATABLE_BEATS[n - 1];
+    // 长于全音符：这张表是「一个音符符号能表示的时值」，到这里就装不下了。
+    //
+    // 旧实现在这里 return 4.0，等于把一个 6 拍的长音截成 4 拍。音符的
+    // durationTicks 被就地改小，后面的时间就成了空洞，三个输出层只好在
+    // 下一小节补一个休止符——`| 3 - - - | 0 - 4 5 |`，唱到一半凭空静音两拍。
+    //
+    // 长音本来就该靠延音线跨小节分写（文本/HTML 的 `-`、MusicXML 的
+    // <tie>），切分逻辑早就写好了。这里只把拍数吸附到 1/4 拍，时值必须保住。
+    if (beats >= NOTATABLE_BEATS[n - 1]) return std::round(beats * 4.0) / 4.0;
     double best = NOTATABLE_BEATS[0];
     double bestDist = 1e9;
     for (int i = 0; i < n; i++) {
@@ -553,7 +561,15 @@ QuantizeReport quantizeTiming(MidiData& data) {
             for (size_t i : idxs) {
                 if (data.notes[i].startTicks != s) continue;
                 long oldDur = data.notes[i].durationTicks;
-                double est = (double)oldDur / gate;   // 还原门限衰减
+                // 门限还原只对「断奏音」成立：门限因子来自 dur/ioi 的众数，
+                // 描述的是音符提前收尾、留出气口的那种演奏习惯。
+                // 长音（附点二分及以上）是按住不放的，note-off 就是真实收尾，
+                // 再按 1/0.86 放大只会让它虚增 16%（4 拍 → 4.65 拍）。
+                // 单声部轨还能靠「响到下一音头」兜回来，柱式和弦的钢琴轨
+                // （复调，monophonic=false）没有这层兜底，虚增会真的落进谱面：
+                // 一个 4 拍的和弦被写成 4 拍 + 0.75 拍延音，整段小节线错位。
+                const bool heldNote = oldDur >= 3L * div;
+                double est = heldNote ? (double)oldDur : (double)oldDur / gate;
 
                 long dur;
                 if (monophonic && ioi > 0 && est >= 0.9 * ioi) {

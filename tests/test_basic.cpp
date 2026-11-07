@@ -1776,6 +1776,135 @@ int main() {
         }
     }
 
+    // -----------------------------------------------------------------
+    // 长音跨小节（延音线）：时值不能被截断，也不能被门限放大
+    // -----------------------------------------------------------------
+    {
+        // 一条连续旋律：4 个四分音符 + 一个长音 + 收尾四分音符。
+        // 长音从 bar1 第 1 拍起，held 拍数由参数给（6 拍跨到 bar2 第 3 拍）。
+        auto heldSong = [](double heldBeats) {
+            MidiData d;
+            d.division = 480;
+            d.timeSig.valid = true;
+            d.timeSig.numerator = 4;
+            d.timeSig.denomPow = 2;
+            auto add = [&](long start, long dur, int pitch) {
+                NoteEvent n;
+                n.pitch = pitch;
+                n.startTicks = start;
+                n.durationTicks = dur;
+                n.rawDurationTicks = dur;
+                n.track = 0;
+                n.channel = 0;
+                n.velocity = 90;
+                d.notes.push_back(n);
+            };
+            const int bar = 1920;
+            const int q = 480;
+            for (int i = 0; i < 4; i++) add(i * q, q, 60 + 2 * i);   // bar0
+            const long held = (long)std::llround(heldBeats * q);
+            add(bar, held, 64);                                      // bar1 起长音
+            add(bar + held, q, 65);                                  // 长音之后
+            add(bar + held + q, q, 67);
+            return d;
+        };
+
+        // 6 拍 > 全音符（4 拍）。旧实现把 snapBeats 钳在 4 拍，长音被截成
+        // 1920 tick，剩下 960 tick 在下一个小节补成休止符。
+        {
+            MidiData d = heldSong(6.0);
+            quantizeTiming(d);
+            const long dur = d.notes[4].durationTicks;   // 长音是第 5 个音符
+            check(dur == 2880, "6 拍长音量化后仍是 6 拍（2880 tick），实际: " +
+                               std::to_string(dur));
+
+            KeyEstimate key;
+            key.tonicPitchClass = 0;
+            key.isMajor = true;
+            const std::string txt = formatJianpu(d, key);
+            check(txt.find("3 - - -") != std::string::npos,
+                  "长音首段写成「3 - - -」: " + txt);
+            check(txt.find("- - 4 5") != std::string::npos,
+                  "长音后段在下一小节续写「- -」，不是休止符 0");
+            check(txt.find("0 - 4 5") == std::string::npos,
+                  "跨小节延音不能被写成休止符");
+        }
+
+        // 10 拍：跨三小节，续接段要有两个。
+        {
+            MidiData d = heldSong(10.0);
+            quantizeTiming(d);
+            const long dur = d.notes[4].durationTicks;
+            check(dur == 4800, "10 拍长音量化后仍是 10 拍（4800 tick），实际: " +
+                               std::to_string(dur));
+
+            KeyEstimate key;
+            key.tonicPitchClass = 0;
+            key.isMajor = true;
+            const std::string txt = formatJianpu(d, key);
+            // 首段一整小节 + 两个整小节续写
+            check(txt.find("3 - - -") != std::string::npos, "10 拍长音首段完整写满一小节");
+            check(txt.find("- - - -") != std::string::npos,
+                  "第二小节整小节都是延音线，实际:\n" + txt);
+        }
+
+        // 复调轨上的 4 拍和弦：门限因子来自另一条「断奏」轨（0.84）时，
+        // 旧算法会拿 4 / 0.84 = 4.76 拍回填，把柱式和弦写成 4.75 拍，
+        // 每个小节都溢出 3/4 拍，小节线整体错位。
+        {
+            MidiData d;
+            d.division = 480;
+            d.timeSig.valid = true;
+            d.timeSig.numerator = 4;
+            d.timeSig.denomPow = 2;
+            // 断奏轨：音头间隔 480，时值 400 -> ratio 0.833，众数成门限
+            for (int i = 0; i < 12; i++) {
+                NoteEvent n;
+                n.pitch = 84;
+                n.startTicks = i * 480L;
+                n.durationTicks = 400;
+                n.rawDurationTicks = 400;
+                n.track = 0;
+                n.channel = 0;
+                d.notes.push_back(n);
+            }
+            // 复调轨：每 4 拍一个三音柱式和弦（同音头 3 个音 -> polyphony 3）
+            for (int bar = 0; bar < 3; bar++) {
+                for (int k = 0; k < 3; k++) {
+                    NoteEvent n;
+                    n.pitch = 48 + 4 * k;
+                    n.startTicks = bar * 1920L;
+                    n.durationTicks = 1920;
+                    n.rawDurationTicks = 1920;
+                    n.track = 1;
+                    n.channel = 1;
+                    d.notes.push_back(n);
+                }
+            }
+            const QuantizeReport rep = quantizeTiming(d);
+            check(rep.gate > 0.80 && rep.gate < 0.90,
+                  "门限因子按断奏轨估出 0.84，实际: " + std::to_string(rep.gate));
+            bool allWhole = true;
+            long staccatoDur = -1;
+            for (const auto& n : d.notes) {
+                if (n.track == 1 && n.durationTicks != 1920) allWhole = false;
+                if (n.track == 0 && n.startTicks == 0) staccatoDur = n.durationTicks;
+            }
+            check(allWhole, "复调轨的 4 拍和弦不被门限放大成 4.75 拍");
+            // 断奏轨该修的仍要修：400 tick 还原成一个四分音符
+            check(staccatoDur == 480,
+                  "断奏轨 400 tick 仍按门限还原成四分音符，实际: " +
+                  std::to_string(staccatoDur));
+        }
+
+        // 短音的既有行为不能变：没有门限证据（全是整拍音头）时原样吸附。
+        {
+            MidiData d = heldSong(1.0);
+            quantizeTiming(d);
+            check(d.notes[4].durationTicks == 480, "一拍音维持四分音符");
+        }
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";
