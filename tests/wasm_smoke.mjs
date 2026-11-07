@@ -133,6 +133,7 @@ const REQUIRED = [
   '_midi2jianpu_set_use_dynamics', // 网页的「力度与演奏法」开关
   '_midi2jianpu_expression_count', // 网页的表情检出提示
   '_midi2jianpu_part_info', // 网页的声部乐器标注提示
+  '_midi2jianpu_tempo_ramp_count', // 网页的「其中 N 处渐快渐慢」提示
   '_malloc',
   '_free',
 ];
@@ -607,6 +608,36 @@ if (existsSync(chordsPath)) {
     'WASM MusicXML 写出 <harmony> 与转位低音', cxml.slice(0, 300));
 } else {
   check(false, '素材 chords.mid 存在（先跑 make_fixture.py）');
+}
+
+// ---- 21. 渐快渐慢：网页谱面与 MusicXML 都只写一个 rit./accel. ----
+// 一段 rit. 在 MIDI 里是几十个连续 set_tempo。谱面必须收成一个记号，
+// 否则网页会被逐小节的速度采样刷屏、导出的 MusicXML 又反过来整段丢失。
+const rampPath = path.join(FIXTURES, 'tempo_ramp.mid');
+if (existsSync(rampPath)) {
+  const rb = new Uint8Array(readFileSync(rampPath));
+  const rq = makeCaller(mod);
+  rq.setMidi(rb);
+  const rh = rq.call('midi2jianpu_html', -1, 1) || '';
+  check(rh.includes('accel. 100→140') && rh.includes('rit. 140→80'),
+    'WASM HTML 把 26 个自动化节点收成 accel. / rit.', rh.slice(0, 300));
+  const marks = rh.match(/<span class='tempo[^']*'>[^<]*<\/span>/g) || [];
+  check(marks.length === 4, `WASM HTML 只有 4 个速度标记，实际 ${marks.length}`);
+
+  const rxml = rq.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(rxml.includes('<words>rit.</words>') && rxml.includes('<words>accel.</words>'),
+    'WASM MusicXML 写出 rit. / accel. 文字记号', rxml.slice(0, 300));
+
+  // 网页提示要用折叠后的计数，不是 26
+  const pcq = mod._malloc(rb.length);
+  mod.HEAPU8.set(rb, pcq);
+  const tc = mod._midi2jianpu_tempo_change_count(pcq, rb.length);
+  const trc = mod._midi2jianpu_tempo_ramp_count(pcq, rb.length);
+  mod._free(pcq);
+  check(tc === 3, `变速处数按折叠后算（3 处），实际 ${tc}`);
+  check(trc === 2, `其中渐快渐慢 2 处，实际 ${trc}`);
+} else {
+  check(false, '素材 tempo_ramp.mid 存在（先跑 make_fixture.py）');
 }
 
 console.log('');

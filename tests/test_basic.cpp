@@ -1640,6 +1640,142 @@ int main() {
         check(cm.bassPc == -1, "非和弦音低音不产生转位");
     }
 
+    // ---- 速度曲线折叠：连续 set_tempo -> rit. / accel. ----
+    {
+        // 造一份「每 half 拍一个自动化节点」的速度曲线，与 DAW 画速度包络
+        // 时写出的东西一致（真实 MIDI 里 rit. 就是几十个 set_tempo）。
+        auto rampData = [](long fromTick, long toTick, double a, double b,
+                           long step) {
+            MidiData d;
+            d.division = 480;
+            d.timeSig = TimeSignature{4, 2, true};
+            if (fromTick > 0) d.tempoChanges.push_back({0, a});
+            const long steps = (toTick - fromTick) / step;
+            for (long k = 0; k <= steps; k++)
+                d.tempoChanges.push_back({fromTick + k * step,
+                                          a + (b - a) * (double)k / (double)steps});
+            return d;
+        };
+
+        // 1) 单调速：只有一个记号，且是阶跃
+        {
+            MidiData d;
+            d.division = 480;
+            d.tempoChanges = {{0, 120.0}};
+            const auto m = tempoMarksOf(d);
+            check(m.size() == 1 && m[0].kind == TempoMarkKind::Step && m[0].bpm == 120,
+                  "单一速度只出一个阶跃记号");
+        }
+
+        // 2) 空表：不产生任何记号（不能凭空造一个 ♩=120）
+        {
+            MidiData d;
+            d.division = 480;
+            check(tempoMarksOf(d).empty(), "没有 0x51 事件时不出速度记号");
+        }
+
+        // 3) 阶跃变速：120 -> 90（第 5 小节），彼此间隔远超一拍，各自一个记号
+        {
+            MidiData d;
+            d.division = 480;
+            d.tempoChanges = {{0, 120.0}, {7680, 90.0}};
+            const auto m = tempoMarksOf(d);
+            check(m.size() == 2 && m[1].kind == TempoMarkKind::Step && m[1].bpm == 90,
+                  "阶跃变速仍是阶跃，不改写成 rit.");
+            check(tempoChangeCount(d) == 1, "一处变速的计数不变");
+        }
+
+        // 4) 渐慢：13 个节点（120 -> 60）-> 曲首阶跃 + 一个 Ritardando
+        {
+            const MidiData d = rampData(1920, 4800, 120.0, 60.0, 240);
+            const auto m = tempoMarksOf(d);
+            check(m.size() == 2, "13 个渐慢节点收敛成 2 个记号，实际: " +
+                                 std::to_string(m.size()));
+            check(m[0].kind == TempoMarkKind::Step && m[0].bpm == 120,
+                  "曲首速度单独成记号");
+            check(m[1].kind == TempoMarkKind::Ritardando,
+                  "下降且单调 -> Ritardando");
+            check(m[1].bpm == 120 && m[1].toBpm == 60, "渐慢记成 120→60");
+            check(m[1].pointCount == 13, "记录原始节点数 13，实际: " +
+                                         std::to_string(m[1].pointCount));
+            check(tempoChangeCount(d) == 1,
+                  "一整段渐慢只算一处变速，不是 13 处");
+        }
+
+        // 5) 渐快：下降方向反过来必须是 Accelerando，不能一律写 rit.
+        {
+            const MidiData d = rampData(1920, 4800, 100.0, 140.0, 240);
+            const auto m = tempoMarksOf(d);
+            check(m.size() == 2 && m[1].kind == TempoMarkKind::Accelerando,
+                  "上升且单调 -> Accelerando");
+            check(m[1].bpm == 100 && m[1].toBpm == 140, "渐快记成 100→140");
+        }
+
+        // 6) 跨度太小：120 -> 118（1.7%）是自动化抖动，不是 rit.
+        {
+            std::vector<TempoPoint> pts{{0, 120.0}};
+            for (int k = 1; k <= 6; k++) pts.push_back({1920 + k * 240, 120.0 - k * 0.33});
+            MidiData d;
+            d.division = 480;
+            d.tempoChanges = pts;
+            const auto m = tempoMarksOf(d);
+            check(m.size() == 2 && m[1].kind == TempoMarkKind::Step,
+                  "跨度 < 5% 的抖动不退化成 rit.");
+        }
+
+        // 7) 非单调（自动化曲线来回拉）：谱面没有对应记号，退化成阶跃取末值
+        {
+            MidiData d;
+            d.division = 480;
+            d.tempoChanges = {{0, 120.0}, {1920, 130.0}, {2160, 118.0},
+                              {2400, 135.0}, {2640, 122.0}};
+            const auto m = tempoMarksOf(d);
+            check(m.size() == 2 && m[1].kind == TempoMarkKind::Step && m[1].bpm == 122,
+                  "非单调速度抖动退化成阶跃（取末值），实际: " +
+                  std::to_string(m[1].bpm));
+        }
+
+        // 8) 聚簇阈值是「一拍」：间隔超过一拍的两个点必须分开成两个记号，
+        //    否则两次独立的阶跃变速会被误当成一段渐变。
+        {
+            MidiData d;
+            d.division = 480;
+            d.tempoChanges = {{0, 120.0}, {1920, 110.0}, {2500, 100.0}};
+            // 1920 -> 2500 间隔 580 tick > 480，不同簇
+            const auto m = tempoMarksOf(d);
+            check(m.size() == 3, "间隔超过一拍的变速点各自成记号，实际: " +
+                                 std::to_string(m.size()));
+        }
+
+        // 9) 页眉文案：阶跃写 ♩=N，渐变写 rit./accel. 并附起止速度
+        {
+            const MidiData d = rampData(1920, 4800, 120.0, 60.0, 240);
+            const std::string s = tempoSummary(d);
+            check(s.find("♩=120") == 0, "页眉以曲首速度开头: " + s);
+            check(s.find("rit. 120→60(第2小节)") != std::string::npos,
+                  "页眉把渐慢写成 rit. 120→60: " + s);
+            check(s.find("♩=116") == std::string::npos,
+                  "页眉不再逐点罗列中间速度");
+
+            const MidiData up = rampData(1920, 4800, 120.0, 150.0, 240);
+            check(tempoSummary(up).find("accel. 120→150") != std::string::npos,
+                  "页眉把渐快写成 accel.: " + tempoSummary(up));
+        }
+
+        // 10) 「从头开始渐慢」：tick 0 就是渐变起点，曲首阶跃仍要先写出来
+        {
+            MidiData d;
+            d.division = 480;
+            for (int k = 0; k <= 8; k++)
+                d.tempoChanges.push_back({k * 240, 120.0 - k * 2.0});
+            const auto m = tempoMarksOf(d);
+            check(m.size() == 2 && m[0].kind == TempoMarkKind::Step && m[0].bpm == 120,
+                  "曲首速度恒为独立阶跃记号");
+            check(m[1].kind == TempoMarkKind::Ritardando && m[1].toBpm == 104,
+                  "曲首起的渐慢仍被识别，终点: " + std::to_string(m[1].toBpm));
+        }
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

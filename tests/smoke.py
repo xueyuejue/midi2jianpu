@@ -939,6 +939,61 @@ def main():
         check("m7b5" in kinds and "7sus4" in kinds,
               f"<kind text> 保留 m7b5 / 7sus4 显示后缀，实际 {kinds}")
 
+    # ---- [25] 渐快 / 渐慢折叠 ----
+    # tempo_ramp.mid 里 accel. 13 个节点、rit. 13 个节点，中间夹恒定速度，
+    # 最后阶跃回 120。旧版会把 28 个点全当变速列进页眉（五条全指同一小节），
+    # HTML 每小节采样一次速度，MusicXML 则因为节点不落在小节线上而整段丢失。
+    print("\n[25] 渐快 / 渐慢：连续 set_tempo 收敛成 rit. / accel.")
+    rmid = os.path.join(FIXTURES, "tempo_ramp.mid")
+    if not os.path.exists(rmid):
+        check(False, "素材 tempo_ramp.mid 存在（先跑 make_fixture.py）")
+    else:
+        rc, out, err = run(exe, rmid)
+        check(rc == 0, "带渐变速度的 MIDI 能正常转换", err[:200])
+        head = out.split("----")[0]
+        check("accel. 100→140" in head, "页眉写出渐快 accel. 100→140", head[:300])
+        check("rit. 140→80" in head, "页眉写出渐慢 rit. 140→80", head[:300])
+        check(head.count("第2小节") <= 1,
+              f"页眉不再重复罗列同一小节，实际 {head.count('第2小节')} 次")
+        # 28 个自动化节点不能逐点出现在页眉里：分隔符 " → " 只有 3 个
+        # （渐变内部的 100→140 没有空格，不会误计）
+        check(head.count(" → ") <= 4,
+              f"页眉分隔符 <= 4（折叠生效），实际 {head.count(' → ')}")
+
+        rh = os.path.join(tmp, "ramp.html")
+        rx = os.path.join(tmp, "ramp.xml")
+        rc2, _, err2 = run(exe, rmid, "--html", rh, "--musicxml", rx)
+        check(rc2 == 0, "导出 tempo_ramp.mid 的 HTML / MusicXML", err2[:200])
+        hbody = open(rh, encoding="utf-8").read()
+        temples = re.findall(r"<span class='tempo[^']*'>([^<]*)</span>", hbody)
+        check(len(temples) == 4,
+              f"HTML 只有 4 个速度标记（曲首 + 渐快 + 渐慢 + a tempo），实际 {temples}")
+        check(any("accel." in t for t in temples), "HTML 写出 accel. 记号")
+        check(any("rit." in t for t in temples), "HTML 写出 rit. 记号")
+        # 渐变段不再逐小节采样：谱面上只该有曲首 100 与 a tempo 120 两个
+        # 具体 BPM，中间那些 116 / 108 之类的采样值一个都不该出现
+        bpms = set(re.findall(r"♩=(\d+)", " ".join(temples)))
+        check(bpms == {"100", "120"},
+              f"HTML 只出现曲首与 a tempo 的具体 BPM，实际 {sorted(bpms)}")
+
+        import xml.etree.ElementTree as ETt
+        troot = ETt.parse(rx).getroot()
+        words = [w.text or "" for w in troot.iter("words")]
+        check("rit." in words, f"MusicXML 写出 <words>rit.</words>，实际 {words}")
+        check("accel." in words, f"MusicXML 写出 <words>accel.</words>，实际 {words}")
+        tempos = [(m.findtext("beat-unit"), m.findtext("per-minute"))
+                  for m in troot.iter("metronome")]
+        check(len(tempos) <= 6,
+              f"<metronome> 不超过 6 个（不是逐节点），实际 {tempos}")
+        check(("quarter", "100") in tempos and ("quarter", "120") in tempos,
+              f"曲首与 a tempo 的阶跃速度仍在，实际 {tempos}")
+
+        # 真实曲目零回归：单调速文件不应该冒出速度记号
+        smid = os.path.join(FIXTURES, "sample.mid")
+        rc3, sout, _ = run(exe, smid)
+        check(rc3 == 0 and "rit." not in sout and "accel." not in sout,
+              "单调速素材 sample.mid 不产生渐快渐慢记号")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

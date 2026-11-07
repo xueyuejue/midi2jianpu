@@ -202,6 +202,16 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
     std::map<long, std::string> chordAt;
     for (const auto& c : chords) chordAt[c.startTick] = c.name;
 
+    // 速度标记：折叠后的记号（阶跃 / 渐快 / 渐慢），再把「记号落在第几小节」
+    // 预先算成一张表。同一个小节里有多个记号时保留第一个（后面的会在
+    // 标记行里挤成一团，而且实用上也不会有一小节里变两次速的谱子）。
+    const std::vector<TempoMark> tempoMarks = tempoMarksOf(data);
+    std::map<long, size_t> tempoAtBar;
+    for (size_t i = 0; i < tempoMarks.size(); i++) {
+        const long b = grid.barIndex(tempoMarks[i].tick);
+        if (tempoAtBar.find(b) == tempoAtBar.end()) tempoAtBar[b] = i;
+    }
+
     // 歌词分配：HTML 的连音线弧线和 MusicXML 的 syllabic/slur 共用同一份结果。
     // 早先这里自己拆字、自己算「第几个音领第几个字」，导出 MusicXML 时整份
     // 歌词就丢了；现在统一走 notation.cpp 的 assignLyrics。
@@ -342,7 +352,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         long prevEnd = 0;
         std::string lastDyn;
         std::string lastChord;
-        int lastTempo = -1;
+        size_t lastTempoIdx = (size_t)-1;
         bool inTriplet = false;
 
         // 和弦游标：按 tick 顺序推进。取「不晚于 tick 的最后一个还没标过的
@@ -385,17 +395,27 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 body << "<span class='keychg'>转 "
                      << "1=" << keyName(keys.keyAtBar(bar, grid)) << "</span>";
 
-            // 中途变速：标在速度变化的那一小节。单一速度已经写在页眉，
-            // 谱面上再印一遍纯属噪音，所以只在有两个以上速度时显示。
-            if (showTempo && data.tempoChanges.size() > 1) {
-                int bpm = 0;
-                for (const auto& tp : data.tempoChanges) {
-                    if (tp.tick <= barStart) bpm = (int)std::lround(tp.bpm);
-                    else break;
-                }
-                if (bpm > 0 && bpm != lastTempo) {
-                    body << "<span class='tempo'>♩=" << bpm << "</span>";
-                    lastTempo = bpm;
+            // 中途变速：标在速度变化落在的那一小节。单一速度已经写在页眉，
+            // 谱面上再印一遍纯属噪音，所以只在有两个以上记号时显示。
+            //
+            // 旧实现是「每个小节采样一次当前速度」，遇到渐慢（MIDI 里几十个
+            // 连续 set_tempo）会每一小节都冒出一个 ♩=116 / ♩=112 / ♩=108，
+            // 满屏无意义数字。现在改走 tempoMarksOf 的折叠结果：阶跃标
+            // `♩=90`，渐变标一次 `rit. 120→60`（只标起点，不再逐小节采样）。
+            if (showTempo && tempoMarks.size() > 1) {
+                auto tm = tempoAtBar.find(bar);
+                if (tm != tempoAtBar.end() && tm->second != lastTempoIdx) {
+                    const TempoMark& m = tempoMarks[tm->second];
+                    if (m.kind == TempoMarkKind::Ritardando) {
+                        body << "<span class='tempo ramp'>rit. " << m.bpm
+                             << "→" << m.toBpm << "</span>";
+                    } else if (m.kind == TempoMarkKind::Accelerando) {
+                        body << "<span class='tempo ramp'>accel. " << m.bpm
+                             << "→" << m.toBpm << "</span>";
+                    } else {
+                        body << "<span class='tempo'>♩=" << m.bpm << "</span>";
+                    }
+                    lastTempoIdx = tm->second;
                 }
             }
 
@@ -721,6 +741,9 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
        font-weight:700;color:#a33;white-space:nowrap;pointer-events:none}
 .tempo{font-size:11px;font-weight:600;color:#4a6fa5;line-height:1;
        border:1px solid #cdd8e8;border-radius:3px;padding:1px 4px;background:#f4f7fc}
+/* 渐快 / 渐慢：与阶跃变速同为速度记号，但用棕色区分——它不是一条
+   「从这个速度开始」的指令，而是一整段的走向，读者扫谱时该分得开 */
+.tempo.ramp{color:#8a5a2b;border-color:#e4d3bb;background:#fdf8f0}
 .meter{font-size:11px;font-weight:700;color:#8a5a2b;line-height:1;
        border:1px solid #e4d3bb;border-radius:3px;padding:1px 4px;background:#fdf8f0}
 /* 倚音（装饰音）：小字上标，写在主音数字前面，不参与节奏计数 */

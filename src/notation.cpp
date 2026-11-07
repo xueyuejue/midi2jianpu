@@ -1105,20 +1105,33 @@ static size_t distinctChordCount(const std::map<long, std::string>& byBar) {
 
 // 速度摘要：单一速度写 "♩=120"，变速曲目写 "♩=120 → 90(第5小节)"。
 // 只写第一个速度是错的：后半首按 90 唱，谱面却还印着 120。
+//
+// 变速点一律走 tempoMarksOf 的折叠结果。旧版直接遍历 tempoChanges 取前 5 个，
+// 遇到渐慢（MIDI 里是几十个连续 set_tempo）会写成
+// 「♩=120 → 120(第3小节) → 116(第3小节) → 113(第3小节) → 109(第3小节) → …」，
+// 五条全指同一小节，读者拿不到任何信息；折叠后同样一段渐慢只写一个
+// 「rit. 120→60(第3小节)」。
 std::string tempoSummary(const MidiData& data) {
-    if (data.tempoChanges.empty()) return std::string();
+    const std::vector<TempoMark> marks = tempoMarksOf(data);
+    if (marks.empty()) return std::string();
+
     std::ostringstream os;
-    os << "♩=" << (int)std::lround(data.tempoChanges[0].bpm);
-    if (data.tempoChanges.size() > 1) {
+    os << "♩=" << marks[0].bpm;
+    if (marks.size() > 1) {
         // 小节号走网格换算：弱起曲目里 tick/小节长 会整体偏一号
         BarGrid grid = barGridOf(data);
-        for (size_t i = 1; i < data.tempoChanges.size() && i <= 4; i++) {
-            os << (i > 1 ? " → " : " → ")
-               << (int)std::lround(data.tempoChanges[i].bpm)
-               << "(第" << grid.measureNumber(grid.barIndex(data.tempoChanges[i].tick))
-               << "小节)";
+        for (size_t i = 1; i < marks.size() && i <= 4; i++) {
+            const TempoMark& m = marks[i];
+            const long bar = grid.measureNumber(grid.barIndex(m.tick));
+            os << " → ";
+            if (m.kind == TempoMarkKind::Ritardando)
+                os << "rit. " << m.bpm << "→" << m.toBpm << "(第" << bar << "小节)";
+            else if (m.kind == TempoMarkKind::Accelerando)
+                os << "accel. " << m.bpm << "→" << m.toBpm << "(第" << bar << "小节)";
+            else
+                os << m.bpm << "(第" << bar << "小节)";
         }
-        if (data.tempoChanges.size() > 5) os << " → …";
+        if (marks.size() > 5) os << " → …";
     }
     return os.str();
 }
@@ -1624,7 +1637,89 @@ std::vector<LyricSyllable> parseLrc(const std::string& lrcPath, int division, in
 }
 
 int tempoChangeCount(const MidiData& data) {
-    return TempoTimeline(data).changeCount();
+    // 折叠后的记号数减掉曲首那一个，才是「中途变了几次速」。
+    // 一段渐慢从 17 个事件收敛成 1 个记号，提示语里的数字才对得上读者
+    // 在谱面上数得到的标记。
+    const size_t n = tempoMarksOf(data).size();
+    return n > 0 ? (int)n - 1 : 0;
+}
+
+// ---- 速度标记折叠 ----
+//
+// 时间轴（TempoTimeline）必须逐点保留 —— 几十个自动化节点是算准秒数的唯一
+// 依据。但谱面只该有 `rit.` / `accel.` 一个记号（见 notation.hpp 的说明）。
+// 这里做的是「事件 -> 符号」的收敛，不改 data 里的任何东西。
+std::vector<TempoMark> tempoMarksOf(const MidiData& data) {
+    std::vector<TempoMark> marks;
+
+    // 先归一化：排序、同 tick 后写覆盖、丢弃非法 BPM。与 TempoTimeline 用
+    // 同一套规则，否则「时间轴按 3 个点算、谱面按 4 个点标」这种错位迟早出现。
+    std::vector<TempoPoint> pts = data.tempoChanges;
+    std::sort(pts.begin(), pts.end(),
+              [](const TempoPoint& a, const TempoPoint& b) { return a.tick < b.tick; });
+    std::vector<TempoPoint> uniq;
+    for (const auto& p : pts) {
+        if (p.bpm <= 0 || p.tick < 0) continue;
+        if (!uniq.empty() && uniq.back().tick == p.tick) uniq.back() = p;
+        else uniq.push_back(p);
+    }
+    if (uniq.empty()) return marks;
+
+    // 曲首速度永远是独立记号：不管它后面接的是渐慢还是保持，读者都得先知道
+    // 「从多快开始」。这样也保证 marks 的第一个元素 tick 恒为 uniq[0].tick。
+    marks.push_back({uniq[0].tick, uniq[0].tick, (int)std::lround(uniq[0].bpm),
+                     (int)std::lround(uniq[0].bpm), TempoMarkKind::Step, 1});
+    if (uniq.size() < 2) return marks;
+
+    // 聚簇：相邻间隔 <= 1 拍的事件属于同一次速度变化。
+    //
+    // 为什么阈值是「一拍」而不是拍内的几分之一：DAW 的 tempo 自动化节点再密
+    // 也不会密过 1/16 拍，而两次**独立**的阶跃变速不可能挤在一拍之内——那在
+    // 音乐上没有意义（拍子还没走完就换两次速度）。所以一拍是个安全的分界：
+    // 单点阶跃（120→90）自己成簇，一整段渐变曲线（几十个点）合成一个簇。
+    const long gap = data.division > 0 ? (long)data.division : 480L;
+
+    size_t i = 1;
+    while (i < uniq.size()) {
+        size_t j = i;
+        while (j + 1 < uniq.size() && uniq[j + 1].tick - uniq[j].tick <= gap) j++;
+        // 簇是 uniq[i..j]，共 j-i+1 个点
+        const size_t n = j - i + 1;
+
+        const int firstBpm = (int)std::lround(uniq[i].bpm);
+        const int lastBpm  = (int)std::lround(uniq[j].bpm);
+
+        // 单调性：全升 / 全降（允许持平，自动化曲线里常见平台）
+        bool nonDecreasing = true, nonIncreasing = true;
+        for (size_t k = i; k < j; k++) {
+            const int a = (int)std::lround(uniq[k].bpm);
+            const int b = (int)std::lround(uniq[k + 1].bpm);
+            if (b < a) nonDecreasing = false;
+            if (b > a) nonIncreasing = false;
+        }
+
+        // 跨度太小（< 5%）不当作渐变：120→118 这种抖动写成 rit. 是误导。
+        const int prevBpm = (int)std::lround(uniq[i > 0 ? i - 1 : 0].bpm);
+        const double span = prevBpm > 0
+                          ? std::fabs((double)(lastBpm - firstBpm)) / (double)prevBpm
+                          : 0.0;
+
+        const bool isRamp = (n >= 3) && (nonDecreasing || nonIncreasing) && span >= 0.05;
+
+        if (isRamp) {
+            marks.push_back({uniq[i].tick, uniq[j].tick, firstBpm, lastBpm,
+                             nonDecreasing ? TempoMarkKind::Accelerando
+                                           : TempoMarkKind::Ritardando,
+                             (int)n});
+        } else {
+            // 阶跃 / 抖动：只保留这一簇的最终速度。抖动（自动化曲线来回拉）
+            // 在谱面上没有对应记号，取末值至少保证「后面按这个速度唱」是对的。
+            marks.push_back({uniq[j].tick, uniq[j].tick, lastBpm, lastBpm,
+                             TempoMarkKind::Step, (int)n});
+        }
+        i = j + 1;
+    }
+    return marks;
 }
 
 // ---- 和弦检测 ----
