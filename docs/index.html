@@ -190,8 +190,20 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     }
     if (wasmMod._midi2jianpu_part_info) {
       // 声部 / 乐器：返回 "声部：Vocal·钢琴, ..."，文件有多条声部时才提示。
-      var info = wasmMod._midi2jianpu_part_info(p, midiBytes.length);
+      // 返回的是 char*（wasm 内存里的指针），必须过 UTF8ToString 才是字符串——
+      // 早先直接拿指针调 indexOf，会在上传文件时抛 TypeError，连带后面的
+      // convert() 都不执行。
+      var info = wasmMod.UTF8ToString(
+        wasmMod._midi2jianpu_part_info(p, midiBytes.length));
       if (info && info.indexOf('：') >= 0) hints.push(info);
+    }
+    if (wasmMod._midi2jianpu_file_header_info) {
+      // 文件头：SMPTE 时间基准 / format 2 独立序列。SMPTE 文件的 division
+      // 折算后是 500 这种非常见值，不点明会被当成解析错误；format 2 若不说，
+      // 用户会以为另外几段音乐丢了。两者都不触发时返回空串。
+      var fh = wasmMod.UTF8ToString(
+        wasmMod._midi2jianpu_file_header_info(p, midiBytes.length));
+      if (fh) hints.push(fh);
     }
     wasmMod._free(p);
     box.textContent = hints.join(' · ');

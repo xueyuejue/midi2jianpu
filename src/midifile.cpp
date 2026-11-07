@@ -5,6 +5,8 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <set>
+#include <sstream>
 #include <unordered_map>
 
 namespace m2j {
@@ -88,6 +90,90 @@ long TempoTimeline::secondsToTick(double seconds) const {
     return (long)std::llround(t);
 }
 
+// SMPTE 时间基准的折算。
+//
+// SMPTE 文件里 tick 就是绝对时间：tick / (fps × ticksPerFrame) = 秒，跟
+// set_tempo 没有关系。但简谱的一切都按「拍」算（每拍 tick 数 = division），
+// 所以必须挑一个速度把绝对时间换算成拍——取曲首 set_tempo（没有就 120BPM）。
+// 折算完 division 就是「每拍多少 tick」，下游 tick/division 直接得到拍数，
+// 三个输出层和量化逻辑一行都不用改。
+//
+// 随之必须做的一处归一：SMPTE 下中途的 tempo 元事件并不改变绝对时间，若把
+// 那些变速点留给 TempoTimeline，秒数会被二次缩放（音符与 LRC 歌词都会错位）。
+// 所以只保留曲首那一个点。
+static void applySmpteTimeBase(MidiData& out) {
+    if (!out.smpte) return;
+    // 帧率 29 表示 29.97 丢帧；按 29.97 算才能和视频对上。
+    double fps = (out.smpteFps == 29) ? 29.97 : (double)out.smpteFps;
+    double ticksPerSec = fps * (double)out.smpteTicksPerFrame;
+    if (!(ticksPerSec > 0.5)) {   // 折算不出来就退回普通 PPQ，别让下游除零
+        out.smpte = false;
+        out.division = 480;
+        return;
+    }
+
+    std::stable_sort(out.tempoChanges.begin(), out.tempoChanges.end(),
+                     [](const TempoPoint& a, const TempoPoint& b) { return a.tick < b.tick; });
+    double bpm = out.tempoChanges.empty() ? 120.0 : out.tempoChanges.front().bpm;
+    if (!(bpm > 0)) bpm = 120.0;
+
+    const double ppq = (60.0 / bpm) * ticksPerSec;   // 一拍多少 tick
+    long d = std::lround(ppq);
+    out.division = (d > 0) ? (int)d : 1;
+
+    out.tempoChanges.assign(1, TempoPoint{0, bpm});
+}
+
+// format 2：每条轨是一个**独立序列**（pattern），不是同一首曲子的各声部。
+//
+// 旧实现不分 format，把所有轨的音符并到同一条时间轴上：两段各 4 小节的音乐
+// 同时起算，小节线对不齐，两个序列里同拍发声的音还会被判成「和弦」。这里
+// 只保留文件顺序里第一条含音符的轨，其余按轨（轨名 / 歌词）与通道
+// （力度 / 弯音 / 音色）一并过滤，避免残留数据串味。
+static void normalizeFormat2(MidiData& out, bool keepAll) {
+    if (out.format != 2 || out.notes.empty()) return;
+
+    std::map<int, size_t> perTrack;
+    for (const auto& n : out.notes) perTrack[n.track]++;
+    out.format2SequenceCount = (int)perTrack.size();
+    if (perTrack.empty()) return;
+
+    const int keep = perTrack.begin()->first;   // std::map 按轨号升序，即文件顺序
+    out.format2UsedTrack = keep;
+    if (perTrack.size() <= 1) return;           // 只有一段，没什么可丢的
+    if (keepAll) return;                        // --track 要自己挑段落，先别丢
+
+    std::set<int> channels;
+    std::vector<NoteEvent> kept;
+    kept.reserve(perTrack[keep]);
+    for (const auto& n : out.notes) {
+        if (n.track != keep) continue;
+        kept.push_back(n);
+        channels.insert(n.channel);
+    }
+    out.notes.swap(kept);
+
+    auto dropOtherChannel = [&](auto& v) {
+        v.erase(std::remove_if(v.begin(), v.end(),
+                               [&](const auto& p) { return channels.count(p.channel) == 0; }),
+                v.end());
+    };
+    dropOtherChannel(out.dynamics);
+    dropOtherChannel(out.pitchBends);
+
+    for (auto it = out.trackNames.begin(); it != out.trackNames.end();) {
+        if (it->first != keep) it = out.trackNames.erase(it);
+        else ++it;
+    }
+    for (auto it = out.channelProgram.begin(); it != out.channelProgram.end();) {
+        if (channels.count(it->first) == 0) it = out.channelProgram.erase(it);
+        else ++it;
+    }
+    out.midiLyrics.erase(std::remove_if(out.midiLyrics.begin(), out.midiLyrics.end(),
+                                        [&](const LyricEvent& e) { return e.track != keep; }),
+                         out.midiLyrics.end());
+}
+
 // 按 set_tempo 分段，把 tick 精确映射为秒。
 //
 // 旧实现是在解析过程中用一个可变的 tempo 变量即时换算（tick2sec 闭包），
@@ -154,7 +240,8 @@ static void normalizeKeyMap(MidiData& out) {
 }
 
 // 核心解析：从内存buffer解析MIDI
-static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
+static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
+                        bool keepAllFormat2) {
     if (size < 14) return false;
     size_t pos = 0;
 
@@ -162,11 +249,30 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
     if (std::memcmp(d, "MThd", 4) != 0) return false;
     pos = 4;
     uint32_t hdrLen = rd32(d + pos); pos += 4;
-    pos += 2;                       // format
-    pos += 2;                       // ntrks
-    out.division = rd16(d + pos); pos += 2;
+    if (hdrLen < 6) return false;   // 先判长度，否则后面 pos += (hdrLen-6) 会下溢
+    out.format = (int)rd16(d + pos); pos += 2;
+    out.trackCount = (int)rd16(d + pos); pos += 2;
+    {
+        uint32_t divWord = rd16(d + pos);
+        out.rawDivision = (int)divWord;
+        if (divWord & 0x8000u) {
+            // SMPTE 时间基准：高字节是「负帧率」的补码（0xE7 = -25），
+            // 低字节是每帧 tick 数。这种文件里 tick 直接就是绝对时间，
+            // 按无符号读会得到 59176 这种荒谬的 PPQ——一首 16 拍的曲子
+            // 被压进 1 小节，还会因量化错乱被拆成好几个假声部。
+            int fps = 256 - (int)((divWord >> 8) & 0xFFu);
+            int tpf = (int)(divWord & 0xFFu);
+            if (fps >= 1 && fps <= 127 && tpf > 0) {
+                out.smpte = true;
+                out.smpteFps = fps;
+                out.smpteTicksPerFrame = tpf;
+            }
+        } else {
+            out.division = (int)divWord;
+        }
+    }
+    pos += 2;
     if (out.division == 0) out.division = 480;   // 防除零：非法 division 回退到 480
-    if (hdrLen < 6) return false;
     pos += (hdrLen - 6);
 
     int trackIdx = 0;
@@ -338,20 +444,51 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
     std::stable_sort(out.markers.begin(), out.markers.end(), byTickStable);
     normalizeMeterMap(out);
     normalizeKeyMap(out);
+    normalizeFormat2(out, keepAllFormat2);
+    applySmpteTimeBase(out);
     recomputeSeconds(out);
     return true;
 }
 
-bool loadMidiFile(const std::string& path, MidiData& out) {
+bool loadMidiFile(const std::string& path, MidiData& out, bool keepAllFormat2) {
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;
     std::string buf((std::istreambuf_iterator<char>(f)),
                     std::istreambuf_iterator<char>());
-    return parseBuffer(reinterpret_cast<const uint8_t*>(buf.data()), buf.size(), out);
+    return parseBuffer(reinterpret_cast<const uint8_t*>(buf.data()), buf.size(), out,
+                       keepAllFormat2);
 }
 
-bool loadMidiFromMemory(const uint8_t* data, size_t size, MidiData& out) {
-    return parseBuffer(data, size, out);
+bool loadMidiFromMemory(const uint8_t* data, size_t size, MidiData& out,
+                        bool keepAllFormat2) {
+    return parseBuffer(data, size, out, keepAllFormat2);
+}
+
+// 这两个说明文本放在解析层而不是输出层：它们是「文件头怎么读的」这一事实，
+// CLI 提示、HTML 页眉、WASM 三处都要用，写在一处才不会各说各话。
+std::string timeBaseLabel(const MidiData& data) {
+    if (!data.smpte) return "";
+    const std::string fps = (data.smpteFps == 29) ? "29.97"
+                                                  : std::to_string(data.smpteFps);
+    const double bpm = (data.tempo > 0) ? 60000000.0 / data.tempo : 120.0;
+    std::ostringstream os;
+    os << "时间基准 SMPTE " << fps << " fps × " << data.smpteTicksPerFrame
+       << " tick → " << data.division << " tick/拍（按 ♩="
+       << std::lround(bpm) << " 折算）";
+    return os.str();
+}
+
+std::string formatLabel(const MidiData& data) {
+    if (data.format != 2) return "";
+    if (data.format2SequenceCount <= 1) return "";
+    std::string s = "format 2（多个独立序列）：共 " +
+                    std::to_string(data.format2SequenceCount) + " 段，只转换轨 " +
+                    std::to_string(data.format2UsedTrack);
+    auto it = data.trackNames.find(data.format2UsedTrack);
+    if (it != data.trackNames.end() && !it->second.empty())
+        s += "「" + it->second + "」";
+    s += "，其余段落属别的曲子";
+    return s;
 }
 
 } // namespace m2j

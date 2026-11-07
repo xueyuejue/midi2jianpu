@@ -45,12 +45,15 @@ struct SmfTrack {
     void at(long tick, std::vector<uint8_t> bytes) { events.push_back({tick, std::move(bytes)}); }
 };
 
-static std::vector<uint8_t> buildSmf(int ntrks, int division, std::vector<SmfTrack> tracks) {
+// format 与 division 都要能自定义：division 传 0xE728 就是 SMPTE 25fps×40，
+// format 传 2 就是「多条互相独立的序列」。
+static std::vector<uint8_t> buildSmfFmt(int format, int ntrks, int division,
+                                       std::vector<SmfTrack> tracks) {
     std::vector<uint8_t> out;
     const char hdr[] = {'M','T','h','d'};
     out.insert(out.end(), hdr, hdr + 4);
     put32(out, 6);
-    put16(out, 1);
+    put16(out, (uint16_t)format);
     put16(out, (uint16_t)ntrks);
     put16(out, (uint16_t)division);
 
@@ -76,6 +79,10 @@ static std::vector<uint8_t> buildSmf(int ntrks, int division, std::vector<SmfTra
         out.insert(out.end(), body.begin(), body.end());
     }
     return out;
+}
+
+static std::vector<uint8_t> buildSmf(int ntrks, int division, std::vector<SmfTrack> tracks) {
+    return buildSmfFmt(1, ntrks, division, std::move(tracks));
 }
 
 static int failures = 0;
@@ -2093,6 +2100,109 @@ int main() {
         quantizeTiming(md);
         check(renderMusicXml(md, estimateKey(md)).find("<backup>") == std::string::npos,
               "单声部 MusicXML 不写 <backup>（与旧版逐字节一致）");
+    }
+
+    // ---- 文件头 MThd：SMPTE 时间基准 ----
+    {
+        std::cout << "\n测试文件头 MThd：SMPTE 时间基准\n";
+        // 25 fps x 40 tick/frame = 1000 tick/秒；120BPM 时一拍正好 500 tick
+        const int kSmpteDiv = 0xE728;
+        const int kTpb = 500;
+        SmfTrack cond, voc;
+        cond.at(0, ev({0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20}));   // 500000us -> 120BPM
+        cond.at(0, ev({0xFF, 0x58, 0x04, 4, 2, 24, 8}));        // 4/4
+        cond.at(0, ev({0xFF, 0x59, 0x02, 0, 0}));               // C 大调
+        for (int i = 0; i < 16; i++) {
+            voc.at(i * kTpb, ev({0x90, 60 + i, 96}));
+            voc.at(i * kTpb + kTpb, ev({0x80, 60 + i, 0}));
+        }
+        // 第 9 拍再写一个 400BPM：SMPTE 下 tempo 不改变绝对时间，必须被归一掉
+        voc.at(8 * kTpb, ev({0xFF, 0x51, 0x03, 0x02, 0x49, 0xF0}));
+
+        auto bytes = buildSmf(2, kSmpteDiv, {cond, voc});
+        MidiData md;
+        check(loadMidiFromMemory(bytes.data(), bytes.size(), md), "解析 SMPTE 文件");
+        check(md.smpte && md.smpteFps == 25 && md.smpteTicksPerFrame == 40,
+              "识别 SMPTE 25 fps x 40 tick");
+        check(md.rawDivision == kSmpteDiv, "保留原始 division 字 0xE728");
+        check(md.division == kTpb,
+              "折算成 500 tick/拍，实际: " + std::to_string(md.division));
+        check(md.notes.size() == 16,
+              "16 个音符都在，实际: " + std::to_string(md.notes.size()));
+
+        double s8 = -1.0;
+        for (const auto& n : md.notes)
+            if (n.startTicks == 8 * kTpb) s8 = n.startSeconds;
+        check(std::fabs(s8 - 4.0) < 1e-6,
+              "第 9 拍落在 4.0 秒（中途 tempo 未被二次缩放），实际: " +
+                  std::to_string(s8));
+        check(md.tempoChanges.size() == 1,
+              "SMPTE 下 tempo 归一为单点，实际: " +
+                  std::to_string(md.tempoChanges.size()));
+
+        const std::string tb = timeBaseLabel(md);
+        check(tb.find("SMPTE") != std::string::npos &&
+                  tb.find("25") != std::string::npos &&
+                  tb.find("500") != std::string::npos,
+              "时间基准说明可读，实际: " + tb);
+        check(timeBaseLabel(MidiData{}).empty(), "普通 PPQ 文件不输出时间基准说明");
+
+        // 划小节：16 拍按 4/4 应是 4 小节，而不是全部挤进 1 小节
+        const std::string jp = formatJianpu(md, estimateKey(md));
+        size_t bars = 0;
+        for (char c : jp) if (c == '|') bars++;
+        check(bars == 4, "16 拍划成 4 小节，实际小节线: " + std::to_string(bars));
+    }
+
+    // ---- 文件头 MThd：format 2 是多个独立序列 ----
+    {
+        std::cout << "\n测试文件头 MThd：format 2 独立序列\n";
+        SmfTrack songA, songB;
+        for (int i = 0; i < 16; i++) {
+            songA.at(i * 480, ev({0x90, 60 + i, 96}));
+            songA.at(i * 480 + 480, ev({0x80, 60 + i, 0}));
+        }
+        for (int i = 0; i < 8; i++) {
+            songB.at(i * 480, ev({0x90, 72 - i, 96}));
+            songB.at(i * 480 + 480, ev({0x80, 72 - i, 0}));
+        }
+        auto bytes = buildSmfFmt(2, 2, 480, {songA, songB});
+
+        MidiData md;
+        check(loadMidiFromMemory(bytes.data(), bytes.size(), md), "解析 format 2 文件");
+        check(md.format == 2, "记下 format=2");
+        check(md.format2SequenceCount == 2,
+              "统计到 2 段独立序列，实际: " + std::to_string(md.format2SequenceCount));
+        check(md.format2UsedTrack == 0, "默认取文件顺序的第 0 轨");
+        check(md.notes.size() == 16,
+              "只保留第 0 轨的 16 个音符，实际: " + std::to_string(md.notes.size()));
+        bool allTrack0 = true;
+        for (const auto& n : md.notes) if (n.track != 0) allTrack0 = false;
+        check(allTrack0, "残留音符全部来自第 0 轨（另一段没混进来）");
+
+        const std::string fl = formatLabel(md);
+        check(fl.find("format 2") != std::string::npos &&
+                  fl.find("2 段") != std::string::npos,
+              "format 2 说明可读，实际: " + fl);
+
+        // --track 要自己挑段落时，解析层不能提前丢数据
+        MidiData all;
+        loadMidiFromMemory(bytes.data(), bytes.size(), all, true);
+        check(all.notes.size() == 24,
+              "keepAllFormat2 时保留全部 24 个音符，实际: " +
+                  std::to_string(all.notes.size()));
+
+        // format 1 的多轨是同一首的各声部，一条都不能丢
+        SmfTrack v, p;
+        v.at(0, ev({0x90, 60, 90}));
+        v.at(480, ev({0x80, 60, 0}));
+        p.at(0, ev({0x90, 48, 90}));
+        p.at(480, ev({0x80, 48, 0}));
+        auto f1 = buildSmf(2, 480, {v, p});
+        MidiData m1;
+        loadMidiFromMemory(f1.data(), f1.size(), m1);
+        check(m1.notes.size() == 2, "format 1 的两个声部都保留");
+        check(formatLabel(m1).empty(), "format 1 不输出独立序列说明");
     }
 
     std::cout << "\n------------------------------------------------\n";

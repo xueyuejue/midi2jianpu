@@ -43,3 +43,7 @@ id_ed25519*
 portable/
 CREDENTIALS.md
 *.bak.*
+
+# --- 临时探针脚本（.probe/）---
+# 复现缺陷用的一次性脚本与新旧二进制对比目录，不进仓库。
+.probe/
