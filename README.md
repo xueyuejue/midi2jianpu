@@ -626,6 +626,22 @@ note-off 紧贴 note-on 导出（每个键只按 1/4 拍），真正的音响长
 
 中文简谱是中国特有的记谱体系，国外打谱软件（MuseScore、Finale）对它支持很差，国内又一直缺少一个干净的、可二次开发的基础库。这个项目想把「MIDI → 简谱」这层地基打好，让后来的人不用重复造轮子。
 
+## 仓库维护约定（换电脑 / 绿色复制）
+
+这个仓库只有一位维护者。GitHub 首页的 Contributors 不只按 commit author 统计，还会解析提交信息里的 `Co-Authored-By: Name <email>` 自动追加贡献者；2026-11 曾因 AI 工具自动追加的一行署名，重写了 39 个提交、21 个 tag，并切换默认分支才把 GitHub 服务端那份只增不减的统计缓存刷新掉。为杜绝复发，仓库自带三层守护：
+
+1. **身份锁在仓库本地**：`user.name` / `user.email` / `core.hooksPath=.githooks` 写在 `.git/config` 里，随整个任务目录绿色复制，不依赖任何一台机器的全局 git 配置。
+2. **提交当场拦截**：`.githooks/commit-msg` 调用 `tools/check_commit_attribution.py --file`，拦下 AI 署名行、AI 厂商邮箱以及非本人的 author/committer 邮箱。
+3. **服务端兜底**：`.github/workflows/commit-guard.yml` 在每次 push 后扫描 `HEAD` 可达的全部提交，`--no-verify` 或换机器忘装钩子也绕不过去。
+
+换电脑、换办公环境或整体复制目录之后，在仓库里跑一次即可：
+
+```bash
+python tools/setup_repo_guard.py     # Windows 也可双击 tools/setup_repo_guard.cmd
+```
+
+它只写 `.git/config`，不改全局配置、不改历史、可重复运行；日常自查用 `python tools/check_commit_attribution.py --history`。提交信息里不要放任何自动生成的署名行，也不要用 `--no-verify`。
+
 ## 贡献
 
 Issue / PR 都欢迎。尤其欢迎：

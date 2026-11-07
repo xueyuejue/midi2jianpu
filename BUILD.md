@@ -155,6 +155,15 @@ node tests/wasm_smoke.mjs build-wasm/midi2jianpu.js        # 或测新编的
 `docs/wasm/` 里还是旧产物」的静默回归——CLI 测试全绿，网页按钮点了没反应。
 CLI 测试永远发现不了这类问题，只能由它兜住。改了 `src/` 一定要重编 wasm 并跑一遍。
 
+### 提交署名守护（换电脑后必跑一次）
+
+```bash
+python tools/setup_repo_guard.py                          # 或双击 tools/setup_repo_guard.cmd
+python tools/check_commit_attribution.py --history       # 自查全部历史提交
+```
+
+第一行把 `user.name` / `user.email` / `core.hooksPath=.githooks` 写进 `.git/config`，随目录绿色复制；之后每次 `git commit` 都会自动校验提交信息，禁止 `Co-Authored-By` 之类的 AI 署名行与非本人邮箱。CI 里的 `.github/workflows/commit-guard.yml` 是服务端兜底。动机与完整说明见 README「仓库维护约定」。
+
 ## 输出示例
 
 ```text

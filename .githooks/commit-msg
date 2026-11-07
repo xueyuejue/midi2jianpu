@@ -1,0 +1,25 @@
+#!/bin/sh
+# commit-msg：提交当场拦下 AI 署名行与错误作者身份。
+# 由仓库本地配置 core.hooksPath=.githooks 启用；配置随 .git/config 一起被绿色复制，
+# 换电脑后只需运行一次 tools/setup_repo_guard.py 即可重建。
+#
+# 退出码 1 会让 git 放弃这次提交（commit 对象虽然已生成，但 HEAD 不会移动）。
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
+    echo "[署名守护] 找不到仓库根目录，拒绝提交" >&2
+    exit 1
+}
+
+PY=""
+for candidate in python3 python py; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        PY="$candidate"
+        break
+    fi
+done
+if [ -z "$PY" ]; then
+    echo "[署名守护] 找不到 Python 3，无法校验提交署名；请先安装 Python 3" >&2
+    exit 1
+fi
+
+exec "$PY" "$ROOT/tools/check_commit_attribution.py" --file "$1"

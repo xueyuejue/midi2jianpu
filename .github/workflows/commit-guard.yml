@@ -1,0 +1,23 @@
+name: 提交署名守护
+
+# 客户端的 commit-msg 钩子可以用 --no-verify 绕过，换电脑时也可能忘了跑 setup；
+# 这里在服务端再查一遍：提交信息不能带 AI 署名行，作者邮箱必须是唯一维护者。
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  attribution:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: 检查提交信息与作者身份
+        run: python tools/check_commit_attribution.py --history
