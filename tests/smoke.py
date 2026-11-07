@@ -1457,6 +1457,53 @@ def main():
     px = xml_pitches(bxx)
     check(px == [("C", "5")], f"setup 轨的 ±12 仍然生效，实际 {px}")
 
+    print("\n[41] 歌词 meta 之后省略状态字节：半首曲子不能凭空消失")
+    rm = os.path.join(FIXTURES, "running_meta.mid")
+    rc, out, err = run(exe, rm, "--no-pickup")
+    check(rc == 0, "省略状态字节的 MIDI 解析成功", err[:200])
+    check("补回 1 处" in out, "CLI 页眉写明补回处数")
+    rmx = os.path.join(tmp, "running_meta.xml")
+    rc, _, err = run(exe, rm, "--no-pickup", "--musicxml", rmx)
+    check(rc == 0, "省略状态字节导出 MusicXML", err[:200])
+    pm = xml_pitches(rmx)
+    check(pm == [("C", "4"), ("D", "4")],
+          f"歌词之后的 D4 还在，实际 {pm}")
+    rmh = os.path.join(tmp, "running_meta.html")
+    rc, _, err = run(exe, rm, "--html", rmh)
+    check(rc == 0, "省略状态字节导出 HTML", err[:200])
+    check("省略状态字节" in open(rmh, encoding="utf-8").read(),
+          "HTML 页眉同步说明")
+
+    print("\n[42] SysEx 取消 / 0xF8 实时消息不取消：两种都要读出两个音")
+    for name, label, need_hint in (
+        ("running_sysex.mid", "SysEx 后省略状态字节", True),
+        ("running_realtime.mid", "0xF8 时钟后省略状态字节", False),
+    ):
+        p = os.path.join(FIXTURES, name)
+        rc, out, err = run(exe, p, "--no-pickup")
+        check(rc == 0, f"{label}：解析成功", err[:200])
+        x = os.path.join(tmp, name + ".xml")
+        rc, _, err = run(exe, p, "--no-pickup", "--musicxml", x)
+        check(rc == 0, f"{label}：导出 MusicXML", err[:200])
+        check(xml_pitches(x) == [("C", "4"), ("D", "4")],
+              f"{label}：C4/D4 都在")
+        if need_hint:
+            check("补回 1 处" in out, f"{label}：补回提示存在")
+        else:
+            check("省略状态字节" not in out,
+                  f"{label}：实时消息不改变 running status，无需补回")
+
+    print("\n[43] 规范写法零回归：重写状态字节时不触发任何补回")
+    rs = os.path.join(FIXTURES, "running_standard.mid")
+    rc, out, err = run(exe, rs, "--no-pickup")
+    check(rc == 0, "规范写法解析成功", err[:200])
+    check("省略状态字节" not in out, "规范写法不输出补回提示")
+    rsx = os.path.join(tmp, "running_standard.xml")
+    rc, _, err = run(exe, rs, "--no-pickup", "--musicxml", rsx)
+    check(rc == 0, "规范写法导出 MusicXML", err[:200])
+    check(xml_pitches(rsx) == [("C", "4"), ("D", "4")],
+          "规范写法仍是 C4/D4 两个八分音符")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

@@ -205,6 +205,10 @@ int main(int argc, char** argv) {
         // 不点明用户会以为转谱把音高算错了。
         const std::string br = m2j::bendRangeLabel(data);
         if (!br.empty()) std::cout << br << "\n";
+        // 系统事件之后省略状态字节是很多导出器的老习惯；补回多少处要说清，
+        // 否则用户不知道这份 MIDI 本来会少掉半首曲子。
+        const std::string rs = m2j::runningStatusLabel(data);
+        if (!rs.empty()) std::cout << rs << "\n";
     }
 
     // --transpose 移调

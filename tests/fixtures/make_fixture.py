@@ -2,12 +2,13 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 30 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 34 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
 pedal / allnotesoff / cc7volume / pedal_channels /
-bendrange_channels / bendrange_timeline / bendrange_crosstrack
+bendrange_channels / bendrange_timeline / bendrange_crosstrack /
+running_meta / running_sysex / running_realtime / running_standard
 （另配 3 份 LRC 歌词）。
 meter 是把变拍号、变速、鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」，
 modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五声调式
@@ -23,7 +24,10 @@ allnotesoff 用 CC123 代替 note-off，cc7volume 只写 CC7 主音量做渐强�
 pedal_channels 则验证踏板不会给没踩的通道补时值。bendrange_channels 让通道 0
 设 ±12 半音、通道 1 保持默认 ±2，bendrange_timeline 在同一通道中途把 ±12 改回
 ±2，bendrange_crosstrack 把 RPN 单独放在文件末尾的 setup 轨——三份都是弯音
-范围「每通道、且随时间变化」的回归闸门。
+范围「每通道、且随时间变化」的回归闸门。running_meta / running_sysex 让歌词
+meta、SysEx 之后仍省略状态字节，running_realtime 在音符流里插 0xF8 时钟
+（规范不改变 running status），running_standard 则是重写状态字节的规范基线：
+四份都应读出 C4、D4 两个八分音符，少一个就说明事件流又错位了。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -1370,6 +1374,54 @@ def build_bendrange_crosstrack() -> bytes:
     return header + lead.render() + setup.render()
 
 
+def _running_melody(middle: bytes, tail_full_status: bool = False) -> Track:
+    """C4 八分 → 中间系统事件 → D4 八分；后半段刻意省略状态字节。
+
+    Track.add 原样写 raw，不做任何状态补全，所以这里能造出真实导出器
+    才会写的「省略 status」字节流。
+    """
+    t = Track()
+    t.add(0, meta(0x03, b"Vocal"))
+    t.add(0, bytes([0x90, 60, 100]))               # C4 on，完整 status
+    t.add(DIV // 2, bytes([60, 0]))                 # C4 off，省略 status
+    t.add(DIV // 2, middle)                         # 同 tick 插入系统事件
+    t.add(DIV, bytes([0x90, 62, 100]) if tail_full_status else bytes([62, 100]))
+    t.add(DIV + DIV // 2,
+          bytes([0x90, 62, 0]) if tail_full_status else bytes([62, 0]))
+    return t
+
+
+def _running_smf(t: Track) -> bytes:
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t.render()
+
+
+def build_running_meta() -> bytes:
+    """歌词 meta 之后仍省略状态字节。旧实现把 0xFF 当成 running status，
+    把 D4 的音高 62 读成 meta 类型、力度 100 读成 meta 长度，整段音符丢失。"""
+    return _running_smf(_running_melody(meta(0x05, b"a")))
+
+
+def build_running_sysex() -> bytes:
+    """SysEx（0xF0 … 0xF7）之后省略状态字节，同样按上一条通道状态补回。"""
+    return _running_smf(_running_melody(b"\xF0\x05\x7E\x7F\x09\x01\xF7"))
+
+
+def build_running_realtime() -> bytes:
+    """0xF8 MIDI clock 插在音符流中间：规范明确不改变 running status，
+    后面的音符无需补回也应正常读到。"""
+    return _running_smf(_running_melody(b"\xF8"))
+
+
+def build_running_standard() -> bytes:
+    """零回归基线：meta 之后规规矩矩重写完整状态字节的规范写法。"""
+    return _running_smf(_running_melody(meta(0x05, b"a"), tail_full_status=True))
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -1567,6 +1619,19 @@ def main() -> None:
         ("allnotesoff", build_allnotesoff),
         ("cc7volume", build_cc7volume),
         ("pedal_channels", build_pedal_channels),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # running status 生命周期素材（meta / SysEx / 实时消息 / 规范基线）
+    for name, builder in (
+        ("running_meta", build_running_meta),
+        ("running_sysex", build_running_sysex),
+        ("running_realtime", build_running_realtime),
+        ("running_standard", build_running_standard),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

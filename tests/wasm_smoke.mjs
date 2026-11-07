@@ -959,6 +959,43 @@ if (brxBytes) {
 check(/UTF8ToString\(\s*wasmMod\._midi2jianpu_bend_range_info/.test(pageHtml2),
   'docs/index.html 的 bend_range_info 用 UTF8ToString 取了字符串');
 
+// ---- 29. 省略状态字节：网页端也要把系统事件之后的半首曲子读回来 ----
+// 旧实现把 meta / SysEx 的状态字节当成 running status，歌词之后的音符
+// 会被读成 meta 事件，整段消失。这里锁住新导出、文件面板和 MusicXML。
+function runningStatusInfo(bytes) {
+  if (!mod._midi2jianpu_running_status_info) return '';
+  const ptr = mod._malloc(bytes.length);
+  mod.HEAPU8.set(bytes, ptr);
+  const s = mod.UTF8ToString(mod._midi2jianpu_running_status_info(ptr, bytes.length));
+  mod._free(ptr);
+  return s || '';
+}
+check(typeof mod._midi2jianpu_running_status_info === 'function',
+  'WASM 导出 _midi2jianpu_running_status_info');
+for (const [name, needHint] of [
+  ['running_meta.mid', true],
+  ['running_sysex.mid', true],
+  ['running_realtime.mid', false],
+  ['running_standard.mid', false],
+]) {
+  const bytes = readFixture(name);
+  if (!bytes) continue;
+  const info = runningStatusInfo(bytes);
+  if (needHint) {
+    check(/补回 1 处/.test(info), `${name}：WASM 报出补回处数，实际：${info}`);
+  } else {
+    check(info === '', `${name}：无需补回时返回空串，实际：${info}`);
+  }
+  const caller = makeCaller(mod);
+  caller.setMidi(bytes);
+  const xml = caller.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(/<step>C<\/step><octave>4<\/octave>/.test(xml) &&
+        /<step>D<\/step><octave>4<\/octave>/.test(xml),
+    `${name}：网页 MusicXML 读出 C4 / D4 两个音`);
+}
+check(/UTF8ToString\(\s*wasmMod\._midi2jianpu_running_status_info/.test(pageHtml2),
+  'docs/index.html 的 running_status_info 用 UTF8ToString 取了字符串');
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

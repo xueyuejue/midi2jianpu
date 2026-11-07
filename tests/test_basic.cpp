@@ -2692,6 +2692,97 @@ int main() {
         }
     }
 
+    // ---- running status：系统事件取消、实时消息不改变、省略字节宽容补回 ----
+    {
+        std::cout << "\n测试 running status：系统事件取消 / 实时消息不改变 / 省略字节补回\n";
+        const std::vector<uint8_t> lyric = ev({0xFF, 0x05, 0x01, 'a'});
+        const std::vector<uint8_t> sysex = ev({0xF0, 0x05, 0x7E, 0x7F, 0x09, 0x01, 0xF7});
+
+        auto load = [](std::vector<SmfTrack> tracks) {
+            auto bytes = buildSmf(1, 480, std::move(tracks));
+            MidiData d;
+            const bool ok = loadMidiFromMemory(bytes.data(), bytes.size(), d);
+            return std::make_pair(ok, std::move(d));
+        };
+        // C4 八分 -> 中间系统事件 -> D4 八分；后半段刻意省略状态字节
+        auto melody = [](std::vector<uint8_t> middle, bool fullStatus, int ch) {
+            SmfTrack t;
+            t.at(0, ev({0x90 | ch, 60, 100}));
+            t.at(240, ev({60, 0}));
+            t.at(240, std::move(middle));
+            t.at(480, fullStatus ? ev({0x90 | ch, 62, 100}) : ev({62, 100}));
+            t.at(720, fullStatus ? ev({0x90 | ch, 62, 0}) : ev({62, 0}));
+            return t;
+        };
+        auto twoNotes = [](const MidiData& d) {
+            return d.notes.size() == 2 && d.notes[0].pitch == 60 &&
+                   d.notes[1].pitch == 62 && d.notes[0].durationTicks == 240 &&
+                   d.notes[1].durationTicks == 240;
+        };
+
+        auto a = load({melody(lyric, false, 0)});
+        check(a.first, "歌词 meta 之后省略状态字节：文件仍能解析");
+        check(twoNotes(a.second), "歌词 meta 之后省略状态字节：C4/D4 两个八分音符都在");
+        check(a.second.runningStatusRecovered == 1, "补回处数 = 1（第一个裸数据字节）");
+        check(runningStatusLabel(a.second).find("补回 1 处") != std::string::npos,
+              "CLI 提示写明补回 1 处");
+        check(runningStatusLabel(MidiData{}).empty(), "普通文件不输出省略状态字节提示");
+
+        auto b = load({melody(sysex, false, 0)});
+        check(twoNotes(b.second), "SysEx 之后省略状态字节：C4/D4 都在");
+        check(b.second.runningStatusRecovered == 1, "SysEx 同样补回 1 处");
+
+        auto c = load({melody(ev({0xF8}), false, 0)});
+        check(twoNotes(c.second), "0xF8 时钟不改变 running status：C4/D4 都在");
+        check(c.second.runningStatusRecovered == 0, "实时消息不需要补回");
+
+        auto d = load({melody(ev({0xFE}), false, 0)});
+        check(twoNotes(d.second), "0xFE active sensing 不改变 running status");
+
+        auto e = load({melody(lyric, true, 0)});
+        check(twoNotes(e.second), "规范写法（重写状态字节）不受影响");
+        check(e.second.runningStatusRecovered == 0, "规范写法不触发补回");
+
+        SmfTrack multi;
+        multi.at(0, ev({0x90, 60, 100}));
+        multi.at(240, ev({60, 0}));
+        multi.at(240, lyric);
+        multi.at(240, sysex);
+        multi.at(480, ev({62, 100}));
+        multi.at(720, ev({62, 0}));
+        auto f = load({multi});
+        check(twoNotes(f.second), "meta + SysEx 连续出现：仍读出两个音");
+
+        // System Common 也取消 running status，且不能把它的两字节数据当状态
+        auto g = load({melody(ev({0xF2, 0x00, 0x00}), false, 0)});
+        check(twoNotes(g.second), "0xF2 Song Position Pointer 之后省略状态字节：两个音都在");
+
+        // 补回的是「最后一条通道状态」，不是硬编码 0x90
+        auto h = load({melody(lyric, false, 1)});
+        check(twoNotes(h.second), "通道 1 的省略状态字节也能补回");
+        check(h.second.notes.size() == 2 && h.second.notes[1].channel == 1,
+              "补回的音符仍归原通道，不是通道 0");
+
+        // 最后通道状态是 0xB0（CC，两字节数据）时，裸数据按 CC 解释，
+        // 不会多吃/少吃字节导致后面的音符错位
+        SmfTrack cc;
+        cc.at(0, ev({0x90, 60, 100}));
+        cc.at(240, ev({60, 0}));
+        cc.at(240, ev({0xB0, 7, 100}));
+        cc.at(240, lyric);
+        cc.at(480, ev({11, 80}));
+        cc.at(480, ev({0x90, 62, 100}));
+        cc.at(720, ev({62, 0}));
+        auto i = load({cc});
+        check(twoNotes(i.second), "最后通道状态是 CC 时，省略状态字节按两字节数据解释");
+        // 同轨先写的 CC7（tick 240）也会进力度表，所以这里查「有没有」而不是
+        // 断言总数：CC11 是 tick 480、值 80 的那一点。
+        bool hasCc11 = false;
+        for (const auto& p : i.second.dynamics)
+            if (p.tick == 480 && p.value == 80) hasCc11 = true;
+        check(hasCc11, "被补回的 CC11 进了力度表");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

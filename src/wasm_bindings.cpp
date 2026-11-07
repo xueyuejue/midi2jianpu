@@ -236,6 +236,16 @@ const char* midi2jianpu_bend_range_info(const uint8_t* midiData, int size) {
     return buf.c_str();
 }
 
+// 省略状态字节：系统事件（歌词 / Marker / SysEx）之后仍有导出器不重写
+// 状态字节，靠上一条通道状态才能读回后半首曲子。网页提示里说一句补回几处。
+const char* midi2jianpu_running_status_info(const uint8_t* midiData, int size) {
+    static std::string buf;
+    m2j::MidiData data;
+    if (!m2j::loadMidiFromMemory(midiData, size, data)) { buf.clear(); return buf.c_str(); }
+    buf = m2j::runningStatusLabel(data);
+    return buf.c_str();
+}
+
 // 获取MIDI音符数据(JSON格式, 用于播放)
 const char* midi2jianpu_get_notes_json(const uint8_t* midiData, int size) {
     m2j::MidiData data;

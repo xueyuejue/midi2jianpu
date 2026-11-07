@@ -484,6 +484,14 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
 
         long absTick = 0;
         uint8_t runningStatus = 0;
+        // running status 只由通道消息（0x80-0xEF）建立。旧实现把每个状态字节
+        // 都记成 runningStatus，于是 0xFF（meta）/ 0xF0（SysEx）之后遇到省略
+        // 状态字节的音符时，会把音符的音高字节当成 meta 类型、力度字节当成
+        // 长度，事件流从那里整体错位——一句歌词之后半首曲子的音符全丢。
+        // SMF 规范：meta / SysEx / System Common 取消 running status；
+        // System Real-Time（0xF8-0xFE）不改变它。lastChannelStatus 只作宽容
+        // 兜底：不少导出器在系统事件之后仍省略状态字节，严格跳过就整轨报废。
+        uint8_t lastChannelStatus = 0;
 
         while (pos < trkEnd) {
             uint32_t delta = readVarLen(d, size, pos);
@@ -493,10 +501,23 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
             uint8_t status;
             if (b & 0x80u) {
                 status = b;
-                runningStatus = b;
                 pos++;
+                if (status < 0xF0u) {
+                    runningStatus = status;
+                    lastChannelStatus = status;
+                } else if (status == 0xFFu || status == 0xF0u || status == 0xF7u ||
+                           (status >= 0xF1u && status <= 0xF6u)) {
+                    // 0xF1-0xF6 是 System Common，与 meta / SysEx 一样取消。
+                    runningStatus = 0;
+                }
+                // 0xF8-0xFE：系统实时消息，保持 runningStatus 原样。
             } else {
                 status = runningStatus;
+                if (status == 0 && lastChannelStatus != 0) {
+                    status = lastChannelStatus;
+                    runningStatus = status;
+                    out.runningStatusRecovered++;
+                }
             }
 
             uint8_t type = status & 0xF0u;
@@ -750,6 +771,12 @@ std::string bendRangeLabel(const MidiData& data) {
     os << " 半音，按通道与时间生效（" << data.bendRangeEvents << " 处设定，"
        << data.bendRangeChannels << " 条通道）";
     return os.str();
+}
+
+std::string runningStatusLabel(const MidiData& data) {
+    if (data.runningStatusRecovered <= 0) return "";
+    return "省略状态字节：系统事件之后按上一条通道状态补回 " +
+           std::to_string(data.runningStatusRecovered) + " 处（否则音符会整段丢失）";
 }
 
 std::string formatLabel(const MidiData& data) {

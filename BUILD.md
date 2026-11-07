@@ -31,9 +31,26 @@ cmake --build build --config Release
 
 > **中文乱码提示**：源码含中文注释与中文字面量。CMake 已为 MSVC 自动加上 `/utf-8`，若你手动调用 `cl.exe` 编译，请务必自行加 `/utf-8`，否则帮助信息与谱面标题会变乱码。
 
+### 一键脚本（Windows，随仓库走）
+
+`build/build_local.cmd`、`build/build_test_local.cmd`、`build/build_wasm.cmd` 是本机
+沙箱里绕开 `vcvars64.bat`（它要查注册表，部分环境会被拦）的一键编译脚本，
+`.gitignore` 单独放行 `build/*.cmd`，所以它们会随仓库一起 clone / 绿色复制。
+脚本用 `cd /d "%~dp0.."` 从自身目录回到仓库根，**不再写死任何盘符或绝对路径**。
+
+换电脑时若工具链位置不同，先设同名环境变量即可覆盖，不必改脚本：
+
+| 变量 | 缺省值 | 用途 |
+| --- | --- | --- |
+| `VCT` / `SDK` / `SDKV` | 本机 VS2022 Community 与 Windows SDK 路径 | CLI 与单元测试 |
+| `EMSDK` | 仓库上级 `../tools/emsdk` | WASM |
+
+`EMSDK` 会经 `%%~fI` 规范化成绝对路径再进 `PATH`：路径里残留 `..\..` 会让
+Emscripten 的 sanity 检查误判配置变化，清掉 sysroot 缓存并重编上千个系统库。
+
 ## 测试
 
-### 单元测试（482 项）
+### 单元测试（500 项）
 
 ```bash
 cd build && ctest --output-on-failure
@@ -41,16 +58,16 @@ cd build && ctest --output-on-failure
 ./build/test_basic
 ```
 
-成功时输出 `共 482 项，失败 0 项 -> 全部通过`。
+成功时输出 `共 500 项，失败 0 项 -> 全部通过`。
 
-覆盖范围：调性识别、各调八度基准、升降号书写（含降号调）、时值后缀、三连音、同音合并、和弦检测、移调、MusicXML 小节时长与 `<chord/>`，以及十六组解析层回归——**鼓轨过滤**、**旋律轨判定**、**变速 tempo map 秒数换算**、**弱起小节网格**、**歌词分配与一字多音区间**、**MIDI 内置歌词规整与精确对齐**、**拍号 map 与逐小节网格**、**调号 map（中途转调 / KeyMap）**、**五声调式宫音判定**、**TempoTimeline 与 LRC 变速对齐（tick/秒往返、乱序去重、offset、多时间戳、旧签名对照）**、**ExpressionMap 演奏表情（力度六档 / 渐变 / 断奏 / 重音 / 滑音 / 颤音 / 段落 / 通道隔离 / 开关 / 节奏混合时不误判）与解析层 velocity、原始时值、多轨事件排序**、**GM 音色名（英文全名 / 中文译名覆盖）、`0xC0` 解析（通道 → GM 音色号）、声部乐器标注 `listParts` / `partSummary`、倚音检测与通道隔离、无 0xC0 / 等间隔流零标注回归**、**和弦转位（低音非根音才写斜杠 / 和弦外音不写）、`Bm7b5` 与 `G7sus4` 的类型扩充、`ChordMark` 的结构化字段（rootPc / kind / kindText / bassPc）**、**速度曲线折叠（`tempoMarksOf`：渐变 / 阶跃 / 抖动退化 / 5% 跨度阈值 / 一拍聚簇阈值 / 曲首独立阶跃 / 页眉文案）**、**长音跨小节（6 拍 / 10 拍时值不被截断、延音段写成 `-` 而非休止符、复调轨 4 拍和弦不被门限放大、断奏轨门限还原仍生效）**、**同轨复调（`splitVoices`：同拍同值算和弦 / 同拍不同值拆声部 / 重叠拆声部 / 超上限退化并截短 / 倚音 skip）、复调 MusicXML 的 `<backup>` 与逐小节时值守恒、单声部零 `<backup>` 回归**、**RPN 弯音范围（按通道隔离 / 中途改范围不倒灌 / 跨轨设定 / CC38 音分微调 / 同 tick 后写覆盖 / 非法值兜底 / 提示文案）**（都在内存里现构造最小 SMF，不依赖 fixture 文件）。
+覆盖范围：调性识别、各调八度基准、升降号书写（含降号调）、时值后缀、三连音、同音合并、和弦检测、移调、MusicXML 小节时长与 `<chord/>`，以及十七组解析层回归——**鼓轨过滤**、**旋律轨判定**、**变速 tempo map 秒数换算**、**弱起小节网格**、**歌词分配与一字多音区间**、**MIDI 内置歌词规整与精确对齐**、**拍号 map 与逐小节网格**、**调号 map（中途转调 / KeyMap）**、**五声调式宫音判定**、**TempoTimeline 与 LRC 变速对齐（tick/秒往返、乱序去重、offset、多时间戳、旧签名对照）**、**ExpressionMap 演奏表情（力度六档 / 渐变 / 断奏 / 重音 / 滑音 / 颤音 / 段落 / 通道隔离 / 开关 / 节奏混合时不误判）与解析层 velocity、原始时值、多轨事件排序**、**GM 音色名（英文全名 / 中文译名覆盖）、`0xC0` 解析（通道 → GM 音色号）、声部乐器标注 `listParts` / `partSummary`、倚音检测与通道隔离、无 0xC0 / 等间隔流零标注回归**、**和弦转位（低音非根音才写斜杠 / 和弦外音不写）、`Bm7b5` 与 `G7sus4` 的类型扩充、`ChordMark` 的结构化字段（rootPc / kind / kindText / bassPc）**、**速度曲线折叠（`tempoMarksOf`：渐变 / 阶跃 / 抖动退化 / 5% 跨度阈值 / 一拍聚簇阈值 / 曲首独立阶跃 / 页眉文案）**、**长音跨小节（6 拍 / 10 拍时值不被截断、延音段写成 `-` 而非休止符、复调轨 4 拍和弦不被门限放大、断奏轨门限还原仍生效）**、**同轨复调（`splitVoices`：同拍同值算和弦 / 同拍不同值拆声部 / 重叠拆声部 / 超上限退化并截短 / 倚音 skip）、复调 MusicXML 的 `<backup>` 与逐小节时值守恒、单声部零 `<backup>` 回归**、**RPN 弯音范围（按通道隔离 / 中途改范围不倒灌 / 跨轨设定 / CC38 音分微调 / 同 tick 后写覆盖 / 非法值兜底 / 提示文案）**、**running status 生命周期（歌词 meta / SysEx / System Common 之后取消、0xF8 与 0xFE 实时消息不改变、省略状态字节按最后一条通道状态补回、补回 CC 的两字节数据、通道归属不变、规范写法零回归、提示文案）**（都在内存里现构造最小 SMF，不依赖 fixture 文件）。
 
 ### 冒烟测试（端到端，验证 README 承诺的每个参数）
 
 需要 Python 3（只用标准库）：
 
 ```bash
-python tests/fixtures/make_fixture.py     # 生成 30 份 .mid 素材（含 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony / smpte / format2 / aftertouch / retrigger / dangling / twolyrics / pedal / allnotesoff / cc7volume / pedal_channels / bendrange_channels / bendrange_timeline / bendrange_crosstrack）+ 3 份变速 LRC
+python tests/fixtures/make_fixture.py     # 生成 34 份 .mid 素材（含 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony / smpte / format2 / aftertouch / retrigger / dangling / twolyrics / pedal / allnotesoff / cc7volume / pedal_channels / bendrange_channels / bendrange_timeline / bendrange_crosstrack / running_meta / running_sysex / running_realtime / running_standard）+ 3 份变速 LRC
 python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2jianpu.exe
 ```
 
@@ -334,6 +351,7 @@ _midi2jianpu_part_info      声部 / 乐器构成（文件面板提示，返回 
 _midi2jianpu_file_header_info   SMPTE 时间基准 / format 2 独立序列（char*）
 _midi2jianpu_controller_info    踏板 / 清音 / CC7 改了什么（char*）
 _midi2jianpu_bend_range_info    RPN 弯音范围按通道与时间的设定（char*）
+_midi2jianpu_running_status_info  省略状态字节补回了几处（char*）
 ```
 
 > 返回 `char*` 的导出在网页里必须过 `UTF8ToString`；`tests/wasm_smoke.mjs` 会逐项

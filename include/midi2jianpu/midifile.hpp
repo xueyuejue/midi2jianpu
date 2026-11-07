@@ -203,6 +203,11 @@ struct MidiData {
     int allNotesOffTrimmed = 0;    // 被清音事件截尾的音符数
     int cc7Dynamics = 0;           // 由 CC7 主音量补入力度表的点数
 
+    // running status 被系统事件取消后，仍有导出器继续省略状态字节。严格按
+    // SMF 规范这些字节是坏数据，直接跳过会让整条轨从该处起错位、音符凭空
+    // 消失；这里按「上一条通道消息的状态」宽容补回，并记下补了几处。
+    int runningStatusRecovered = 0;
+
     // MIDI 通道 10（channel index 9）是打击乐专用通道：音高代表底鼓/军鼓/踩镲
     // 这些鼓件，而不是音级。简谱没有对应的记法，把它当旋律转出来只会得到
     // `1,, #4,, #6,,` 这种垃圾，并且会因为音符数最多而抢走「旋律轨」身份。
@@ -310,6 +315,9 @@ std::string controllerLabel(const MidiData& data);
 // 弯音范围：RPN 0x0000 的设定次数、涉及的通道数与实际半音数。
 // 没有 RPN 时返回空串。
 std::string bendRangeLabel(const MidiData& data);
+// 省略状态字节：被系统事件取消 running status 后宽容补回的处数。
+// 没有补回时返回空串。
+std::string runningStatusLabel(const MidiData& data);
 
 std::string formatLabel(const MidiData& data);
 

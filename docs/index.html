@@ -219,6 +219,13 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
         wasmMod._midi2jianpu_bend_range_info(p, midiBytes.length));
       if (br) hints.push(br);
     }
+    if (wasmMod._midi2jianpu_running_status_info) {
+      // 省略状态字节：系统事件之后靠上一条通道状态补回，不说用户不知道
+      // 这份 MIDI 本来会少掉半首曲子。char* 走 UTF8ToString。
+      var rs = wasmMod.UTF8ToString(
+        wasmMod._midi2jianpu_running_status_info(p, midiBytes.length));
+      if (rs) hints.push(rs);
+    }
     wasmMod._free(p);
     box.textContent = hints.join(' · ');
   }

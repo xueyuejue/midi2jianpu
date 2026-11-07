@@ -60,7 +60,7 @@
 - [x] `--version` 打印版本号
 - [x] **在线 Demo**：WASM 核心，浏览器内运行 C++ 代码
 - [x] **减时线按拍连通**：一拍内的八分/十六分音符共用一条横线（十六分再叠平行线），而不是每个音各画一小段；和弦的减时线只画在最下面那个音上
-- [x] 466 项单元测试 + 37 组端到端冒烟测试 + WASM 产物一致性检查
+- [x] 500 项单元测试 + 43 组端到端冒烟测试 + WASM 产物一致性检查
 
 ## 在线 Demo 功能
 
@@ -612,19 +612,47 @@ CLI 与 HTML 页眉写明 `弯音范围：±2 / ±12 半音，按通道与时间
 网页文件面板走新导出 `_midi2jianpu_bend_range_info`。`MidiData::bendRange` 保留为
 「文件里没有任何 RPN 时的默认值」，不再参与谱面计算。
 
+## 省略的状态字节不是坏文件
+
+MIDI 为了省字节允许「省略状态字节」：连续同类事件只写一次 `0x90`，后面直接跟
+音高 / 力度，这叫 running status。但它有严格的生命周期：
+
+* 只有**通道消息**（`0x80`–`0xEF`）能建立 running status；
+* **meta / SysEx / System Common**（`0xFF` / `0xF0` / `0xF7` / `0xF1`–`0xF6`）之后取消；
+* **System Real-Time**（`0xF8`–`0xFE`，MIDI clock、active sensing）不改变它。
+
+旧实现把读到的每个状态字节都记成 running status。于是歌词 `0xFF` 之后再出现
+省略状态字节的音符时，音高 `62` 被读成 meta 类型、力度 `100` 被读成 meta 长度，
+事件流从那里整体错位——一句歌词之后半首曲子的音符全丢。
+
+现在按规范分三类处理，并且对「系统事件之后仍省略状态字节」的老导出器留了
+宽容兜底：按**上一条通道状态**补回。补回的状态决定该读几个数据字节
+（`0x90` 两个、`0xC0` 一个），不会多吃少吃了让后面的音符继续错位，也不会把
+补回的音符错记到通道 0。CLI 页眉、HTML 页眉、网页文件面板同步写明补回几处，
+新导出 `_midi2jianpu_running_status_info`。严格按规范重写状态字节的文件不会
+触发补回，输出与旧版逐字节一致。
+
+| 素材 | 场景 | 旧版 | 现在 |
+| --- | --- | --- | --- |
+| `running_meta.mid` | 歌词 meta 后省略状态字节 | 只有 C4 | C4 / D4 |
+| `running_sysex.mid` | SysEx 后省略状态字节 | 只有 C4 | C4 / D4 |
+| `running_realtime.mid` | 音符流中插入 `0xF8` 时钟 | 只有 C4 | C4 / D4（且无需补回） |
+| `running_standard.mid` | meta 后规规矩矩重写状态字节 | C4 / D4 | C4 / D4（防回归） |
+
 ## 技术选型
 
 - 核心：**C++17**，手写 SMF 二进制解析，无第三方库依赖，便于编译成 WASM
 - 调性识别：**Krumhansl-Schmuckler** 算法（音乐信息检索标准）；无调号时再由**宫商角徵羽五声调式**判定校正宫音
 - 和弦检测：按和声窗（半小节 / 附点四分 / 整小节）统计音级频率，匹配 11 种和弦类型，低音决定转位
 - 输出：文本 + 自包含 HTML（内联 CSS）+ MusicXML 3.1
-- 测试：内置断言 482 项单元测试，另有 `tests/smoke.py` 40 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`、声部乐器标注 + 倚音混合素材 `parts.mid`、和弦转位 + 七和弦素材 `chords.mid`、渐快渐慢素材 `tempo_ramp.mid`、长音跨小节素材 `long_tie.mid`、同轨复调素材 `polyphony.mid`、SMPTE 时间基准素材 `smpte.mid`、format 2 独立序列素材 `format2.mid`、复音触后素材 `aftertouch.mid`、同音重触发素材 `retrigger.mid`、轨尾悬挂音素材 `dangling.mid`、双歌词轨素材 `twolyrics.mid`、延音踏板素材 `pedal.mid`、强制清音素材 `allnotesoff.mid`、CC7 主音量素材 `cc7volume.mid`、踏板通道隔离素材 `pedal_channels.mid`、弯音范围按通道 / 按时间 / 跨轨三份素材 `bendrange_channels.mid` / `bendrange_timeline.mid` / `bendrange_crosstrack.mid`）
+- 测试：内置断言 500 项单元测试，另有 `tests/smoke.py` 43 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`、声部乐器标注 + 倚音混合素材 `parts.mid`、和弦转位 + 七和弦素材 `chords.mid`、渐快渐慢素材 `tempo_ramp.mid`、长音跨小节素材 `long_tie.mid`、同轨复调素材 `polyphony.mid`、SMPTE 时间基准素材 `smpte.mid`、format 2 独立序列素材 `format2.mid`、复音触后素材 `aftertouch.mid`、同音重触发素材 `retrigger.mid`、轨尾悬挂音素材 `dangling.mid`、双歌词轨素材 `twolyrics.mid`、延音踏板素材 `pedal.mid`、强制清音素材 `allnotesoff.mid`、CC7 主音量素材 `cc7volume.mid`、踏板通道隔离素材 `pedal_channels.mid`、弯音范围按通道 / 按时间 / 跨轨三份素材 `bendrange_channels.mid` / `bendrange_timeline.mid` / `bendrange_crosstrack.mid`、省略状态字节四份素材 `running_meta.mid` / `running_sysex.mid` / `running_realtime.mid` / `running_standard.mid`）
 
 ## 路线图
 
 - [x] 在线网页版（[GitHub Pages](https://xueyuejue.github.io/midi2jianpu/)，WASM 核心）
 - [x] MusicXML 导出（可被 MuseScore 打开）
 - [x] RPN 弯音范围解析（按通道隔离 + 中途改范围 + 跨轨设定，v1.29.0）
+- [x] running status 生命周期（系统事件取消 / 实时消息不改变 / 省略字节宽容补回，v1.30.0）
 - [x] 歌词写入（LRC 格式，按时间戳精确对齐；一字多音时按小节铺开）
 - [x] WASM 编译（浏览器内运行 C++ 核心）
 - [x] 和弦检测与标记显示
@@ -667,6 +695,10 @@ python tools/setup_repo_guard.py     # Windows 也可双击 tools/setup_repo_gua
 
 它只写 `.git/config`，不改全局配置、不改历史、可重复运行；日常自查用 `python tools/check_commit_attribution.py --history`。提交信息里不要放任何自动生成的署名行，也不要用 `--no-verify`。
 
+三个 Windows 一键编译脚本（`build/*.cmd`）也已纳入版本控制，并改成从脚本自身位置
+回到仓库根、不再写死本机路径；换电脑若 MSVC / emsdk 装在别处，先 `set VCT`、
+`set SDK`、`set SDKV` 或 `set EMSDK` 覆盖即可，细节见 [BUILD.md](BUILD.md)。
+
 ## 贡献
 
 Issue / PR 都欢迎。尤其欢迎：
@@ -679,7 +711,7 @@ Issue / PR 都欢迎。尤其欢迎：
 提交前请跑一遍：
 
 ```bash
-cd build && ctest --output-on-failure                  # 482 项单元测试
+cd build && ctest --output-on-failure                  # 500 项单元测试
 python tests/smoke.py build/Release/midi2jianpu.exe    # 端到端冒烟（含鼓轨场景）
 node tests/wasm_smoke.mjs                              # WASM 产物与源码是否同步
 ```
