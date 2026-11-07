@@ -198,6 +198,9 @@ int main(int argc, char** argv) {
         if (!tb.empty()) std::cout << tb << "\n";
         const std::string fl = m2j::formatLabel(data);
         if (!fl.empty()) std::cout << fl << "（--track 可从 0 起指定别的段落）\n";
+        // 控制器悄悄改过时值 / 力度，不说明用户会以为「谱面和 MIDI 对不上」。
+        const std::string cl = m2j::controllerLabel(data);
+        if (!cl.empty()) std::cout << cl << "\n";
     }
 
     // --transpose 移调

@@ -825,6 +825,91 @@ if (tlBytes) {
   check(thtml.includes('另 1 轨的 10 个音节已忽略'), '网页页眉说明忽略了另一条歌词轨');
 }
 
+// ---- 26. 控制器语义提示：网页能读到踏板 / 清音 / CC7 改了什么 ----
+// 这三项都在用户看不见的地方改谱面（时值变长、幽灵音消失、多出力度记号），
+// 网页文件面板若不说一句，用户只会觉得「谱和 DAW 里对不上」。
+function controllerInfo(bytes) {
+  const ptr = mod._malloc(bytes.length);
+  mod.HEAPU8.set(bytes, ptr);
+  const s = mod.UTF8ToString(mod._midi2jianpu_controller_info(ptr, bytes.length));
+  mod._free(ptr);
+  return s || '';
+}
+
+const pedBytes = readFixture('pedal.mid');
+if (pedBytes) {
+  check(/延音踏板：补长 6 个音/.test(controllerInfo(pedBytes)),
+    `WASM 报出踏板补长 6 个音，实际：${controllerInfo(pedBytes)}`);
+}
+const aoBytes = readFixture('allnotesoff.mid');
+if (aoBytes) {
+  check(/强制清音：截尾 1 个音/.test(controllerInfo(aoBytes)),
+    `WASM 报出清音截尾，实际：${controllerInfo(aoBytes)}`);
+}
+const c7Bytes = readFixture('cc7volume.mid');
+if (c7Bytes) {
+  check(/CC7 主音量：补入 8 个力度点/.test(controllerInfo(c7Bytes)),
+    `WASM 报出 CC7 力度点，实际：${controllerInfo(c7Bytes)}`);
+}
+const plainBytes = readFixture('sample.mid');
+if (plainBytes) {
+  check(controllerInfo(plainBytes) === '',
+    `普通 PPQ 文件不输出控制器提示，实际：${controllerInfo(plainBytes)}`);
+}
+
+// ---- 27. 控制器语义在 WASM 三个输出层同步生效 ----
+if (pedBytes) {
+  const pc = makeCaller(mod);
+  pc.setMidi(pedBytes);
+  const phtml = pc.call('midi2jianpu_html', -1, 1) || '';
+  check(phtml.includes('延音踏板：补长 6 个音'),
+    '网页 HTML 页眉写明踏板补长');
+  check(!phtml.includes('1= 3= 5='), '网页谱面不再是一串十六分音符');
+  const pxml = pc.call('midi2jianpu_musicxml', -1, 1) || '';
+  const pdurs = (pxml.match(/<duration>1920<\/duration>/g) || []).length;
+  check(pdurs >= 6, `WASM MusicXML 六个音都补成 4 拍，实际 ${pdurs} 个 1920`);
+}
+if (aoBytes) {
+  const ac = makeCaller(mod);
+  ac.setMidi(aoBytes);
+  const axml = ac.call('midi2jianpu_musicxml', -1, 1) || '';
+  const anotes = (axml.match(/<note>/g) || []).length;
+  check(anotes >= 7, `WASM MusicXML 含 7 个真实音符，实际 ${anotes}`);
+  check(!axml.includes('声部2'), '清音后不再拆出假声部');
+}
+if (c7Bytes) {
+  const cc = makeCaller(mod);
+  cc.setMidi(c7Bytes);
+  const chtml = cc.call('midi2jianpu_html', -1, 1) || '';
+  // HTML 用的是 <span class='dyn'>p</span> / <span class='wedge'>cresc.</span>，
+  // 不是 CLI 文本里的方括号写法。
+  check(/<span class='dyn'>p<\/span>/.test(chtml) &&
+        /<span class='dyn'>mf<\/span>/.test(chtml) &&
+        /<span class='wedge'>cresc\.<\/span>/.test(chtml),
+    '网页谱面印出 CC7 带来的 p / mf / cresc.');
+  check(chtml.includes('CC7 主音量：补入 8 个力度点'),
+    '网页 HTML 页眉写明 CC7 力度点');
+}
+const pchBytes = readFixture('pedal_channels.mid');
+if (pchBytes) {
+  check(/延音踏板：补长 1 个音/.test(controllerInfo(pchBytes)),
+    `WASM 踏板按通道隔离（只补 1 个音），实际：${controllerInfo(pchBytes)}`);
+  // 网页端没有 --no-pickup，稀疏素材会自动判弱起，4 拍音在 MusicXML 里被
+  // 拆成 960+960 的连音线；精确时值由 CLI 冒烟 [37] 用 --no-pickup 锁定。
+  const gc = makeCaller(mod);
+  gc.setMidi(pchBytes);
+  const gxml = gc.call('midi2jianpu_musicxml', -1, 1) || '';
+  const glong = (gxml.match(/<duration>960<\/duration>/g) || []).length;
+  check(glong >= 2 && gxml.includes('<tie '),
+    `网页 MusicXML 把补长的 4 拍写成分段连音，实际 ${glong} 段 960`);
+}
+
+// 新导出同样返回 char*，网页必须过 UTF8ToString（v1.26.0 在 part_info 上
+// 踩过一次 TypeError，上传直接崩）。
+const pageHtml2 = readFileSync(path.join(ROOT, 'docs', 'index.html'), 'utf8');
+check(/UTF8ToString\(\s*wasmMod\._midi2jianpu_controller_info/.test(pageHtml2),
+  'docs/index.html 的 controller_info 用 UTF8ToString 取了字符串');
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

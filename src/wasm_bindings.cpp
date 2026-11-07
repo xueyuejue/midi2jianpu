@@ -215,6 +215,17 @@ const char* midi2jianpu_file_header_info(const uint8_t* midiData, int size) {
     return buf.c_str();
 }
 
+// 控制器语义提示：踏板补长 / 强制清音截尾 / CC7 力度点。这三项都会在用户
+// 看不见的地方改谱面（时值变长、幽灵音消失、多了力度记号），网页必须说一句，
+// 否则用户会以为「转出来的谱和我在 DAW 里看到的对不上」。
+const char* midi2jianpu_controller_info(const uint8_t* midiData, int size) {
+    static std::string buf;
+    m2j::MidiData data;
+    if (!m2j::loadMidiFromMemory(midiData, size, data)) { buf.clear(); return buf.c_str(); }
+    buf = m2j::controllerLabel(data);
+    return buf.c_str();
+}
+
 // 获取MIDI音符数据(JSON格式, 用于播放)
 const char* midi2jianpu_get_notes_json(const uint8_t* midiData, int size) {
     m2j::MidiData data;

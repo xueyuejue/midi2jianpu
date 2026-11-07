@@ -174,6 +174,133 @@ static void normalizeFormat2(MidiData& out, bool keepAll) {
                          out.midiLyrics.end());
 }
 
+// 控制器语义不能「跳过去就算了」。0xB0 里有三件事直接决定谱面：
+//   CC64 踏板：琴键抬手不等于消音，音要响到踏板抬起或同键重新击打；
+//   CC120/123：强制清音，某些导出器拿它代替 note-off；
+//   CC7：主音量，与 CC11 一样是渐强渐弱的来源。
+// 全部轨解析完之后才做：踏板事件可能写在另一条轨上，按轨顺序处理会读成
+// 「先处理轨 0 的所有未来事件，再处理轨 1 的过去事件」。
+static void applyControllerSemantics(MidiData& out,
+                                     const std::vector<PedalPoint>& pedal,
+                                     const std::vector<AllNotesOffPoint>& allOff,
+                                     const std::vector<DynPoint>& cc7) {
+    out.pedalEvents = (int)pedal.size();
+    out.allNotesOffEvents = (int)allOff.size();
+
+    // format 2 可能已经把别的段落整轨丢掉，只认还活着的通道。
+    std::set<int> liveChannels;
+    for (const auto& n : out.notes) liveChannels.insert(n.channel);
+
+    // ---- 1) CC7 主音量并入力度表 ----
+    // 同一 (tick, 通道) 若 CC11 也在，以表情为准：DAW 常把 CC7 当静态混音值，
+    // 而 CC11 才是演奏者真正的强弱意图，两个都收会凭空多出一档力度。
+    for (const auto& p : cc7) {
+        if (!liveChannels.count(p.channel)) continue;
+        bool covered = false;
+        for (const auto& d : out.dynamics)
+            if (d.tick == p.tick && d.channel == p.channel) { covered = true; break; }
+        if (covered) continue;
+        out.dynamics.push_back(p);
+        out.cc7Dynamics++;
+    }
+    if (out.cc7Dynamics > 0)
+        std::stable_sort(out.dynamics.begin(), out.dynamics.end(),
+                         [](const DynPoint& a, const DynPoint& b) { return a.tick < b.tick; });
+    if (out.notes.empty()) return;
+
+    // ---- 2) 踏板事件按 (tick, 文件顺序) 配成每通道的 [踩下, 抬起) 区间 ----
+    std::vector<PedalPoint> ps;
+    for (const auto& p : pedal) if (liveChannels.count(p.channel)) ps.push_back(p);
+    std::stable_sort(ps.begin(), ps.end(),
+                     [](const PedalPoint& a, const PedalPoint& b) {
+                         if (a.tick != b.tick) return a.tick < b.tick;
+                         return a.seq < b.seq;
+                     });
+    std::vector<AllNotesOffPoint> as;
+    for (const auto& a : allOff) if (liveChannels.count(a.channel)) as.push_back(a);
+    std::stable_sort(as.begin(), as.end(),
+                     [](const AllNotesOffPoint& a, const AllNotesOffPoint& b) {
+                         if (a.tick != b.tick) return a.tick < b.tick;
+                         return a.seq < b.seq;
+                     });
+
+    long maxTick = 0;
+    for (const auto& n : out.notes)
+        maxTick = std::max(maxTick, n.startTicks + n.durationTicks);
+
+    std::map<int, std::vector<std::pair<long, long>>> ranges;  // 通道 -> 踏板区间
+    std::map<int, bool> isDown;
+    std::map<int, long> onTick;
+    for (const auto& p : ps) {
+        if (p.down) {
+            if (!isDown[p.channel]) { isDown[p.channel] = true; onTick[p.channel] = p.tick; }
+        } else if (isDown[p.channel]) {
+            // 同 tick 的 127→0→127 是「重新踩踏板」，零长区间直接丢掉。
+            if (p.tick > onTick[p.channel])
+                ranges[p.channel].push_back({onTick[p.channel], p.tick});
+            isDown[p.channel] = false;
+        }
+    }
+    for (const auto& kv : isDown) {
+        // 到曲尾都没抬踏板：用最后一个音符的结尾收束，不能让音无限拖下去。
+        if (kv.second && maxTick > onTick[kv.first])
+            ranges[kv.first].push_back({onTick[kv.first], maxTick});
+    }
+
+    // ---- 3) 同键重新击打：前一个音的音响到此为止 ----
+    auto keyOf = [](const NoteEvent& n) -> uint64_t {
+        return ((uint64_t)(n.channel & 0x0F) << 24) |
+               ((uint64_t)(n.pitch & 0xFF) << 8) |
+               (uint64_t)(n.track & 0xFF);
+    };
+    std::map<uint64_t, std::vector<long>> startsByKey;
+    for (const auto& n : out.notes) startsByKey[keyOf(n)].push_back(n.startTicks);
+    for (auto& kv : startsByKey)
+        std::sort(kv.second.begin(), kv.second.end());
+
+    // ---- 4) 逐个音符改时值 ----
+    for (auto& n : out.notes) {
+        const long start = n.startTicks;
+        const long origEnd = start + n.durationTicks;
+        long newEnd = origEnd;
+
+        // 只有在「抬手那一刻踏板正踩着」才延长；踏板抬起之后才松键不算。
+        auto rit = ranges.find(n.channel);
+        if (rit != ranges.end()) {
+            for (const auto& rg : rit->second) {
+                if (origEnd >= rg.first && origEnd < rg.second) {
+                    newEnd = rg.second;
+                    break;
+                }
+            }
+        }
+        if (newEnd > origEnd) {
+            auto sit = startsByKey.find(keyOf(n));
+            if (sit != startsByKey.end()) {
+                for (long st : sit->second)
+                    if (st > start && st < newEnd) { newEnd = st; break; }
+            }
+        }
+        // 强制清音：只要落在音符持续区间内，不管踏板状态都截到这里。
+        for (const auto& a : as) {
+            if (a.channel != n.channel) continue;
+            if (a.tick > start && a.tick < newEnd) { newEnd = a.tick; break; }
+        }
+
+        if (newEnd > origEnd) {
+            n.durationTicks = newEnd - start;
+            out.pedalExtendedNotes++;
+            // rawDurationTicks 故意不动：它是「量化前的按键时长」，断奏 / 倚音
+            // 判据靠它。踏板带来的共鸣不是按键时长，写回去会把整首判成连奏。
+        } else if (newEnd < origEnd) {
+            n.durationTicks = std::max<long>(newEnd - start, 1);
+            if (n.rawDurationTicks > n.durationTicks)
+                n.rawDurationTicks = n.durationTicks;
+            out.allNotesOffTrimmed++;
+        }
+    }
+}
+
 // 按 set_tempo 分段，把 tick 精确映射为秒。
 //
 // 旧实现是在解析过程中用一个可变的 tempo 变量即时换算（tick2sec 闭包），
@@ -278,6 +405,13 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
     int trackIdx = 0;
     // value = (note-on tick, velocity)。力度要跟着音符走，演奏法分析要用。
     std::unordered_map<uint64_t, std::pair<long, int>> active;
+
+    // 控制器事件先攒着，等所有轨都读完再统一处理：踏板 / 清音常常写在
+    // conductor 轨上，而逐轨解析是按「文件顺序」不是「时间顺序」推进的。
+    std::vector<PedalPoint> pedalEvents;
+    std::vector<AllNotesOffPoint> allOffEvents;
+    std::vector<DynPoint> volumeCc7;
+    int ctrlSeq = 0;
 
     // 把一个按下的音在 endTick 收尾。key 里已经带了 通道/音高/轨号
     // （见下面的拼法），所以这里不必再传一遍。
@@ -417,6 +551,12 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                 uint8_t val = d[pos++];
                 if (ctrl == 0x0Bu) {  // Expression
                     out.dynamics.push_back({absTick, (int)val, (int)channel});
+                } else if (ctrl == 0x07u) {  // 主音量：和 CC11 一样承载渐强渐弱
+                    volumeCc7.push_back({absTick, (int)val, (int)channel});
+                } else if (ctrl == 0x40u) {  // CC64 延音踏板，>=64 算踩下
+                    pedalEvents.push_back({absTick, (int)channel, val >= 64, ctrlSeq++});
+                } else if (ctrl == 0x78u || ctrl == 0x7Bu) {  // All Sound/Notes Off
+                    allOffEvents.push_back({absTick, (int)channel, ctrlSeq++});
                 }
                 // RPN跟踪: 0x65=RPN MSB, 0x64=RPN LSB, 0x06=Data Entry MSB
                 if (ctrl == 0x65u) rpnMSB = val;
@@ -482,6 +622,7 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
     normalizeMeterMap(out);
     normalizeKeyMap(out);
     normalizeFormat2(out, keepAllFormat2);
+    applyControllerSemantics(out, pedalEvents, allOffEvents, volumeCc7);
     applySmpteTimeBase(out);
     recomputeSeconds(out);
     return true;
@@ -513,6 +654,26 @@ std::string timeBaseLabel(const MidiData& data) {
        << " tick → " << data.division << " tick/拍（按 ♩="
        << std::lround(bpm) << " 折算）";
     return os.str();
+}
+
+std::string controllerLabel(const MidiData& data) {
+    std::vector<std::string> parts;
+    if (data.pedalExtendedNotes > 0)
+        parts.push_back("延音踏板：补长 " + std::to_string(data.pedalExtendedNotes) +
+                        " 个音（" + std::to_string(data.pedalEvents) + " 个踏板事件）");
+    if (data.allNotesOffTrimmed > 0)
+        parts.push_back("强制清音：截尾 " + std::to_string(data.allNotesOffTrimmed) +
+                        " 个音（" + std::to_string(data.allNotesOffEvents) + " 个事件）");
+    if (data.cc7Dynamics > 0)
+        parts.push_back("CC7 主音量：补入 " + std::to_string(data.cc7Dynamics) +
+                        " 个力度点");
+    if (parts.empty()) return "";
+    std::string out;
+    for (size_t i = 0; i < parts.size(); i++) {
+        if (i) out += " ｜ ";
+        out += parts[i];
+    }
+    return out;
 }
 
 std::string formatLabel(const MidiData& data) {

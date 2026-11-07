@@ -2,10 +2,11 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 23 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 27 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
-smpte / format2 / aftertouch / retrigger / dangling / twolyrics
+smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
+pedal / allnotesoff / cc7volume / pedal_channels
 （另配 3 份 LRC 歌词）。
 meter 是把变拍号、变速、鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」，
 modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五声调式
@@ -16,7 +17,9 @@ modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五
 SMPTE 时间基准（0xE728 = 25fps×40），format2 则是两条互不相干的独立序列。
 aftertouch 在每个音中间插 0xA0（3 字节事件，读错就整轨崩），retrigger 是同音
 还没抬手又按下，dangling 是轨尾只按不抬的悬挂音，twolyrics 则把两段词放在两条
-轨上（错开半拍，合并成一行就是乱码）。
+轨上（错开半拍，合并成一行就是乱码）。pedal 是踩着踏板只按 1/4 拍的钢琴和弦，
+allnotesoff 用 CC123 代替 note-off，cc7volume 只写 CC7 主音量做渐强，
+pedal_channels 则验证踏板不会给没踩的通道补时值。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -1168,6 +1171,110 @@ def build_twolyrics() -> bytes:
     return header + t0.render() + t1.render() + t2.render()
 
 
+def build_pedal() -> bytes:
+    """CC64 延音踏板素材：琴键只按 1/4 拍，踏板一直踩到第 8 拍。
+
+    钢琴 MIDI 里非常常见的写法——DAW 把 note-off 紧贴 note-on 导出，真正的
+    音响长度由踏板决定。旧实现只看按键时长，得到「1= 3= 5= 0 - - -」：
+    三个十六分音符加一长串休止，完全不是听感。现在把每个音补到踏板抬起
+    （或同键重新击打，本素材第 4 拍正好重按一次），两小节各成一个
+    4 拍的持续和弦。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Piano"))
+    t1.cc(0, 64, 127, 0)                     # 踩下
+    t1.cc(0, 64, 0, 8 * DIV)                 # 第 8 拍抬起
+    for bar in range(2):
+        for pitch in (60, 64, 67):           # C 大三和弦
+            t1.note(0, pitch, 96, bar * 4 * DIV, DIV // 4)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + t1.render()
+
+
+def build_allnotesoff() -> bytes:
+    """CC123 All Notes Off 素材：导出器用清音代替 note-off。
+
+    第一个音只按不抬，tick=480 写一条 CC123 强制清音。旧实现不认这个控制器，
+    那个音会被轨尾补收成横跨整首曲子的幽灵长音，还因此把谱面拆成两个假声部。
+    现在把它截到 CC123 所在 tick（正好 1 拍）。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Piano"))
+    t1.add(0, bytes([0x90, 60, 96]))         # 只按不抬
+    t1.cc(0, 123, 0, DIV)                    # All Notes Off
+    for i, pitch in enumerate((62, 64, 65, 67, 69, 71)):
+        t1.note(0, pitch, 96, (i + 2) * DIV, DIV)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + t1.render()
+
+
+def build_cc7volume() -> bytes:
+    """CC7 主音量素材：整首渐强，一个 CC11 都不写。
+
+    GM 里 CC7 是主音量、CC11 是表情，两者都是强弱来源，但旧实现只认
+    CC11 —— 这类文件转出来一个力度记号都没有。现在 CC7 并入力度表，
+    同一 (tick, 通道) 若 CC11 也在则让位给表情（避免凭空多一档）。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Strings"))
+    scale = (60, 62, 64, 65, 67, 69, 71, 72)
+    for i, pitch in enumerate(scale):
+        t1.cc(0, 7, 20 + i * 14, i * DIV)   # 20 → 118，跨好几档
+        t1.note(0, pitch, 96, i * DIV, DIV)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + t1.render()
+
+
+def build_pedal_channels() -> bytes:
+    """踏板按通道隔离素材：通道 0 踩踏板，通道 1 从头到尾没踩。
+
+    踏板是通道级控制器，不能一踩就给全曲所有乐器补时值。同时验证
+    「踏板抬起之后才松键的音」不该被补长。
+    预期四个音的时值：1920 / 120 / 120 / 120 tick。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Piano"))
+    t1.cc(0, 64, 127, 0)
+    t1.cc(0, 64, 0, 4 * DIV)
+    t1.note(0, 60, 96, 0, DIV // 4)          # 踏板内抬手 → 补到 4 拍
+    t1.note(0, 64, 96, 4 * DIV, DIV // 4)    # 抬踏板之后松键 → 保持 1/4 拍
+
+    t2 = Track()
+    t2.add(0, meta(0x03, b"Bass"))
+    t2.note(1, 48, 96, 2 * DIV, DIV // 4)    # 通道 1 没踩踏板 → 保持 1/4 拍
+    t2.note(1, 55, 96, 6 * DIV, DIV // 4)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 3, DIV)
+    return header + t0.render() + t1.render() + t2.render()
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -1346,6 +1453,19 @@ def main() -> None:
         tldata = build_twolyrics()
         f.write(tldata)
     print(f"wrote {tlmid} ({len(tldata)} bytes)")
+
+    # 控制器语义素材（CC64 / CC123 / CC7）
+    for name, builder in (
+        ("pedal", build_pedal),
+        ("allnotesoff", build_allnotesoff),
+        ("cc7volume", build_cc7volume),
+        ("pedal_channels", build_pedal_channels),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
 
 
 if __name__ == "__main__":

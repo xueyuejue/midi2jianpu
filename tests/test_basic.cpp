@@ -2379,6 +2379,175 @@ int main() {
         check(pickMidiLyricTrack(MidiData{}).track == -1, "没有歌词事件时取轨结果为 -1");
     }
 
+    // ---- 控制器语义：CC64 延音踏板补时值 ----
+    {
+        std::cout << "\n测试控制器语义：CC64 延音踏板\n";
+        // 钢琴导出里最常见的写法：琴键只按 1/4 拍，真正的音响长度由踏板决定。
+        // 旧实现只看 note-off，得到「1= 3= 5= 0 - - -」三个十六分音符加长休止。
+        SmfTrack cond, piano;
+        cond.at(0, ev({0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20}));
+        cond.at(0, ev({0xFF, 0x58, 0x04, 4, 2, 24, 8}));
+        piano.at(0, ev({0xB0, 0x40, 127}));          // CC64 踩下
+        piano.at(8 * 480, ev({0xB0, 0x40, 0}));      // 第 8 拍抬起
+        for (int bar = 0; bar < 2; bar++) {
+            for (int pitch : {60, 64, 67}) {
+                piano.at(bar * 4 * 480, ev({0x90, pitch, 96}));
+                piano.at(bar * 4 * 480 + 120, ev({0x80, pitch, 0x40}));
+            }
+        }
+        auto bytes = buildSmf(2, 480, {cond, piano});
+        MidiData md;
+        check(loadMidiFromMemory(bytes.data(), bytes.size(), md), "踏板文件解析成功");
+        check(md.notes.size() == 6, "6 个和弦音都在，实际: " + std::to_string(md.notes.size()));
+        check(md.pedalEvents == 2 && md.pedalExtendedNotes == 6,
+              "记下 2 个踏板事件 / 补长 6 个音，实际: " +
+                  std::to_string(md.pedalEvents) + " / " +
+                  std::to_string(md.pedalExtendedNotes));
+        bool allFourBeats = true, rawKept = true;
+        for (const auto& n : md.notes) {
+            // 第一小节被同键重按截在 1920，第二小节补到踏板抬起的 3840，
+            // 两个小节都是「每音 4 拍」。
+            if (n.durationTicks != 1920) allFourBeats = false;
+            if (n.rawDurationTicks != 120) rawKept = false;
+        }
+        check(allFourBeats, "每个音补成 4 拍（1920 tick）");
+        check(rawKept, "rawDurationTicks 仍是按键的 1/4 拍，不污染断奏判据");
+        const std::string cl = controllerLabel(md);
+        check(cl.find("延音踏板：补长 6 个音") != std::string::npos,
+              "控制器提示可读，实际: " + cl);
+        const std::string jp = formatJianpu(md, estimateKey(md));
+        size_t bars = 0;
+        for (char c : jp) if (c == '|') bars++;
+        check(bars == 2, "仍是 2 小节，实际小节线: " + std::to_string(bars));
+
+        // 同 tick 的 127→0 是「重新踩踏板」，零长区间不能凭空补时值
+        SmfTrack same;
+        same.at(0, ev({0xB0, 0x40, 127}));
+        same.at(0, ev({0xB0, 0x40, 0}));
+        same.at(0, ev({0x90, 60, 96}));
+        same.at(120, ev({0x80, 60, 0x40}));
+        auto bs = buildSmf(1, 480, {same});
+        MidiData ms;
+        loadMidiFromMemory(bs.data(), bs.size(), ms);
+        check(ms.notes.size() == 1 && ms.notes[0].durationTicks == 120,
+              "同 tick 踩放不产生零长踏板区间，时值仍是 1/4 拍");
+
+        // 踏板事件写在 conductor 轨（另一条轨）上也要认
+        SmfTrack cond2, voc;
+        cond2.at(0, ev({0xB0, 0x40, 127}));
+        cond2.at(4 * 480, ev({0xB0, 0x40, 0}));
+        voc.at(0, ev({0x90, 60, 96}));
+        voc.at(120, ev({0x80, 60, 0x40}));
+        auto bo = buildSmf(2, 480, {cond2, voc});
+        MidiData mo;
+        loadMidiFromMemory(bo.data(), bo.size(), mo);
+        check(mo.notes.size() == 1 && mo.notes[0].durationTicks == 1920,
+              "踏板写在别的轨上也能补时值（按 tick 而非按轨顺序）");
+    }
+
+    // ---- 控制器语义：踏板按通道隔离 ----
+    {
+        std::cout << "\n测试控制器语义：踏板按通道隔离\n";
+        SmfTrack cond, piano, bass;
+        cond.at(0, ev({0xFF, 0x58, 0x04, 4, 2, 24, 8}));
+        piano.at(0, ev({0xB0, 0x40, 127}));            // 只有通道 0 踩
+        piano.at(4 * 480, ev({0xB0, 0x40, 0}));
+        piano.at(0, ev({0x90, 60, 96}));
+        piano.at(120, ev({0x80, 60, 0x40}));
+        piano.at(4 * 480, ev({0x90, 64, 96}));         // 抬踏板之后才松键
+        piano.at(4 * 480 + 120, ev({0x80, 64, 0x40}));
+        bass.at(2 * 480, ev({0x91, 48, 96}));          // 通道 1 全程没踩
+        bass.at(2 * 480 + 120, ev({0x81, 48, 0x40}));
+        bass.at(6 * 480, ev({0x91, 55, 96}));
+        bass.at(6 * 480 + 120, ev({0x81, 55, 0x40}));
+        auto bytes = buildSmf(3, 480, {cond, piano, bass});
+        MidiData md;
+        loadMidiFromMemory(bytes.data(), bytes.size(), md);
+        check(md.notes.size() == 4, "4 个音符都在");
+        check(md.pedalExtendedNotes == 1,
+              "只补长 1 个音，实际: " + std::to_string(md.pedalExtendedNotes));
+        std::vector<long> durs;
+        for (const auto& n : md.notes) durs.push_back(n.durationTicks);
+        std::sort(durs.begin(), durs.end());
+        check(durs == std::vector<long>({120, 120, 120, 1920}),
+              "时值为 1920 / 120 / 120 / 120（通道 1 与抬踏板后都不补）");
+    }
+
+    // ---- 控制器语义：CC120 / CC123 强制清音 ----
+    {
+        std::cout << "\n测试控制器语义：All Notes Off\n";
+        SmfTrack piano;
+        piano.at(0, ev({0x90, 60, 96}));               // 只按不抬
+        piano.at(480, ev({0xB0, 0x7B, 0}));           // CC123 All Notes Off
+        for (int i = 0; i < 6; i++) {
+            piano.at((i + 2) * 480, ev({0x90, 62 + i, 96}));
+            piano.at((i + 3) * 480, ev({0x80, 62 + i, 0x40}));
+        }
+        auto bytes = buildSmf(1, 480, {piano});
+        MidiData md;
+        loadMidiFromMemory(bytes.data(), bytes.size(), md);
+        check(md.notes.size() == 7, "7 个音符都在，实际: " + std::to_string(md.notes.size()));
+        check(md.allNotesOffEvents == 1 && md.allNotesOffTrimmed == 1,
+              "记下 1 个清音事件 / 截尾 1 个音");
+        long firstDur = -1, firstRaw = -1;
+        for (const auto& n : md.notes)
+            if (n.startTicks == 0) { firstDur = n.durationTicks; firstRaw = n.rawDurationTicks; }
+        check(firstDur == 480, "悬挂音截到 CC123 所在 tick（1 拍），实际: " +
+                                   std::to_string(firstDur));
+        check(firstRaw == 480, "原始时值同步截短，不会被判成断奏，实际: " +
+                                   std::to_string(firstRaw));
+        check(controllerLabel(md).find("强制清音：截尾 1 个音") != std::string::npos,
+              "控制器提示可读，实际: " + controllerLabel(md));
+
+        // CC120 All Sound Off 同样算清音
+        SmfTrack t120;
+        t120.at(0, ev({0x90, 60, 96}));
+        t120.at(240, ev({0xB0, 0x78, 0}));
+        t120.at(480, ev({0x90, 62, 96}));
+        t120.at(960, ev({0x80, 62, 0x40}));
+        auto b120 = buildSmf(1, 480, {t120});
+        MidiData m120;
+        loadMidiFromMemory(b120.data(), b120.size(), m120);
+        check(m120.allNotesOffTrimmed == 1 && m120.notes[0].durationTicks == 240,
+              "CC120 也按清音处理（半拍收尾）");
+    }
+
+    // ---- 控制器语义：CC7 主音量并入力度表 ----
+    {
+        std::cout << "\n测试控制器语义：CC7 主音量\n";
+        SmfTrack strings;
+        for (int i = 0; i < 8; i++) {
+            strings.at(i * 480, ev({0xB0, 0x07, 20 + i * 14}));
+            strings.at(i * 480, ev({0x90, 60 + i, 96}));
+            strings.at(i * 480 + 480, ev({0x80, 60 + i, 0x40}));
+        }
+        auto bytes = buildSmf(1, 480, {strings});
+        MidiData md;
+        loadMidiFromMemory(bytes.data(), bytes.size(), md);
+        check(md.dynamics.size() == 8,
+              "8 个 CC7 点并入力度表，实际: " + std::to_string(md.dynamics.size()));
+        check(md.cc7Dynamics == 8, "记下补入 8 个力度点");
+        check(controllerLabel(md).find("CC7 主音量：补入 8 个力度点") != std::string::npos,
+              "控制器提示可读，实际: " + controllerLabel(md));
+
+        // 同 tick 同通道若 CC11 也在，以表情为准，不能凭空多一档
+        SmfTrack both;
+        for (int i = 0; i < 4; i++) {
+            both.at(i * 480, ev({0xB0, 0x07, 20 + i * 20}));
+            both.at(i * 480, ev({0xB0, 0x0B, 40 + i * 20}));
+            both.at(i * 480, ev({0x90, 60, 96}));
+            both.at(i * 480 + 480, ev({0x80, 60, 0x40}));
+        }
+        auto b2 = buildSmf(1, 480, {both});
+        MidiData m2;
+        loadMidiFromMemory(b2.data(), b2.size(), m2);
+        check(m2.cc7Dynamics == 0 && m2.dynamics.size() == 4,
+              "同 tick 的 CC7 让位给 CC11，实际: " +
+                  std::to_string(m2.dynamics.size()) + " 点 / 补入 " +
+                  std::to_string(m2.cc7Dynamics));
+        check(controllerLabel(MidiData{}).empty(), "普通文件不输出控制器提示");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

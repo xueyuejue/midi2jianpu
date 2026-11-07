@@ -1308,6 +1308,107 @@ def main():
         check("".join(texts) == "春眠不觉晓处处闻",
               "MusicXML 歌词同样只剩第一段", str(texts))
 
+    import xml.etree.ElementTree as ETC
+
+    print("\n[34] CC64 延音踏板：抬手不等于消音")
+    ped = os.path.join(FIXTURES, "pedal.mid")
+    rc, out, err = run(exe, ped)
+    check(rc == 0, "踏板文件解析成功", err[:200])
+    check("延音踏板：补长 6 个音（2 个踏板事件）" in out,
+          "CLI 报出补长 6 个音")
+    body = out.split("---")[-1]
+    check("1= 3= 5=" not in body and "0 - - -" not in body,
+          "不再是一串十六分音符加长休止")
+    check("1 - - -" in body, "和弦音补成 4 拍全音符")
+
+    px = os.path.join(tmp, "pedal.xml")
+    rc, _, err = run(exe, ped, "--musicxml", px)
+    check(rc == 0, "踏板文件导出 MusicXML", err[:200])
+    root_p = ETC.fromstring(open(px, encoding="utf-8").read())
+    pdiv = int(root_p.findtext(".//divisions"))
+    pm = list(root_p.iter("measure"))
+    check(len(pm) == 2, f"两个小节，实际 {len(pm)}")
+    pbad = []
+    for m in pm:
+        notes = [n for n in m.iter("note") if n.find("rest") is None]
+        main = [n for n in notes if n.find("chord") is None]
+        total = sum(int(n.findtext("duration")) for n in main)
+        if total != 4 * pdiv or len(notes) != 3:
+            pbad.append((total, len(notes)))
+    check(not pbad, f"每小节 3 个和弦音共 4 拍（含 2 个 <chord/>），实际 {pbad}")
+
+    ph = os.path.join(tmp, "pedal.html")
+    rc, _, err = run(exe, ped, "--html", ph)
+    check(rc == 0, "踏板文件导出 HTML", err[:200])
+    check("延音踏板：补长 6 个音" in open(ph, encoding="utf-8").read(),
+          "HTML 页眉写明踏板补长")
+
+    print("\n[35] CC123 All Notes Off：清音要截在正确 tick")
+    ao = os.path.join(FIXTURES, "allnotesoff.mid")
+    rc, out, err = run(exe, ao)
+    check(rc == 0, "清音文件解析成功", err[:200])
+    check("强制清音：截尾 1 个音（1 个事件）" in out, "CLI 报出截尾 1 个音")
+    check("共提取 7 个音符" in out, "7 个音符都在")
+    check("声部2" not in out, "不再因幽灵长音拆出假声部")
+
+    ax = os.path.join(tmp, "allnotesoff.xml")
+    rc, _, err = run(exe, ao, "--musicxml", ax)
+    check(rc == 0, "清音文件导出 MusicXML", err[:200])
+    root_a = ETC.fromstring(open(ax, encoding="utf-8").read())
+    adiv = int(root_a.findtext(".//divisions"))
+    adurs = [int(n.findtext("duration")) for n in root_a.iter("note")
+             if n.find("rest") is None]
+    check(len(adurs) == 7 and all(d == adiv for d in adurs),
+          f"7 个音符都是 1 拍，实际 {adurs}")
+    # 小节 1 在 tick 480~960 本来就是休止（清音之后空了一拍），
+    # 所以要把 rest 的时值一起算进来，只排除 <chord/> 的叠加音。
+    abad = []
+    for m in root_a.iter("measure"):
+        main = [n for n in m.iter("note") if n.find("chord") is None]
+        if sum(int(n.findtext("duration")) for n in main) != 4 * adiv:
+            abad.append(m.get("number"))
+    check(not abad, f"每小节音符 + 休止仍是 4 拍，异常小节 {abad}")
+
+    print("\n[36] CC7 主音量：和 CC11 一样是强弱来源")
+    cv = os.path.join(FIXTURES, "cc7volume.mid")
+    rc, out, err = run(exe, cv)
+    check(rc == 0, "CC7 文件解析成功", err[:200])
+    check("CC7 主音量：补入 8 个力度点" in out, "CLI 报出补入 8 个力度点")
+    check("演奏表情" in out and "渐强" in out, "识别出渐强与力度档位")
+    check("[cresc.]" in out and "[p]" in out and "[mf]" in out,
+          "谱面印出 cresc. / p / mf")
+
+    ch = os.path.join(tmp, "cc7volume.html")
+    rc, _, err = run(exe, cv, "--html", ch)
+    check(rc == 0, "CC7 文件导出 HTML", err[:200])
+    check("CC7 主音量：补入 8 个力度点" in open(ch, encoding="utf-8").read(),
+          "HTML 页眉写明 CC7 力度点")
+
+    cx = os.path.join(tmp, "cc7volume.xml")
+    rc, _, err = run(exe, cv, "--musicxml", cx)
+    check(rc == 0, "CC7 文件导出 MusicXML", err[:200])
+    cxml = open(cx, encoding="utf-8").read()
+    check("<dynamics" in cxml or "<other-dynamics" in cxml or "cresc" in cxml,
+          "MusicXML 里也有力度 / 渐强方向")
+
+    print("\n[37] 踏板按通道隔离：没踩的通道不补时值")
+    pc = os.path.join(FIXTURES, "pedal_channels.mid")
+    # 素材刻意稀疏，自动弱起判定会把小节网格左移；用 --no-pickup 固定网格，
+    # 本组只关心四个音各自的时值。
+    rc, out, err = run(exe, pc, "--no-pickup")
+    check(rc == 0, "双通道踏板文件解析成功", err[:200])
+    check("延音踏板：补长 1 个音（2 个踏板事件）" in out,
+          "只补长通道 0 的那一个音")
+
+    cpx = os.path.join(tmp, "pedal_channels.xml")
+    rc, _, err = run(exe, pc, "--no-pickup", "--musicxml", cpx)
+    check(rc == 0, "双通道踏板导出 MusicXML", err[:200])
+    root_c = ETC.fromstring(open(cpx, encoding="utf-8").read())
+    cdurs = sorted(int(n.findtext("duration")) for n in root_c.iter("note")
+                   if n.find("rest") is None)
+    check(cdurs == [120, 120, 120, 1920],
+          f"时值 1920 / 120 / 120 / 120，实际 {cdurs}")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

@@ -84,6 +84,25 @@ struct KeySigPoint {
     KeySignature sig;
 };
 
+// ---- 控制器事件（0xB0）----
+// 过去 0xB0 分支只认 CC11（表情）与 RPN，其余控制器被当成「跳过两个字节」。
+// 但有三类控制器直接决定谱面长什么样：
+//   CC64 延音踏板：琴键抬手不等于消音，音要响到踏板抬起（或同键重新按下）；
+//   CC120 / CC123：强制清音，是某些导出器代替 note-off 的写法；
+//   CC7 主音量：与 CC11 一样是渐强渐弱的来源，只认 CC11 会整段丢掉力度。
+// seq 是文件里的出现顺序；同一 tick 上多个事件要靠它定序（跨轨时 tick 相同）。
+struct PedalPoint {
+    long tick;
+    int channel;
+    bool down;      // CC64 值 >= 64 为踩下，< 64 为抬起
+    int seq;
+};
+struct AllNotesOffPoint {
+    long tick;
+    int channel;
+    int seq;
+};
+
 // 弯音轮事件（从 0xE0 解析，14位值，中心8192）
 struct PitchBendPoint {
     long tick;
@@ -152,6 +171,15 @@ struct MidiData {
     std::vector<LyricEvent> midiLyrics;     // MIDI内置歌词(0x05 meta)
     std::vector<TextEvent> textEvents;      // 文本事件(0x01 meta)
     std::vector<MarkerEvent> markers;       // 标记事件(0x06 meta)
+
+    // 控制器语义修正的统计。解析完所有轨之后统一处理（踏板可能写在另一条轨上，
+    // 逐轨即时处理会读乱时间顺序），这里记下「谱面被动过什么」，
+    // 供 CLI / HTML 页眉 / WASM 三处如实说明。
+    int pedalEvents = 0;           // CC64 事件数（踩下 + 抬起）
+    int pedalExtendedNotes = 0;    // 因踏板补长的音符数
+    int allNotesOffEvents = 0;     // CC120 / CC123 事件数
+    int allNotesOffTrimmed = 0;    // 被清音事件截尾的音符数
+    int cc7Dynamics = 0;           // 由 CC7 主音量补入力度表的点数
 
     // MIDI 通道 10（channel index 9）是打击乐专用通道：音高代表底鼓/军鼓/踩镲
     // 这些鼓件，而不是音级。简谱没有对应的记法，把它当旋律转出来只会得到
@@ -254,6 +282,10 @@ bool loadMidiFromMemory(const uint8_t* data, size_t size, MidiData& out,
 // SMPTE：「SMPTE 25 fps × 40 tick → 500 tick/拍（按 ♩=120 折算）」
 std::string timeBaseLabel(const MidiData& data);
 // format 2：「format 2（多个独立序列）：共 2 段，只转换第 2 轨「SongA」」
+// 控制器语义提示：延音踏板 / 强制清音 / CC7 主音量各改了多少东西。
+// 没有触发任何一项时返回空串。
+std::string controllerLabel(const MidiData& data);
+
 std::string formatLabel(const MidiData& data);
 
 } // namespace m2j

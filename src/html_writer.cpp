@@ -897,6 +897,7 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
          << (pickupLabel(data).empty() ? "" : " ｜ " + pickupLabel(data))
          << (timeBaseLabel(data).empty() ? "" : " ｜ " + timeBaseLabel(data))
          << (formatLabel(data).empty() ? "" : " ｜ " + formatLabel(data))
+         << (controllerLabel(data).empty() ? "" : " ｜ " + controllerLabel(data))
          << (data.drumNotesSkipped > 0 ? " ｜ 已跳过鼓轨" : "")
          << (lyricLabel.empty() ? "" : " ｜ " + lyricLabel)
          << (expr.summary().empty() ? "" : " ｜ " + expr.summary())

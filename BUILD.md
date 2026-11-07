@@ -33,7 +33,7 @@ cmake --build build --config Release
 
 ## 测试
 
-### 单元测试（443 项）
+### 单元测试（466 项）
 
 ```bash
 cd build && ctest --output-on-failure
@@ -41,7 +41,7 @@ cd build && ctest --output-on-failure
 ./build/test_basic
 ```
 
-成功时输出 `共 443 项，失败 0 项 -> 全部通过`。
+成功时输出 `共 466 项，失败 0 项 -> 全部通过`。
 
 覆盖范围：调性识别、各调八度基准、升降号书写（含降号调）、时值后缀、三连音、同音合并、和弦检测、移调、MusicXML 小节时长与 `<chord/>`，以及十六组解析层回归——**鼓轨过滤**、**旋律轨判定**、**变速 tempo map 秒数换算**、**弱起小节网格**、**歌词分配与一字多音区间**、**MIDI 内置歌词规整与精确对齐**、**拍号 map 与逐小节网格**、**调号 map（中途转调 / KeyMap）**、**五声调式宫音判定**、**TempoTimeline 与 LRC 变速对齐（tick/秒往返、乱序去重、offset、多时间戳、旧签名对照）**、**ExpressionMap 演奏表情（力度六档 / 渐变 / 断奏 / 重音 / 滑音 / 颤音 / 段落 / 通道隔离 / 开关 / 节奏混合时不误判）与解析层 velocity、原始时值、多轨事件排序**、**GM 音色名（英文全名 / 中文译名覆盖）、`0xC0` 解析（通道 → GM 音色号）、声部乐器标注 `listParts` / `partSummary`、倚音检测与通道隔离、无 0xC0 / 等间隔流零标注回归**、**和弦转位（低音非根音才写斜杠 / 和弦外音不写）、`Bm7b5` 与 `G7sus4` 的类型扩充、`ChordMark` 的结构化字段（rootPc / kind / kindText / bassPc）**、**速度曲线折叠（`tempoMarksOf`：渐变 / 阶跃 / 抖动退化 / 5% 跨度阈值 / 一拍聚簇阈值 / 曲首独立阶跃 / 页眉文案）**、**长音跨小节（6 拍 / 10 拍时值不被截断、延音段写成 `-` 而非休止符、复调轨 4 拍和弦不被门限放大、断奏轨门限还原仍生效）**、**同轨复调（`splitVoices`：同拍同值算和弦 / 同拍不同值拆声部 / 重叠拆声部 / 超上限退化并截短 / 倚音 skip）、复调 MusicXML 的 `<backup>` 与逐小节时值守恒、单声部零 `<backup>` 回归**（都在内存里现构造最小 SMF，不依赖 fixture 文件）。
 
@@ -50,7 +50,7 @@ cd build && ctest --output-on-failure
 需要 Python 3（只用标准库）：
 
 ```bash
-python tests/fixtures/make_fixture.py     # 生成 23 份 .mid 素材（含 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony / smpte / format2 / aftertouch / retrigger / dangling / twolyrics）+ 3 份变速 LRC
+python tests/fixtures/make_fixture.py     # 生成 27 份 .mid 素材（含 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony / smpte / format2 / aftertouch / retrigger / dangling / twolyrics / pedal / allnotesoff / cc7volume / pedal_channels）+ 3 份变速 LRC
 python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2jianpu.exe
 ```
 
@@ -116,6 +116,28 @@ SongB（2 小节 8 音），彼此无关。断言覆盖默认只转 SongA（16 �
 第二段词「夜来风雨声花落知多少」在第 2 轨且错开半拍。断言覆盖只取第 1 轨的 10 个
 音节、忽略第 2 轨的 10 个、规整结果恰为「春眠不觉晓处处闻啼鸟」、`midiLyricTrack`
 在双段词文件里仍能认出人声轨，以及「和弦名轨（音节少）被忽略」。
+
+`pedal.mid` 是**CC64 延音踏板素材**：两小节 C 大三和弦，每个键只按 1/4 拍，踏板从
+tick 0 踩到第 8 拍（第 4 拍同键重按一次，用来验证「重按截断」）。断言覆盖 6 个音
+都补成 1920 tick、同键重按把第一小节截在 1920、`rawDurationTicks` 仍是 120、
+`pedalExtendedNotes == 6`、MusicXML 每小节 3 个和弦音共 4 拍（2 个 `<chord/>`），
+以及「同 tick 踩放不产生零长区间」「踏板写在别的轨上也生效」。
+
+`allnotesoff.mid` 是**强制清音素材**：第一个音只按不抬，tick 480 写一条 CC123，
+之后 6 个正常四分音符。断言覆盖 7 个音符、首音截到 480 tick（含
+`rawDurationTicks`）、不再拆出假声部、MusicXML 每小节「音符 + 休止」仍为 4 拍；
+另有用例验证 CC120 All Sound Off 同样算清音。
+
+`cc7volume.mid` 是**CC7 主音量素材**：8 个四分音符，每拍一条 CC7 从 20 渐强到
+118，一个 CC11 都不写。断言覆盖 8 个力度点并入 `dynamics`、谱面印出
+`[cresc.] [p] [mf]`、HTML 页眉写明补入数量；另有用例验证同一 tick 同时写
+CC7 与 CC11 时 CC7 让位（不凭空多一档）。
+
+`pedal_channels.mid` 是**踏板通道隔离素材**：通道 0 踩踏板、通道 1 全程不踩，
+另含一个「抬踏板之后才松键」的音。断言覆盖 `pedalExtendedNotes == 1` 且四个音
+时值为 `1920 / 120 / 120 / 120`。素材刻意稀疏，自动弱起判定会把小节网格左移，
+冒烟测试统一加 `--no-pickup` 固定网格；网页端没有这个参数，对应断言改为检查
+4 拍音被写成分段连音线。
 
 路线图里的「更多真实 MIDI 样本校验」由这些混合素材配合 `die_yi_sui_xue_vocal.mid`（真实人声录音导出）完成：每次发布都用它做一次带 LRC 的全链路回归渲染，确认新的网格 / 调号 map / 调式校正 / 时间轴 / 表情分析没有改变已有曲目的输出（v1.20.0 的真实曲目 MusicXML 与 v1.19.0 **逐字节一致**，HTML 谱面内容也逐字节一致，仅内联 CSS 多了几条定义）。这份曲子音头间隔是 0.5 / 1 / 1.5 / 2 拍混合，正好用来守住「断奏不误判」这道闸门。
 
