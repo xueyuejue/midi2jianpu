@@ -132,6 +132,7 @@ const REQUIRED = [
   '_midi2jianpu_pentatonic_info', // 网页的调式提示
   '_midi2jianpu_set_use_dynamics', // 网页的「力度与演奏法」开关
   '_midi2jianpu_expression_count', // 网页的表情检出提示
+  '_midi2jianpu_part_info', // 网页的声部乐器标注提示
   '_malloc',
   '_free',
 ];
@@ -559,6 +560,34 @@ if (existsSync(exPath)) {
     nj && nj.slice(0, 120));
 } else {
   check(false, '素材 expression.mid 存在（先跑 make_fixture.py）');
+}
+
+// ---- 19. 声部乐器标注查询（网页据此在文件面板提示声部构成）----
+// 这是 v1.21.0 新增的导出；旧 wasm 产物缺它，网页「声部」提示会拿不到数据。
+const partsPath = path.join(FIXTURES, 'parts.mid');
+if (existsSync(partsPath)) {
+  const pb = new Uint8Array(readFileSync(partsPath));
+  const pq = mod._malloc(pb.length);
+  mod.HEAPU8.set(pb, pq);
+  const pinfo = mod._midi2jianpu_part_info
+    ? mod.UTF8ToString(mod._midi2jianpu_part_info(pq, pb.length)) : null;
+  mod._free(pq);
+  check(typeof pinfo === 'string' && pinfo.includes('声部：')
+    && pinfo.includes('Vocal·长笛') && pinfo.includes('Piano·钢琴')
+    && pinfo.includes('Bass·原声贝斯'),
+    'part_info 返回各声部与 GM 乐器中文名', pinfo);
+
+  // 同样的查询接口对普通（带 0xC0）曲子也能稳定返回字符串（不崩溃）
+  const sq3 = mod._malloc(sampleMidi.length);
+  mod.HEAPU8.set(sampleMidi, sq3);
+  const sInfo = mod.UTF8ToString(mod._midi2jianpu_part_info(sq3, sampleMidi.length));
+  mod._free(sq3);
+  check(typeof sInfo === 'string' && sInfo.length > 0,
+    'part_info 对任意曲子返回非空字符串', sInfo);
+  // 无 0xC0 的曲子不强行拼乐器名这一点由单元测试的构造样例锁死；
+  // 这里只验证接口稳健、不会返回 null 或抛异常。
+} else {
+  check(false, '素材 parts.mid 存在（先跑 make_fixture.py）');
 }
 
 console.log('');

@@ -179,6 +179,16 @@ int midi2jianpu_expression_count(const uint8_t* midiData, int size) {
     return m2j::ExpressionMap(data).totalCount();
 }
 
+// 声部 / 乐器摘要，供网页提示「声部：Vocal·钢琴, Piano·钢琴」。
+// 只列含音符的声部及其 GM 乐器名；与表情计数一样只读文件，不受渲染开关影响。
+const char* midi2jianpu_part_info(const uint8_t* midiData, int size) {
+    static std::string buf;
+    m2j::MidiData data;
+    if (!m2j::loadMidiFromMemory(midiData, size, data)) { buf.clear(); return buf.c_str(); }
+    buf = m2j::partSummary(data);
+    return buf.c_str();
+}
+
 // 获取MIDI音符数据(JSON格式, 用于播放)
 const char* midi2jianpu_get_notes_json(const uint8_t* midiData, int size) {
     m2j::MidiData data;

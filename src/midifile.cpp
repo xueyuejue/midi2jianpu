@@ -308,7 +308,12 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out) {
                 // SysEx：按长度整体跳过，否则会把后续事件错位解析
                 uint32_t sxLen = readVarLen(d, size, pos);
                 pos += sxLen;
-            } else if (type == 0xC0u || type == 0xD0u) {
+            } else if (type == 0xC0u) {
+                // 音色号（GM program change）。旧实现直接跳过，于是「这条轨是
+                // 笛子/二胡/钢琴」这种对读谱极有用的信息被丢掉了；现在按通道
+                // 记下来，输出层据此给每条声部标出乐器名。
+                if (channel < 16) out.channelProgram[(int)channel] = (int)d[pos++];
+            } else if (type == 0xD0u) {  // 通道触后（无数据字节外的 1 字节）
                 pos += 1;
             } else {
                 pos += 1;

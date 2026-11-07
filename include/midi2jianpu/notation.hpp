@@ -3,6 +3,7 @@
 #include "midi2jianpu/midifile.hpp"
 #include <algorithm>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -264,6 +265,20 @@ int pickMelodyTrack(const MidiData& data, const std::vector<LyricLine>* lyrics =
 // 速度摘要（变速曲目会列出每次变化及其小节）
 std::string tempoSummary(const MidiData& data);
 
+// ---- 声部 / 乐器标注 ----
+// GM 音色号(0..127) -> 乐器名。常用乐器给中文译名（钢琴/长笛/二胡风格等），
+// 其余回落到 GM 标准英文全名。中文曲 MIDI 常把笛子/古筝/二胡映射到 Flute/Harp/
+// Tremolo Strings 等通用音色，所以中文译名只覆盖标准 GM 集，不臆造民族乐器名。
+std::string gmInstrumentName(int prog);
+
+// 列出所有「含音符」的声部（跳过打击乐通道 9）。返回 (声部名, 乐器名)，
+// 声部名取轨道名（0x03），没有就回落到「轨 N」；乐器名来自该声部主导通道的
+// 0xC0 音色号，查不到则空串。
+std::vector<std::pair<std::string, std::string>> listParts(const MidiData& data);
+
+// 页眉用的声部摘要，如 "声部：Vocal·钢琴, Piano·钢琴"；没有可标注的声部时返回空串。
+std::string partSummary(const MidiData& data);
+
 // ---- 小节网格 ----
 // 「tick -> 小节」的换算分散在文本 / HTML / MusicXML 三个输出里，弱起一进来
 // 就得三处同时改，否则谱面一半对一半错。统一收进这个结构体。
@@ -444,10 +459,13 @@ struct NoteExpression {
     bool staccatissimo = false;
     bool accent = false;
     BendMark bend = BendMark::None;
+    int gracePitch = -1;   // >=0 表示本音前面带一个倚音（MIDI 音号），-1 表示无
 
     bool any() const {
-        return staccato || staccatissimo || accent || bend != BendMark::None;
+        return staccato || staccatissimo || accent ||
+               bend != BendMark::None || gracePitch >= 0;
     }
+    bool hasGrace() const { return gracePitch >= 0; }
     std::string symbol() const;  // 文本谱用的紧凑标记，如 "▼>"、"↗"
 };
 
@@ -466,6 +484,10 @@ public:
     // 键里必须带通道：旋律和伴奏常有同一 tick 的音头，只按 tick 索引会让
     // 伴奏「继承」旋律的滑音/断音记号（真实压力素材里踩到过）。
     NoteExpression noteAt(long tick, int channel) const;
+
+    // 某个音头本身是不是「被判定为倚音」的音（渲染时整颗跳过，改挂到主音上）。
+    // 同样按 (tick, channel) 索引，避免跨通道串扰。
+    bool isGraceNote(long tick, int channel) const;
 
     // 按 tick 升序的标记行事件；inRange 供 MusicXML 按小节取用。
     const std::vector<ExpressionMark>& marks() const { return marks_; }
@@ -489,6 +511,7 @@ private:
     std::vector<DynPoint> dyn_;
     std::vector<ExpressionMark> marks_;
     std::map<std::pair<long, int>, NoteExpression> notes_;
+    std::set<std::pair<long, int>> graceNotes_;  // 被判定为倚音的音头，渲染时跳过
     int nDynamic_ = 0, nCresc_ = 0, nDim_ = 0;
     int nArtic_ = 0, nBend_ = 0, nSection_ = 0;
 };

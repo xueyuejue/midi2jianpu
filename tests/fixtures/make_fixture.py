@@ -747,6 +747,60 @@ def build_expression() -> bytes:
     return header + t0.render() + t1.render() + t2.render()
 
 
+# ---------------------------------------------------------------------------
+# 声部 / 乐器标注 + 倚音（装饰音）的混合素材。
+#
+# 三条含音符的声部，各带不同的 GM 音色号（长笛 / 钢琴 / 原声贝斯），用来验证：
+#   1) 页眉的「声部：Vocal·长笛, Piano·钢琴, Bass·原声贝斯」标注；
+#   2) MusicXML 的 <score-instrument> 写了对应乐器名；
+#   3) 旋律轨（单声部的长笛）被正确判定为主旋律，柱式和弦的钢琴、低音贝斯
+#      仍是伴奏，不会抢走旋律身份。
+# 旋律第一拍前放一个极短的装饰音（B4，14 tick），紧跟 C5 长音 —— 既验证倚音被
+# 判定（渲染成主音前的小字装饰音），又验证它不会被误判成断奏或独立占一格。
+# ---------------------------------------------------------------------------
+def build_parts() -> bytes:
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120 BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调
+
+    # 旋律：单声部长笛（GM 73 -> 长笛），第 1 拍前带一个极短倚音 B4->C5
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    t1.program(0, 73, 0)
+    t1.note(0, 59, 90, 460, 14)                         # 倚音 B4（极短，紧跟 C5）
+    melody = [
+        (60, 480, 480), (62, 480, 960), (64, 480, 1440), (65, 480, 1920),
+        (67, 960, 2400), (69, 480, 3360), (71, 480, 3840),
+        (72, 480, 4320), (72, 480, 4800), (76, 960, 5280),
+        (74, 480, 6240), (72, 480, 6720), (71, 480, 7200), (69, 960, 7680),
+    ]
+    for pitch, dur, start in melody:
+        t1.note(0, pitch, 90, start, dur)
+
+    # 钢琴：每小节一个柱式和弦（复音数 3，明显不是旋律），GM 0 -> 钢琴
+    t2 = Track()
+    t2.add(0, meta(0x03, b"Piano"))
+    t2.program(1, 0, 0)
+    for bar, chord in enumerate([(48, 52, 55), (53, 57, 60),
+                                 (48, 52, 55), (53, 57, 60)]):
+        for p in chord:
+            t2.note(1, p, 70, bar * BAR, BAR)
+
+    # 贝斯：每小节两个长音的单声部低音线，GM 32 -> 原声贝斯
+    t3 = Track()
+    t3.add(0, meta(0x03, b"Bass"))
+    t3.program(2, 32, 0)
+    bass = [(48, 0), (48, 960), (43, 1920), (43, 2880),
+            (48, 3840), (48, 4800), (43, 5760), (43, 6720)]
+    for p, start in bass:
+        t3.note(2, p, 80, start, 960)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 4, DIV)
+    return header + t0.render() + t1.render() + t2.render() + t3.render()
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -848,6 +902,13 @@ def main() -> None:
         exdata = build_expression()
         f.write(exdata)
     print(f"wrote {exmid} ({len(exdata)} bytes)")
+
+    # 声部 / 乐器标注 + 倚音（装饰音）的混合素材
+    pmid2 = os.path.join(here, "parts.mid")
+    with open(pmid2, "wb") as f:
+        pdata2 = build_parts()
+        f.write(pdata2)
+    print(f"wrote {pmid2} ({len(pdata2)} bytes)")
 
 
 if __name__ == "__main__":
