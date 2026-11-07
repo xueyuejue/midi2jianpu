@@ -1585,6 +1585,61 @@ int main() {
         check(!anyGrace, "等间隔四分音符流不误判倚音");
     }
 
+    // ---- 和弦：转位（slash bass）+ 半减七 / 挂四七 ----
+    std::cout << "\n测试和弦转位与七和弦扩充（detectChords）\n";
+    {
+        // 每个用例：一条单声部旋律（track 0，保证被选为旋律轨）+ 一个伴奏和弦
+        auto chordOf = [](std::vector<int> acc, ChordMark* outMark) -> std::string {
+            MidiData d;
+            d.division = 480;
+            d.timeSig = TimeSignature{4, 2, true};
+            const int mel[8] = {72, 74, 76, 77, 79, 81, 83, 84};
+            for (int i = 0; i < 8; i++) {
+                NoteEvent n;
+                n.startTicks = i * 240L;
+                n.durationTicks = 240; n.rawDurationTicks = 240;
+                n.pitch = mel[i]; n.track = 0; n.channel = 0; n.velocity = 90;
+                d.notes.push_back(n);
+            }
+            for (int p : acc) {
+                NoteEvent n;
+                n.startTicks = 0;
+                n.durationTicks = 960; n.rawDurationTicks = 960;
+                n.pitch = p; n.track = 1; n.channel = 1; n.velocity = 70;
+                d.notes.push_back(n);
+            }
+            KeyEstimate k;
+            auto chords = detectChords(d, k);
+            if (chords.empty()) return std::string();
+            if (outMark) *outMark = chords[0];
+            return chords[0].name;
+        };
+
+        ChordMark cm;
+        std::string nm;
+        nm = chordOf({48, 52, 55}, &cm);
+        check(nm == "C", "原位三和弦标 C, 实际: " + nm);
+        check(cm.rootPc == 0 && cm.kind == "major" && cm.bassPc == -1,
+              "原位 C：rootPc=0 / kind=major / 无转位");
+
+        nm = chordOf({52, 55, 60}, &cm);
+        check(nm == "C/E", "E 在低音时标 C/E, 实际: " + nm);
+        check(cm.rootPc == 0 && cm.bassPc == 4, "C/E 的 rootPc=0 / bassPc=4(E)");
+
+        nm = chordOf({47, 50, 53, 57}, &cm);
+        check(nm == "Bm7b5", "B-D-F-A 标半减七 Bm7b5, 实际: " + nm);
+        check(cm.kind == "half-diminished" && cm.kindText == "m7b5",
+              "Bm7b5 的 kind=half-diminished / 显示后缀 m7b5");
+
+        nm = chordOf({43, 48, 50, 53}, &cm);
+        check(nm == "G7sus4", "G-C-D-F 标挂四七 G7sus4, 实际: " + nm);
+
+        // 低音是和弦外音（经过音 / 持续音）时不是转位，不能写斜杠
+        nm = chordOf({41, 48, 52, 55}, &cm);
+        check(nm == "C", "低音 F 非 C 和弦音时不写 C/F, 实际: " + nm);
+        check(cm.bassPc == -1, "非和弦音低音不产生转位");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

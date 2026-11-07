@@ -2,9 +2,9 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 12 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 14 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
-tempolrc / expression（另配 3 份 LRC 歌词）。
+tempolrc / expression / parts / chords（另配 3 份 LRC 歌词）。
 meter 是把变拍号、变速、鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」，
 modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五声调式
 （C 宫、G 徵调式，故意不写 0x59 逼自动猜调暴露宫音判错）。
@@ -801,6 +801,50 @@ def build_parts() -> bytes:
     return header + t0.render() + t1.render() + t2.render() + t3.render()
 
 
+# ---------------------------------------------------------------------------
+# 和弦转位 + 七和弦扩充素材。
+#
+# 四小节各放一个和声窗（960 tick 一个），刻意只改「低音」和「特征音」，
+# 让谱面上能一眼看出转位与和弦类型的区别：
+#   第 1 窗  C/E      —— 音级仍是 C E G，但 E 在低音，必须写斜杠
+#   第 2 窗  Bm7b5    —— 半减七（B D F A），旧版会只标 Bdim 或干脆不标
+#   第 3 窗  G7sus4   —— 挂四七（G C D F），旧版会标成 C sus4 或 G7
+#   第 4 窗  C        —— 原位三和弦，用来验证「低音=根音时不写斜杠」
+# 旋律用八个上行四分音符（单声部、音域宽），保证旋律轨判定选中它，
+# 和弦音全部落在伴奏轨上，不被当成旋律。
+# ---------------------------------------------------------------------------
+def build_chords() -> bytes:
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120 BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调
+
+    # 旋律：C5 起的上行音阶，8 个四分音符 = 2 小节
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    t1.program(0, 0, 0)
+    for i, p in enumerate((72, 74, 76, 77, 79, 81, 83, 84)):
+        t1.note(0, p, 90, i * DIV, DIV)
+
+    # 伴奏：四窗各一个和弦，窗长 960 tick（4/4 的半小节）
+    t2 = Track()
+    t2.add(0, meta(0x03, b"Piano"))
+    t2.program(1, 0, 0)
+    windows = [
+        (0,    (52, 55, 60)),        # C/E   —— E3 在低音
+        (960,  (47, 50, 53, 57)),    # Bm7b5 —— B D F A
+        (1920, (43, 48, 50, 53)),    # G7sus4—— G C D F
+        (2880, (48, 52, 55)),        # C     —— 原位
+    ]
+    for start, chord in windows:
+        for p in chord:
+            t2.note(1, p, 70, start, 960)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 3, DIV)
+    return header + t0.render() + t1.render() + t2.render()
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -909,6 +953,13 @@ def main() -> None:
         pdata2 = build_parts()
         f.write(pdata2)
     print(f"wrote {pmid2} ({len(pdata2)} bytes)")
+
+    # 和弦转位 / 七和弦扩充素材
+    cmid = os.path.join(here, "chords.mid")
+    with open(cmid, "wb") as f:
+        cdata = build_chords()
+        f.write(cdata)
+    print(f"wrote {cmid} ({len(cdata)} bytes)")
 
 
 if __name__ == "__main__":
