@@ -1059,6 +1059,81 @@ def main():
         check(not bad,
               f"复调轨的每个和弦正好 12 个 token（三音各 4 拍），实际异常行 {bad[:2]}")
 
+    # ---- [27] 同轨复调：一条轨里两个声部 ----
+    # polyphony.mid 是钢琴左右手写进同一个轨：右手四分音符，左手长音铺底，
+    # 时值各不相同、互相重叠。旧版把「同拍不同值」也当成和弦，长音叠短音
+    # 写进同一格，4/4 的小节被撑成 8 拍（<chord/> 成员时值不等），
+    # 导出的 MusicXML 是坏文件。现在按声部拆开、用 <backup> 回退游标。
+    print("\n[27] 同轨复调（一条轨两个声部）")
+    poly = os.path.join(FIXTURES, "polyphony.mid")
+    rc, out, err = run(exe, poly)
+    check(rc == 0, "解析 polyphony.mid", err[:200])
+
+    check("[Piano · 声部1]" in out and "[Piano · 声部2]" in out,
+          "文本谱按声部拆成两个谱行，实际:\n" + out[-400:])
+
+    # 每个声部块里的每一行都必须是 4 拍：声部拆对了，小节线才对得上
+    blocks = re.split(r"\[([^\]]*声部\d)\]", out)
+    ok_rows = True
+    bad_rows = []
+    for i in range(1, len(blocks) - 1, 2):
+        for ln in blocks[i + 1].splitlines():
+            if "|" not in ln:
+                continue
+            toks = re.sub(r"\[[^\]]*\]", "", ln).replace("|", " ").split()
+            if len(toks) != 4:
+                ok_rows = False
+                bad_rows.append(f"{blocks[i]}: {ln}")
+    check(ok_rows, f"两个声部每小节都正好 4 个 token，实际异常 {bad_rows[:2]}")
+
+    # 低声部在第 2 小节第 3 拍才进来，前面必须是休止而不是空白
+    check(re.search(r"\[Piano · 声部2\].*?\n(0 - 3, -|0 - 3,)", out, re.S) is not None,
+          "声部 2 的后半小节从休止起，位置正确")
+
+    px = os.path.join(tmp, "poly.xml")
+    ph = os.path.join(tmp, "poly.html")
+    rc2, _, err2 = run(exe, poly, "--musicxml", px, "--html", ph)
+    check(rc2 == 0, "导出 polyphony.mid 的 MusicXML / HTML", err2[:200])
+
+    xml = open(px, encoding="utf-8").read()
+    check(xml.count("<backup>") == 4,
+          f"每个含第二声部的小节各一次 <backup>，实际 {xml.count(chr(60) + 'backup' + chr(62))}")
+    check("<voice>2</voice>" in xml, "第二个声部写成 <voice>2</voice>")
+
+    # 逐小节核对总时值：<chord/> 不推进时间，<backup> 回退
+    div = int(re.search(r"<divisions>(\d+)</divisions>", xml).group(1))
+    bad = []
+    for body in re.findall(r"<measure [^>]*>(.*?)</measure>", xml, re.S):
+        pos = mx = 0
+        for frag in re.findall(
+                r"<note>.*?</note>|<backup>.*?</backup>", body, re.S):
+            d = re.search(r"<duration>(\d+)</duration>", frag)
+            if not d:
+                continue
+            dur = int(d.group(1))
+            if frag.startswith("<backup>"):
+                pos -= dur
+            elif "<chord/>" not in frag:
+                pos += dur
+                mx = max(mx, pos)
+        if mx != 4 * div:
+            bad.append((mx, 4 * div))
+    check(not bad, f"每个小节正好 4 拍（声部叠加不溢出），实际 {bad[:3]}")
+
+    check(xml.count('<tie type="start"') == 1 and xml.count('<tie type="stop"') == 1,
+          "跨小节的低音在声部内写成一对延音线")
+
+    html = open(ph, encoding="utf-8").read()
+    check(html.count("<div class='staff") == 2,
+          f"HTML 拆成两块谱面，实际 {html.count(chr(60) + 'div class=' + chr(39) + 'staff')}")
+    check("voiceTag" in html and html.count("声部 2") >= 1,
+          "HTML 标题标出声部号")
+
+    # 单声部素材不该被拆：回归锁
+    rc3, sample_out, _ = run(exe, os.path.join(FIXTURES, "sample.mid"))
+    check("声部1" not in sample_out and "声部2" not in sample_out,
+          "单声部素材不拆声部（不出现声部N 标签）")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

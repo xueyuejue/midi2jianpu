@@ -5,6 +5,7 @@
 //       拍号 map 与逐小节网格、调号 map（中途转调 / KeyMap）、
 //       五声调式（宫商角徵羽）宫音判定与校正、tempo map 时间轴与 LRC 对齐。
 #include "midi2jianpu/notation.hpp"
+#include "midi2jianpu/musicxml_writer.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -1903,6 +1904,195 @@ int main() {
             quantizeTiming(d);
             check(d.notes[4].durationTicks == 480, "一拍音维持四分音符");
         }
+    }
+
+    // -----------------------------------------------------------------
+    // v1.25.0: 同轨复调（一条轨里两个声部）
+    // -----------------------------------------------------------------
+    std::cout << "\n测试同轨复调分声部\n";
+    {
+        auto mk = [](long start, long dur, int pitch) {
+            NoteEvent n;
+            n.startTicks = start;
+            n.durationTicks = dur;
+            n.rawDurationTicks = dur;
+            n.pitch = pitch;
+            return n;
+        };
+        auto maxVoice = [](const std::vector<int>& v) {
+            int m = 0;
+            for (int x : v) m = std::max(m, x);
+            return m;
+        };
+
+        // 1. 单声部旋律不该被拆出声部
+        {
+            std::vector<NoteEvent> ns;
+            for (int i = 0; i < 8; i++) ns.push_back(mk(i * 480, 480, 60 + i));
+            const auto vo = splitVoices(ns);
+            check(maxVoice(vo) == 0, "单声部旋律只占一个声部");
+        }
+
+        // 2. 同拍同值的柱式和弦仍属于同一声部（不然 <chord/> 会散架）
+        {
+            std::vector<NoteEvent> ns;
+            for (int p : {48, 52, 55}) ns.push_back(mk(0, 1920, p));
+            const auto vo = splitVoices(ns);
+            check(maxVoice(vo) == 0, "同拍同值的三音和弦留在同一声部");
+        }
+
+        // 3. 同拍不同值（长音叠短音）必须拆开：这正是小节时值溢出的根源
+        {
+            std::vector<NoteEvent> ns;
+            ns.push_back(mk(0, 1920, 48));   // 低音全音符
+            ns.push_back(mk(0, 480, 72));    // 高音四分
+            ns.push_back(mk(480, 480, 74));
+            const auto vo = splitVoices(ns);
+            check(vo[0] != vo[1], "同拍不同值拆成两个声部（不是和弦）");
+            check(vo[1] == vo[2], "后一个四分接在高音声部里");
+            check(ns[0].durationTicks == 1920,
+                  "低声部的全音符时值不变，实际: " + std::to_string(ns[0].durationTicks));
+        }
+
+        // 4. 交错重叠（长音还没收尾，下一句就进来了）
+        {
+            std::vector<NoteEvent> ns;
+            ns.push_back(mk(0, 1440, 60));    // 3 拍
+            ns.push_back(mk(480, 480, 72));   // 第 2 拍起
+            const auto vo = splitVoices(ns);
+            check(vo[0] != vo[1], "重叠音符分到不同声部");
+        }
+
+        // 5. 超过声部上限时要退化成和弦并收口，不能让同声部继续重叠
+        {
+            std::vector<NoteEvent> ns;
+            ns.push_back(mk(0, 480, 76));
+            ns.push_back(mk(0, 1440, 60));
+            ns.push_back(mk(0, 960, 55));
+            ns.push_back(mk(0, 1920, 48));   // 第 4 个同拍音，已超上限
+            const auto vo = splitVoices(ns);
+            check(maxVoice(vo) < 3, "声部数不超过上限 3，实际: " +
+                  std::to_string(maxVoice(vo) + 1));
+            // 同一声部里不能有两个「同拍但时值不同」的音
+            bool ok = true;
+            for (size_t i = 0; i < ns.size(); i++)
+                for (size_t j = i + 1; j < ns.size(); j++)
+                    if (vo[i] == vo[j] && ns[i].startTicks == ns[j].startTicks &&
+                        ns[i].durationTicks != ns[j].durationTicks)
+                        ok = false;
+            check(ok, "同声部同拍的音时值对齐（退化成真和弦）");
+        }
+
+        // 6. skip 谓词（倚音）不参与声部划分
+        {
+            std::vector<NoteEvent> ns;
+            ns.push_back(mk(0, 60, 59));     // 极短倚音
+            ns.push_back(mk(60, 480, 60));   // 主音，紧接其后
+            const auto vo = splitVoices(ns, 3, [](const NoteEvent& n) {
+                return n.durationTicks < 120;
+            });
+            check(vo[0] == 0 && vo[1] == 0, "被 skip 的倚音不另起声部");
+            check(ns[0].durationTicks == 60, "倚音时值不被截短");
+        }
+    }
+
+    // 复调谱导成 MusicXML：小节时值必须严丝合缝
+    std::cout << "\n测试复调 MusicXML 小节时值\n";
+    {
+        SmfTrack meta0;
+        meta0.at(0, ev({0xFF, 0x51, 3, 0x07, 0xA1, 0x20}));
+        meta0.at(0, ev({0xFF, 0x58, 4, 4, 2, 24, 8}));
+        meta0.at(0, ev({0xFF, 0x59, 2, 0, 0}));
+
+        SmfTrack t1;
+        t1.at(0, ev({0xFF, 0x03, 5, 'P', 'i', 'a', 'n', 'o'}));
+        const long BAR = 1920;
+        // 右手：每小节四个四分音符
+        for (int bar = 0; bar < 4; bar++)
+            for (int i = 0; i < 4; i++)
+                if (!(bar == 3 && i < 2)) {
+                    t1.at(bar * BAR + i * 480, ev({0x90, 84, 90}));
+                    t1.at(bar * BAR + i * 480 + 480, ev({0x80, 84, 0}));
+                }
+        // 左手：全音符铺底，最后一个跨小节
+        t1.at(0, ev({0x90, 48, 70}));
+        t1.at(BAR, ev({0x80, 48, 0}));
+        t1.at(BAR, ev({0x90, 50, 70}));
+        t1.at(2 * BAR, ev({0x80, 50, 0}));
+        t1.at(2 * BAR + 960, ev({0x90, 52, 70}));
+        t1.at(3 * BAR + 960, ev({0x80, 52, 0}));
+
+        auto bytes = buildSmf(2, 480, {meta0, t1});
+        MidiData d;
+        check(loadMidiFromMemory(bytes.data(), bytes.size(), d), "解析复调 SMF");
+        quantizeTiming(d);
+        const std::string xml = renderMusicXml(d, estimateKey(d));
+
+        check(xml.find("<backup>") != std::string::npos,
+              "复调 MusicXML 用 <backup> 退回小节开头");
+        check(xml.find("<voice>2</voice>") != std::string::npos,
+              "第二个声部写成 <voice>2</voice>");
+
+        // 逐小节算总时值：<chord/> 不前进时间，<backup> 回退
+        auto measureTotals = [](const std::string& s) {
+            std::vector<long> totals;
+            size_t p = 0;
+            while (true) {
+                const size_t m = s.find("<measure ", p);
+                if (m == std::string::npos) break;
+                const size_t gt = s.find('>', m);
+                const size_t end = s.find("</measure>", gt);
+                if (end == std::string::npos) break;
+                const std::string body = s.substr(gt + 1, end - gt - 1);
+                p = end + 10;
+                long pos = 0, mx = 0;
+                size_t i = 0;
+                while (i < body.size()) {
+                    const size_t nt = body.find("<note>", i);
+                    const size_t bk = body.find("<backup>", i);
+                    if (nt == std::string::npos && bk == std::string::npos) break;
+                    const bool isBackup = (bk != std::string::npos) &&
+                                          (nt == std::string::npos || bk < nt);
+                    const size_t at = isBackup ? bk : nt;
+                    const size_t close = isBackup ? body.find("</backup>", at)
+                                                  : body.find("</note>", at);
+                    if (close == std::string::npos) break;
+                    const std::string frag = body.substr(at, close - at);
+                    const size_t dp = frag.find("<duration>");
+                    const long dur = (dp == std::string::npos) ? 0
+                                                               : std::stol(frag.substr(dp + 10));
+                    if (isBackup) {
+                        pos -= dur;
+                    } else if (frag.find("<chord/>") == std::string::npos) {
+                        pos += dur;
+                        if (pos > mx) mx = pos;
+                    }
+                    i = close + 1;
+                }
+                totals.push_back(mx);
+            }
+            return totals;
+        };
+        const std::vector<long> totals = measureTotals(xml);
+        check(totals.size() == 4, "四个小节，实际: " + std::to_string(totals.size()));
+        bool allFull = !totals.empty();
+        for (long t : totals) if (t != BAR) allFull = false;
+        std::string detail;
+        for (long t : totals) detail += std::to_string(t) + " ";
+        check(allFull, "每个小节正好 1920 tick（声部叠加不溢出），实际: " + detail);
+
+        // 单声部仍不该出现 <backup>
+        SmfTrack mono;
+        for (int i = 0; i < 8; i++) {
+            mono.at(i * 480, ev({0x90, 60 + i, 90}));
+            mono.at(i * 480 + 480, ev({0x80, 60 + i, 0}));
+        }
+        auto mb = buildSmf(2, 480, {meta0, mono});
+        MidiData md;
+        loadMidiFromMemory(mb.data(), mb.size(), md);
+        quantizeTiming(md);
+        check(renderMusicXml(md, estimateKey(md)).find("<backup>") == std::string::npos,
+              "单声部 MusicXML 不写 <backup>（与旧版逐字节一致）");
     }
 
     std::cout << "\n------------------------------------------------\n";

@@ -2,6 +2,7 @@
 // notation.hpp - 调性识别与音高->简谱转换
 #include "midi2jianpu/midifile.hpp"
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -106,6 +107,28 @@ std::string midiNoteName(int pitch);
 
 // 检测三连音: 返回每个音符是否属于三连音组
 std::vector<bool> detectTriplets(const std::vector<NoteEvent>& notes, int division);
+
+// 同轨复调拆分：把一条轨的音符贪心分到若干「互不重叠」的声部，返回每个音符
+// 的声部号（按入参下标，0 = 最高的那个声部）。
+//
+// 一条轨里有两个声部是很常见的：钢琴左右手导进同一个 MIDI 轨、把伴奏垫在
+// 人声轨下面、或者踩延音踏板让上一个和弦还响着。若不分声部，这些重叠音会
+// 被当成和弦塞进同一拍 —— 长音叠短音写成的 <chord/> 时值各不相同，小节总
+// 时值直接溢出（4/4 的一小节写成 8 拍）。
+//
+// 判定分三步：
+//   1. 同拍同值  -> 真和弦，并进同一声部（只有这时才该写 <chord/>）
+//   2. 有空出来的声部（上一个音已收尾）-> 放进去
+//   3. 都占着 -> 开新声部；到 maxVoices 上限就并进最早结束的那个，并把该音
+//      截短到下一个音头（宁可少一个长音的尾巴，也不能让小节时值溢出）
+//
+// notes 会被就地修改（只有第 3 步的溢出情形会改动时值）。
+//
+// skip 用来排除「不是独立声部」的音（目前是倚音）：倚音时长极短，量化时
+// 按门限还原会把它放大到压住主音，误判成第二声部。被 skip 的音一律归入
+// 声部 0，且不参与声部状态推进。
+std::vector<int> splitVoices(std::vector<NoteEvent>& notes, int maxVoices = 3,
+                             const std::function<bool(const NoteEvent&)>& skip = nullptr);
 
 // 歌词字（对齐到音符）
 struct LyricSyllable {

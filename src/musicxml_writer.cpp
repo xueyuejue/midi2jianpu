@@ -113,6 +113,7 @@ struct Segment {
     int bar = 0;           // 所属小节（从 0 计）
     int pitch = 0;
     int channel = 0;       // 演奏法按 (tick, channel) 查，不能只按 tick
+    int voice = 0;         // 同轨复调的声部号（0 = 最高声部），写出时 +1 成 <voice>
     bool triplet = false;  // 属于三连音组，需要 <time-modification>
     bool tieStart = false; // 后面还有延续段 -> <tie type="start"/>
     bool tieEnd = false;   // 前面有被切开的段 -> <tie type="stop"/>
@@ -259,6 +260,12 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
         };
 
         // ---- 1. 展开成片段：跨小节的音符在此切开 ----
+        //
+        // 先分声部：同轨两个声部（钢琴左右手写在同一个轨里）如果混在一起写，
+        // 长音叠短音会被当成和弦塞进同一拍，<chord/> 的各个成员时值不同，
+        // 小节总时值直接溢出（4/4 写成 8 拍），MuseScore 打不开。
+        const std::vector<int> voiceOf = splitVoices(
+            ns, 3, [&](const NoteEvent& n) { return expr.isGraceNote(n.startTicks, n.channel); });
         auto triplets = detectTriplets(ns, division);
         std::vector<Segment> segs;
         segs.reserve(ns.size() * 2);
@@ -286,6 +293,7 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                 s.bar = bar;
                 s.pitch = n.pitch;
                 s.channel = n.channel;
+                s.voice = (i < voiceOf.size()) ? voiceOf[i] : 0;
                 s.triplet = (i < triplets.size()) ? triplets[i] : false;
                 s.tieEnd = !firstPart;      // 前面被切过
                 s.tieStart = (segEnd < end); // 后面还有
@@ -296,9 +304,12 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             }
         }
 
-        // ---- 2. 按 (小节, 起始 tick) 稳定排序，保持和弦内各音次序 ----
+        // ---- 2. 按 (小节, 声部, 起始 tick) 稳定排序 ----
+        // 声部当成第二排序键：同一声部在一个小节里的音必须连续写出来，
+        // 才能在小节中途 <backup> 回开头换声部。
         std::stable_sort(segs.begin(), segs.end(), [](const Segment& a, const Segment& b) {
             if (a.bar != b.bar) return a.bar < b.bar;
+            if (a.voice != b.voice) return a.voice < b.voice;
             return a.start < b.start;
         });
 
@@ -315,13 +326,15 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
         int curBar = -1;
         long writtenUpTo = 0;   // 当前小节内已写到的绝对 tick
         long lastSegStart = -1; // 识别同拍和弦
+        long lastSegDur = -1;   // 和弦成员必须同拍且同值才是真和弦
+        int curVoice = -1;      // 当前正在写的声部
 
-        auto emitRest = [&](long from, long to) {
+        auto emitRest = [&](long from, long to, int voice) {
             if (to <= from) return;
             long len = to - from;
             auto [rt, rd] = durTypeDot(len / (double)division);
             xml << "      <note><rest/><duration>" << len
-                << "</duration><voice>1</voice><type>" << rt << "</type>";
+                << "</duration><voice>" << (voice + 1) << "</voice><type>" << rt << "</type>";
             if (rd) xml << "<dot/>";
             xml << "</note>\n";
         };
@@ -475,23 +488,34 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                 if (it != chordsByBar.end()) pendingChords = it->second;
             }
             writtenUpTo = grid.barStart(bar);
+            curVoice = -1;
+            lastSegStart = -1;
+            lastSegDur = -1;
         };
 
-        auto closeMeasure = [&]() {
+        // 收尾当前声部：补上小节末尾的休止，把还没落笔的和弦符号写掉。
+        // 换声部前必须先调一次，否则 <backup> 之后这一声部的尾巴就丢了。
+        auto finishVoice = [&]() {
             long barEndTick = grid.barEnd(curBar);
             // 小节末尾还没被音符消费的和弦（后半小节是休止时常见）：先补到
             // 它所在的拍位再写符号，否则和弦会被顶到小节第一拍。
-            if (writeChords) {
+            // 和弦只写一份，交给最高声部。
+            if (writeChords && curVoice == 0) {
                 while (pendingIdx < pendingChords.size()) {
                     const ChordMark& cm = *pendingChords[pendingIdx++];
                     if (writtenUpTo < cm.startTick) {
-                        emitRest(writtenUpTo, cm.startTick);
+                        emitRest(writtenUpTo, cm.startTick, curVoice);
                         writtenUpTo = cm.startTick;
                     }
                     emitHarmonyXml(xml, cm, prefersFlats(keys.at(cm.startTick)));
                 }
             }
-            if (writtenUpTo < barEndTick) emitRest(writtenUpTo, barEndTick);
+            if (curVoice >= 0 && writtenUpTo < barEndTick)
+                emitRest(writtenUpTo, barEndTick, curVoice);
+        };
+
+        auto closeMeasure = [&]() {
+            finishVoice();
             xml << "    </measure>\n";
         };
 
@@ -517,15 +541,35 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                 curBar = seg.bar;
                 openMeasure(curBar);
                 lastSegStart = -1;
+                lastSegDur = -1;
             }
 
-            // 间隙补休止符（和弦成员不重复补）
-            bool isChordMember = (seg.start == lastSegStart);
-            if (!isChordMember && seg.start > writtenUpTo) emitRest(writtenUpTo, seg.start);
+            // 同轨复调：一个声部写完后回到小节开头写下一个声部。
+            // MusicXML 用 <backup> 把「当前时间游标」退回去，退的正好是一个
+            // 小节的长度；不写这一步，第二个声部就会接在第一个声部后面继续
+            // 排，小节时值成倍溢出。
+            if (seg.voice != curVoice) {
+                if (curVoice >= 0) {
+                    finishVoice();
+                    xml << "      <backup><duration>" << grid.barSpan(curBar)
+                        << "</duration></backup>\n";
+                }
+                curVoice = seg.voice;
+                writtenUpTo = grid.barStart(curBar);
+                lastSegStart = -1;
+                lastSegDur = -1;
+            }
+
+            // 间隙补休止符（和弦成员不重复补）。
+            // 真和弦的判据必须带上时值：同拍不同值（长音叠短音）不是和弦，
+            // 那是两个声部，分声部之后本就不会走到这里。
+            bool isChordMember = (seg.start == lastSegStart && seg.dur == lastSegDur);
+            if (!isChordMember && seg.start > writtenUpTo)
+                emitRest(writtenUpTo, seg.start, curVoice);
 
             // 和弦符号按音头位置插入：此刻文档已推进到 seg.start，写在这里
-            // 就正好落在该拍上方。
-            flushChords(seg.start);
+            // 就正好落在该拍上方。只在最高声部写一次。
+            if (curVoice == 0) flushChords(seg.start);
 
             int pc = seg.pitch % 12;
             if (pc < 0) pc += 12;
@@ -545,7 +589,7 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             // 一个字唱多个音时：首音 syllabic=begin + slur start，中间音
             // middle，末音 end + slur stop；一音一字则写 single。
             std::string lyricXml, slurXml;
-            if (!lyrics.empty() && !seg.tieEnd && !isChordMember) {
+            if (!lyrics.empty() && seg.voice == 0 && !seg.tieEnd && !isChordMember) {
                 auto pit = lyrics.at.find(seg.start);
                 if (pit != lyrics.at.end()) {
                     const LyricPlacement& pl = pit->second;
@@ -572,7 +616,7 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             // 倚音（装饰音）：在主音之前写一个 <grace/> 音符，不占时长，
             // MuseScore 会把它渲染成主音左侧的小装饰音。只在主音的第一个分段
             // （真实音头，非跨小节延续段、非和弦成员）上写一次。
-            if (!isChordMember && !seg.tieEnd) {
+            if (!isChordMember && !seg.tieEnd && seg.voice == 0) {
                 const NoteExpression ae0 = expr.noteAt(seg.start, seg.channel);
                 if (ae0.hasGrace()) {
                     int gp = ae0.gracePitch;
@@ -600,7 +644,7 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                 << "<duration>" << seg.dur << "</duration>";
             if (seg.tieEnd)   xml << "<tie type=\"stop\"/>";
             if (seg.tieStart) xml << "<tie type=\"start\"/>";
-            xml << "<voice>1</voice><type>" << ntype << "</type>";
+            xml << "<voice>" << (seg.voice + 1) << "</voice><type>" << ntype << "</type>";
             if (ndot) xml << "<dot/>";
             if (seg.triplet) {
                 xml << "<time-modification>"
@@ -640,6 +684,7 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             xml << "</note>\n";
 
             lastSegStart = seg.start;
+            lastSegDur = seg.dur;
             writtenUpTo = std::max(writtenUpTo, seg.start + seg.dur);
         }
 

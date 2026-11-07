@@ -31,7 +31,7 @@ add_executable(midi2jianpu src/main.cpp ${M2J_CORE})
 
 # ---- 单元测试 ----
 enable_testing()
-add_executable(test_basic tests/test_basic.cpp src/midifile.cpp src/notation.cpp)
+add_executable(test_basic tests/test_basic.cpp src/midifile.cpp src/notation.cpp src/musicxml_writer.cpp)
 add_test(NAME basic COMMAND test_basic)
 
 # ---- WebAssembly（可选；需要 emsdk 提供 emcmake / em++）----
