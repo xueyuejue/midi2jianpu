@@ -1,8 +1,11 @@
 # --- 构建产物 ---
 # build/ 里还放着三个一键编译脚本，它们必须随仓库走（换电脑才能直接编译），
-# 所以忽略目录内容而不是目录本身，再单独放行 .cmd。
+# 所以忽略目录内容而不是目录本身，再按名字放行这三个（通配 *.cmd 会把
+# build.cmd / build_try.cmd 这类本机临时脚本也放出来）。
 build/*
-!build/*.cmd
+!build/build_local.cmd
+!build/build_test_local.cmd
+!build/build_wasm.cmd
 build-wasm/
 out/
 cmake-build-*/
