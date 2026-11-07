@@ -49,6 +49,35 @@ static const int FLAT_ALTER[12] = {
     0, -1, 0, -1, 0, 0, -1, 0, -1, 0, -1, 0
 };
 
+// 和弦符号 <harmony> 的 root-step / bass-step：把音级写成「音名 + 升降」。
+// MusicXML 用 <root-step>C</root-step><root-alter>1</root-alter> 这种两段式，
+// 而不是一个 "C#" 字符串；升降为 0 时 <*-alter> 可以省掉。
+static void emitHarmonyStep(std::ostringstream& xml, const char* tag, int pc, bool flat) {
+    const char* step = flat ? FLAT_STEP[pc] : SHARP_STEP[pc];
+    const int alter = flat ? FLAT_ALTER[pc] : SHARP_ALTER[pc];
+    xml << "<" << tag << "-step>" << step << "</" << tag << "-step>";
+    if (alter != 0) xml << "<" << tag << "-alter>" << alter << "</" << tag << "-alter>";
+}
+
+// 和弦符号。此前和弦只活在文本谱和 HTML 里，导进 MuseScore 就全没了；
+// 现在写 <harmony>，MuseScore / Finale 会在谱表上方显示和弦名。
+// kind 用 MusicXML 标准值（语义），text 属性放我们的显示后缀——m7b5、7sus4
+// 没有对应的标准 kind，靠 text 才能原样显示。转位写 <bass>。
+static void emitHarmonyXml(std::ostringstream& xml, const ChordMark& cm, bool flat) {
+    if (cm.rootPc < 0) return;
+    xml << "      <harmony><root>";
+    emitHarmonyStep(xml, "root", cm.rootPc, flat);
+    xml << "</root><kind";
+    if (!cm.kindText.empty()) xml << " text=\"" << xmlEscape(cm.kindText) << "\"";
+    xml << ">" << (cm.kind.empty() ? "major" : cm.kind) << "</kind>";
+    if (cm.bassPc >= 0) {
+        xml << "<bass>";
+        emitHarmonyStep(xml, "bass", cm.bassPc, flat);
+        xml << "</bass>";
+    }
+    xml << "</harmony>\n";
+}
+
 // 拍数 -> MusicXML <type> + 是否附点
 //
 // 传入的必须是**名义时值**：三连音八分音符实际占 1/3 拍，但它的 <type>
@@ -164,6 +193,15 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
     const bool hasLyrics = lyricSourceOf(data, lyricLines) != LyricSource::None;
     const int mainTrack = hasLyrics ? pickMelodyTrack(data, lyricLines) : -1;
 
+    // 和弦符号：和文本谱 / HTML 共用同一份 detectChords 结果。
+    // 挂到旋律声部上方（标准 lead sheet 排法）；没有明确旋律声部时退化到
+    // 第一个声部。按小节分桶，便于随音符位置插入 <harmony>。
+    const std::vector<ChordMark> chordMarks = detectChords(data, key);
+    const int chordTrack = pickMelodyTrack(data, lyricLines);
+    std::map<int, std::vector<const ChordMark*>> chordsByBar;
+    for (const auto& cm : chordMarks)
+        chordsByBar[(int)grid.barIndex(cm.startTick)].push_back(&cm);
+
     partIdx = 1;
     for (auto& [t, ns] : byTrack) {
         if (ns.empty()) { partIdx++; continue; }
@@ -176,6 +214,22 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
         // 音符的通道，与 HTML 的 openBar(firstTick, channel) 保持同一取值口径。
         const int partChannel = ns.front().channel;
         std::string lastDyn;
+
+        // 和弦符号只写一份：旋律声部优先，没有旋律声部时写进第一个 part。
+        const bool writeChords = (chordTrack >= 0) ? (t == chordTrack) : (partIdx == 1);
+        std::vector<const ChordMark*> pendingChords;  // 当前小节待写的和弦（按 tick 升序）
+        size_t pendingIdx = 0;
+        // 把 tick <= uptoTick 的和弦写出来。MusicXML 的 <harmony> 与音符按文档
+        // 顺序定位，所以必须插在「该 tick 之前已写到的位置」——写在小节开头会
+        // 让后半小节换的和弦全挤到第一拍。
+        auto flushChords = [&](long uptoTick) {
+            if (!writeChords) return;
+            while (pendingIdx < pendingChords.size() &&
+                   pendingChords[pendingIdx]->startTick <= uptoTick) {
+                const ChordMark& cm = *pendingChords[pendingIdx++];
+                emitHarmonyXml(xml, cm, prefersFlats(keys.at(cm.startTick)));
+            }
+        };
 
         // ---- 1. 展开成片段：跨小节的音符在此切开 ----
         auto triplets = detectTriplets(ns, division);
@@ -367,11 +421,29 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             xml << ">\n";
             emitAttributes(bar);
             emitDirections(bar);
+            pendingChords.clear();
+            pendingIdx = 0;
+            if (writeChords) {
+                auto it = chordsByBar.find(bar);
+                if (it != chordsByBar.end()) pendingChords = it->second;
+            }
             writtenUpTo = grid.barStart(bar);
         };
 
         auto closeMeasure = [&]() {
             long barEndTick = grid.barEnd(curBar);
+            // 小节末尾还没被音符消费的和弦（后半小节是休止时常见）：先补到
+            // 它所在的拍位再写符号，否则和弦会被顶到小节第一拍。
+            if (writeChords) {
+                while (pendingIdx < pendingChords.size()) {
+                    const ChordMark& cm = *pendingChords[pendingIdx++];
+                    if (writtenUpTo < cm.startTick) {
+                        emitRest(writtenUpTo, cm.startTick);
+                        writtenUpTo = cm.startTick;
+                    }
+                    emitHarmonyXml(xml, cm, prefersFlats(keys.at(cm.startTick)));
+                }
+            }
             if (writtenUpTo < barEndTick) emitRest(writtenUpTo, barEndTick);
             xml << "    </measure>\n";
         };
@@ -403,6 +475,10 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             // 间隙补休止符（和弦成员不重复补）
             bool isChordMember = (seg.start == lastSegStart);
             if (!isChordMember && seg.start > writtenUpTo) emitRest(writtenUpTo, seg.start);
+
+            // 和弦符号按音头位置插入：此刻文档已推进到 seg.start，写在这里
+            // 就正好落在该拍上方。
+            flushChords(seg.start);
 
             int pc = seg.pitch % 12;
             if (pc < 0) pc += 12;

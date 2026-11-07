@@ -42,9 +42,10 @@
 - [x] **倚音（装饰音）识别**：MIDI 没有显式 grace note 事件，现从「极短前导音 + 紧邻长音」推断（前导音原始时长 < 1/8 拍、主音 ≥ 1/4 拍且≥4 倍、间隔在 [-1/8, 1/16] 拍内、异音高），判据按通道收紧，快速经过音 / 十六分音符流不误判；文本谱写成 `(装饰音数字)` 贴在主音前，HTML 用 `<span class='grace'>` 上标，MusicXML 写 `<grace/>` 不占时长
 - [x] 三连音自动识别（按 1/3 拍体系判定时值，八分音符连奏不会被误判），且按 1/3、1/6、1/12 拍单独取档位——三连八分只画一条减时线，不会被时值表最近的 0.375 档误判成附点十六分（两条线加一个点）
 - [x] 弯音轮修正（Pitch Bend 平均偏移 ±0.5 半音以上修正音高）
-- [x] **和弦检测**：自动识别伴奏轨和弦进行（C/Am/G7 等9种类型）；按「和声窗」而不是整小节判定（4/4 半小节、6/8 附点四分、3/4 整小节），`| C  Am |` 这种一小节两个和弦能分别标出，相邻同名自动合并
+- [x] **和弦检测**：自动识别伴奏轨和弦进行（C/Am/G7 等 11 种类型）；按「和声窗」而不是整小节判定（4/4 半小节、6/8 附点四分、3/4 整小节），`| C  Am |` 这种一小节两个和弦能分别标出，相邻同名自动合并
+- [x] **和弦转位与扩充**：同样三个音 C E G，E 在低音时是 `C/E`——音级集合完全相同，**转位只能由最低音判定**，低音落在和弦外（经过音 / 持续音）时则老实写 `C`，不硬凑斜杠；和弦类型在原有 9 种之外补上 `Bm7b5`（半减七）与 `G7sus4`（挂四七），文本 / HTML / MusicXML 三层同步
 - [x] **HTML 谱面导出**：自包含网页，浏览器打开即可打印 PDF，含和弦标记、小节号、和弦竖向叠写；小节号/力度/速度独占标记行，和弦则挂在它管的那个音符正上方（标记行是从左往右排的，写在那里会被别的标记顶偏），三层互不侵入
-- [x] **MusicXML 导出**：`--musicxml out.xml`，符合 3.1 规范（整数 `duration`、`<chord/>`、`<tie>` 跨小节延音、正确 `<fifths>`/`<clef>`/速度标记）；配合 `--lyrics` 还会写出 `<lyric>`（syllabic begin/middle/end）与一字多音的 `<slur>`，导进 MuseScore 有词可看
+- [x] **MusicXML 导出**：`--musicxml out.xml`，符合 3.1 规范（整数 `duration`、`<chord/>`、`<tie>` 跨小节延音、正确 `<fifths>`/`<clef>`/速度标记、和弦 `<harmony>` 含 `<root>`/`<kind>`/`<bass>`）；配合 `--lyrics` 还会写出 `<lyric>`（syllabic begin/middle/end）与一字多音的 `<slur>`，导进 MuseScore 有词可看、和弦符号也能显示
 - [x] **歌词写入**：`--lyrics lyrics.lrc` 支持 LRC 格式，按时间戳精确对齐；一行词跨多小节、旋律音数多于字数（一字多音）时按行内音数铺开，不会全挤在第一小节，并在这些音上方画出连音线弧线
 - [x] **LRC 按变速分段对齐**：`[mm:ss.xx]` 是真实秒，新的 `TempoTimeline` 按 `set_tempo` map 逐段反解成 tick，变速曲目的后半段歌词不再整体错位（120→60 BPM 时旧版能差出整整一小节）；同时支持 `[offset:±毫秒]` 整体平移与一行多个时间戳（副歌重复句），CLI / 网页版 / HTML / MusicXML 共用同一个解析器
 - [x] 文本输出到文件：`--output out.txt`（含和弦标记）
@@ -52,7 +53,7 @@
 - [x] `--version` 打印版本号
 - [x] **在线 Demo**：WASM 核心，浏览器内运行 C++ 代码
 - [x] **减时线按拍连通**：一拍内的八分/十六分音符共用一条横线（十六分再叠平行线），而不是每个音各画一小段；和弦的减时线只画在最下面那个音上
-- [x] 343 项单元测试 + 23 组端到端冒烟测试 + WASM 产物一致性检查
+- [x] 352 项单元测试 + 24 组端到端冒烟测试 + WASM 产物一致性检查
 
 ## 在线 Demo 功能
 
@@ -324,13 +325,26 @@ Krumhansl-Schmuckler 用七声大/小调轮廓打分。纯五声旋律 `C D E G 
 
 `--no-dynamics`（网页上是「力度与演奏法」复选框）让整张表情图为空，但事件表本身保留，调性与旋律轨判定不受影响。**没有任何表情数据的文件输出不变**：真实人声曲目《蝶衣碎雪》带 LRC 回归的 MusicXML 逐字节一致，HTML 谱面内容也逐字节一致（仅内联 CSS 多了几条定义）。
 
+## 和弦怎么标
+
+和弦由伴奏轨按和声窗统计音级后匹配模板（旋律轨自带经过音，不参与）。三和弦与七和弦的差别是「特征音在不在场」，转位则完全由低音决定——`C E G` 和 `E G C` 的音级集合一模一样，谱面却必须一个是 `C`、一个是 `C/E`。
+
+| 现象 | 处理 |
+| --- | --- |
+| 低音是和弦音但不是根音 | 写斜杠 `C/E` / `G/B`，MusicXML 写 `<bass>` |
+| 低音是和弦外音（经过音 / 持续音） | 不写斜杠。低音只是路过，硬凑成 `C/F` 反而是错的 |
+| 多出 b5 或「挂四 + 小七」 | `Bm7b5` / `G7sus4`；只有特征音真在场才升格，否则仍是三和弦 |
+| 低音在独立的贝斯轨上 | 照常参与判定——低音常常根本不在钢琴轨里 |
+
+MusicXML 的 `<kind>` 用标准值（`major` / `half-diminished` / `suspended-fourth`…），显示后缀走 `text` 属性，于是 MuseScore 既能正确识别语义，又能原样显示 `m7b5` / `7sus4` 这种简写。
+
 ## 技术选型
 
 - 核心：**C++17**，手写 SMF 二进制解析，无第三方库依赖，便于编译成 WASM
 - 调性识别：**Krumhansl-Schmuckler** 算法（音乐信息检索标准）；无调号时再由**宫商角徵羽五声调式**判定校正宫音
-- 和弦检测：按和声窗（半小节 / 附点四分 / 整小节）统计音级频率，匹配 9 种和弦类型
+- 和弦检测：按和声窗（半小节 / 附点四分 / 整小节）统计音级频率，匹配 11 种和弦类型，低音决定转位
 - 输出：文本 + 自包含 HTML（内联 CSS）+ MusicXML 3.1
-- 测试：内置断言 343 项单元测试，另有 `tests/smoke.py` 23 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`、声部乐器标注 + 倚音混合素材 `parts.mid`）
+- 测试：内置断言 352 项单元测试，另有 `tests/smoke.py` 24 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`、声部乐器标注 + 倚音混合素材 `parts.mid`、和弦转位 + 七和弦素材 `chords.mid`）
 
 ## 路线图
 
@@ -354,6 +368,7 @@ Krumhansl-Schmuckler 用七声大/小调轮廓打分。纯五声旋律 `C D E G 
 - [x] 五声音阶／民族调式宫音判定：`detectPentatonic` + `keyFromGong`，KS 误判的宫音自动校正，三个输出层与网页同步；新增 `pentatonic.mid`（宫/商/角/徵/羽 + 六声偏音 + 七声对照组）
 - [x] LRC 时间轴接入 tempo map：抽出 `TempoTimeline`，变速歌词的秒→tick 逐段反解，补 `[offset:]` 与多时间戳；新增 `tempolrc.mid` + 3 份 LRC 对照素材
 - [x] 力度与演奏法：抽出 `ExpressionMap`，把已解析但闲置的 CC11 / note-on velocity / 弯音 / `0x06` marker 统一判定后同步写进文本 / HTML / MusicXML，补 CLI 与网页开关、播放力度；新增 `expression.mid` 混合压力素材，真实人声曲目零回归
+- [x] 和弦转位与扩充：按和声窗最低音判定 `C/E` 转位，补 `Bm7b5` / `G7sus4` 两类常用和弦，MusicXML 写出 `<harmony>`（root / kind / bass）；新增 `chords.mid` 素材，真实曲目零回归
 
 ## 为什么开源
 
@@ -371,7 +386,7 @@ Issue / PR 都欢迎。尤其欢迎：
 提交前请跑一遍：
 
 ```bash
-cd build && ctest --output-on-failure                  # 343 项单元测试
+cd build && ctest --output-on-failure                  # 352 项单元测试
 python tests/smoke.py build/Release/midi2jianpu.exe    # 端到端冒烟（含鼓轨场景）
 node tests/wasm_smoke.mjs                              # WASM 产物与源码是否同步
 ```

@@ -590,6 +590,25 @@ if (existsSync(partsPath)) {
   check(false, '素材 parts.mid 存在（先跑 make_fixture.py）');
 }
 
+// ---- 20. 和弦转位 / 七和弦：网页与 MusicXML 导出必须同步 ----
+// 和弦检测在 C++ 里改一次，网页和导出就都得跟着变；这里用 chords.mid 锁住
+// C/E（转位）与 Bm7b5（半减七），避免出现「CLI 有斜杠、网页却没有」的半截状态。
+const chordsPath = path.join(FIXTURES, 'chords.mid');
+if (existsSync(chordsPath)) {
+  const cb = new Uint8Array(readFileSync(chordsPath));
+  const cq = makeCaller(mod);
+  cq.setMidi(cb);
+  const ch = cq.call('midi2jianpu_html', -1, 1) || '';
+  check(ch.includes('C/E') && ch.includes('Bm7b5') && ch.includes('G7sus4'),
+    'WASM HTML 写出转位 C/E 与扩充和弦', ch.slice(0, 200));
+  const cxml = cq.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(cxml.includes('<harmony>') && cxml.includes('<bass-step>E</bass-step>') &&
+        cxml.includes('text="m7b5"'),
+    'WASM MusicXML 写出 <harmony> 与转位低音', cxml.slice(0, 300));
+} else {
+  check(false, '素材 chords.mid 存在（先跑 make_fixture.py）');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

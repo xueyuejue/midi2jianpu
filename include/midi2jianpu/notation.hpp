@@ -227,9 +227,17 @@ LyricAssignment resolveLyrics(const MidiData& data,
                               int mainTrack);
 
 // 和弦标记
+//
+// name 是谱面显示用的字符串（文本 / HTML 直接印它）；其余三个字段是给
+// MusicXML 的 <harmony> 用的结构化信息——把「显示名」反解析成根音/类型
+// 既脆弱又要把 m7b5、C/E 这类写法再拆一遍，不如在检测时就一并给出。
 struct ChordMark {
-    long startTick;
-    std::string name;  // 如 "C", "Am", "G7"
+    long startTick = 0;
+    std::string name;            // 如 "C", "Am", "G7", "C/E", "Bm7b5"
+    int rootPc = -1;             // 根音音级 0..11（绝对音高），-1 = 未知
+    std::string kind;            // MusicXML <kind> 标准值，如 "major" / "half-diminished"
+    std::string kindText;        // <kind text="..."> 的显示后缀，如 "m7b5" / "7sus4"
+    int bassPc = -1;             // 转位低音音级，-1 = 原位（或低音不是和弦音）
 };
 
 // 单条轨道的特征，供旋律轨判定使用

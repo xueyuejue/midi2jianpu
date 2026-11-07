@@ -1680,23 +1680,43 @@ std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key
         return bs + (local / w) * w;
     };
 
-    std::map<long, std::map<int, int>> winPitch;  // 窗口起点 -> 音级 -> 次数
+    // 每个和声窗既要统计音级，也要记住「最低音」——转位（C/E、G/B）只能由
+    // 低音判定：C E G 三个音无论怎么排列，音级集合都一样，只有最低音能说明
+    // 作曲家把哪个音放在低音部。低音常常来自独立的贝斯轨，所以这里把所有
+    // 非旋律轨的音一起收进来，跟和弦音的统计口径保持一致。
+    struct WinInfo {
+        std::map<int, int> pitchCount;  // 音级 -> 次数
+        int lowestPitch = 1000;         // 窗口内最低的 MIDI 音高
+    };
+    std::map<long, WinInfo> winInfo;  // 窗口起点 -> 统计
     for (const auto& note : data.notes) {
         if (note.track == mainTrack) continue;
-        winPitch[windowOf(note.startTicks)][note.pitch % 12]++;
+        int pc = note.pitch % 12;
+        if (pc < 0) pc += 12;
+        WinInfo& w = winInfo[windowOf(note.startTicks)];
+        w.pitchCount[pc]++;
+        if (note.pitch < w.lowestPitch) w.lowestPitch = note.pitch;
     }
 
-    struct ChordType { const char* suffix; std::vector<int> intervals; };
+    struct ChordType {
+        const char* suffix;
+        std::vector<int> intervals;
+        const char* kind;   // MusicXML <kind> 的标准取值
+    };
+    // 顺序有讲究：同分时先命中者胜，所以三和弦排在七和弦之前，
+    // 只有在第三个音之外还多出一个「特征音」时才会升格成七和弦。
     const std::vector<ChordType> chordTypes = {
-        {"",     {0, 4, 7}},      // 大三和弦
-        {"m",    {0, 3, 7}},      // 小三和弦
-        {"7",    {0, 4, 7, 10}},  // 属七和弦
-        {"m7",   {0, 3, 7, 10}},  // 小七和弦
-        {"maj7", {0, 4, 7, 11}},  // 大七和弦
-        {"dim",  {0, 3, 6}},      // 减三和弦
-        {"aug",  {0, 4, 8}},      // 增三和弦
-        {"sus4", {0, 5, 7}},      // 挂四和弦
-        {"sus2", {0, 2, 7}},      // 挂二和弦
+        {"",      {0, 4, 7},     "major"},              // 大三和弦
+        {"m",     {0, 3, 7},     "minor"},              // 小三和弦
+        {"7",     {0, 4, 7, 10}, "dominant"},           // 属七和弦
+        {"m7",    {0, 3, 7, 10}, "minor-seventh"},      // 小七和弦
+        {"maj7",  {0, 4, 7, 11}, "major-seventh"},      // 大七和弦
+        {"dim",   {0, 3, 6},     "diminished"},         // 减三和弦
+        {"aug",   {0, 4, 8},     "augmented"},          // 增三和弦
+        {"sus4",  {0, 5, 7},     "suspended-fourth"},   // 挂四和弦
+        {"sus2",  {0, 2, 7},     "suspended-second"},   // 挂二和弦
+        {"m7b5",  {0, 3, 6, 10}, "half-diminished"},    // 半减七（Bm7b5）
+        {"7sus4", {0, 5, 7, 10}, "suspended-fourth"},   // 挂四七（G7sus4）
     };
 
     static const char* NOTE_NAMES_SHARP[12] = {
@@ -1708,40 +1728,69 @@ std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key
         "Gb", "G", "Ab", "A", "Bb", "B"
     };
 
-    // 单个窗口里最可能的和弦；证据不足时返回空串
-    auto bestChordOf = [&](const std::map<int, int>& pitchCount,
-                           const char* const* names) -> std::string {
-        if (pitchCount.size() < 2) return std::string();   // 只有一个音级不构成和弦
+    // 单个窗口里最可能的和弦；证据不足时返回空 Pick（root < 0）。
+    // 打分仍是「和弦各音出现次数之和」，4 音和弦只有在三个音都在场、
+    // 且多出的那个特征音也真出现时才压过同根音的三和弦。
+    struct Pick { int root = -1; int type = -1; int score = 0; };
+    auto bestPickOf = [&](const std::map<int, int>& pitchCount) -> Pick {
+        if (pitchCount.size() < 2) return Pick{};   // 只有一个音级不构成和弦
 
-        std::string best;
-        int bestScore = 0;
+        Pick best;
         for (const auto& kv : pitchCount) {
             const int root = kv.first;
-            for (const auto& ct : chordTypes) {
+            for (size_t ti = 0; ti < chordTypes.size(); ti++) {
                 int score = 0;
                 bool allPresent = true;
-                for (int interval : ct.intervals) {
+                for (int interval : chordTypes[ti].intervals) {
                     auto f = pitchCount.find((root + interval) % 12);
                     if (f == pitchCount.end()) { allPresent = false; break; }
                     score += f->second;
                 }
-                if (allPresent && score > bestScore) {
-                    bestScore = score;
-                    best = names[root] + std::string(ct.suffix);
+                if (allPresent && score > best.score) {
+                    best = Pick{root, (int)ti, score};
                 }
             }
         }
-        return bestScore >= 3 ? best : std::string();
+        return best.score >= 3 ? best : Pick{};
     };
 
     // 相邻同名合并。空窗口不改 prevName，所以「C · 空 · C」不会标两次。
     std::string prevName;
-    for (const auto& kv : winPitch) {
+    for (const auto& kv : winInfo) {
+        const WinInfo& wi = kv.second;
+        const Pick pick = bestPickOf(wi.pitchCount);
+        if (pick.root < 0) continue;
+
         const char* const* names = prefersFlats(keys.at(kv.first))
                                  ? NOTE_NAMES_FLAT : NOTE_NAMES_SHARP;
-        std::string name = bestChordOf(kv.second, names);
-        if (name.empty() || name == prevName) continue;
-        chords.push_back({kv.first, name});
+        const ChordType& ct = chordTypes[pick.type];
+
+        std::string name = std::string(names[pick.root]) + ct.suffix;
+        int bassPc = -1;
+        // 转位：最低音是「和弦音」但不是根音时写成 C/E。低音落在和弦外
+        // （经过音、持续音）时不写斜杠——那不是转位，写出来反而是错的。
+        if (wi.lowestPitch < 1000) {
+            int bp = wi.lowestPitch % 12;
+            if (bp < 0) bp += 12;
+            bool isChordTone = false;
+            for (int interval : ct.intervals)
+                if ((pick.root + interval) % 12 == bp) { isChordTone = true; break; }
+            if (isChordTone && bp != pick.root) {
+                bassPc = bp;
+                name += "/";
+                name += names[bp];
+            }
+        }
+
+        if (name == prevName) continue;
+        ChordMark cm;
+        cm.startTick = kv.first;
+        cm.name = name;
+        cm.rootPc = pick.root;
+        cm.kind = ct.kind;
+        cm.kindText = ct.suffix;
+        cm.bassPc = bassPc;
+        chords.push_back(std::move(cm));
         prevName = name;
     }
     return chords;

@@ -903,6 +903,42 @@ def main():
         check("(7,)1" not in out3 and "(6,)1" not in out3,
               "普通等间隔旋律不被误标倚音", out3[:500])
 
+    # ---- [24] 和弦转位 + 七和弦扩充 + MusicXML 和弦符号 ----
+    # chords.mid 的四个和声窗：C/E（转位）、Bm7b5（半减七）、G7sus4（挂四七）、
+    # 原位 C。转位只能由低音判定——音级集合完全相同，谱面却必须写 C/E。
+    print("\n[24] 和弦转位 + 七和弦扩充 + MusicXML 和弦符号")
+    import xml.etree.ElementTree as ETch
+    cmid = os.path.join(FIXTURES, "chords.mid")
+    if not os.path.exists(cmid):
+        check(False, "素材 chords.mid 存在（先跑 make_fixture.py）")
+    else:
+        rc, out, err = run(exe, cmid)
+        check(rc == 0, "带转位和弦的 MIDI 能正常转换", err[:200])
+        check("[C/E]" in out, "E 在低音时标出 C/E 转位", out[:400])
+        check("[Bm7b5]" in out, "半减七标出 Bm7b5", out[:400])
+        check("[G7sus4]" in out, "挂四七标出 G7sus4", out[:400])
+        # 原位 C 不能带斜杠：整份谱里 "[C]" 只出现一次
+        check(out.count("[C]") == 1,
+              f"原位 C 不写斜杠，[C] 实际出现 {out.count('[C]')} 次")
+
+        ch = os.path.join(tmp, "chords.html")
+        cx = os.path.join(tmp, "chords.xml")
+        rc2, _, err2 = run(exe, cmid, "--html", ch, "--musicxml", cx)
+        check(rc2 == 0, "导出 chords.mid 的 HTML / MusicXML", err2[:200])
+        hbody = open(ch, encoding="utf-8").read()
+        check("C/E" in hbody and "Bm7b5" in hbody,
+              "HTML 和弦带同步写出转位与半减七")
+
+        xroot = ETch.parse(cx).getroot()
+        harmonies = list(xroot.iter("harmony"))
+        check(len(harmonies) == 4,
+              f"MusicXML 写出 4 个 <harmony>，实际 {len(harmonies)}")
+        bass = [b.text for b in xroot.iter("bass-step")]
+        check(bass == ["E"], f"转位和弦写出 <bass-step>E</bass-step>，实际 {bass}")
+        kinds = [k.get("text") for k in xroot.iter("kind")]
+        check("m7b5" in kinds and "7sus4" in kinds,
+              f"<kind text> 保留 m7b5 / 7sus4 显示后缀，实际 {kinds}")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")
