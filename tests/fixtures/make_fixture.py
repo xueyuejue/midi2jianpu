@@ -2,15 +2,16 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 16 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 17 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
-tempolrc / expression / parts / chords / tempo_ramp / long_tie
+tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony
 （另配 3 份 LRC 歌词）。
 meter 是把变拍号、变速、鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」，
 modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五声调式
 （C 宫、G 徵调式，故意不写 0x59 逼自动猜调暴露宫音判错），tempo_ramp 用
 每半拍一个 set_tempo 复刻 DAW 的渐快 / 渐慢曲线，long_tie 则是 6 拍 / 10 拍
-长音跨小节，外加一条每小节一个 4 拍柱式和弦的钢琴轨。
+长音跨小节，外加一条每小节一个 4 拍柱式和弦的钢琴轨，polyphony 则把钢琴
+左右手放进同一个轨，测「同拍不同值不是和弦而是两个声部」。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -967,6 +968,52 @@ def build_long_tie() -> bytes:
     return header + t0.render() + t1.render() + t2.render()
 
 
+# ---------------------------------------------------------------------------
+# 同轨复调（一条轨里两个声部）素材。
+#
+# 钢琴 MIDI 最常见的形态就是左右手写进同一个轨：右手旋律、左手长音铺底，
+# 两边同时发声、时值还各不相同。若不分声部，长音和短音会被当成「同一拍的
+# 和弦」塞进一格，而 <chord/> 的成员时值不等，小节总时值直接溢出
+# （4/4 写成 8 拍），导出的 MusicXML 是有问题的文件。
+#
+#   bar 0  右手 5 6 7 1'   左手 1,（全音符）
+#   bar 1  右手 2' 3' 4' 5'  左手 2,
+#   bar 2  右手 6'(2) 5'(2)   左手 3, 从第 3 拍起 4 拍，跨到 bar3 第 2 拍
+#   bar 3  - - 4' 3'        左手 5, 从第 3 拍起 2 拍
+#
+# bar2 那个跨小节音同时锁两件事：声部内延音线（<tie>）、以及换声部时的
+# <backup> 不能把上一声部的尾巴吃掉。
+# ---------------------------------------------------------------------------
+def build_polyphony() -> bytes:
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120 BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调
+
+    BAR = DIV * 4
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Piano"))
+    t1.program(0, 0, 0)                                # 钢琴
+    # 右手（高音声部）
+    for i, p in enumerate((72, 74, 76, 77)):
+        t1.note(0, p, 90, i * DIV, DIV)                # bar0
+    for i, p in enumerate((79, 81, 83, 84)):
+        t1.note(0, p, 90, BAR + i * DIV, DIV)          # bar1
+    t1.note(0, 86, 90, 2 * BAR, 2 * DIV)               # bar2
+    t1.note(0, 84, 90, 2 * BAR + 2 * DIV, 2 * DIV)
+    t1.note(0, 83, 90, 3 * BAR + 2 * DIV, DIV)         # bar3 第 3 拍
+    t1.note(0, 81, 90, 3 * BAR + 3 * DIV, DIV)
+    # 左手（低音声部，与右手同时进行）
+    t1.note(0, 48, 70, 0, 4 * DIV)                     # bar0 全音符
+    t1.note(0, 50, 70, BAR, 4 * DIV)                   # bar1
+    t1.note(0, 52, 70, 2 * BAR + 2 * DIV, 4 * DIV)     # bar2 第 3 拍起 4 拍（跨小节）
+    t1.note(0, 55, 70, 3 * BAR + 2 * DIV, 2 * DIV)     # bar3 第 3 拍
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + t1.render()
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -1096,6 +1143,13 @@ def main() -> None:
         tldata = build_long_tie()
         f.write(tldata)
     print(f"wrote {tlmid} ({len(tldata)} bytes)")
+
+    # 同轨复调（双声部）素材
+    tpmid = os.path.join(here, "polyphony.mid")
+    with open(tpmid, "wb") as f:
+        tpdata = build_polyphony()
+        f.write(tpdata)
+    print(f"wrote {tpmid} ({len(tpdata)} bytes)")
 
 
 if __name__ == "__main__":

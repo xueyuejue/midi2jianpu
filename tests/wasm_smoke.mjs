@@ -665,6 +665,48 @@ if (existsSync(longTiePath)) {
   check(false, '素材 long_tie.mid 存在（先跑 make_fixture.py）');
 }
 
+// ---- 23. 同轨复调：一条轨两个声部，网页与 MusicXML 都不让小节溢出 ----
+// polyphony.mid 是钢琴左右手写进同一个轨（右手四分音符 + 左手长音）。
+// 旧版把「同拍不同值」也当和弦，4/4 小节被撑成 8 拍。
+const polyPath = path.join(FIXTURES, 'polyphony.mid');
+if (existsSync(polyPath)) {
+  const pb = new Uint8Array(readFileSync(polyPath));
+  const pq = makeCaller(mod);
+  pq.setMidi(pb);
+
+  const ph = pq.call('midi2jianpu_html', -1, 1) || '';
+  const staffs = (ph.match(/<div class='staff/g) || []).length;
+  check(staffs === 2, `WASM HTML 拆成两块谱面（两个声部），实际 ${staffs}`);
+  check(/声部 2/.test(ph), 'WASM HTML 标题标出声部号');
+
+  const pxml = pq.call('midi2jianpu_musicxml', -1, 1) || '';
+  const backups = (pxml.match(/<backup>/g) || []).length;
+  check(backups === 4, `WASM MusicXML 每个复调小节各一次 <backup>，实际 ${backups}`);
+  check(/<voice>2<\/voice>/.test(pxml), 'WASM MusicXML 写出 <voice>2</voice>');
+
+  // 逐小节核对总时值（<chord/> 不推进，<backup> 回退）
+  const divM = pxml.match(/<divisions>(\d+)<\/divisions>/);
+  const dv = divM ? parseInt(divM[1], 10) : 480;
+  const bodies = pxml.match(/<measure [^>]*>[\s\S]*?<\/measure>/g) || [];
+  const overflow = bodies.filter((body) => {
+    let pos = 0;
+    let mx = 0;
+    const frags = body.match(/<note>[\s\S]*?<\/note>|<backup>[\s\S]*?<\/backup>/g) || [];
+    for (const f of frags) {
+      const dm = f.match(/<duration>(\d+)<\/duration>/);
+      if (!dm) continue;
+      const dur = parseInt(dm[1], 10);
+      if (f.startsWith('<backup>')) pos -= dur;
+      else if (!f.includes('<chord/>')) { pos += dur; mx = Math.max(mx, pos); }
+    }
+    return mx !== 4 * dv;
+  });
+  check(overflow.length === 0,
+    `WASM MusicXML 每个小节正好 4 拍，溢出小节 ${overflow.length} 个`);
+} else {
+  check(false, '素材 polyphony.mid 存在（先跑 make_fixture.py）');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

@@ -4,6 +4,7 @@
 #include <array>
 #include <algorithm>
 #include <cctype>
+#include <climits>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
@@ -655,6 +656,114 @@ std::vector<bool> detectTriplets(const std::vector<NoteEvent>& notes, int divisi
         i += 2;
     }
     return isTriplet;
+}
+
+// 同轨复调拆分。见头文件注释：同拍同值算和弦，其余重叠音分到不同声部。
+std::vector<int> splitVoices(std::vector<NoteEvent>& notes, int maxVoices,
+                             const std::function<bool(const NoteEvent&)>& skip) {
+    std::vector<int> voice(notes.size(), 0);
+    if (notes.empty()) return voice;
+    if (maxVoices < 1) maxVoices = 1;
+
+    // 每个声部的「上一个音」状态：用它判断同拍和弦与是否已经空出来。
+    struct Lane { long start = -1; long end = -1; };
+    std::vector<Lane> lanes;
+
+    std::vector<size_t> order(notes.size());
+    for (size_t i = 0; i < notes.size(); i++) order[i] = i;
+    // 先按音头排，同拍时高音在前 —— 声部号越小越靠上，谱面读起来才顺。
+    std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+        if (notes[a].startTicks != notes[b].startTicks)
+            return notes[a].startTicks < notes[b].startTicks;
+        return notes[a].pitch > notes[b].pitch;
+    });
+
+    for (size_t idx : order) {
+        // 倚音不占独立声部：它只是主音前面的装饰，留在声部 0 里由输出层跳过。
+        if (skip && skip(notes[idx])) { voice[idx] = 0; continue; }
+
+        const long start = notes[idx].startTicks;
+        const long dur = std::max<long>(notes[idx].durationTicks, 1);
+        const long end = start + dur;
+        int chosen = -1;
+
+        // 1. 同拍同值：这是一个真和弦，几个音共用一格，写成 <chord/> 才对。
+        for (size_t v = 0; v < lanes.size(); v++) {
+            if (lanes[v].start == start && lanes[v].end - lanes[v].start == dur) {
+                chosen = (int)v;
+                break;
+            }
+        }
+        // 2. 上一个音已经收尾的声部可以直接接上。
+        if (chosen < 0) {
+            for (size_t v = 0; v < lanes.size(); v++) {
+                if (lanes[v].end <= start) { chosen = (int)v; break; }
+            }
+        }
+        // 3. 都占着：开新声部；到上限就并进最早结束的那个。
+        if (chosen < 0) {
+            if ((int)lanes.size() < maxVoices) {
+                lanes.push_back(Lane());
+                chosen = (int)lanes.size() - 1;
+            } else {
+                size_t best = 0;
+                for (size_t v = 1; v < lanes.size(); v++)
+                    if (lanes[v].end < lanes[best].end) best = v;
+                chosen = (int)best;
+            }
+        }
+
+        voice[idx] = chosen;
+        lanes[chosen].start = start;
+        lanes[chosen].end = std::max(lanes[chosen].end, end);
+    }
+
+    // 合并进同一声部的溢出音可能和里面的音重叠。同声部一旦重叠，输出层就会
+    // 把长音当和弦写、把小节撑爆，所以这里统一收口：
+    //   1. 同拍不同值 -> 全部取最小值，变成时值一致的（真）和弦
+    //   2. 还和后面的音头重叠 -> 截短到下一个音头
+    // 同拍同值的正常和弦不受影响（这一步对它们是无操作）。
+    std::map<int, std::vector<size_t>> byVoice;
+    for (size_t i = 0; i < notes.size(); i++) byVoice[voice[i]].push_back(i);
+    for (auto& kv : byVoice) {
+        auto& v = kv.second;
+        std::stable_sort(v.begin(), v.end(), [&](size_t a, size_t b) {
+            return notes[a].startTicks < notes[b].startTicks;
+        });
+        // 1. 同拍对齐时值
+        for (size_t k = 0; k < v.size();) {
+            size_t j = k;
+            long minDur = LONG_MAX;
+            while (j < v.size() && notes[v[j]].startTicks == notes[v[k]].startTicks) {
+                if (!(skip && skip(notes[v[j]])))
+                    minDur = std::min(minDur, std::max<long>(notes[v[j]].durationTicks, 1));
+                j++;
+            }
+            if (minDur != LONG_MAX) {
+                for (size_t m = k; m < j; m++)
+                    if (!(skip && skip(notes[v[m]])) && notes[v[m]].durationTicks > minDur)
+                        notes[v[m]].durationTicks = minDur;
+            }
+            k = j;
+        }
+        // 2. 截短到下一个（更晚的）音头
+        for (size_t k = 0; k < v.size(); k++) {
+            const size_t i = v[k];
+            if (skip && skip(notes[i])) continue;   // 倚音保持原样
+            long nextStart = LONG_MAX;
+            for (size_t j = k + 1; j < v.size(); j++) {
+                if (notes[v[j]].startTicks > notes[i].startTicks) {
+                    nextStart = notes[v[j]].startTicks;
+                    break;
+                }
+            }
+            if (nextStart == LONG_MAX) continue;
+            const long end = notes[i].startTicks + notes[i].durationTicks;
+            if (end > nextStart)
+                notes[i].durationTicks = std::max<long>(1, nextStart - notes[i].startTicks);
+        }
+    }
+    return voice;
 }
 
 // 实质性的拍号变化：排序、去掉多轨重复声明、去掉与当前生效拍号相同的事件。
@@ -1317,22 +1426,58 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
         chordByBar[c.startTick] = c.name;
     }
 
+    // 同轨复调：一条轨常常同时装着两个声部（钢琴左右手写在同一个轨里、
+    // 伴奏垫在人声轨下面）。简谱一行写不下两个声部，所以按声部拆成独立的
+    // 谱行。单声部轨（绝大多数文件）走原样，输出与旧版逐字一致。
+    struct PartView {
+        int track = 0;
+        int voice = 0;
+        int voiceCount = 1;
+        std::vector<NoteEvent> notes;
+    };
+    std::vector<PartView> partViews;
     for (auto& [t, ns] : byTrack) {
-        bool isMain = (t == mainTrack);
+        const std::vector<int> vo = splitVoices(
+            ns, 3, [&](const NoteEvent& n) { return expr.isGraceNote(n.startTicks, n.channel); });
+        int voiceCount = 0;
+        for (int v : vo) voiceCount = std::max(voiceCount, v + 1);
+        if (voiceCount <= 1) {
+            partViews.push_back({t, 0, 1, std::move(ns)});
+            continue;
+        }
+        for (int v = 0; v < voiceCount; v++) {
+            PartView pv;
+            pv.track = t;
+            pv.voice = v;
+            pv.voiceCount = voiceCount;
+            for (size_t i = 0; i < ns.size(); i++)
+                if (vo[i] == v) pv.notes.push_back(ns[i]);
+            if (!pv.notes.empty()) partViews.push_back(std::move(pv));
+        }
+    }
+
+    for (const auto& pv : partViews) {
+        const int t = pv.track;
+        const auto& ns = pv.notes;
+        // 旋律声部的「主要那条」才挂和弦与歌词：第二个声部跟着标一遍只是噪音。
+        const bool isMain = (t == mainTrack && pv.voice == 0);
+        // 轨名按「轨」判定，不按声部：否则主旋律的第二声部会被叫成「伴奏轨0」。
+        const bool isMainTrack = (t == mainTrack);
         std::string label;
         auto it = data.trackNames.find(t);
         if (it != data.trackNames.end() && !it->second.empty()) {
             label = it->second;
         } else {
-            label = isMain ? "旋律轨" : "伴奏轨" + std::to_string(t);
+            label = isMainTrack ? "旋律轨" : "伴奏轨" + std::to_string(t);
         }
+        if (pv.voiceCount > 1)
+            label += " · 声部" + std::to_string(pv.voice + 1);
         os << "[" << label << "] (" << ns.size() << " 音符)";
-        if (t == mainTrack && !chordByBar.empty()) {
+        if (isMain && !chordByBar.empty()) {
             os << " · 和弦: " << distinctChordCount(chordByBar) << " 个";
         }
         os << "\n";
-        os << formatTrack(ns, keys, data, expr,
-                          (t == mainTrack) ? &chordByBar : nullptr);
+        os << formatTrack(ns, keys, data, expr, isMain ? &chordByBar : nullptr);
     }
     return os.str();
 }

@@ -253,11 +253,43 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
     // 下面画连音线、写歌词字都只读这份结果。
     if (mainTrack >= 0) lyrics = resolveLyrics(data, lyricLines, mainTrack);
 
+    // 同轨复调：一条轨常常同时装着两个声部（钢琴左右手写在同一轨、伴奏垫在
+    // 人声轨下面）。简谱一行写不下两个声部，所以按声部拆成独立谱行；
+    // 单声部轨（绝大多数文件）与旧版输出逐字节一致。
+    struct PartView {
+        int track = 0;
+        int voice = 0;
+        int voiceCount = 1;
+        std::vector<NoteEvent> notes;
+    };
+    std::vector<PartView> parts;
     for (auto& [t, ns] : byTrack) {
-        const bool isMain = (t == mainTrack);
+        const std::vector<int> vo = splitVoices(
+            ns, 3, [&](const NoteEvent& n) { return expr.isGraceNote(n.startTicks, n.channel); });
+        int voiceCount = 0;
+        for (int v : vo) voiceCount = std::max(voiceCount, v + 1);
+        if (voiceCount <= 1) {
+            parts.push_back({t, 0, 1, std::move(ns)});
+            continue;
+        }
+        for (int v = 0; v < voiceCount; v++) {
+            PartView pv;
+            pv.track = t;
+            pv.voice = v;
+            pv.voiceCount = voiceCount;
+            for (size_t i = 0; i < ns.size(); i++)
+                if (vo[i] == v) pv.notes.push_back(ns[i]);
+            if (!pv.notes.empty()) parts.push_back(std::move(pv));
+        }
+    }
+
+    for (size_t pi = 0; pi < parts.size(); pi++) {
+        const int t = parts[pi].track;
+        const auto& ns = parts[pi].notes;
+        const bool isMain = (t == mainTrack && parts[pi].voice == 0);
         // 速度标记属于整份谱，只在第一行谱上印一次。每轨都印一遍是噪音，
         // 而且同一页上会出现好几个一模一样的 ♩=90。
-        const bool showTempo = (t == byTrack.begin()->first);
+        const bool showTempo = (pi == 0);
 
         // ---- 同音合并：连续同音且首尾相接时并成一个长音 ----
         // 不合并的话同音重复会被画成 `5 - 5 -`，而简谱规范应写成 `5 - - -`。
@@ -298,7 +330,11 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         body << "<div class='track'><h3>";
         auto it = data.trackNames.find(t);
         if (it != data.trackNames.end() && !it->second.empty()) body << htmlEscape(it->second);
-        else body << (isMain ? "旋律轨" : "伴奏轨 " + std::to_string(t));
+        else body << ((t == mainTrack) ? "旋律轨" : "伴奏轨 " + std::to_string(t));
+        // 复调轨按声部拆成多行：标题要标清楚这是第几声部，否则同一轨名
+        // 连着出现三四次，读者会以为是导出错了。
+        if (parts[pi].voiceCount > 1)
+            body << " <span class='voiceTag'>声部 " << (parts[pi].voice + 1) << "</span>";
         body << " <small>(" << merged.size() << " 音符)</small></h3><div class='staff"
              << (hasSlur ? " hasslur" : "") << "'><div class='row'>";
 
@@ -752,6 +788,8 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
    这里不是节奏变了、而是整段唱名换了。 */
 .keychg{font-size:11px;font-weight:700;color:#7a3f7d;line-height:1;
         border:1px solid #e0cbe1;border-radius:3px;padding:1px 4px;background:#fbf5fb}
+/* 复调轨按声部拆行时的小标签：同一条轨会连着出现好几行，靠它区分 */
+.voiceTag{font-size:12px;font-weight:400;color:#6b7a8d;margin-left:2px}
 
 /* 和弦标记：浮在它所管的那个音符上方，不占宽度。
    位置必须跟音符走——标记行是从左往右排的，一旦前面多了一个速度标记，
