@@ -64,10 +64,9 @@ def main() -> int:
         print("[安装] %-16s = %s" % (key, value))
 
     # 4) 顺手自查一遍历史，确认这台机器拿到的副本是干净的。
-    result = run("python" if sys.platform == "win32" else "python3",
-                 checker, "--history", check=False)
-    if result.returncode != 0:
-        result = run(sys.executable, checker, "--history", check=False)
+    # 用当前解释器而不是硬编码 python / python3：另一台机器可能只装了 py，
+    # 或者把解释器放在非标准路径，脚本照样能跑。
+    result = run(sys.executable, checker, "--history", check=False)
     print(result.stdout.strip() or result.stderr.strip())
     print("[安装] 完成。之后每次 git commit 都会自动校验提交信息。")
     if result.returncode != 0:
