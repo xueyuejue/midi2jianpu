@@ -165,6 +165,19 @@ int midi2jianpu_tempo_change_count(const uint8_t* midiData, int size) {
     return m2j::tempoChangeCount(data);
 }
 
+// 其中有多少处是渐快 / 渐慢（而不是阶跃变速）。
+//
+// 网页要解释一件事：一段 rit. 在 MIDI 里往往是几十个连续的 set_tempo，
+// 谱面上却只标一个「rit. 120→60」。不说明的话用户会以为漏了速度数据。
+int midi2jianpu_tempo_ramp_count(const uint8_t* midiData, int size) {
+    m2j::MidiData data;
+    if (!m2j::loadMidiFromMemory(midiData, size, data)) return 0;
+    int n = 0;
+    for (const auto& m : m2j::tempoMarksOf(data))
+        if (m.kind != m2j::TempoMarkKind::Step) n++;
+    return n;
+}
+
 // 网页版「力度与演奏法」开关：0 = 谱面只留音符，非 0 = 写出表情（默认）。
 void midi2jianpu_set_use_dynamics(int on) {
     g_useDynamics = (on != 0);

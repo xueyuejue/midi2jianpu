@@ -2,12 +2,13 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 14 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 15 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
-tempolrc / expression / parts / chords（另配 3 份 LRC 歌词）。
+tempolrc / expression / parts / chords / tempo_ramp（另配 3 份 LRC 歌词）。
 meter 是把变拍号、变速、鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」，
 modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五声调式
-（C 宫、G 徵调式，故意不写 0x59 逼自动猜调暴露宫音判错）。
+（C 宫、G 徵调式，故意不写 0x59 逼自动猜调暴露宫音判错），tempo_ramp 用
+每半拍一个 set_tempo 复刻 DAW 的渐快 / 渐慢曲线。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -845,6 +846,59 @@ def build_chords() -> bytes:
     return header + t0.render() + t1.render() + t2.render()
 
 
+# ---------------------------------------------------------------------------
+# 渐快 / 渐慢（tempo ramp）素材。
+#
+# DAW 里的 rit. 不是一条曲线，而是几十个连续的 set_tempo 事件。这份素材就是
+# 按 DAW 的真实写法造的：每半拍一个自动化节点，一段 accel. 13 个点、一段
+# rit. 13 个点，中间夹一段恒定速度，最后阶跃回到 120。
+#
+#   tick        事件
+#   0           ♩=100            曲首速度
+#   1920..4800  accel 100→140    每 240 tick 一个点（13 个）
+#   4800..5760  停留在 140
+#   5760..8640  rit 140→80       每 240 tick 一个点（13 个）
+#   8640..13440 停留在 80
+#   13440       ♩=120            a tempo（阶跃，不是渐变）
+#
+# 期望：叠成 4 个记号（♩=100 / accel. 100→140 / rit. 140→80 / ♩=120）。
+# 旧版会把 28 个点全当变速列出来，页眉挤满「(第2小节) → (第2小节) → …」。
+# ---------------------------------------------------------------------------
+def build_tempo_ramp() -> bytes:
+    def us(bpm: float) -> bytes:
+        micro = int(round(60000000.0 / bpm))
+        return bytes([(micro >> 16) & 0xFF, (micro >> 8) & 0xFF, micro & 0xFF])
+
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调
+
+    def ramp(start: int, end: int, bpm_from: float, bpm_to: float) -> None:
+        """每半拍一个自动化节点，与 DAW 画速度曲线时写出的东西一致。"""
+        steps = (end - start) // 240
+        for k in range(steps + 1):
+            bpm = bpm_from + (bpm_to - bpm_from) * k / steps
+            t0.add(start + k * 240, meta(0x51, us(bpm)))
+
+    t0.add(0, meta(0x51, us(100)))                     # 曲首 100
+    ramp(1920, 4800, 100.0, 140.0)                     # 渐快
+    ramp(5760, 8640, 140.0, 80.0)                      # 渐慢
+    t0.add(13440, meta(0x51, us(120)))                 # a tempo（阶跃）
+
+    # 旋律：32 个四分音符（8 小节），C 大调音阶往返，便于肉眼核对小节号
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    t1.program(0, 73, 0)
+    scale = [60, 62, 64, 65, 67, 69, 71, 72]
+    for i in range(32):
+        oct_up = 12 if (i // 8) % 2 else 0
+        t1.note(0, scale[i % 8] + oct_up, 90, i * DIV, DIV)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + t1.render()
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -960,6 +1014,13 @@ def main() -> None:
         cdata = build_chords()
         f.write(cdata)
     print(f"wrote {cmid} ({len(cdata)} bytes)")
+
+    # 渐快 / 渐慢（连续 set_tempo 折叠）素材
+    rmid = os.path.join(here, "tempo_ramp.mid")
+    with open(rmid, "wb") as f:
+        rdata = build_tempo_ramp()
+        f.write(rdata)
+    print(f"wrote {rmid} ({len(rdata)} bytes)")
 
 
 if __name__ == "__main__":

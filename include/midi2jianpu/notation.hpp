@@ -146,7 +146,48 @@ std::vector<LyricLine> parseLrcLines(const std::string& lrcPath, const MidiData&
 std::vector<LyricLine> parseLrcText(const std::string& lrc, const MidiData& data);
 
 // 实质变速点数（供 CLI / 网页提示「LRC 已按 N 处变速分段对齐」）。
+// 走 tempoMarksOf 的折叠结果，所以一段渐慢只算一处，不是几十处。
 int tempoChangeCount(const MidiData& data);
+
+// ---- 速度标记（渐快渐慢的折叠）----
+//
+// DAW 里的渐慢 / 渐快在 MIDI 里不是一条曲线，而是**几十个连续的 set_tempo
+// 事件**（自动化节点通常每 1/16 ~ 1 拍一个）。这些点对时间轴换算是必需的
+// ——TempoTimeline 全靠它们才能算准秒数——但**不能一个个写进谱面**：
+//
+//   - 旧页眉取前 5 个变化点，一段渐慢直接变成
+//     「♩=120 → 120(第3小节) → 116(第3小节) → 113(第3小节) → …」，
+//     五条全指同一小节，读者拿不到任何信息；
+//   - HTML 每个小节起点采样一次速度，渐慢段每小节都冒出一个 ♩=，
+//     满屏都是没有意义的数字；
+//   - MusicXML 反过来只在「tick 正好等于小节线」时才写 <metronome>，
+//     而渐变节点几乎不可能落在小节线上，于是整段渐慢在导出的谱里**彻底消失**。
+//
+// 乐谱的正确写法只有一个记号：`rit.` / `accel.`。所以这里把事件序列收敛成
+// 「谱面上该有的那几个记号」，时间轴仍用原始事件表精确换算。这就是本项目
+// 一贯的分层：事件表是播放的真相，输出层只挑该显示的。
+enum class TempoMarkKind {
+    Step,          // 阶跃变速：♩=90
+    Accelerando,   // 渐快：accel. A→B
+    Ritardando,    // 渐慢：rit. A→B
+};
+
+struct TempoMark {
+    long tick = 0;        // 生效位置（渐变取第一个节点的 tick）
+    long endTick = 0;     // 渐变结束 tick；Step 时等于 tick
+    int bpm = 0;          // 起点速度
+    int toBpm = 0;        // 终点速度；Step 时等于 bpm
+    TempoMarkKind kind = TempoMarkKind::Step;
+    int pointCount = 1;   // 由多少个 set_tempo 事件收敛而来（供测试与诊断）
+};
+
+// 把 set_tempo 序列折叠成谱面标记。判据：
+//   - 相邻两点间隔 <= 1 拍（division tick）算同一次速度变化；
+//   - 一簇里 >=3 点、单调、且总跨度 >= 5% 才算渐变（渐快 / 渐慢）；
+//   - 其余（单点阶跃、两点、来回抖动、跨度太小）一律退化成 Step 取簇末速度
+//     ——宁可写成 `♩=N` 也不要给谱面撒一个假的 rit.。
+// 曲首速度恒为独立的 Step，所以「从头开始渐慢」会得到 ♩=120 + rit. 120→60。
+std::vector<TempoMark> tempoMarksOf(const MidiData& data);
 
 // ---- 歌词对齐结果 ----
 // 一个字落在哪个音上、以及它「唱」了几个音。noteCount >= 2 就是一字多音
