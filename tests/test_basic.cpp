@@ -842,9 +842,25 @@ int main() {
                                       [](const NoteEvent& x) { return x.track == 2; }),
                        d3.notes.end());
         check(midiLyricTrack(d3) == -1, "只有一条有音符的轨时不采信歌词轨号");
+        // 歌词分散到多轨：不再一律放弃，而是取音节最多的那条（这里 4:1），
+        // 被忽略的轨数 / 音节数要如实记下来，供页眉说明。
         MidiData d4 = d;
         d4.midiLyrics[1].track = 2;
-        check(midiLyricTrack(d4) == -1, "歌词分散在多轨时不采信歌词轨号");
+        const LyricTrackPick p4 = pickMidiLyricTrack(d4);
+        check(p4.track == 1 && p4.syllables == 4 &&
+                  p4.droppedTracks == 1 && p4.droppedSyllables == 1,
+              "多轨歌词取音节最多的一轨，实际: 轨 " + std::to_string(p4.track) +
+                  " / " + std::to_string(p4.syllables) + " 音节 / 丢弃 " +
+                  std::to_string(p4.droppedTracks) + " 轨 " +
+                  std::to_string(p4.droppedSyllables) + " 音节");
+        check(midiLyricTrack(d4) == 1, "被采信的歌词轨仍须有音符");
+        check(droppedLyricNote(d4).find("另 1 轨的 1 个音节已忽略") != std::string::npos,
+              "忽略提示可读，实际: " + droppedLyricNote(d4));
+        check(droppedLyricNote(d).empty(), "只有一条歌词轨时不提示忽略");
+        check(normalizeMidiLyrics(d4).size() == 5 - 1,
+              "规整结果只含被采信那条轨的 4 个音节");
+        check(lyricSourceLabel(d4, nullptr).find("另 1 轨") != std::string::npos,
+              "页眉的歌词来源也带上忽略说明");
 
         MidiData d5;
         d5.midiLyrics = {{0, "  ", 1}, {0, "- -", 1}, {0, "/", 1}, {0, "！", 1}};
@@ -2203,6 +2219,164 @@ int main() {
         loadMidiFromMemory(f1.data(), f1.size(), m1);
         check(m1.notes.size() == 2, "format 1 的两个声部都保留");
         check(formatLabel(m1).empty(), "format 1 不输出独立序列说明");
+    }
+
+    // ---- 事件流对齐：0xA0 复音触后是 3 字节事件 ----
+    {
+        std::cout << "\n测试事件流对齐：0xA0 复音触后\n";
+        // 复音触后（状态 + 音高 + 压力）。旧实现落到兜底分支只跳 1 字节，
+        // 每遇到一个就与事件流错位，一条 16 个音的轨最后连一个音都提不出来。
+        const int mel[16] = {60, 62, 64, 65, 67, 69, 71, 72,
+                             72, 71, 69, 67, 65, 64, 62, 60};
+        SmfTrack cond, voc;
+        cond.at(0, ev({0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20}));
+        cond.at(0, ev({0xFF, 0x58, 0x04, 4, 2, 24, 8}));
+        for (int i = 0; i < 16; i++) {
+            voc.at(i * 480, ev({0x90, mel[i], 96}));
+            voc.at(i * 480 + 240, ev({0xA0, mel[i], 0x50}));   // 3 字节
+            voc.at(i * 480 + 480, ev({0x80, mel[i], 0x40}));
+        }
+        auto pat = buildSmf(2, 480, {cond, voc});
+        MidiData mp;
+        check(loadMidiFromMemory(pat.data(), pat.size(), mp), "含复音触后的文件解析成功");
+        check(mp.notes.size() == 16,
+              "16 个音符一个不少，实际: " + std::to_string(mp.notes.size()));
+        bool durOk = true;
+        for (const auto& n : mp.notes) if (n.durationTicks != 480) durOk = false;
+        check(durOk, "触后事件没有吃掉时值（每个音仍是 1 拍）");
+
+        const std::string jp = formatJianpu(mp, estimateKey(mp));
+        size_t bars = 0;
+        for (char c : jp) if (c == '|') bars++;
+        check(bars == 4, "16 拍仍划成 4 小节，实际小节线: " + std::to_string(bars));
+
+        // 通道触后 0xD0 只有 1 个数据字节，别和 0xA0 一起写错
+        SmfTrack at;
+        at.at(0, ev({0x90, 60, 96}));
+        at.at(240, ev({0xD0, 0x40}));
+        at.at(480, ev({0x80, 60, 0x40}));
+        auto p2 = buildSmf(1, 480, {at});
+        MidiData m2;
+        loadMidiFromMemory(p2.data(), p2.size(), m2);
+        check(m2.notes.size() == 1 && m2.notes[0].durationTicks == 480,
+              "0xD0 通道触后按 1 字节跳过，时值不受影响");
+    }
+
+    // ---- 音符配对：同音重触发与轨尾悬挂音 ----
+    {
+        std::cout << "\n测试音符配对：重触发 / 悬挂音\n";
+        const int mel[16] = {60, 62, 64, 65, 67, 69, 71, 72,
+                             72, 71, 69, 67, 65, 64, 62, 60};
+        // 同一个键还没抬手就又按下：旧实现覆盖 active 表项，前一个音凭空消失
+        SmfTrack voc;
+        voc.at(0, ev({0x90, 60, 96}));
+        voc.at(480, ev({0x90, 60, 64}));     // 重触发，前一个音没有 note-off
+        voc.at(960, ev({0x80, 60, 0x40}));
+        for (int i = 0; i < 14; i++) {
+            voc.at((i + 2) * 480, ev({0x90, 60 + i, 96}));
+            voc.at((i + 3) * 480, ev({0x80, 60 + i, 0x40}));
+        }
+        auto r1 = buildSmf(1, 480, {voc});
+        MidiData mr;
+        loadMidiFromMemory(r1.data(), r1.size(), mr);
+        check(mr.notes.size() == 16,
+              "重触发不吞音，16 个音符都在，实际: " + std::to_string(mr.notes.size()));
+        long firstDur = -1, secondStart = -1;
+        int secondVel = -1;
+        for (const auto& n : mr.notes) {
+            if (n.pitch != 60) continue;
+            if (n.startTicks == 0) firstDur = n.durationTicks;
+            if (n.startTicks == 480) { secondStart = n.startTicks; secondVel = n.velocity; }
+        }
+        check(firstDur == 480, "前一个音在重触发点收尾（1 拍），实际: " +
+                                   std::to_string(firstDur));
+        check(secondStart == 480 && secondVel == 64,
+              "后一个音从重触发点起算，力度用新值，实际力度: " +
+                  std::to_string(secondVel));
+
+        // 同一 tick 重复按下：前一个音长 0，应直接换掉而不是留下零长音符
+        SmfTrack same;
+        same.at(0, ev({0x90, 62, 96}));
+        same.at(0, ev({0x90, 62, 80}));
+        same.at(480, ev({0x80, 62, 0x40}));
+        auto r2 = buildSmf(1, 480, {same});
+        MidiData ms;
+        loadMidiFromMemory(r2.data(), r2.size(), ms);
+        check(ms.notes.size() == 1 && ms.notes[0].durationTicks == 480,
+              "同一 tick 重复按下只留一个音（不产生零长音符）");
+
+        // 轨结束时还按着没抬手：旧实现整条丢掉，还会把调性带偏
+        SmfTrack dang;
+        for (int i = 0; i < 15; i++) {
+            dang.at(i * 480, ev({0x90, mel[i], 96}));
+            dang.at((i + 1) * 480, ev({0x80, mel[i], 0x40}));
+        }
+        dang.at(15 * 480, ev({0x90, mel[15], 96}));       // 只按不抬
+        dang.at(16 * 480, ev({0xFF, 0x01, 0x03, 0x65, 0x6E, 0x64}));   // "end"
+        auto r3 = buildSmf(1, 480, {dang});
+        MidiData mg;
+        loadMidiFromMemory(r3.data(), r3.size(), mg);
+        check(mg.notes.size() == 16,
+              "轨尾悬挂音补收，16 个音符都在，实际: " + std::to_string(mg.notes.size()));
+        long tailDur = -1;
+        for (const auto& n : mg.notes) if (n.startTicks == 15 * 480) tailDur = n.durationTicks;
+        check(tailDur == 480, "悬挂音收到本轨最后一个事件（1 拍），实际: " +
+                                  std::to_string(tailDur));
+        check(estimateKey(mg).tonicPitchClass == 0,
+              "少一个音也不再把 C 大调带偏，实际主音: " +
+                  std::to_string(estimateKey(mg).tonicPitchClass));
+    }
+
+    // ---- 多轨歌词：只取音节最多的一条 ----
+    {
+        std::cout << "\n测试多轨歌词：只取一条\n";
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        NoteEvent n;
+        n.track = 1; n.channel = 0; n.durationTicks = 480;
+        for (int i = 0; i < 8; i++) {
+            n.startTicks = (long)i * 480;
+            n.pitch = 60 + i;
+            d.notes.push_back(n);
+        }
+        const char* verse1[10] = {"春","眠","不","觉","晓","处","处","闻","啼","鸟"};
+        const char* verse2[10] = {"夜","来","风","雨","声","花","落","知","多","少"};
+        for (int i = 0; i < 10; i++) {
+            d.midiLyrics.push_back({(long)i * 480, verse1[i], 1});
+            // 第二段词错开半拍：直接按 tick 合并会得到「春夜来风雨声花落」
+            d.midiLyrics.push_back({(long)i * 480 + 240, verse2[i], 2});
+        }
+        const LyricTrackPick pv = pickMidiLyricTrack(d);
+        check(pv.track == 1 && pv.syllables == 10 &&
+                  pv.droppedTracks == 1 && pv.droppedSyllables == 10,
+              "取第 1 轨的 10 个音节、忽略第 2 轨的 10 个，实际: 轨 " +
+                  std::to_string(pv.track) + " / " +
+                  std::to_string(pv.syllables) + " / " +
+                  std::to_string(pv.droppedSyllables));
+        std::string joined;
+        for (const auto& sy : normalizeMidiLyrics(d)) joined += sy.text;
+        check(joined == "春眠不觉晓处处闻啼鸟",
+              "歌词不再两段交错，实际: " + joined);
+        // 歌词轨要有音符、且文件里不止一条有声轨才可信（format 0 的轨号没意义）
+        MidiData dTwo = d;
+        NoteEvent acc;
+        acc.track = 2; acc.channel = 1; acc.durationTicks = 1920;
+        acc.startTicks = 0;
+        acc.pitch = 48;
+        dTwo.notes.push_back(acc);
+        check(midiLyricTrack(dTwo) == 1, "采信的歌词轨参与旋律轨判定");
+        check(midiLyricTrack(d) == -1, "只有一条有声轨时仍不采信歌词轨号");
+
+        // 伴奏轨拿 0x05 存和弦名时，音节更少的那条被丢掉
+        MidiData c2 = d;
+        c2.midiLyrics.clear();
+        for (int i = 0; i < 10; i++)
+            c2.midiLyrics.push_back({(long)i * 480, verse1[i], 1});
+        for (int bar = 0; bar < 2; bar++)
+            c2.midiLyrics.push_back({(long)bar * 1920, "C", 2});
+        check(pickMidiLyricTrack(c2).track == 1, "和弦名轨（音节少）被忽略");
+        check(pickMidiLyricTrack(MidiData{}).track == -1, "没有歌词事件时取轨结果为 -1");
     }
 
     std::cout << "\n------------------------------------------------\n";

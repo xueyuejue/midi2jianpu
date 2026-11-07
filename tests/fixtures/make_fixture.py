@@ -2,10 +2,10 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 19 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 23 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
-smpte / format2
+smpte / format2 / aftertouch / retrigger / dangling / twolyrics
 （另配 3 份 LRC 歌词）。
 meter 是把变拍号、变速、鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」，
 modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五声调式
@@ -14,6 +14,9 @@ modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五
 长音跨小节，外加一条每小节一个 4 拍柱式和弦的钢琴轨，polyphony 则把钢琴
 左右手放进同一个轨，测「同拍不同值不是和弦而是两个声部」。smpte 是
 SMPTE 时间基准（0xE728 = 25fps×40），format2 则是两条互不相干的独立序列。
+aftertouch 在每个音中间插 0xA0（3 字节事件，读错就整轨崩），retrigger 是同音
+还没抬手又按下，dangling 是轨尾只按不抬的悬挂音，twolyrics 则把两段词放在两条
+轨上（错开半拍，合并成一行就是乱码）。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -1064,6 +1067,107 @@ def build_format2() -> bytes:
     return header + a.render() + b.render()
 
 
+MELODY = (60, 62, 64, 65, 67, 69, 71, 72, 72, 71, 69, 67, 65, 64, 62, 60)
+
+
+def build_aftertouch() -> bytes:
+    """复音触后（0xA0）素材：每个音中间插一个 3 字节的触后事件。
+
+    0xA0 是「状态 + 音高 + 压力」，旧实现落到兜底分支只跳 1 字节，遇到第一个
+    触后事件就和事件流错位，16 个音的轨最后连一个音都提不出来（连「只有鼓轨」
+    的误报都不是，直接报「未提取到音符」）。1000 tick 一个音，4 小节 4/4。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 500000us -> 120BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Aftertouch Vocal"))
+    for i, p in enumerate(MELODY):
+        t1.note(0, p, 96, i * DIV, DIV)
+        t1.add(i * DIV + DIV // 2, bytes([0xA0, p, 0x50]))
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + t1.render()
+
+
+def build_retrigger() -> bytes:
+    """同音重触发素材：一个键还没抬手就又按下。
+
+    第 1 拍按下 C4 之后，第 2 拍又按了一次 C4（前一个音没有 note-off），
+    直到第 3 拍才抬手。旧实现用 active[key] 覆盖，第一个 C4 凭空消失，
+    8 个音只剩 7 个；现在前一个音在重触发点收尾，两个音都在。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Retrig Vocal"))
+    t1.add(0, bytes([0x90, 60, 96]))
+    t1.add(DIV, bytes([0x90, 60, 64]))            # 重触发，前一个音没有 note-off
+    t1.add(DIV * 2, bytes([0x80, 60, 0x40]))
+    for i, p in enumerate((64, 65, 67, 69, 71, 72)):
+        t1.note(0, p, 96, (i + 2) * DIV, DIV)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + t1.render()
+
+
+def build_dangling() -> bytes:
+    """轨尾悬挂音素材：最后一个音只按不抬，轨就结束了。
+
+    旧实现把还按着的音整条丢掉：16 个音的 C 大调音阶只剩 15 个，少掉的那个
+    C 还让调性被猜成 F / D 小调。现在按本轨最后一个事件补收。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    # 故意不写 0x59 调号：少掉的那个音过去会把自动猜调带偏成 F / D 小调，
+    # 写了调号就掩盖了这个问题。
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Dangling Vocal"))
+    for i in range(15):
+        t1.note(0, MELODY[i], 96, i * DIV, DIV)
+    t1.add(15 * DIV, bytes([0x90, MELODY[15], 96]))    # 只按不抬
+    t1.add(16 * DIV, meta(0x01, b"end"))               # 轨尾，没有 note-off
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + t1.render()
+
+
+def build_twolyrics() -> bytes:
+    """双歌词轨素材：第一段词、第二段词各占一条轨。
+
+    第二段词错开半拍（卡拉 OK 文件里两段词的时间本来就不重合）。旧实现按 tick
+    把所有轨的 0x05 合并成一行，得到「春夜来风雨声花落」这种交错乱码，音节数
+    也从 10 变成 20。现在只取音节最多的那条轨，其余整轨忽略。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Melody"))
+    for i, p in enumerate(MELODY[:8]):
+        t1.note(0, p, 96, i * DIV, DIV)
+    for i, ch in enumerate("春眠不觉晓处处闻啼鸟"):
+        t1.add(i * DIV, meta(0x05, ch.encode("utf-8")))
+
+    t2 = Track()
+    t2.add(0, meta(0x03, b"Lyric2"))
+    for i, ch in enumerate("夜来风雨声花落知多少"):
+        t2.add(i * DIV + DIV // 2, meta(0x05, ch.encode("utf-8")))
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 3, DIV)
+    return header + t0.render() + t1.render() + t2.render()
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -1214,6 +1318,34 @@ def main() -> None:
         f2data = build_format2()
         f.write(f2data)
     print(f"wrote {f2mid} ({len(f2data)} bytes)")
+
+    # 复音触后（0xA0）素材
+    atmid = os.path.join(here, "aftertouch.mid")
+    with open(atmid, "wb") as f:
+        atdata = build_aftertouch()
+        f.write(atdata)
+    print(f"wrote {atmid} ({len(atdata)} bytes)")
+
+    # 同音重触发素材
+    rtmid = os.path.join(here, "retrigger.mid")
+    with open(rtmid, "wb") as f:
+        rtdata = build_retrigger()
+        f.write(rtdata)
+    print(f"wrote {rtmid} ({len(rtdata)} bytes)")
+
+    # 轨尾悬挂音素材
+    dgmid = os.path.join(here, "dangling.mid")
+    with open(dgmid, "wb") as f:
+        dgdata = build_dangling()
+        f.write(dgdata)
+    print(f"wrote {dgmid} ({len(dgdata)} bytes)")
+
+    # 双歌词轨素材
+    tlmid = os.path.join(here, "twolyrics.mid")
+    with open(tlmid, "wb") as f:
+        tldata = build_twolyrics()
+        f.write(tldata)
+    print(f"wrote {tlmid} ({len(tldata)} bytes)")
 
 
 if __name__ == "__main__":

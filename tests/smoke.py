@@ -1202,6 +1202,112 @@ def main():
             fbad.append(tot)
     check(not fbad, f"每小节正好 4 拍，实际 {fbad[:3]}")
 
+    print("\n[30] 复音触后 0xA0：3 字节事件不能读错")
+    at = os.path.join(FIXTURES, "aftertouch.mid")
+    if not os.path.exists(at):
+        check(False, "素材 aftertouch.mid 存在（先跑 make_fixture.py）")
+    else:
+        rc, out, err = run(exe, at)
+        check(rc == 0, "含复音触后的文件能正常转换", err[:200])
+        check("未提取到音符" not in out,
+              "不再因为事件流错位报「未提取到音符」")
+        check("16 个音符" in out, "16 个音符一个不少")
+        body = out.split("---")[-1]
+        check(body.count("|") == 4, f"16 拍划成 4 小节，实际小节线 {body.count('|')}")
+        check("声部2" not in out, "时值没被吃掉，不会拆出假声部")
+
+        ax = os.path.join(tmp, "aftertouch.xml")
+        rc, _, err = run(exe, at, "--musicxml", ax)
+        check(rc == 0, "含复音触后的文件导出 MusicXML", err[:200])
+        axml = open(ax, encoding="utf-8").read()
+        adiv = int(re.search(r"<divisions>(\d+)</divisions>", axml).group(1))
+        check(axml.count("<measure ") == 4,
+              f"MusicXML 四个小节，实际 {axml.count(chr(60) + 'measure ')}")
+        abad = []
+        for mbody in re.findall(r"<measure [^>]*>(.*?)</measure>", axml, re.S):
+            tot = sum(int(d) for d in re.findall(r"<duration>(\d+)</duration>", mbody)
+                      if "<chord/>" not in mbody)
+            if tot != 4 * adiv:
+                abad.append(tot)
+        check(not abad, f"每小节正好 4 拍，实际 {abad[:3]}")
+
+    print("\n[31] 同音重触发：一个键没抬手又按下")
+    rt = os.path.join(FIXTURES, "retrigger.mid")
+    if not os.path.exists(rt):
+        check(False, "素材 retrigger.mid 存在（先跑 make_fixture.py）")
+    else:
+        rc, out, err = run(exe, rt)
+        check(rc == 0, "同音重触发的文件能正常转换", err[:200])
+        check("8 个音符" in out and "7 个音符" not in out,
+              "前一个音没被覆盖掉（8 个而不是 7 个）")
+        body = out.split("---")[-1]
+        # 两个 C4 首尾相接，谱面应写成「1 -」而不是只剩一个「1」
+        check("1 - 3 4" in body, "重触发的两个 C4 合成延音（1 -），音高不丢",
+              body.splitlines()[1] if len(body.splitlines()) > 1 else body)
+
+        rx = os.path.join(tmp, "retrigger.xml")
+        rc, _, err = run(exe, rt, "--musicxml", rx)
+        check(rc == 0, "同音重触发导出 MusicXML", err[:200])
+        rxml = open(rx, encoding="utf-8").read()
+        # 重触发是两次发声，MusicXML 里就该是两个四分音符（简谱那一侧把相邻
+        # 同音合并成「1 -」是显示上的简化，不代表只按了一次）
+        cc4 = rxml.count("<step>C</step><octave>4</octave>")
+        check(cc4 == 2, f"两个 C4 都写进了 MusicXML，实际 {cc4} 个")
+        rdurs = [sum(int(d) for d in re.findall(r"<duration>(\d+)</duration>", mb))
+                 for mb in re.findall(r"<measure [^>]*>(.*?)</measure>", rxml, re.S)]
+        check(rdurs == [1920, 1920], f"每小节仍是 4 拍，实际 {rdurs}")
+        check(rxml.count("<measure ") == 2,
+              f"MusicXML 两个小节，实际 {rxml.count(chr(60) + 'measure ')}")
+
+    print("\n[32] 轨尾悬挂音：只按不抬的音不能丢")
+    dg = os.path.join(FIXTURES, "dangling.mid")
+    if not os.path.exists(dg):
+        check(False, "素材 dangling.mid 存在（先跑 make_fixture.py）")
+    else:
+        rc, out, err = run(exe, dg)
+        check(rc == 0, "悬挂音的文件能正常转换", err[:200])
+        check("16 个音符" in out and "15 个音符" not in out,
+              "轨尾悬挂音被补收（16 个而不是 15 个）")
+        check("1=C 大调" in out, "少一个音不再把调性带偏成 F / D 小调")
+        check("弱起" not in out, "也不再误判出「弱起 3 拍」")
+        dx = os.path.join(tmp, "dangling.xml")
+        rc, _, err = run(exe, dg, "--musicxml", dx)
+        check(rc == 0, "悬挂音导出 MusicXML", err[:200])
+        dxml = open(dx, encoding="utf-8").read()
+        check(dxml.count("<measure ") == 4,
+              f"MusicXML 四个小节，实际 {dxml.count(chr(60) + 'measure ')}")
+
+    print("\n[33] 双歌词轨：只取音节最多的一条")
+    tl = os.path.join(FIXTURES, "twolyrics.mid")
+    if not os.path.exists(tl):
+        check(False, "素材 twolyrics.mid 存在（先跑 make_fixture.py）")
+    else:
+        rc, out, err = run(exe, tl)
+        check(rc == 0, "双歌词轨的文件能正常转换", err[:200])
+        check("10 个音节" in out and "20 个音节" not in out,
+              "只算被采信那条轨的 10 个音节")
+        check("另 1 轨的 10 个音节已忽略" in out, "控制台说明忽略了另一条轨")
+        tlh = os.path.join(tmp, "twolyrics.html")
+        rc, _, err = run(exe, tl, "--html", tlh)
+        check(rc == 0, "双歌词轨导出 HTML", err[:200])
+        th = open(tlh, encoding="utf-8").read()
+        check("歌词：MIDI 内置（10 音节，另 1 轨的 10 个音节已忽略）" in th,
+              "页眉的歌词来源也带上忽略说明")
+        words = [w for w in re.findall(r"<span class='lyric'>([^<]*)</span>", th) if w]
+        check(words == list("春眠不觉晓处处闻"),
+              "只剩第一段词，没有和第二段交错", "".join(words))
+        check("夜" not in "".join(words), "第二段词（夜来风雨声…）没混进来")
+
+        tlx = os.path.join(tmp, "twolyrics.xml")
+        rc, _, err = run(exe, tl, "--musicxml", tlx)
+        check(rc == 0, "双歌词轨导出 MusicXML", err[:200])
+        import xml.etree.ElementTree as ET5
+        root5 = ET5.fromstring(open(tlx, encoding="utf-8").read())
+        texts = [n.findtext("lyric/text") for n in root5.iter("note")
+                 if n.find("lyric") is not None and n.findtext("lyric/text")]
+        check("".join(texts) == "春眠不觉晓处处闻",
+              "MusicXML 歌词同样只剩第一段", str(texts))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

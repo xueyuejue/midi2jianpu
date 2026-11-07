@@ -269,6 +269,23 @@ struct MidiSyllable {
 // 标点与空白不占音节。同 tick 的多个事件合成一批，共享 spanEnd。
 std::vector<MidiSyllable> normalizeMidiLyrics(const MidiData& data);
 
+// 0x05 歌词分散在多轨时的取用结果。
+//
+// 一个文件里出现两条歌词轨是常事：卡拉 OK 文件把第一段词、第二段词各放一轨；
+// 也有伴奏轨拿 0x05 存和弦名。旧实现按 tick 把所有轨的事件合并成一行，得到
+// 「春夜来风雨声花落」这种交错乱码，音节数还会翻倍。现在只取有效音节最多的
+// 那一条轨（并列时取轨号小的），其余整轨忽略并记下丢了多少。
+struct LyricTrackPick {
+    int track = -1;            // 实际取用的轨；-1 = 没有可用歌词
+    int syllables = 0;         // 该轨的有效音节数
+    int droppedTracks = 0;     // 被忽略的其它歌词轨数
+    int droppedSyllables = 0;  // 被忽略的音节数
+};
+LyricTrackPick pickMidiLyricTrack(const MidiData& data);
+
+// 「（另 1 轨的 10 个音节已忽略）」，没有可忽略的轨时返回空串。
+std::string droppedLyricNote(const MidiData& data);
+
 // 按精确 tick 对齐：一批音节吸附到 [tick, spanEnd) 内真实存在的旋律音头，
 // 单音节批次就覆盖整段（这正是一字多音），多字批次在段内均分。
 LyricAssignment assignMidiLyrics(const MidiData& data, int mainTrack);

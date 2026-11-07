@@ -2175,13 +2175,12 @@ static std::vector<std::string> splitMidiSyllables(const std::string& s) {
     return out;
 }
 
-std::vector<MidiSyllable> normalizeMidiLyrics(const MidiData& data) {
+// 规整「单条轨」上的 0x05 事件。normalizeMidiLyrics 拿它的结果，
+// pickMidiLyricTrack 只借用它数音节——两条通路共用一个规整口径，
+// 否则「哪条轨音节多」的判断会和实际印出来的字对不上。
+static std::vector<MidiSyllable> normalizeLyricEvents(std::vector<const LyricEvent*> evs) {
     std::vector<MidiSyllable> out;
-    if (data.midiLyrics.empty()) return out;
-
-    std::vector<const LyricEvent*> evs;
-    evs.reserve(data.midiLyrics.size());
-    for (const auto& e : data.midiLyrics) evs.push_back(&e);
+    if (evs.empty()) return out;
     // 稳定排序：同一 tick 上多个事件的先后由文件顺序决定，不能打乱歌词次序
     std::stable_sort(evs.begin(), evs.end(),
                      [](const LyricEvent* a, const LyricEvent* b) { return a->tick < b->tick; });
@@ -2231,6 +2230,47 @@ std::vector<MidiSyllable> normalizeMidiLyrics(const MidiData& data) {
             out.push_back({batches[i].tick, s, right});
     }
     return out;
+}
+
+LyricTrackPick pickMidiLyricTrack(const MidiData& data) {
+    LyricTrackPick pick;
+    if (data.midiLyrics.empty()) return pick;
+    std::map<int, std::vector<const LyricEvent*>> byTrack;
+    for (const auto& e : data.midiLyrics) byTrack[e.track].push_back(&e);
+
+    std::vector<std::pair<int, int>> counts;
+    for (const auto& kv : byTrack) {
+        const int n = (int)normalizeLyricEvents(kv.second).size();
+        counts.push_back({kv.first, n});
+        // std::map 按轨号升序，用严格大于比较，并列时自然保住轨号小的那条
+        if (n > pick.syllables) { pick.syllables = n; pick.track = kv.first; }
+    }
+    if (pick.track < 0 || pick.syllables == 0) return LyricTrackPick{};
+    for (const auto& c : counts) {
+        if (c.first == pick.track || c.second <= 0) continue;
+        pick.droppedTracks++;
+        pick.droppedSyllables += c.second;
+    }
+    return pick;
+}
+
+std::string droppedLyricNote(const MidiData& data) {
+    const LyricTrackPick pick = pickMidiLyricTrack(data);
+    if (pick.droppedTracks <= 0) return std::string();
+    return "，另 " + std::to_string(pick.droppedTracks) + " 轨的 " +
+           std::to_string(pick.droppedSyllables) + " 个音节已忽略";
+}
+
+std::vector<MidiSyllable> normalizeMidiLyrics(const MidiData& data) {
+    if (data.midiLyrics.empty()) return std::vector<MidiSyllable>();
+    // 多轨歌词只取一条：两段词各占一轨时合并会把两段词交错成乱码
+    const LyricTrackPick pick = pickMidiLyricTrack(data);
+    if (pick.track < 0) return std::vector<MidiSyllable>();
+    std::vector<const LyricEvent*> evs;
+    evs.reserve(data.midiLyrics.size());
+    for (const auto& e : data.midiLyrics)
+        if (e.track == pick.track) evs.push_back(&e);
+    return normalizeLyricEvents(std::move(evs));
 }
 
 LyricAssignment assignMidiLyrics(const MidiData& data, int mainTrack) {
@@ -2300,15 +2340,16 @@ LyricAssignment assignMidiLyrics(const MidiData& data, int mainTrack) {
 int midiLyricTrack(const MidiData& data) {
     // 只有元数据 / 延续符的文件（例如拿 0x05 存段落标记）没有可唱音节，
     // 这种「歌词轨」不能拿来给旋律轨加分。
-    if (normalizeMidiLyrics(data).empty()) return -1;
+    const LyricTrackPick pick = pickMidiLyricTrack(data);
+    if (pick.track < 0) return -1;
     std::set<int> noteTracks;
     for (const auto& n : data.notes) noteTracks.insert(n.track);
     // format 0 只有一条轨，歌词轨号不携带任何信息
     if (noteTracks.size() < 2) return -1;
-    const int t = data.midiLyrics.front().track;
-    if (t < 0 || !noteTracks.count(t)) return -1;
-    for (const auto& e : data.midiLyrics) if (e.track != t) return -1;
-    return t;
+    // 歌词分散在多轨时以前一律返回 -1（怕认错轨），现在 pickMidiLyricTrack
+    // 已经定下「实际唱的是哪条」，只要那条轨真有音符就敢用。
+    if (!noteTracks.count(pick.track)) return -1;
+    return pick.track;
 }
 
 LyricSource lyricSourceOf(const MidiData& data, const std::vector<LyricLine>* external) {
@@ -2323,7 +2364,8 @@ std::string lyricSourceLabel(const MidiData& data,
         case LyricSource::External: return "歌词：外部 LRC";
         case LyricSource::Midi:
             return "歌词：MIDI 内置（" +
-                   std::to_string(normalizeMidiLyrics(data).size()) + " 音节）";
+                   std::to_string(pickMidiLyricTrack(data).syllables) + " 音节" +
+                   droppedLyricNote(data) + "）";
         default: return std::string();
     }
 }

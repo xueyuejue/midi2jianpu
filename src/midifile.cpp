@@ -279,6 +279,27 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
     // value = (note-on tick, velocity)。力度要跟着音符走，演奏法分析要用。
     std::unordered_map<uint64_t, std::pair<long, int>> active;
 
+    // 把一个按下的音在 endTick 收尾。key 里已经带了 通道/音高/轨号
+    // （见下面的拼法），所以这里不必再传一遍。
+    auto flushNote = [&](uint64_t key, long endTick) {
+        auto it = active.find(key);
+        if (it == active.end()) return;
+        NoteEvent ne;
+        ne.startTicks = it->second.first;
+        ne.durationTicks = endTick - it->second.first;
+        // 轨尾悬挂音的起点可能正好落在最后一个事件上，给一个最小的十六分音符，
+        // 免得时值 0 被下游量化当成「不存在的音」再丢一次。
+        const long floorDur = (out.division > 0 ? out.division / 4 : 1);
+        if (ne.durationTicks < 1) ne.durationTicks = floorDur;
+        ne.velocity = it->second.second;
+        ne.rawDurationTicks = ne.durationTicks;
+        ne.pitch = (int)((key >> 8) & 0xFFu);
+        ne.channel = (int)((key >> 24) & 0x0Fu);
+        ne.track = (int)(key & 0xFFu);
+        out.notes.push_back(ne);
+        active.erase(it);
+    };
+
     // ---- 逐轨 ----
     while (pos + 8 <= size && std::memcmp(d + pos, "MTrk", 4) == 0) {
         pos += 4;
@@ -318,21 +339,20 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                     uint64_t key = ((uint64_t)channel << 24) |
                                    ((uint64_t)note << 8) | (uint64_t)trackIdx;
                     if (type == 0x90u && vel > 0) {
-                        active[key] = {absTick, (int)vel};
-                    } else {
+                        // 同一个键还没抬手就又按下（重复触键、转录软件、踏板踩法
+                        // 都会这样）：旧实现用 active[key] = ... 直接覆盖，前一个
+                        // 音凭空消失，调性判断也跟着少一个音。现在把它收到此刻，
+                        // 再以新力度重新起音。
                         auto it = active.find(key);
                         if (it != active.end()) {
-                            NoteEvent ne;
-                            ne.startTicks = it->second.first;
-                            ne.durationTicks = absTick - it->second.first;
-                            ne.velocity = it->second.second;
-                            ne.rawDurationTicks = ne.durationTicks;
-                            ne.pitch = note;
-                            ne.channel = channel;
-                            ne.track = trackIdx;
-                            out.notes.push_back(ne);
-                            active.erase(it);
+                            // 同一 tick 重复按下只是重复通知，前一个音时长为 0，
+                            // 直接换掉；凭空补一个十六分音符反而会多出一个音。
+                            if (absTick > it->second.first) flushNote(key, absTick);
+                            else active.erase(it);
                         }
+                        active[key] = {absTick, (int)vel};
+                    } else {
+                        flushNote(key, absTick);
                     }
                 }
             } else if (status == 0xFFu) {
@@ -419,13 +439,30 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                 // 笛子/二胡/钢琴」这种对读谱极有用的信息被丢掉了；现在按通道
                 // 记下来，输出层据此给每条声部标出乐器名。
                 if (channel < 16) out.channelProgram[(int)channel] = (int)d[pos++];
-            } else if (type == 0xD0u) {  // 通道触后（无数据字节外的 1 字节）
+            } else if (type == 0xA0u) {
+                // 复音触后：状态 + 音高 + 压力 = 3 字节。旧实现落到末尾的
+                // 兜底 pos += 1，每遇到一个就少读一个字节，事件流从那里开始
+                // 整体错位——一条 16 个音的轨最后连一个音都提取不出来。
+                // 简谱没有触后记号，正确跳过即可。
+                pos += 2;
+            } else if (type == 0xD0u) {   // 通道触后：只有 1 个数据字节
                 pos += 1;
+            } else if (status == 0xF1u || status == 0xF3u) {
+                pos += 1;                 // MTC quarter frame / song select
+            } else if (status == 0xF2u) {
+                pos += 2;                 // song position pointer
+            } else if (status >= 0xF6u) {
+                // 0xF6 起是系统实时消息，没有数据字节；按 1 字节跳过会把后面
+                // 的 delta 时间一起吃掉。
             } else {
                 pos += 1;
             }
         }
         pos = trkEnd;
+        // 轨结束了还按着没抬手的音：旧实现整条丢掉（开头那个探针里少掉的
+        // 音甚至把调性从 C 大调带偏成 F / D 小调）。按本轨最后一个事件的
+        // 位置收尾。
+        while (!active.empty()) flushNote(active.begin()->first, absTick);
         trackIdx++;
     }
 

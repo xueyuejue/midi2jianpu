@@ -33,7 +33,7 @@ cmake --build build --config Release
 
 ## 测试
 
-### 单元测试（420 项）
+### 单元测试（443 项）
 
 ```bash
 cd build && ctest --output-on-failure
@@ -41,7 +41,7 @@ cd build && ctest --output-on-failure
 ./build/test_basic
 ```
 
-成功时输出 `共 420 项，失败 0 项 -> 全部通过`。
+成功时输出 `共 443 项，失败 0 项 -> 全部通过`。
 
 覆盖范围：调性识别、各调八度基准、升降号书写（含降号调）、时值后缀、三连音、同音合并、和弦检测、移调、MusicXML 小节时长与 `<chord/>`，以及十六组解析层回归——**鼓轨过滤**、**旋律轨判定**、**变速 tempo map 秒数换算**、**弱起小节网格**、**歌词分配与一字多音区间**、**MIDI 内置歌词规整与精确对齐**、**拍号 map 与逐小节网格**、**调号 map（中途转调 / KeyMap）**、**五声调式宫音判定**、**TempoTimeline 与 LRC 变速对齐（tick/秒往返、乱序去重、offset、多时间戳、旧签名对照）**、**ExpressionMap 演奏表情（力度六档 / 渐变 / 断奏 / 重音 / 滑音 / 颤音 / 段落 / 通道隔离 / 开关 / 节奏混合时不误判）与解析层 velocity、原始时值、多轨事件排序**、**GM 音色名（英文全名 / 中文译名覆盖）、`0xC0` 解析（通道 → GM 音色号）、声部乐器标注 `listParts` / `partSummary`、倚音检测与通道隔离、无 0xC0 / 等间隔流零标注回归**、**和弦转位（低音非根音才写斜杠 / 和弦外音不写）、`Bm7b5` 与 `G7sus4` 的类型扩充、`ChordMark` 的结构化字段（rootPc / kind / kindText / bassPc）**、**速度曲线折叠（`tempoMarksOf`：渐变 / 阶跃 / 抖动退化 / 5% 跨度阈值 / 一拍聚簇阈值 / 曲首独立阶跃 / 页眉文案）**、**长音跨小节（6 拍 / 10 拍时值不被截断、延音段写成 `-` 而非休止符、复调轨 4 拍和弦不被门限放大、断奏轨门限还原仍生效）**、**同轨复调（`splitVoices`：同拍同值算和弦 / 同拍不同值拆声部 / 重叠拆声部 / 超上限退化并截短 / 倚音 skip）、复调 MusicXML 的 `<backup>` 与逐小节时值守恒、单声部零 `<backup>` 回归**（都在内存里现构造最小 SMF，不依赖 fixture 文件）。
 
@@ -50,7 +50,7 @@ cd build && ctest --output-on-failure
 需要 Python 3（只用标准库）：
 
 ```bash
-python tests/fixtures/make_fixture.py     # 生成 19 份 .mid 素材（含 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony / smpte / format2）+ 3 份变速 LRC
+python tests/fixtures/make_fixture.py     # 生成 23 份 .mid 素材（含 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony / smpte / format2 / aftertouch / retrigger / dangling / twolyrics）+ 3 份变速 LRC
 python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2jianpu.exe
 ```
 
@@ -97,6 +97,25 @@ tick/frame，即 1000 tick/秒），曲首 120BPM 使一拍正好 500 tick，共
 SongB（2 小节 8 音），彼此无关。断言覆盖默认只转 SongA（16 个音符、不含
 `[SongB]`）、`format2SequenceCount == 2`、`--track 1` 能取到 SongB（8 个音符）、
 `keepAllFormat2` 时保留全部 24 个音符，以及 MusicXML 只写 4 个小节且每小节 4 拍。
+
+`aftertouch.mid` 是**复音触后素材**：16 个音每个都在中间插一个 `0xA0`（状态 + 音高
++ 压力 = 3 字节）。断言覆盖 16 个音符一个不少、时值不被吃掉、仍是 4 小节，另有
+`0xD0`（通道触后，1 字节）的对照用例。旧版遇到第一个 `0xA0` 就与事件流错位，整条轨
+报「未提取到音符」。
+
+`retrigger.mid` 是**同音重触发素材**：第 1 拍按下 C4 后，第 2 拍又按一次 C4（前一个
+音没有 note-off），第 3 拍才抬手。断言覆盖 8 个音符都在、前一个音在重触发点收尾
+（1 拍）、后一个音用新力度 64、MusicXML 里两个 C4 各写一个四分音符且每小节 4 拍；
+另有「同一 tick 重复按下只留一个音」的用例。
+
+`dangling.mid` 是**轨尾悬挂音素材**：16 个音的 C 大调音阶，最后一个只按不抬，轨就以
+一个 text 事件结束。断言覆盖 16 个音符、悬挂音收到本轨最后一个事件（1 拍）、
+`estimateKey()` 主音仍是 C（旧版被带偏成 F / D 小调，还多判一个「弱起 3 拍」）。
+
+`twolyrics.mid` 是**双歌词轨素材**：第一段词「春眠不觉晓处处闻啼鸟」写在第 1 轨，
+第二段词「夜来风雨声花落知多少」在第 2 轨且错开半拍。断言覆盖只取第 1 轨的 10 个
+音节、忽略第 2 轨的 10 个、规整结果恰为「春眠不觉晓处处闻啼鸟」、`midiLyricTrack`
+在双段词文件里仍能认出人声轨，以及「和弦名轨（音节少）被忽略」。
 
 路线图里的「更多真实 MIDI 样本校验」由这些混合素材配合 `die_yi_sui_xue_vocal.mid`（真实人声录音导出）完成：每次发布都用它做一次带 LRC 的全链路回归渲染，确认新的网格 / 调号 map / 调式校正 / 时间轴 / 表情分析没有改变已有曲目的输出（v1.20.0 的真实曲目 MusicXML 与 v1.19.0 **逐字节一致**，HTML 谱面内容也逐字节一致，仅内联 CSS 多了几条定义）。这份曲子音头间隔是 0.5 / 1 / 1.5 / 2 拍混合，正好用来守住「断奏不误判」这道闸门。
 

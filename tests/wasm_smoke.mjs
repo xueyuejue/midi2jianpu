@@ -763,6 +763,68 @@ check(/UTF8ToString\(\s*wasmMod\._midi2jianpu_part_info/.test(pageHtml),
 check(/UTF8ToString\(\s*wasmMod\._midi2jianpu_file_header_info/.test(pageHtml),
   'docs/index.html 的 file_header_info 用 UTF8ToString 取了字符串');
 
+// ---- 25. 事件流对齐与音符配对：0xA0 / 重触发 / 悬挂音 / 双歌词轨 ----
+// 这四个都是「文件没按理想写法写」就悄悄出错的情形，网页端必须和 CLI 同步修好，
+// 否则用户只会看到「未提取到音符」或者半截歌词。
+function readFixture(name) {
+  const p = path.join(FIXTURES, name);
+  check(existsSync(p), `素材 ${name} 存在（先跑 make_fixture.py）`);
+  return existsSync(p) ? new Uint8Array(readFileSync(p)) : null;
+}
+
+const atBytes = readFixture('aftertouch.mid');
+if (atBytes) {
+  const ac = makeCaller(mod);
+  ac.setMidi(atBytes);
+  const ahtml = ac.call('midi2jianpu_html', -1, 1) || '';
+  check(!ahtml.includes('未提取到音符'),
+    '0xA0 复音触后不再把整轨读崩（网页不再报「未提取到音符」）');
+  const axml = ac.call('midi2jianpu_musicxml', -1, 1) || '';
+  const am = (axml.match(/<measure /g) || []).length;
+  check(am === 4, `WASM MusicXML 四个小节，实际 ${am}`);
+  const anotes = (axml.match(/<note>/g) || []).length;
+  check(anotes === 16, `WASM MusicXML 16 个音符，实际 ${anotes}`);
+}
+
+const rtBytes = readFixture('retrigger.mid');
+if (rtBytes) {
+  const rc = makeCaller(mod);
+  rc.setMidi(rtBytes);
+  const rxml = rc.call('midi2jianpu_musicxml', -1, 1) || '';
+  const rnotes = (rxml.match(/<note>/g) || []).length;
+  check(rnotes === 8, `同音重触发不吞音，8 个音符，实际 ${rnotes}`);
+  const rc4 = (rxml.match(/<step>C<\/step><octave>4<\/octave>/g) || []).length;
+  check(rc4 === 2, `两个 C4 都在，实际 ${rc4} 个`);
+}
+
+const dgBytes = readFixture('dangling.mid');
+if (dgBytes) {
+  const dc = makeCaller(mod);
+  dc.setMidi(dgBytes);
+  const dxml = dc.call('midi2jianpu_musicxml', -1, 1) || '';
+  const dnotes = (dxml.match(/<note>/g) || []).length;
+  check(dnotes === 16, `轨尾悬挂音补收，16 个音符，实际 ${dnotes}`);
+  const dhtml = dc.call('midi2jianpu_html', -1, 1) || '';
+  check(dhtml.includes('1=C 大调'), '少一个音不再把调性带偏成 F / D 小调');
+}
+
+const tlBytes = readFixture('twolyrics.mid');
+if (tlBytes) {
+  const tptr = mod._malloc(tlBytes.length);
+  mod.HEAPU8.set(tlBytes, tptr);
+  const n = mod._midi2jianpu_midi_lyric_count(tptr, tlBytes.length);
+  mod._free(tptr);
+  check(n === 10, `双歌词轨只算一条，10 个音节，实际 ${n}`);
+
+  const tc = makeCaller(mod);
+  tc.setMidi(tlBytes);
+  const thtml = tc.call('midi2jianpu_html', -1, 1) || '';
+  const words = (thtml.match(/<span class='lyric'>([^<]*)<\/span>/g) || [])
+    .map((w) => w.replace(/<[^>]*>/g, '')).filter(Boolean).join('');
+  check(words === '春眠不觉晓处处闻', `网页歌词不再两段交错，实际：${words}`);
+  check(thtml.includes('另 1 轨的 10 个音节已忽略'), '网页页眉说明忽略了另一条歌词轨');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

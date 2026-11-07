@@ -174,7 +174,8 @@ int main(int argc, char** argv) {
     } else if (builtinLyricEvents > 0) {
         const auto syls = m2j::normalizeMidiLyrics(data);
         if (!syls.empty())
-            std::cout << "MIDI 内置歌词: " << syls.size() << " 个音节（自动加载，"
+            std::cout << "MIDI 内置歌词: " << syls.size() << " 个音节"
+                      << m2j::droppedLyricNote(data) << "（自动加载，"
                       << "--no-midi-lyrics 可关闭）\n";
     }
 
