@@ -87,6 +87,7 @@ struct Segment {
     bool triplet = false;  // 属于三连音组，需要 <time-modification>
     bool tieStart = false; // 后面还有延续段 -> <tie type="start"/>
     bool tieEnd = false;   // 前面有被切开的段 -> <tie type="stop"/>
+    bool grace = false;    // 倚音：<grace/> 不占时长，排在主音之前
 };
 
 std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
@@ -126,8 +127,19 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
         auto it = data.trackNames.find(t);
         if (it != data.trackNames.end() && !it->second.empty()) name = it->second;
         else name = "Part " + std::to_string(t + 1);
+        // 声部乐器：取该声部第一个音符的通道，查 0xC0 音色号得到 GM 乐器名。
+        int pch = ns.empty() ? -1 : ns.front().channel;
+        std::string inst;
+        auto pit = data.channelProgram.find(pch);
+        if (pit != data.channelProgram.end()) inst = gmInstrumentName(pit->second);
         xml << "    <score-part id=\"P" << partIdx << "\">"
-            << "<part-name>" << name << "</part-name></score-part>\n";
+            << "<part-name>" << xmlEscape(name) << "</part-name>";
+        if (!inst.empty()) {
+            xml << "<score-instrument id=\"P" << partIdx << "-I" << partIdx << "\">"
+                << "<instrument-name>" << xmlEscape(inst) << "</instrument-name>"
+                << "</score-instrument>";
+        }
+        xml << "</score-part>\n";
         partIdx++;
     }
     xml << "  </part-list>\n";
@@ -172,6 +184,10 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
 
         for (size_t i = 0; i < ns.size(); i++) {
             const auto& n = ns[i];
+            // 倚音（装饰音）：整颗跳过，改挂到紧随其后的主音上作为 <grace/>。
+            // 否则它会自己占一格、还把主音往后推，整行节奏错位。
+            if (expr.isGraceNote(n.startTicks, n.channel)) continue;
+
             long start = n.startTicks;
             long end = start + std::max<long>(n.durationTicks, 1);
             bool firstPart = true;
@@ -305,9 +321,23 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                     << "      </direction>\n";
                 lastDyn = dyn;
             }
-            // 段落名 / 渐强渐弱属于整份谱，只在第一个 part 写一次；
+            // 段落名 / 渐强渐弱 / 速度变化属于整份谱，只在第一个 part 写一次；
             // 力度按通道各自写（伴奏轨有自己的 CC11 曲线）。
             if (partIdx == 1) {
+                // 速度变化点：在那一小节标 ♩=N（初始速度已在 emitAttributes 写）。
+                for (size_t ti = 1; ti < data.tempoChanges.size(); ti++) {
+                    if (data.tempoChanges[ti].tick == bs) {
+                        int tb = (int)std::lround(data.tempoChanges[ti].bpm);
+                        xml << "      <direction placement=\"above\">\n"
+                            << "        <direction-type><metronome>"
+                            << "<beat-unit>quarter</beat-unit>"
+                            << "<per-minute>" << tb << "</per-minute>"
+                            << "</metronome></direction-type>"
+                            << "<sound tempo=\"" << tb << "\"/>\n"
+                            << "      </direction>\n";
+                        break;
+                    }
+                }
                 for (const auto& m : expr.inRange(bs, be)) {
                     if (!m.section.empty())
                         xml << "      <direction placement=\"above\">\n"
@@ -413,6 +443,29 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                                  + "</syllabic><extend/></lyric>";
                         if (last) slurXml = "<slur type=\"stop\" number=\"1\"/>";
                     }
+                }
+            }
+
+            // 倚音（装饰音）：在主音之前写一个 <grace/> 音符，不占时长，
+            // MuseScore 会把它渲染成主音左侧的小装饰音。只在主音的第一个分段
+            // （真实音头，非跨小节延续段、非和弦成员）上写一次。
+            if (!isChordMember && !seg.tieEnd) {
+                const NoteExpression ae0 = expr.noteAt(seg.start, seg.channel);
+                if (ae0.hasGrace()) {
+                    int gp = ae0.gracePitch;
+                    double goff = bendOffset(seg.start - division / 16,
+                                            seg.start, seg.channel);
+                    if (std::abs(goff) >= 0.5) gp += (int)std::round(goff);
+                    int gpc = gp % 12; if (gpc < 0) gpc += 12;
+                    int goct = gp / 12 - 1;
+                    const bool gflat = prefersFlats(keys.at(seg.start));
+                    const char* gstep = gflat ? FLAT_STEP[gpc] : SHARP_STEP[gpc];
+                    int galter = gflat ? FLAT_ALTER[gpc] : SHARP_ALTER[gpc];
+                    xml << "      <note><grace/>"
+                        << "<pitch><step>" << gstep << "</step>";
+                    if (galter != 0) xml << "<alter>" << galter << "</alter>";
+                    xml << "<octave>" << goct << "</octave></pitch>"
+                        << "<voice>1</voice><type>eighth</type></note>\n";
                 }
             }
 

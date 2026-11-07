@@ -254,6 +254,12 @@ int main(int argc, char** argv) {
         std::cout << "演奏表情: " << expr.summary()
                   << "（--no-dynamics 可关闭）\n";
 
+    // 声部 / 乐器标注：列出每条含音符的声部及其 GM 乐器名，帮助用户确认
+    // 旋律/伴奏轨判定是否正确（例如某轨被误当成旋律时一眼能看出）。
+    const std::string psum = m2j::partSummary(data);
+    if (!psum.empty())
+        std::cout << psum << "\n";
+
     // 歌词只解析一次，HTML 谱面和 MusicXML 共用同一份 LRC 行。
     // 早先解析写在 --html 分支里，导 MusicXML 时整份歌词都丢了。
     std::vector<m2j::LyricLine> lyricLines;

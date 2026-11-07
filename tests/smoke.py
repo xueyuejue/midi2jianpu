@@ -864,6 +864,45 @@ def main():
         _, help_out, _ = run(exe, "--help")
         check("--no-dynamics" in help_out, "帮助列出 --no-dynamics")
 
+    # ---- [23] 声部乐器标注 + 倚音（装饰音） ----
+    # parts.mid：Vocal=长笛(73) 带一个 B3->C4 倚音、Piano=钢琴(0) 柱式和弦、
+    # Bass=原声贝斯(32) 低音线。验证「已解析未使用」的 0xC0 / 0x51 数据
+    # 真正落到谱面，倚音识别按通道收紧、不误判快速经过音。
+    print("\n[23] 声部乐器标注 + 倚音（装饰音）")
+    import xml.etree.ElementTree as ETpart
+    parts = os.path.join(FIXTURES, "parts.mid")
+    if not os.path.exists(parts):
+        check(False, "素材 parts.mid 存在（先跑 make_fixture.py）")
+    else:
+        rc, out, err = run(exe, parts)
+        check(rc == 0, "带声部标注的 MIDI 能正常转换", err[:200])
+        check("声部：Vocal·长笛，Piano·钢琴，Bass·原声贝斯" in out,
+              "文本谱页眉写出声部与 GM 乐器名", out[:300])
+        # 倚音写成 (装饰音数字) 直接贴在主音前，例如 B3(7,) -> C4(1)
+        check("(7,)1" in out,
+              "文本谱写出倚音 B3->C4： (7,)1", out[:500])
+
+        ph = os.path.join(tmp, "parts.html")
+        px = os.path.join(tmp, "parts.xml")
+        rc2, _, _ = run(exe, parts, "--html", ph, "--musicxml", px)
+        check(rc2 == 0, "导出 parts.mid 的 HTML / MusicXML")
+        hbody = open(ph, encoding="utf-8").read()
+        check("声部：Vocal·长笛" in hbody, "HTML 页眉写出声部乐器标注")
+        check("class='grace'>" in hbody, "HTML 写出倚音 <span class='grace'>")
+        xroot = ETpart.parse(px).getroot()
+        inst = [t.text for t in xroot.iter("instrument-name")]
+        check("长笛" in inst and "钢琴" in inst and "原声贝斯" in inst,
+              "MusicXML part-list 写出每个声部的 GM 乐器中文名", str(inst))
+        n_grace = len(list(xroot.iter("grace")))
+        check(n_grace == 1, "MusicXML 写出一个倚音 <grace/>", str(n_grace))
+
+        # 真实曲目零回归：等间隔四分音符流（样本 / 真实录音）不应被误标成倚音。
+        # 「已解析未使用」的字段（0xC0 音色号等）在无对应事件时不凭空产出标注，
+        # 这一点由单元测试的构造样例锁死；这里用真实曲风样本做冒烟兜底。
+        rc3, out3, _ = run(exe, os.path.join(FIXTURES, "sample.mid"))
+        check("(7,)1" not in out3 and "(6,)1" not in out3,
+              "普通等间隔旋律不被误标倚音", out3[:500])
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

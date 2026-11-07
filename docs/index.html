@@ -179,6 +179,11 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
       var ex = wasmMod._midi2jianpu_expression_count(p, midiBytes.length);
       if (ex > 0) hints.push('检测到 ' + ex + ' 处演奏表情（力度/断音/滑音/段落）');
     }
+    if (wasmMod._midi2jianpu_part_info) {
+      // 声部 / 乐器：返回 "声部：Vocal·钢琴, ..."，文件有多条声部时才提示。
+      var info = wasmMod._midi2jianpu_part_info(p, midiBytes.length);
+      if (info && info.indexOf('：') >= 0) hints.push(info);
+    }
     wasmMod._free(p);
     box.textContent = hints.join(' · ');
   }

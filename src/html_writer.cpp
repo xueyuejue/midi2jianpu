@@ -489,6 +489,14 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             const bool cont = grp[0]->cont;
             int bar = (int)grid.barIndex(n.startTicks);
 
+            // 倚音（装饰音）：整组跳过，只在它后面的主音上用小字上标呈现。
+            // 否则倚音会自己占一格，把主音挤到下一拍，整行节奏错位。
+            if (expr.isGraceNote(n.startTicks, n.channel)) {
+                prevEnd = std::max(prevEnd, n.startTicks + n.durationTicks);
+                firstNote = false;
+                continue;
+            }
+
             if (bar != curBar) {
                 flushBeam();                                  // 小节线截断减时线
                 flushSlur();                                  // 小节线同样截断连音线
@@ -579,6 +587,14 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                     else if (c == ',') lowDots++;
                     else num += c;
                 }
+                // 倚音（装饰音）：先快速滑/弹一个音再落到主音，谱面上用小字上标
+                // 写在主音数字前面，如 <sup>3</sup>5，不参与节奏计数。
+                const NoteExpression ne = expr.noteAt(n.startTicks, n.channel);
+                std::string graceHtml;
+                if (ne.hasGrace())
+                    graceHtml = "<span class='grace'>" +
+                                htmlEscape(pitchToJianpu(ne.gracePitch, keys.at(n.startTicks))) +
+                                "</span>";
                 // 不要再排除第一个音：休止符是单独插入的列，本来就不参与歌词分配，
                 // 多一个 !firstNote 只会把一句词的第一个字吞掉（"风霜染尽客行袍"
                 // 变成"风霜染尽客行"+下一小节的"袍"）。
@@ -586,10 +602,10 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                                   ? lyricForNote(n.startTicks) : std::string();
                 // 三连音走单独的时值档位，避免 1/3 拍被当成附点十六分
                 DurStyle ds = grp[0]->trip ? tripletStyleOf(beats) : durStyleOf(beats);
-                std::string col = withArticulation(
+                std::string col = graceHtml + withArticulation(
                     withChord(noteColumn(num, highDots, lowDots, beats, syl, "", &ds),
                               chordMarkFor(n.startTicks)),
-                    expr.noteAt(n.startTicks, n.channel).symbol());
+                    ne.symbol());
                 const int g = hasSlur ? lyrics.groupAt(n.startTicks) : 0;
 
                 // 能否接上上一条减时线：同小节、首尾相接、减时线条数相同，
@@ -632,6 +648,14 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 std::sort(sorted.begin(), sorted.end(),
                           [](const NoteEvent& a, const NoteEvent& b) { return a.pitch > b.pitch; });
 
+                // 倚音（装饰音）：和弦前面的快速装饰音同样用小字上标呈现。
+                const NoteExpression ne = expr.noteAt(n.startTicks, n.channel);
+                std::string graceHtml;
+                if (ne.hasGrace())
+                    graceHtml = "<span class='grace'>" +
+                                htmlEscape(pitchToJianpu(ne.gracePitch, keys.at(n.startTicks))) +
+                                "</span>";
+
                 std::vector<std::pair<std::string, std::pair<int, int>>> tones;
                 for (const auto& t : sorted) {
                     std::string jp = pitchToJianpu(t.pitch, keys.at(t.startTicks));
@@ -644,9 +668,9 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                     }
                     tones.push_back({num, {hi, lo}});
                 }
-                emit(withArticulation(
+                emit(graceHtml + withArticulation(
                          withChord(chordColumn(tones, beats, ""), chordMarkFor(n.startTicks)),
-                         expr.noteAt(n.startTicks, n.channel).symbol()),
+                         ne.symbol()),
                      n.startTicks);
             }
 
@@ -699,6 +723,8 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
        border:1px solid #cdd8e8;border-radius:3px;padding:1px 4px;background:#f4f7fc}
 .meter{font-size:11px;font-weight:700;color:#8a5a2b;line-height:1;
        border:1px solid #e4d3bb;border-radius:3px;padding:1px 4px;background:#fdf8f0}
+/* 倚音（装饰音）：小字上标，写在主音数字前面，不参与节奏计数 */
+.grace{font-size:11px;color:#a36a2a;vertical-align:super;margin-right:1px}
 /* 转调标记与拍号/速度同为「谱面事件」，但用紫红色区分，扫一眼就知道
    这里不是节奏变了、而是整段唱名换了。 */
 .keychg{font-size:11px;font-weight:700;color:#7a3f7d;line-height:1;
@@ -806,6 +832,7 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
          << " ｜ " << (data.keySig.valid ? "MIDI调号"
                        : (key.scaleLabel.empty() ? "自动猜测" : "五声宫音校正"))
          << (tempoSummary(data).empty() ? "" : " ｜ " + tempoSummary(data))
+         << (partSummary(data).empty() ? "" : " ｜ " + partSummary(data))
          << (pickupLabel(data).empty() ? "" : " ｜ " + pickupLabel(data))
          << (data.drumNotesSkipped > 0 ? " ｜ 已跳过鼓轨" : "")
          << (lyricLabel.empty() ? "" : " ｜ " + lyricLabel)

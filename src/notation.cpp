@@ -1012,6 +1012,14 @@ static std::string formatTrack(
     for (size_t idx = 0; idx < merged.size(); idx++) {
         const auto& n = merged[idx];
 
+        // 倚音（装饰音）：本身不单独占一格，改挂到紧随其后的主音上。这里整颗
+        // 跳过，只把结束位置推进到倚音尾部，避免主音的休止计算把它算成空拍。
+        if (expr.isGraceNote(n.startTicks, n.channel)) {
+            started = true;
+            prevEnd = n.startTicks + n.durationTicks;
+            continue;
+        }
+
         // 右括号必须先于休止输出，否则 3(5 5 5 0 ) 会把休止吞进三连音组
         if (!triplets[idx] && inTriplet) { os << ") "; inTriplet = false; }
 
@@ -1053,9 +1061,16 @@ static std::string formatTrack(
         if (triplets[idx] && !inTriplet) { os << "3("; inTriplet = true; }
 
         // 三连音组内的音符不标时值后缀（"3(...)" 已表达节奏）
-        std::string head = pitchToJianpu(n.pitch, keys.at(n.startTicks));
+        // 倚音（装饰音）写成 (装饰音数字) 直接贴在主音数字前，例如 (3)5
+        // 表示先快速滑/弹一个 3 再落到主音 5；括号把它和正式音区分开，
+        // 也避免与和弦 [..]、三连音 3(..) 等记号混淆。
+        const NoteExpression ne = expr.noteAt(n.startTicks, n.channel);
+        std::string grace;
+        if (ne.hasGrace())
+            grace = "(" + pitchToJianpu(ne.gracePitch, keys.at(n.startTicks)) + ")";
+        std::string head = grace + pitchToJianpu(n.pitch, keys.at(n.startTicks));
         // 断音 / 重音 / 滑音 / 颤音只挂在真实音头上，延续段的 "-" 不带记号。
-        const std::string art = expr.noteAt(n.startTicks, n.channel).symbol();
+        const std::string art = ne.symbol();
         long noteEnd = n.startTicks + n.durationTicks;
         long barEnd = grid.barEnd(barOf(n.startTicks));
         if (triplets[idx] || noteEnd <= barEnd) {
@@ -1108,6 +1123,116 @@ std::string tempoSummary(const MidiData& data) {
     return os.str();
 }
 
+// ---- 声部 / 乐器标注 ----
+// GM 标准 128 个音色号的英文全名；中文曲 MIDI 常常把民族乐器映射到 Flute /
+// Harp / Tremolo Strings 等通用音色，所以这里只给标准 GM 集做中文译名覆盖，
+// 不会凭空造出「笛子/二胡」这种名字误导用户。查不到（>=128）回落到空串。
+static const char* GM_NAMES[128] = {
+    "Acoustic Grand Piano", "Bright Acoustic Piano", "Electric Grand Piano",
+    "Honky-tonk Piano", "Electric Piano 1", "Electric Piano 2",
+    "Harpsichord", "Clavinet", "Celesta", "Glockenspiel",
+    "Music Box", "Vibraphone", "Marimba", "Xylophone",
+    "Tubular Bells", "Dulcimer", "Drawbar Organ", "Percussive Organ",
+    "Rock Organ", "Church Organ", "Reed Organ", "Accordion",
+    "Harmonica", "Tango Accordion", "Acoustic Guitar (nylon)",
+    "Acoustic Guitar (steel)", "Electric Guitar (jazz)",
+    "Electric Guitar (clean)", "Electric Guitar (muted)",
+    "Overdriven Guitar", "Distortion Guitar", "Guitar Harmonics",
+    "Acoustic Bass", "Electric Bass (finger)", "Electric Bass (pick)",
+    "Fretless Bass", "Slap Bass 1", "Slap Bass 2", "Synth Bass 1",
+    "Synth Bass 2", "Violin", "Viola", "Cello",
+    "Contrabass", "Tremolo Strings", "Pizzicato Strings",
+    "Orchestral Harp", "Timpani", "String Ensemble 1",
+    "String Ensemble 2", "Synth Strings 1", "Synth Strings 2",
+    "Choir Aahs", "Voice Oohs", "Synth Voice", "Orchestra Hit",
+    "Trumpet", "Trombone", "Tuba", "Muted Trumpet",
+    "French Horn", "Brass Section", "Synth Brass 1", "Synth Brass 2",
+    "Soprano Sax", "Alto Sax", "Tenor Sax", "Baritone Sax",
+    "Oboe", "English Horn", "Bassoon", "Clarinet",
+    "Piccolo", "Flute", "Recorder", "Pan Flute",
+    "Blown Bottle", "Shakuhachi", "Whistle", "Ocarina",
+    "Lead 1 (square)", "Lead 2 (sawtooth)", "Lead 3 (calliope)",
+    "Lead 4 (chiff)", "Lead 5 (charang)", "Lead 6 (voice)",
+    "Lead 7 (fifths)", "Lead 8 (bass + lead)", "Pad 1 (new age)",
+    "Pad 2 (warm)", "Pad 3 (polysynth)", "Pad 4 (choir)",
+    "Pad 5 (bowed)", "Pad 6 (metallic)", "Pad 7 (halo)",
+    "Pad 8 (sweep)", "FX 1 (rain)", "FX 2 (soundtrack)",
+    "FX 3 (crystal)", "FX 4 (atmosphere)", "FX 5 (brightness)",
+    "FX 6 (goblins)", "FX 7 (echoes)", "FX 8 (sci-fi)",
+    "Sitar", "Banjo", "Shamisen", "Koto",
+    "Kalimba", "Bagpipe", "Fiddle", "Shanai",
+    "Tinkle Bell", "Agogo", "Steel Drums", "Woodblock",
+    "Taiko Drum", "Melodic Tom", "Synth Drum", "Reverse Cymbal",
+    "Guitar Fret Noise", "Breath Noise", "Seashore", "Bird Tweet",
+    "Telephone Ring", "Helicopter", "Applause", "Gunshot"
+};
+
+// 常用音色的中文译名覆盖（其余回落到上面的英文全名）。
+static const char* GM_CN[128] = {
+    "钢琴", nullptr, nullptr, nullptr, nullptr, nullptr, "拨弦键琴", "击弦键琴",
+    nullptr, "钟琴", "八音盒", "电颤琴", "马林巴", "木琴", "管钟", nullptr,
+    "管风琴", "打击风琴", nullptr, "教堂管风琴", "簧风琴", "手风琴", "口琴",
+    nullptr, "尼龙弦吉他", "钢弦吉他", "爵士吉他", "清音电吉他", "闷音电吉他",
+    "过载吉他", "失真吉他", nullptr, "原声贝斯", "电贝斯", nullptr, "无品贝斯",
+    nullptr, nullptr, "合成贝斯", nullptr, "小提琴", "中提琴", "大提琴",
+    "低音提琴", "颤音弦乐", "拨奏弦乐", "竖琴", "定音鼓", "弦乐合奏", nullptr,
+    "合成弦乐", nullptr, "合唱啊", "人声呜", "合成人声", "乐团击奏", "小号",
+    "长号", "大号", "弱音小号", "圆号", "铜管组", nullptr, nullptr, "高音萨克斯",
+    "中音萨克斯", "次中音萨克斯", "上低音萨克斯", "双簧管", nullptr, "大管",
+    "单簧管", "短笛", "长笛", "竖笛", "排箫", nullptr, "尺八", "哨子", "陶笛",
+    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+    nullptr, "西塔琴", "班卓琴", "三味线", "筝", "卡林巴", "风笛", "民间提琴", "唢呐",
+    nullptr, nullptr, "钢鼓", nullptr, nullptr, nullptr, nullptr, nullptr,
+    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr
+};
+
+std::string gmInstrumentName(int prog) {
+    if (prog < 0 || prog >= 128) return std::string();
+    if (GM_CN[prog]) return std::string(GM_CN[prog]);
+    return std::string(GM_NAMES[prog]);
+}
+
+std::vector<std::pair<std::string, std::string>> listParts(const MidiData& data) {
+    // 统计每条声部轨（跳过打击乐通道 9）的主导通道 -> 音色号
+    std::map<int, std::map<int, int>> trackChanCount;  // track -> channel -> count
+    for (const auto& n : data.notes) {
+        if (n.channel == 9) continue;  // 鼓轨已在解析阶段丢弃，防御性再跳一次
+        trackChanCount[n.track][n.channel]++;
+    }
+    std::vector<std::pair<std::string, std::string>> out;
+    for (auto& [tr, chans] : trackChanCount) {
+        if (chans.empty()) continue;
+        // 取音符最多的通道作为该声部的代表通道
+        int bestCh = chans.begin()->first, bestN = -1;
+        for (auto& [ch, c] : chans)
+            if (c > bestN) { bestN = c; bestCh = ch; }
+        std::string name;
+        auto it = data.trackNames.find(tr);
+        if (it != data.trackNames.end() && !it->second.empty()) name = it->second;
+        else name = "轨 " + std::to_string(tr);
+        std::string inst;
+        auto pit = data.channelProgram.find(bestCh);
+        if (pit != data.channelProgram.end()) inst = gmInstrumentName(pit->second);
+        out.emplace_back(std::move(name), std::move(inst));
+    }
+    return out;
+}
+
+std::string partSummary(const MidiData& data) {
+    auto parts = listParts(data);
+    if (parts.empty()) return std::string();
+    std::ostringstream os;
+    os << "声部：";
+    for (size_t i = 0; i < parts.size(); i++) {
+        if (i) os << "，";
+        os << parts[i].first;
+        if (!parts[i].second.empty()) os << "·" << parts[i].second;
+    }
+    return os.str();
+}
+
 std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
     const KeyMap keys(data, key);
     const BarGrid grid = barGridOf(data);
@@ -1117,6 +1242,8 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
        << "    " << meterSummary(data);
     std::string tempo = tempoSummary(data);
     if (!tempo.empty()) os << "    " << tempo;
+    std::string parts = partSummary(data);
+    if (!parts.empty()) os << "    " << parts;
     std::string pickup = pickupLabel(data);
     if (!pickup.empty()) os << "    " << pickup;
     const std::string exprSum = expr.summary();
@@ -2185,10 +2312,45 @@ ExpressionMap::ExpressionMap(const MidiData& data) {
                 if (dst.bend == BendMark::None) dst.bend = e.bend;
             }
         }
+
+        // ---- 4. 倚音（装饰音）检测 ----
+        // MIDI 没有显式的 grace note 事件，只能从「极短的前导音 + 紧邻的长音」
+        // 推断。判据刻意收紧，宁可漏标也不把快速经过音、十六分音符流误判成倚音：
+        //   - 前导音原始时长 < 1/8 拍（比十六分音符还短，真正的快速经过音极少这么短）
+        //   - 主音原始时长 >= 1/4 拍，且至少是前导音的 4 倍长（短前长后）
+        //   - 前导音的尾部紧贴主音头部（间隔在 [-1/8, 1/16] 拍内，容错重叠/量化）
+        //   - 前导音与主音不同音高（同音高是倚音无意义，也会和同音合并逻辑打架）
+        // 按通道判定：旋律和伴奏各自独立，跨通道误连不会出现。
+        std::map<int, std::vector<const NoteEvent*>> byCh;
+        for (const auto* p : ns) byCh[p->channel].push_back(p);
+        for (auto& [ch, chv] : byCh) {
+            (void)ch;
+            std::stable_sort(chv.begin(), chv.end(),
+                             [](const NoteEvent* a, const NoteEvent* b) {
+                                 return a->startTicks < b->startTicks;
+                             });
+            for (size_t i = 1; i < chv.size(); i++) {
+                const NoteEvent* prev = chv[i - 1];
+                const NoteEvent* cur = chv[i];
+                if (cur->pitch == prev->pitch) continue;
+                const long prevRaw = prev->rawDurationTicks > 0
+                                   ? prev->rawDurationTicks : prev->durationTicks;
+                const long curRaw = cur->rawDurationTicks > 0
+                                  ? cur->rawDurationTicks : cur->durationTicks;
+                if (prevRaw <= 0 || prevRaw >= div / 8) continue;   // 前导音必须极短
+                if (curRaw < div / 4) continue;                    // 主音必须够长
+                if (curRaw < 4 * prevRaw) continue;                // 短前长后
+                const long gap = cur->startTicks - (prev->startTicks + prevRaw);
+                if (gap < -div / 8 || gap > div / 16) continue;    // 紧贴主音头部
+                graceNotes_.insert({prev->startTicks, prev->channel});
+                NoteExpression& dst = notes_[{cur->startTicks, cur->channel}];
+                dst.gracePitch = prev->pitch;
+            }
+        }
     }
     for (const auto& kv : notes_) {
         const NoteExpression& e = kv.second;
-        if (e.staccato || e.staccatissimo || e.accent) nArtic_++;
+        if (e.staccato || e.staccatissimo || e.accent || e.hasGrace()) nArtic_++;
         if (e.bend != BendMark::None) nBend_++;
     }
 }
@@ -2206,6 +2368,10 @@ std::string ExpressionMap::dynamicAt(long tick, int channel) const {
 NoteExpression ExpressionMap::noteAt(long tick, int channel) const {
     auto it = notes_.find({tick, channel});
     return it == notes_.end() ? NoteExpression{} : it->second;
+}
+
+bool ExpressionMap::isGraceNote(long tick, int channel) const {
+    return graceNotes_.find({tick, channel}) != graceNotes_.end();
 }
 
 std::vector<ExpressionMark> ExpressionMap::inRange(long from, long to) const {

@@ -38,6 +38,8 @@
 - [x] 休止符 `0`（按时长显示时值线）
 - [x] 高低八度点、升降号 `#`/`b`（降号调自动优先写 `b`）
 - [x] **力度与演奏法**：CC11 力度（pp/p/mp/mf/f/ff，按通道隔离）、渐强渐弱、段落标记（`0x06`）、note-on 重音、弯音上滑/下滑/颤音、等间隔断奏，统一由 `ExpressionMap` 判定后同步写进文本 / HTML / MusicXML；`--no-dynamics` 一键关闭，网页是「力度与演奏法」复选框
+- [x] **声部乐器标注**：解析层早已读取 `0xC0` 音色号却没落谱，现按轨主导通道查 GM 标准 128 音色名（常用音色附中文译名，如 长笛 / 钢琴 / 原声贝斯），谱面页眉与网页文件面板写出「声部：Vocal·长笛，Piano·钢琴，Bass·原声贝斯」；鼓轨（通道 10）不计入声部
+- [x] **倚音（装饰音）识别**：MIDI 没有显式 grace note 事件，现从「极短前导音 + 紧邻长音」推断（前导音原始时长 < 1/8 拍、主音 ≥ 1/4 拍且≥4 倍、间隔在 [-1/8, 1/16] 拍内、异音高），判据按通道收紧，快速经过音 / 十六分音符流不误判；文本谱写成 `(装饰音数字)` 贴在主音前，HTML 用 `<span class='grace'>` 上标，MusicXML 写 `<grace/>` 不占时长
 - [x] 三连音自动识别（按 1/3 拍体系判定时值，八分音符连奏不会被误判），且按 1/3、1/6、1/12 拍单独取档位——三连八分只画一条减时线，不会被时值表最近的 0.375 档误判成附点十六分（两条线加一个点）
 - [x] 弯音轮修正（Pitch Bend 平均偏移 ±0.5 半音以上修正音高）
 - [x] **和弦检测**：自动识别伴奏轨和弦进行（C/Am/G7 等9种类型）；按「和声窗」而不是整小节判定（4/4 半小节、6/8 附点四分、3/4 整小节），`| C  Am |` 这种一小节两个和弦能分别标出，相邻同名自动合并
@@ -50,7 +52,7 @@
 - [x] `--version` 打印版本号
 - [x] **在线 Demo**：WASM 核心，浏览器内运行 C++ 代码
 - [x] **减时线按拍连通**：一拍内的八分/十六分音符共用一条横线（十六分再叠平行线），而不是每个音各画一小段；和弦的减时线只画在最下面那个音上
-- [x] 316 项单元测试 + 22 组端到端冒烟测试 + WASM 产物一致性检查
+- [x] 343 项单元测试 + 23 组端到端冒烟测试 + WASM 产物一致性检查
 
 ## 在线 Demo 功能
 
@@ -328,7 +330,7 @@ Krumhansl-Schmuckler 用七声大/小调轮廓打分。纯五声旋律 `C D E G 
 - 调性识别：**Krumhansl-Schmuckler** 算法（音乐信息检索标准）；无调号时再由**宫商角徵羽五声调式**判定校正宫音
 - 和弦检测：按和声窗（半小节 / 附点四分 / 整小节）统计音级频率，匹配 9 种和弦类型
 - 输出：文本 + 自包含 HTML（内联 CSS）+ MusicXML 3.1
-- 测试：内置断言 316 项单元测试，另有 `tests/smoke.py` 22 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`）
+- 测试：内置断言 343 项单元测试，另有 `tests/smoke.py` 23 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`、声部乐器标注 + 倚音混合素材 `parts.mid`）
 
 ## 路线图
 
@@ -369,7 +371,7 @@ Issue / PR 都欢迎。尤其欢迎：
 提交前请跑一遍：
 
 ```bash
-cd build && ctest --output-on-failure                  # 316 项单元测试
+cd build && ctest --output-on-failure                  # 343 项单元测试
 python tests/smoke.py build/Release/midi2jianpu.exe    # 端到端冒烟（含鼓轨场景）
 node tests/wasm_smoke.mjs                              # WASM 产物与源码是否同步
 ```
