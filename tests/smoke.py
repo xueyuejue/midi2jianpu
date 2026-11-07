@@ -994,6 +994,71 @@ def main():
         check(rc3 == 0 and "rit." not in sout and "accel." not in sout,
               "单调速素材 sample.mid 不产生渐快渐慢记号")
 
+    # ---- [26] 长音跨小节：延音线而不是休止符 ----
+    # long_tie.mid 的旋律轨在第 4 小节放一个 6 拍长音、在第 7 小节放一个
+    # 10 拍长音，钢琴轨每小节一个 4 拍柱式和弦（复调，用来验证长音不被门限放大）。
+    # 旧版把超过全音符的时值钳到 4 拍，长音的余下时间变成休止符：
+    #   | 3 - - - | 0 - 4 5 |     而不是     | 3 - - - | - - 4 5 |
+    print("\n[26] 长音跨小节：延音线（- / <tie>）而不是休止符")
+    lmid = os.path.join(FIXTURES, "long_tie.mid")
+    if not os.path.exists(lmid):
+        check(False, "素材 long_tie.mid 存在（先跑 make_fixture.py）")
+    else:
+        rc, out, err = run(exe, lmid)
+        check(rc == 0, "带跨小节长音的 MIDI 能正常转换", err[:200])
+        # 只看旋律轨那一段
+        sec = out.split("[Vocal]")[1].split("[Piano]")[0] if "[Vocal]" in out else out
+        lines = [re.sub(r"\[[^\]]*\]\s*", "", ln).strip() for ln in sec.splitlines()]
+        lines = [ln for ln in lines if ln and "|" in ln]
+        check(len(lines) == 9, f"旋律轨共 9 小节，实际 {len(lines)}: {lines}")
+
+        def barsig(i):
+            return lines[i].replace("|", "").replace(" ", "")
+
+        check(barsig(3) == "3---", f"6 拍长音首段写满一小节，实际 {lines[3]!r}")
+        check(barsig(4).startswith("--45"),
+              f"长音后段在下一小节续写「- -」，不是休止符，实际 {lines[4]!r}")
+        check("0" not in barsig(4), f"延音段里不能出现休止符 0，实际 {lines[4]!r}")
+        check(barsig(7) == "----", f"10 拍长音跨过整小节，实际 {lines[7]!r}")
+        check(barsig(8).startswith("--76"),
+              f"10 拍长音在第三小节收尾，实际 {lines[8]!r}")
+        # 长音不该被门限放大：每个小节必须正好 4 拍。
+        # 这份素材的音符全是四分及更长，所以「拍数 = token 数」。
+        for i, ln in enumerate(lines):
+            toks = re.sub(r"\[[^\]]*\]", "", ln).replace("|", " ").split()
+            check(len(toks) == 4,
+                  f"第 {i + 1} 小节正好 4 拍（长音没被放大），实际 {len(toks)}: {ln}")
+
+        lh = os.path.join(tmp, "longtie.html")
+        lx = os.path.join(tmp, "longtie.xml")
+        rc2, _, err2 = run(exe, lmid, "--html", lh, "--musicxml", lx)
+        check(rc2 == 0, "导出 long_tie.mid 的 HTML / MusicXML", err2[:200])
+
+        hbody = open(lh, encoding="utf-8").read()
+        dash_cells = hbody.count("<span class='num'>-</span>")
+        check(dash_cells == 8,
+              f"HTML 里单独写出的延音线共 8 个（6 拍 2 个 + 10 拍 6 个），实际 {dash_cells}")
+
+        import xml.etree.ElementTree as ETl
+        lroot = ETl.parse(lx).getroot()
+        starts = len(lroot.findall(".//tie[@type='start']"))
+        stops = len(lroot.findall(".//tie[@type='stop']"))
+        check(starts == 3, f"MusicXML 写出 3 个 <tie type=start>，实际 {starts}")
+        check(stops == 3, f"MusicXML 写出 3 个 <tie type=stop>，实际 {stops}")
+        check(len(lroot.findall(".//tied[@type='start']")) == 3,
+              "MusicXML 的 <tied> 与 <tie> 同步，记谱软件才画得出弧线")
+
+        # 钢琴轨（复调）的 4 拍和弦不能被门限放大成 4.76 拍。
+        # 柱式和弦在文本谱里写成 `1, - - - 3, - - - 5, - - -`（三音 × 4 拍 = 12 个 token），
+        # 一旦被放大就会多出 `-.` 这类续接 token，行内 token 数随之变多。
+        psec = out.split("[Piano]")[1] if "[Piano]" in out else ""
+        plines = [ln for ln in psec.splitlines() if "|" in ln]
+        check(len(plines) == 9, f"钢琴轨 9 个柱式和弦各占一行，实际 {len(plines)}")
+        bad = [ln for ln in plines
+               if len(ln.replace("|", " ").split()) != 12 or "0" in ln]
+        check(not bad,
+              f"复调轨的每个和弦正好 12 个 token（三音各 4 拍），实际异常行 {bad[:2]}")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

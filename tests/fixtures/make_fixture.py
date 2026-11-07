@@ -2,13 +2,15 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 15 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 16 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
-tempolrc / expression / parts / chords / tempo_ramp（另配 3 份 LRC 歌词）。
+tempolrc / expression / parts / chords / tempo_ramp / long_tie
+（另配 3 份 LRC 歌词）。
 meter 是把变拍号、变速、鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」，
 modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五声调式
 （C 宫、G 徵调式，故意不写 0x59 逼自动猜调暴露宫音判错），tempo_ramp 用
-每半拍一个 set_tempo 复刻 DAW 的渐快 / 渐慢曲线。
+每半拍一个 set_tempo 复刻 DAW 的渐快 / 渐慢曲线，long_tie 则是 6 拍 / 10 拍
+长音跨小节，外加一条每小节一个 4 拍柱式和弦的钢琴轨。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -899,6 +901,72 @@ def build_tempo_ramp() -> bytes:
     return header + t0.render() + t1.render()
 
 
+# ---------------------------------------------------------------------------
+# 长音跨小节（延音线）素材。
+#
+# 简谱的 `-` 是「延长一拍」，跨过小节线就必须在新的一小节继续写 `-`，
+# 也就是靠延音线分写。一个 6 拍长音的正确写法是：
+#     | 3 - - - | - - 4 5 |
+# 而不是「4 拍 + 2 拍休止」。可量化阶段曾把超过全音符的时值钳到 4 拍，
+# 长音被截断、剩下的时间变成末尾休止符，谱面上凭空多出一段静音。
+#
+#   bar  0  1234      四个四分音符
+#   bar  1  5671'     四个四分音符
+#   bar  2  1' 7 6 -  两拍后接二分
+#   bar  3  3 起 6 拍 —— 跨到 bar4 第 2 拍（1 个延音段）
+#   bar  4  - - 4 5   前两拍由上一小节的延音线占满
+#   bar  5  6 7 1' 2'
+#   bar  6  1' 起 10 拍 —— 跨到 bar8 第 2 拍（2 个延音段）
+#   bar  7  - - - -
+#   bar  8  - - 7 6
+#
+# 另配一条钢琴柱式和弦轨（每小节一个 4 拍三和弦）：复调轨没有「响到下一
+# 音头」兜底，门限还原若作用在 4 拍的和弦上会把它放成 4.75 拍，整段小节线
+# 错位。两条轨一起才锁得住「长音不截断 + 长音不放大」。
+# ---------------------------------------------------------------------------
+def build_long_tie() -> bytes:
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120 BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # 明确 C 大调，唱名可预期
+
+    BAR = DIV * 4
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    t1.program(0, 73, 0)                               # 长笛
+    for i, p in enumerate((60, 62, 64, 65)):
+        t1.note(0, p, 90, i * DIV, DIV)                # bar0
+    for i, p in enumerate((67, 69, 71, 72)):
+        t1.note(0, p, 90, BAR + i * DIV, DIV)          # bar1
+    t1.note(0, 72, 90, 2 * BAR, DIV)                   # bar2
+    t1.note(0, 71, 90, 2 * BAR + DIV, DIV)
+    t1.note(0, 69, 90, 2 * BAR + 2 * DIV, 2 * DIV)
+    t1.note(0, 64, 90, 3 * BAR, 6 * DIV)               # bar3 起 6 拍，跨到 bar4
+    t1.note(0, 65, 90, 4 * BAR + 2 * DIV, DIV)         # bar4 第 3 拍
+    t1.note(0, 67, 90, 4 * BAR + 3 * DIV, DIV)
+    for i, p in enumerate((69, 71, 72, 74)):
+        t1.note(0, p, 90, 5 * BAR + i * DIV, DIV)      # bar5
+    t1.note(0, 72, 90, 6 * BAR, 10 * DIV)              # bar6 起 10 拍，跨两小节
+    t1.note(0, 71, 90, 8 * BAR + 2 * DIV, DIV)         # bar8 第 3 拍
+    t1.note(0, 69, 90, 8 * BAR + 3 * DIV, DIV)
+
+    # 钢琴：每小节一个 4 拍柱式和弦（复调，用来验证长音不被门限放大）
+    t2 = Track()
+    t2.add(0, meta(0x03, b"Piano"))
+    t2.program(1, 0, 0)
+    triads = [
+        (48, 52, 55), (53, 57, 60), (55, 59, 62), (57, 60, 64), (59, 62, 65),
+        (55, 59, 62), (57, 60, 64), (53, 57, 60), (48, 52, 55),
+    ]
+    for bar, chord in enumerate(triads):
+        for p in chord:
+            t2.note(1, p, 70, bar * BAR, 4 * DIV)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 3, DIV)
+    return header + t0.render() + t1.render() + t2.render()
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -1021,6 +1089,13 @@ def main() -> None:
         rdata = build_tempo_ramp()
         f.write(rdata)
     print(f"wrote {rmid} ({len(rdata)} bytes)")
+
+    # 长音跨小节（延音线）素材
+    tlmid = os.path.join(here, "long_tie.mid")
+    with open(tlmid, "wb") as f:
+        tldata = build_long_tie()
+        f.write(tldata)
+    print(f"wrote {tlmid} ({len(tldata)} bytes)")
 
 
 if __name__ == "__main__":

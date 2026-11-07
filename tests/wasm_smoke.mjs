@@ -640,6 +640,31 @@ if (existsSync(rampPath)) {
   check(false, '素材 tempo_ramp.mid 存在（先跑 make_fixture.py）');
 }
 
+// ---- 22. 长音跨小节：网页谱面与 MusicXML 都写延音线，不写休止符 ----
+// long_tie.mid 的旋律轨有一个 6 拍长音和一个 10 拍长音。量化阶段曾把超过
+// 全音符的时值钳到 4 拍，余下时间变成休止符——谱面上`3 - - -` 之后跟着
+// `0 - 4 5`，唱到一半凭空静音两拍。
+const longTiePath = path.join(FIXTURES, 'long_tie.mid');
+if (existsSync(longTiePath)) {
+  const lb = new Uint8Array(readFileSync(longTiePath));
+  const lq = makeCaller(mod);
+  lq.setMidi(lb);
+  const lh = lq.call('midi2jianpu_html', -1, 1) || '';
+  const dashes = (lh.match(/<span class='num'>-<\/span>/g) || []).length;
+  check(dashes === 8,
+    `WASM HTML 写出 8 个延音线（6 拍 2 个 + 10 拍 6 个），实际 ${dashes}`);
+  check(!/>0<\/span>/.test(lh.split('Piano')[0] || ''),
+    'WASM HTML 的旋律轨没有把延音写成休止符 0');
+
+  const lxml = lq.call('midi2jianpu_musicxml', -1, 1) || '';
+  const ls = (lxml.match(/<tie type="start"\/>/g) || []).length;
+  const le = (lxml.match(/<tie type="stop"\/>/g) || []).length;
+  check(ls === 3 && le === 3,
+    `WASM MusicXML 的 <tie> 起止成对（3/3），实际 ${ls}/${le}`);
+} else {
+  check(false, '素材 long_tie.mid 存在（先跑 make_fixture.py）');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);
