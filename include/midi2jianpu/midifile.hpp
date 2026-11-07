@@ -117,6 +117,26 @@ struct MarkerEvent {
 // 解析结果
 struct MidiData {
     int division = 480;
+
+    // ---- 文件头 MThd 的三个字段 ----
+    // 过去这一段是整块跳过的，于是两个「头字段级」的错误一直存在：
+    //   1) SMPTE 时间基准（division 高字节为负）被当成无符号 PPQ 读成 59176，
+    //      一首 16 拍的曲子被压进 1 小节，还被拆成 3 个假声部；
+    //   2) format 2 的多条轨其实是**各自独立的序列**，合并到同一时间轴后
+    //      两段音乐互相错位、同拍音被当成和弦。
+    // format: 0=单轨，1=多轨同一首，2=多轨各自独立。
+    int format = 1;
+    int trackCount = 0;
+    int rawDivision = 480;      // 文件里原始的 16 位 division（含 SMPTE 标志位）
+
+    bool smpte = false;         // division 高字节为负 → SMPTE 时间基准
+    int smpteFps = 0;           // 24 / 25 / 29（29.97 丢帧）/ 30
+    int smpteTicksPerFrame = 0;
+
+    // format 2 的取舍结果：共几段独立序列、实际转换的是哪一轨。
+    int format2SequenceCount = 0;
+    int format2UsedTrack = -1;
+
     std::vector<NoteEvent> notes;
     double tempo = 500000.0;
     TimeSignature timeSig;
@@ -220,9 +240,20 @@ inline long barEndTick(long bar, long barLen, long pickupTicks) {
     return (bar + 1) * barLen;
 }
 
-bool loadMidiFile(const std::string& path, MidiData& out);
+// keepAllFormat2 只对 format 2 文件有意义：默认只保留第一条含音符的序列
+// （其余轨属别的曲子），传 true 则原样保留全部轨——CLI 的 --track 要靠它
+// 才能选到第 2 段以后。
+bool loadMidiFile(const std::string& path, MidiData& out, bool keepAllFormat2 = false);
 
 // 从内存加载MIDI
-bool loadMidiFromMemory(const uint8_t* data, size_t size, MidiData& out);
+bool loadMidiFromMemory(const uint8_t* data, size_t size, MidiData& out,
+                        bool keepAllFormat2 = false);
+
+// ---- 文件头的一句话说明（CLI 提示 / HTML 页眉 / WASM 共用）----
+// 普通 PPQ 文件返回空串，调用方不必判断。
+// SMPTE：「SMPTE 25 fps × 40 tick → 500 tick/拍（按 ♩=120 折算）」
+std::string timeBaseLabel(const MidiData& data);
+// format 2：「format 2（多个独立序列）：共 2 段，只转换第 2 轨「SongA」」
+std::string formatLabel(const MidiData& data);
 
 } // namespace m2j

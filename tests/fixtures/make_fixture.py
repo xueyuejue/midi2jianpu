@@ -2,16 +2,18 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 17 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 19 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
-tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony
+tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
+smpte / format2
 （另配 3 份 LRC 歌词）。
 meter 是把变拍号、变速、鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」，
 modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五声调式
 （C 宫、G 徵调式，故意不写 0x59 逼自动猜调暴露宫音判错），tempo_ramp 用
 每半拍一个 set_tempo 复刻 DAW 的渐快 / 渐慢曲线，long_tie 则是 6 拍 / 10 拍
 长音跨小节，外加一条每小节一个 4 拍柱式和弦的钢琴轨，polyphony 则把钢琴
-左右手放进同一个轨，测「同拍不同值不是和弦而是两个声部」。
+左右手放进同一个轨，测「同拍不同值不是和弦而是两个声部」。smpte 是
+SMPTE 时间基准（0xE728 = 25fps×40），format2 则是两条互不相干的独立序列。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -1014,6 +1016,54 @@ def build_polyphony() -> bytes:
     return header + t0.render() + t1.render()
 
 
+def build_smpte() -> bytes:
+    """SMPTE 时间基准（division 高字节为负）的素材。
+
+    25 fps x 40 tick = 1000 tick/秒；曲首 120BPM 时一拍正好 500 tick。
+    旧实现把 0xE728 当无符号读成 59176，16 拍会被压进 1 小节。
+    第 9 拍另插一个 set_tempo 400BPM：SMPTE 下 tempo 不改变绝对时间，
+    解析层必须把它归一掉，否则后半程的秒数会被二次缩放。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 500000us -> 120BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调
+
+    TPB = 500                                          # 每拍 500 tick
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Smpte Vocal"))
+    t1.add(8 * TPB, meta(0x51, bytes([0x02, 0x49, 0xF0])))   # 150000us -> 400BPM
+    for i, p in enumerate((60, 62, 64, 65, 67, 69, 71, 72,
+                           72, 71, 69, 67, 65, 64, 62, 60)):
+        t1.note(0, p, 96, i * TPB, TPB)
+
+    # 0xE7 = -25 fps，0x28 = 40 tick/frame
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, 0xE728)
+    return header + t0.render() + t1.render()
+
+
+def build_format2() -> bytes:
+    """format 2 素材：两条轨是两段互相独立的音乐，不是同一首的两个声部。
+
+    SongA 4 小节 16 个四分音符，SongB 只有 2 小节 8 个音。旧实现把它们并到
+    同一条时间轴上，两段小节线对不齐；现在只转 SongA，其余轨丢弃。
+    """
+    a = Track()
+    a.add(0, meta(0x03, b"SongA"))
+    for i, p in enumerate((60, 62, 64, 65, 67, 69, 71, 72,
+                           72, 71, 69, 67, 65, 64, 62, 60)):
+        a.note(0, p, 96, i * DIV, DIV)
+
+    b = Track()
+    b.add(0, meta(0x03, b"SongB"))
+    for i, p in enumerate((72, 71, 69, 67, 65, 64, 62, 60)):
+        b.note(0, p, 96, i * DIV, DIV)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 2, 2, DIV)
+    return header + a.render() + b.render()
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -1150,6 +1200,20 @@ def main() -> None:
         tpdata = build_polyphony()
         f.write(tpdata)
     print(f"wrote {tpmid} ({len(tpdata)} bytes)")
+
+    # SMPTE 时间基准素材
+    smid = os.path.join(here, "smpte.mid")
+    with open(smid, "wb") as f:
+        sdata = build_smpte()
+        f.write(sdata)
+    print(f"wrote {smid} ({len(sdata)} bytes)")
+
+    # format 2（多个独立序列）素材
+    f2mid = os.path.join(here, "format2.mid")
+    with open(f2mid, "wb") as f:
+        f2data = build_format2()
+        f.write(f2data)
+    print(f"wrote {f2mid} ({len(f2data)} bytes)")
 
 
 if __name__ == "__main__":

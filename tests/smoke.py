@@ -1134,6 +1134,74 @@ def main():
     check("声部1" not in sample_out and "声部2" not in sample_out,
           "单声部素材不拆声部（不出现声部N 标签）")
 
+    print("\n[28] SMPTE 时间基准：division 高字节为负")
+    smpte = os.path.join(FIXTURES, "smpte.mid")
+    rc, out, err = run(exe, smpte)
+    check(rc == 0, "SMPTE 文件解析成功", err[:200])
+    check("时间基准 SMPTE 25 fps × 40 tick → 500 tick/拍" in out,
+          "报出 SMPTE 基准并折算成 500 tick/拍")
+    check("division=500" in out, "division 已折算（不再是无符号的 59176）")
+    check("division=59176" not in out, "不再把 0xE728 读成 59176")
+    check("♩=120" in out and "→ 400" not in out,
+          "中途 400BPM 的 set_tempo 被归一，页眉只报 ♩=120")
+    check("声部2" not in out,
+          "不再把量化错乱的音符拆成假声部")
+    body = out.split("---")[-1]
+    check(body.count("|") == 4, f"16 拍划成 4 小节，实际小节线 {body.count('|')}")
+
+    sx = os.path.join(tmp, "smpte.xml")
+    rc, _, err = run(exe, smpte, "--musicxml", sx)
+    check(rc == 0, "SMPTE 文件导出 MusicXML", err[:200])
+    sxml = open(sx, encoding="utf-8").read()
+    sdiv = int(re.search(r"<divisions>(\d+)</divisions>", sxml).group(1))
+    check(sdiv == 500, f"MusicXML divisions 用折算后的 500，实际 {sdiv}")
+    check(sxml.count("<measure ") == 4,
+          f"MusicXML 四个小节，实际 {sxml.count(chr(60) + 'measure ')}")
+    sbad = []
+    for mbody in re.findall(r"<measure [^>]*>(.*?)</measure>", sxml, re.S):
+        tot = sum(int(d) for d in re.findall(r"<duration>(\d+)</duration>", mbody)
+                  if "<chord/>" not in mbody)
+        if tot != 4 * sdiv:
+            sbad.append(tot)
+    check(not sbad, f"每小节正好 4 拍 = {4 * sdiv} tick，实际 {sbad[:3]}")
+
+    sh = os.path.join(tmp, "smpte.html")
+    rc, _, err = run(exe, smpte, "--html", sh)
+    check(rc == 0, "SMPTE 文件导出 HTML", err[:200])
+    shtml = open(sh, encoding="utf-8").read()
+    check("SMPTE 25 fps × 40 tick" in shtml, "HTML 页眉写有时间基准")
+
+    print("\n[29] format 2：多条轨是互相独立的序列")
+    f2 = os.path.join(FIXTURES, "format2.mid")
+    rc, out, err = run(exe, f2)
+    check(rc == 0, "format 2 文件解析成功", err[:200])
+    check("format 2（多个独立序列）：共 2 段，只转换轨 0" in out,
+          "说明只转了第 0 段")
+    check("16 个音符" in out and "24 个音符" not in out,
+          "只保留 SongA 的 16 个音符（不再把两段并成 24 个）")
+    check("[SongA]" in out and "[SongB]" not in out,
+          "另一段没有混进谱面")
+
+    rc, out2, _ = run(exe, f2, "--track", "1")
+    check(rc == 0 and "8 个音符" in out2 and "[SongB]" in out2,
+          "--track 1 能取到第二段（SongB）")
+    check("只转换轨 1" in out2, "--track 后提示跟着改口")
+
+    fx = os.path.join(tmp, "format2.xml")
+    rc, _, err = run(exe, f2, "--musicxml", fx)
+    check(rc == 0, "format 2 导出 MusicXML", err[:200])
+    fxml = open(fx, encoding="utf-8").read()
+    fdiv = int(re.search(r"<divisions>(\d+)</divisions>", fxml).group(1))
+    check(fxml.count("<measure ") == 4,
+          f"只写 SongA 的 4 小节，实际 {fxml.count(chr(60) + 'measure ')}")
+    fbad = []
+    for mbody in re.findall(r"<measure [^>]*>(.*?)</measure>", fxml, re.S):
+        tot = sum(int(d) for d in re.findall(r"<duration>(\d+)</duration>", mbody)
+                  if "<chord/>" not in mbody)
+        if tot != 4 * fdiv:
+            fbad.append(tot)
+    check(not fbad, f"每小节正好 4 拍，实际 {fbad[:3]}")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

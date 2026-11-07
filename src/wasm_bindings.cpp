@@ -202,6 +202,19 @@ const char* midi2jianpu_part_info(const uint8_t* midiData, int size) {
     return buf.c_str();
 }
 
+// 文件头读法提示：SMPTE 时间基准 + format 2 独立序列，两段文字用「 ｜ 」拼。
+// 网页版读到 SMPTE 文件时，用户看到的 division 会和常见 PPQ 完全不同，
+// 不说一句「已按 SMPTE 折算」就会被当成解析错误。都没触发时返回空串。
+const char* midi2jianpu_file_header_info(const uint8_t* midiData, int size) {
+    static std::string buf;
+    m2j::MidiData data;
+    if (!m2j::loadMidiFromMemory(midiData, size, data)) { buf.clear(); return buf.c_str(); }
+    buf = m2j::timeBaseLabel(data);
+    const std::string fl = m2j::formatLabel(data);
+    if (!fl.empty()) buf += (buf.empty() ? "" : " ｜ ") + fl;
+    return buf.c_str();
+}
+
 // 获取MIDI音符数据(JSON格式, 用于播放)
 const char* midi2jianpu_get_notes_json(const uint8_t* midiData, int size) {
     m2j::MidiData data;

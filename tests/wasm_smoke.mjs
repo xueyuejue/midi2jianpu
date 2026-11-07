@@ -707,6 +707,62 @@ if (existsSync(polyPath)) {
   check(false, '素材 polyphony.mid 存在（先跑 make_fixture.py）');
 }
 
+// ---- 24. 文件头 MThd：SMPTE 时间基准与 format 2 独立序列 ----
+// 这两类文件过去会被静默读错：SMPTE 的 0xE728 被当成无符号 PPQ 59176，
+// format 2 的多段独立序列被并成一首。网页若不提示，用户只会觉得「转换坏了」。
+const smptePath = path.join(FIXTURES, 'smpte.mid');
+check(existsSync(smptePath), '素材 smpte.mid 存在（先跑 make_fixture.py）');
+if (existsSync(smptePath)) {
+  const sb = new Uint8Array(readFileSync(smptePath));
+  const sptr = mod._malloc(sb.length);
+  mod.HEAPU8.set(sb, sptr);
+  const fh = mod.UTF8ToString(mod._midi2jianpu_file_header_info(sptr, sb.length));
+  mod._free(sptr);
+  check(/SMPTE 25 fps/.test(fh) && /500 tick/.test(fh),
+    `WASM 报出 SMPTE 折算结果，实际：${fh}`);
+
+  const sc = makeCaller(mod);
+  sc.setMidi(sb);
+  const sh = sc.call('midi2jianpu_html', -1, 1) || '';
+  check(sh.includes('SMPTE 25 fps'), 'WASM HTML 页眉写有时间基准');
+
+  const sx = sc.call('midi2jianpu_musicxml', -1, 1) || '';
+  const sd = sx.match(/<divisions>(\d+)<\/divisions>/);
+  check(sd && sd[1] === '500',
+    `WASM MusicXML divisions 用折算后的 500，实际 ${sd && sd[1]}`);
+  const smeasures = (sx.match(/<measure /g) || []).length;
+  check(smeasures === 4, `WASM MusicXML 四个小节，实际 ${smeasures}`);
+}
+
+const f2Path = path.join(FIXTURES, 'format2.mid');
+check(existsSync(f2Path), '素材 format2.mid 存在（先跑 make_fixture.py）');
+if (existsSync(f2Path)) {
+  const fb = new Uint8Array(readFileSync(f2Path));
+  const fptr = mod._malloc(fb.length);
+  mod.HEAPU8.set(fb, fptr);
+  const finfo = mod.UTF8ToString(mod._midi2jianpu_file_header_info(fptr, fb.length));
+  mod._free(fptr);
+  check(/format 2/.test(finfo) && /2 段/.test(finfo),
+    `WASM 说明 format 2 只转了第一段，实际：${finfo}`);
+
+  const fc = makeCaller(mod);
+  fc.setMidi(fb);
+  const fhtml = fc.call('midi2jianpu_html', -1, 1) || '';
+  check(fhtml.includes('SongA') && !fhtml.includes('SongB'),
+    'WASM HTML 只有 SongA，另一段没混进来');
+  const fxml = fc.call('midi2jianpu_musicxml', -1, 1) || '';
+  check((fxml.match(/<measure /g) || []).length === 4,
+    `WASM MusicXML 只写 SongA 的 4 小节，实际 ${(fxml.match(/<measure /g) || []).length}`);
+}
+
+// 网页脚本里两处返回 char* 的调用必须过 UTF8ToString。少包一层就会在上传
+// 文件时抛 TypeError（拿指针当字符串用），连带 convert() 都不执行。
+const pageHtml = readFileSync(path.join(ROOT, 'docs', 'index.html'), 'utf8');
+check(/UTF8ToString\(\s*wasmMod\._midi2jianpu_part_info/.test(pageHtml),
+  'docs/index.html 的 part_info 用 UTF8ToString 取了字符串');
+check(/UTF8ToString\(\s*wasmMod\._midi2jianpu_file_header_info/.test(pageHtml),
+  'docs/index.html 的 file_header_info 用 UTF8ToString 取了字符串');
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

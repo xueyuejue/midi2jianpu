@@ -139,7 +139,8 @@ int main(int argc, char** argv) {
     if (input.empty()) { printHelp(); return 1; }
 
     m2j::MidiData data;
-    if (!m2j::loadMidiFile(input, data)) {
+    // --track 要在 format 2 里挑段落，此时不能提前丢掉别的轨
+    if (!m2j::loadMidiFile(input, data, trackFilter >= 0)) {
         std::cerr << "错误: 无法读取或解析 MIDI 文件: " << input << "\n";
         return 2;
     }
@@ -183,6 +184,19 @@ int main(int argc, char** argv) {
         for (auto& n : data.notes) if (n.track == trackFilter) filtered.push_back(n);
         data.notes = filtered;
         if (data.notes.empty()) { std::cerr << "轨道 " << trackFilter << " 无音符。\n"; return 4; }
+        // 手动挑段落后，文件头提示里的「第 N 轨」要跟着改口
+        if (data.format == 2) data.format2UsedTrack = trackFilter;
+    }
+
+    // 文件头读法的提示。放在 --track 之后：format 2 的提示要报「实际转了哪一轨」，
+    // 提前打印就会和用户手动指定的轨道互相矛盾。
+    // SMPTE 文件若不说明，用户看到 division=500 会以为解析错了；
+    // format 2 若不说明，用户会怀疑「另几段音乐去哪了」。
+    {
+        const std::string tb = m2j::timeBaseLabel(data);
+        if (!tb.empty()) std::cout << tb << "\n";
+        const std::string fl = m2j::formatLabel(data);
+        if (!fl.empty()) std::cout << fl << "（--track 可从 0 起指定别的段落）\n";
     }
 
     // --transpose 移调
@@ -219,8 +233,7 @@ int main(int argc, char** argv) {
     }
 
     m2j::KeyEstimate key;
-    std::string keySource;
-    if (!gongArg.empty()) {
+    std::string keySource;    if (!gongArg.empty()) {
         // --gong 优先于 --key：它同时决定「1 落在哪个音」和调式名。
         m2j::KeyEstimate g;
         if (parseKey(gongArg, g)) {

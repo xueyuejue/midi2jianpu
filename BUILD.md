@@ -33,7 +33,7 @@ cmake --build build --config Release
 
 ## 测试
 
-### 单元测试（400 项）
+### 单元测试（420 项）
 
 ```bash
 cd build && ctest --output-on-failure
@@ -41,7 +41,7 @@ cd build && ctest --output-on-failure
 ./build/test_basic
 ```
 
-成功时输出 `共 400 项，失败 0 项 -> 全部通过`。
+成功时输出 `共 420 项，失败 0 项 -> 全部通过`。
 
 覆盖范围：调性识别、各调八度基准、升降号书写（含降号调）、时值后缀、三连音、同音合并、和弦检测、移调、MusicXML 小节时长与 `<chord/>`，以及十六组解析层回归——**鼓轨过滤**、**旋律轨判定**、**变速 tempo map 秒数换算**、**弱起小节网格**、**歌词分配与一字多音区间**、**MIDI 内置歌词规整与精确对齐**、**拍号 map 与逐小节网格**、**调号 map（中途转调 / KeyMap）**、**五声调式宫音判定**、**TempoTimeline 与 LRC 变速对齐（tick/秒往返、乱序去重、offset、多时间戳、旧签名对照）**、**ExpressionMap 演奏表情（力度六档 / 渐变 / 断奏 / 重音 / 滑音 / 颤音 / 段落 / 通道隔离 / 开关 / 节奏混合时不误判）与解析层 velocity、原始时值、多轨事件排序**、**GM 音色名（英文全名 / 中文译名覆盖）、`0xC0` 解析（通道 → GM 音色号）、声部乐器标注 `listParts` / `partSummary`、倚音检测与通道隔离、无 0xC0 / 等间隔流零标注回归**、**和弦转位（低音非根音才写斜杠 / 和弦外音不写）、`Bm7b5` 与 `G7sus4` 的类型扩充、`ChordMark` 的结构化字段（rootPc / kind / kindText / bassPc）**、**速度曲线折叠（`tempoMarksOf`：渐变 / 阶跃 / 抖动退化 / 5% 跨度阈值 / 一拍聚簇阈值 / 曲首独立阶跃 / 页眉文案）**、**长音跨小节（6 拍 / 10 拍时值不被截断、延音段写成 `-` 而非休止符、复调轨 4 拍和弦不被门限放大、断奏轨门限还原仍生效）**、**同轨复调（`splitVoices`：同拍同值算和弦 / 同拍不同值拆声部 / 重叠拆声部 / 超上限退化并截短 / 倚音 skip）、复调 MusicXML 的 `<backup>` 与逐小节时值守恒、单声部零 `<backup>` 回归**（都在内存里现构造最小 SMF，不依赖 fixture 文件）。
 
@@ -50,7 +50,7 @@ cd build && ctest --output-on-failure
 需要 Python 3（只用标准库）：
 
 ```bash
-python tests/fixtures/make_fixture.py     # 生成 17 份 .mid 素材（含 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony）+ 3 份变速 LRC
+python tests/fixtures/make_fixture.py     # 生成 19 份 .mid 素材（含 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony / smpte / format2）+ 3 份变速 LRC
 python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2jianpu.exe
 ```
 
@@ -85,6 +85,18 @@ python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2ji
 `long_tie.mid` 是**长音跨小节（延音线）素材**：9 小节 4/4，旋律轨在 bar4 放一个 **6 拍**长音（跨到下一小节第 2 拍）、在 bar7 放一个 **10 拍**长音（跨三小节），另配一条每小节一个 **4 拍柱式三和弦**的钢琴轨。断言覆盖文本谱 `3 - - -` 之后跟着 `- - 4 5`（不是 `0 - 4 5`）、每个小节正好 4 个 token（长音没被门限放大）、HTML 单独写出的延音线共 8 个、MusicXML 的 `<tie>` 起止成对 3/3 且 `<tied>` 同步；钢琴轨的 9 个和弦每行正好 12 个 token，锁住「复调轨长音不被放大」这条。
 
 `polyphony.mid` 是**同轨复调（一条轨两个声部）素材**：4 小节 4/4，钢琴轨里右手走四分音符（`5 6 7 1'` / `2' 3' 4' 5'` / `6'(2) 5'(2)` / `- - 4' 3'`），左手长音铺底（全音符 ×2，第 3 小节第 3 拍起一个 4 拍音跨至下一小节）。断言覆盖文本谱拆成 `[Piano · 声部1]` / `[Piano · 声部2]` 两块且每行正好 4 个 token、第二声部从小节中段进入时先补休止、MusicXML 每个复调小节各一次 `<backup>` 与 `<voice>2</voice>`、逐小节总时值正好 1920 tick（`<chord/>` 不推进、`<backup>` 回退）、跨小节低音在声部内写成一对 `<tie>`、HTML 拆成两块 `.staff` 并标 `声部 2`，以及单声部素材不被误拆。
+
+`smpte.mid` 是**SMPTE 时间基准素材**：`MThd` 的 division 写成 `0xE728`（= -25 fps × 40
+tick/frame，即 1000 tick/秒），曲首 120BPM 使一拍正好 500 tick，共 16 拍 4 小节；
+第 9 拍额外写一个 400BPM 的 `set_tempo`，用来验证「SMPTE 下 tempo 不改变绝对时间」
+必须被归一。断言覆盖 `division == 500`（而不是无符号的 59176）、16 个音符不被拆成
+假声部、第 9 拍落在 4.0 秒、`tempoChanges` 收成 1 点、小节线正好 4 条、MusicXML
+`<divisions>500</divisions>` 且每小节 2000 tick。
+
+`format2.mid` 是**format 2 独立序列素材**：两条轨分别是 SongA（4 小节 16 音）与
+SongB（2 小节 8 音），彼此无关。断言覆盖默认只转 SongA（16 个音符、不含
+`[SongB]`）、`format2SequenceCount == 2`、`--track 1` 能取到 SongB（8 个音符）、
+`keepAllFormat2` 时保留全部 24 个音符，以及 MusicXML 只写 4 个小节且每小节 4 拍。
 
 路线图里的「更多真实 MIDI 样本校验」由这些混合素材配合 `die_yi_sui_xue_vocal.mid`（真实人声录音导出）完成：每次发布都用它做一次带 LRC 的全链路回归渲染，确认新的网格 / 调号 map / 调式校正 / 时间轴 / 表情分析没有改变已有曲目的输出（v1.20.0 的真实曲目 MusicXML 与 v1.19.0 **逐字节一致**，HTML 谱面内容也逐字节一致，仅内联 CSS 多了几条定义）。这份曲子音头间隔是 0.5 / 1 / 1.5 / 2 拍混合，正好用来守住「断奏不误判」这道闸门。
 
