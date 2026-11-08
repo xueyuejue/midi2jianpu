@@ -175,10 +175,11 @@ node tests/wasm_smoke.mjs build-wasm/midi2jianpu.js        # 或测新编的
 
 需要 Node 18+。它走的是 `docs/index.html` 里 `callWasm()` 的同一条调用路径，
 逐项检查网页每个按钮背后的导出符号是否存在、返回内容是否合法、坏数据会不会崩。
+共 35 组，其中第 34 组直接比对 `version.hpp` 的 `M2J_VERSION` 与 WASM 生成的页脚版本号，第 35 组用 `pedal_hysteresis.mid` 校验网页端也带上了 CC64 迟滞修复。
 
 **这个测试的存在理由**：仓库曾出现「源码加了 `_midi2jianpu_musicxml`，但
 `docs/wasm/` 里还是旧产物」的静默回归——CLI 测试全绿，网页按钮点了没反应。
-CLI 测试永远发现不了这类问题，只能由它兜住。改了 `src/` 一定要重编 wasm 并跑一遍。
+CLI 测试永远发现不了这类问题，只能由它兜住。改了 `src/` 一定要重编 wasm 并跑一遍。 升过 `version.hpp` 却忘了重编 wasm 时，第 34 组会直接报「页脚 v旧 / 源码 v新」——v1.35.0 ~ v1.37.0 的网页产物曾连续三版停在 1.34.0，这道守护就是为此加的。
 
 ### 提交署名守护（换电脑后必跑一次）
 
@@ -252,6 +253,14 @@ python tools/check_commit_attribution.py --history       # 自查全部历史提
 
 ### 一、装 emsdk
 
+**便携树已自带，通常无需安装**：绿色移交目录里的 `../tools/emsdk` 就是一套
+完整可用的 emsdk（emcc 6.0.13 / clang 24 / Node 24 / Python 3.13），
+`build\build_wasm.cmd` 用 `%~dp0..\..` 自动定位到它，直接运行该 .cmd 即可重编。
+换电脑若 emsdk 放在别处，先 `set EMSDK=...` 覆盖，不要改脚本
+（脚本注释保持纯 ASCII、行尾 CRLF）。
+
+只有拿到一份不带 `tools/emsdk` 的裸仓库时才需要自己装：
+
 ```bash
 git clone --depth 1 https://github.com/emscripten-core/emsdk.git
 cd emsdk
@@ -285,6 +294,17 @@ emcc --version
 
 ### 二、编译
 
+最省事的一键方式（自动定位便携 emsdk，导出清单以脚本为唯一真源）：
+
+```bat
+build\build_wasm.cmd
+node tests/wasm_smoke.mjs build-wasm/midi2jianpu.js
+copy build-wasm\midi2jianpu.js   docs\wasm\
+copy build-wasm\midi2jianpu.wasm docs\wasm\
+```
+
+或者走 CMake：
+
 ```bash
 emcmake cmake -B build-wasm -S . -DM2J_BUILD_WASM=ON
 cmake --build build-wasm
@@ -299,18 +319,12 @@ cp build-wasm/midi2jianpu.wasm docs/wasm/
 > **Windows 上没有 ninja / make**：`emcmake cmake` 需要 Ninja 或 Make 生成器，
 > MSVC 的默认生成器驱动不了 emcc。装一个 ninja（或 `pip install ninja`、
 > `choco install ninja`）后用 `emcmake cmake -G Ninja -B build-wasm -S . -DM2J_BUILD_WASM=ON`；
-> 实在装不上就直接调 `em++`，参数与 CMakeLists 完全一致：
+> 实在装不上就直接跑 `build\build_wasm.cmd`（内部直接调 `em++`）。
 >
-> ```bash
-> em++ -std=c++17 -O2 -Iinclude \
->   src/wasm_bindings.cpp src/midifile.cpp src/notation.cpp \
->   src/html_writer.cpp src/musicxml_writer.cpp \
->   -o build-wasm/midi2jianpu.js \
->   -sEXPORTED_FUNCTIONS='["_malloc","_free","_midi2jianpu_parse","_midi2jianpu_html","_midi2jianpu_musicxml","_midi2jianpu_result_len","_midi2jianpu_copy_result","_midi2jianpu_set_lyrics","_midi2jianpu_set_title","_midi2jianpu_set_use_midi_lyrics","_midi2jianpu_midi_lyric_count","_midi2jianpu_key_change_count","_midi2jianpu_tempo_change_count","_midi2jianpu_set_use_pentatonic","_midi2jianpu_pentatonic_info","_midi2jianpu_get_notes_json","_midi2jianpu_set_use_dynamics","_midi2jianpu_expression_count","_midi2jianpu_part_info"]' \
->   -sEXPORTED_RUNTIME_METHODS='["UTF8ToString","lengthBytesUTF8","stringToUTF8","HEAPU8"]' \
->   -sMODULARIZE=1 -sEXPORT_NAME=createMidi2Jianpu \
->   -sALLOW_MEMORY_GROWTH=1 -sENVIRONMENT=web,node
-> ```
+> **不要再手抄 `-sEXPORTED_FUNCTIONS` 清单**：它以 `build/build_wasm.cmd` 与
+> `CMakeLists.txt` 为准，两处都随新导出同步更新；文档里复制的旧清单曾长期缺
+> `file_header_info` / `controller_info` / `track_info` 等 10 个导出，照抄会编出
+> 一个网页按钮点不动的 wasm。
 
 产物 `midi2jianpu.js` + `midi2jianpu.wasm`，`docs/index.html` 直接加载这两个文件。
 两个链接参数有坑，改之前先看：

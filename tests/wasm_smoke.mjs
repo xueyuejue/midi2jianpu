@@ -1221,6 +1221,37 @@ check(/_midi2jianpu_set_track\(currentTrack\(\)\)/.test(pageHtml2),
   'docs/index.html 转换前按当前下拉框重设段落');
 check(/<select id="track"/.test(pageHtml2) && /function fillTrackOptions/.test(pageHtml2),
   'docs/index.html 提供段落下拉框并按 MThd 轨数填充');
+
+// ---- 34. WASM 产物版本必须与源码一致（防止只发 CLI、忘记重编 wasm） ----
+// 历史教训：v1.35.0 ~ v1.37.0 的 CLI 都修好了，docs/wasm/ 却一直是 1.34.0 的
+// 产物，网页转换器连续三版拿不到修复、页脚版本号也一直滞后。这里直接比对
+// version.hpp 与 WASM 生成的页脚，漏重编就当场失败。
+const versionHpp = readFileSync(path.join(ROOT, 'include', 'midi2jianpu', 'version.hpp'), 'utf8');
+const srcVer = (versionHpp.match(/M2J_VERSION\s+"([^"]+)"/) || [])[1] || '';
+const wasmVer = ((htmlLyric || '').match(/<footer[^>]*>[^<]*v([\d.]+)/) || [])[1] || '';
+check(/^\d+\.\d+\.\d+$/.test(srcVer), `version.hpp 能读出版本号（${srcVer}）`);
+check(srcVer !== '' && srcVer === wasmVer,
+  `WASM 产物与源码版本一致（v${srcVer}）`,
+  `页脚 v${wasmVer} / 源码 v${srcVer}；改了 src/ 后请重编 docs/wasm/`);
+
+// ---- 35. v1.36.0 CC64 踏板迟滞：网页端也要延到真正的释放点 ----
+// 127 -> 50（死区 33..63）-> 0：旧二值判定在 50 处就断开（1 拍），迟滞后
+// 延到真正释放点（2 拍）。CLI 有素材和冒烟组，网页端由这里兜住。
+const phPath = path.join(FIXTURES, 'pedal_hysteresis.mid');
+if (existsSync(phPath)) {
+  const ph = makeCaller(mod);
+  ph.setMidi(new Uint8Array(readFileSync(phPath)));
+  ph.setLyrics('');
+  const phXml = ph.call('midi2jianpu_musicxml', -1, 1) || '';
+  const pitched = [...phXml.matchAll(/<note\b[\s\S]*?<\/note>/g)]
+    .map((m) => m[0]).filter((b) => !/<rest\b/.test(b));
+  check(pitched.length === 1, '踏板迟滞素材在网页端解析出 1 个实音', phXml.slice(0, 200));
+  check(pitched.length === 1 && /<duration>960<\/duration>/.test(pitched[0])
+    && /<type>half<\/type>/.test(pitched[0]),
+    'CC64 迟滞：网页 WASM 延到真正释放点（960 tick / half，旧产物是 1 拍）',
+    pitched[0] || '');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);
