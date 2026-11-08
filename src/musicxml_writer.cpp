@@ -157,11 +157,18 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
         auto it = data.trackNames.find(t);
         if (it != data.trackNames.end() && !it->second.empty()) name = it->second;
         else name = "Part " + std::to_string(t + 1);
-        // 声部乐器：取该声部第一个音符的通道，查 0xC0 音色号得到 GM 乐器名。
+        // 声部乐器：取该声部第一个音符的通道与时刻，按时间轴查当时的
+        // 0xC0 音色号；中途换乐器的曲子不会整首都标成最后一件乐器。
         int pch = ns.empty() ? -1 : ns.front().channel;
+        long firstTick = 0;
+        if (!ns.empty()) {
+            firstTick = ns.front().startTicks;
+            for (const auto& nn : ns)
+                if (nn.startTicks < firstTick) firstTick = nn.startTicks;
+        }
         std::string inst;
-        auto pit = data.channelProgram.find(pch);
-        if (pit != data.channelProgram.end()) inst = gmInstrumentName(pit->second);
+        const int prg = pch < 0 ? -1 : programAt(data, pch, firstTick);
+        if (prg >= 0) inst = gmInstrumentName(prg);
         xml << "    <score-part id=\"P" << partIdx << "\">"
             << "<part-name>" << xmlEscape(name) << "</part-name>";
         if (!inst.empty()) {

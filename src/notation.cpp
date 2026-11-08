@@ -1335,10 +1335,14 @@ std::string gmInstrumentName(int prog) {
 std::vector<std::pair<std::string, std::string>> listParts(const MidiData& data) {
     // 统计每条声部轨（跳过打击乐通道 9）的主导通道 -> 音色号
     std::map<int, std::map<int, int>> trackChanCount;  // track -> channel -> count
+    std::map<int, long> trackFirstTick;                 // track -> 首音 tick
     for (const auto& n : data.notes) {
         // 逻辑通道是 port*16+ch，鼓件看低 4 位；port 0 时仍是原来的 9。
         if ((n.channel & 0x0F) == 9) continue;  // 鼓轨已在解析阶段丢弃，防御性再跳一次
         trackChanCount[n.track][n.channel]++;
+        auto fit = trackFirstTick.find(n.track);
+        if (fit == trackFirstTick.end() || n.startTicks < fit->second)
+            trackFirstTick[n.track] = n.startTicks;
     }
     std::vector<std::pair<std::string, std::string>> out;
     for (auto& [tr, chans] : trackChanCount) {
@@ -1351,9 +1355,13 @@ std::vector<std::pair<std::string, std::string>> listParts(const MidiData& data)
         auto it = data.trackNames.find(tr);
         if (it != data.trackNames.end() && !it->second.empty()) name = it->second;
         else name = "轨 " + std::to_string(tr);
+        // 按声部首音那一刻生效的音色取名：一首曲子中途 0xC0 换乐器时，
+        // 前半首不该被标成最后那件乐器。没有时间轴记录时 programAt 会
+        // 自动回退到 channelProgram，普通 GM 文件行为逐字节不变。
         std::string inst;
-        auto pit = data.channelProgram.find(bestCh);
-        if (pit != data.channelProgram.end()) inst = gmInstrumentName(pit->second);
+        const long firstTick = trackFirstTick.count(tr) ? trackFirstTick[tr] : 0;
+        const int prg = programAt(data, bestCh, firstTick);
+        if (prg >= 0) inst = gmInstrumentName(prg);
         out.emplace_back(std::move(name), std::move(inst));
     }
     return out;

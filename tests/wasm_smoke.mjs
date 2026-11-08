@@ -1093,6 +1093,56 @@ for (const name of ['sysex_unknown.mid', 'sample.mid', 'port_standard.mid']) {
 check(/UTF8ToString\(\s*wasmMod\._midi2jianpu_sysex_info/.test(pageHtml2),
   'docs/index.html 的 sysex_info 用 UTF8ToString 取了字符串');
 
+
+// ---- 32. Bank Select / Program Change：网页端同样按时间轴处理 ----
+// 旧实现忽略 CC0 / CC32，XG 用 `Bn 00 7F` 指定的鼓通道会转成假旋律；
+// 0xC0 也只记最后一个音色号，中途换乐器时前半首声部被错标。
+function bankInfo(bytes) {
+  if (!mod._midi2jianpu_bank_info) return '';
+  const ptr = mod._malloc(bytes.length);
+  mod.HEAPU8.set(bytes, ptr);
+  const s = mod.UTF8ToString(mod._midi2jianpu_bank_info(ptr, bytes.length));
+  mod._free(ptr);
+  return s || '';
+}
+check(typeof mod._midi2jianpu_bank_info === 'function',
+  'WASM 导出 _midi2jianpu_bank_info');
+const bxBytes = readFixture('bank_xg_drum.mid');
+if (bxBytes) {
+  const info = bankInfo(bxBytes);
+  check(/2 处 Bank Select/.test(info) && /1 条 XG 鼓组通道/.test(info),
+    `bank_xg_drum：WASM 报出 Bank Select 与鼓组通道，实际：${info}`);
+  const caller = makeCaller(mod);
+  caller.setMidi(bxBytes);
+  const xml = caller.call('midi2jianpu_musicxml', -1, 1) || '';
+  const steps = [...xml.matchAll(/<step>[A-G]<\/step>/g)];
+  check(steps.length === 8 && !/<octave>2<\/octave>/.test(xml),
+    'bank_xg_drum：网页 MusicXML 只有 8 个旋律音，没有低八度鼓件音');
+}
+const bnBytes = readFixture('bank_normal.mid');
+if (bnBytes) {
+  const caller = makeCaller(mod);
+  caller.setMidi(bnBytes);
+  const xml = caller.call('midi2jianpu_musicxml', -1, 1) || '';
+  check([...xml.matchAll(/<step>[A-G]<\/step>/g)].length >= 16,
+    'bank_normal：普通音色库对照的网页 MusicXML 不丢音');
+}
+const ptBytes = readFixture('program_timeline.mid');
+if (ptBytes) {
+  const caller = makeCaller(mod);
+  caller.setMidi(ptBytes);
+  const xml = caller.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(/<instrument-name>钢琴<\/instrument-name>/.test(xml) &&
+        !/<instrument-name>小提琴<\/instrument-name>/.test(xml),
+    'program_timeline：网页 MusicXML 的声部乐器名按首音时刻取钢琴');
+}
+for (const name of ['program_timeline.mid', 'sample.mid', 'sysex_gs_drum.mid']) {
+  const bytes = readFixture(name);
+  if (!bytes) continue;
+  check(bankInfo(bytes) === '', `${name}：无 Bank Select 时返回空串`);
+}
+check(/UTF8ToString\(\s*wasmMod\._midi2jianpu_bank_info/.test(pageHtml2),
+  'docs/index.html 的 bank_info 用 UTF8ToString 取了字符串');
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

@@ -117,6 +117,22 @@ struct BendRangePoint {
     int seq;
 };
 
+// 音色设定点（0xC0 Program Change + 它之前的 CC0 / CC32 Bank Select）。
+//
+// 旧实现只往 channelProgram[channel] 写最后一个音色号，于是一首曲子中途换
+// 乐器时，前半首的声部也被标成最后那件乐器；CC0 / CC32 更是整段跳过，
+// 而 Yamaha XG 正是用 Bank MSB 127 把任意 part 切成鼓组。这里按
+// (tick, 逻辑通道) 记全完整音色状态，鼓判定与乐器名一律按时间轴查询。
+struct ProgramPoint {
+    long tick;
+    int channel;
+    int program;      // 0..127
+    int bankMsb = 0;  // CC0；127 = XG 鼓组
+    int bankLsb = 0;  // CC32
+    bool drum = false;
+    int seq = 0;
+};
+
 // 弯音轮事件（从 0xE0 解析，14位值，中心8192）
 struct PitchBendPoint {
     long tick;
@@ -238,6 +254,17 @@ struct MidiData {
     int sysExNormalChannels = 0;      // 被 SysEx 改回普通乐器的逻辑通道数
     int sysExDrumNotesSkipped = 0;    // 因 SysEx 鼓设定丢掉的音符数
 
+    // ---- CC0 / CC32 Bank Select 与 0xC0 Program Change 的时间轴 ----
+    // 旧实现忽略 CC0 / CC32，只把最后一个 program 号写进 channelProgram，
+    // 于是 XG 鼓组库（Bank MSB 127）指定的鼓通道被当旋律、中途换音色的
+    // 曲子整首都标成最后一件乐器。programTimeline 按 (tick, 逻辑通道) 记全。
+    std::vector<ProgramPoint> programTimeline;
+    int bankSelectEvents = 0;        // CC0 / CC32 事件数
+    int programChangeEvents = 0;     // 0xC0 事件数
+    int bankModeEvents = 0;          // 由 Bank Select 触发的鼓组切换数
+    int bankDrumChannels = 0;        // 被 Bank MSB 127 设为鼓的逻辑通道数
+    int programSwitchChannels = 0;   // 中途换过音色的通道数
+
     // 弱起（anacrusis）小节长度，单位 tick；-1 表示自动判定（见 notation.hpp
     // 的 detectPickupTicks），0 表示明确没有弱起。
     //
@@ -348,6 +375,13 @@ std::string portLabel(const MidiData& data);
 // SysEx 鼓模式：GS/XG 指定了哪些鼓通道、Reset 恢复了默认、跳过了多少鼓件音。
 // 文件里没有这类 SysEx 时返回空串。
 std::string sysExLabel(const MidiData& data);
+// 音色库 / 音色设定：Bank Select 次数、XG 鼓组通道、中途换音色的通道。
+// 普通 GM 文件只有 0xC0、没有 CC0/CC32 时返回空串，保证既有谱面页眉
+// 逐字节不变。
+std::string bankLabel(const MidiData& data);
+// 返回 channel 在 tick 时刻生效的 GM 音色号；没有时间轴记录时回退
+// channelProgram，两处都没有则返回 -1。
+int programAt(const MidiData& data, int channel, long tick);
 
 std::string formatLabel(const MidiData& data);
 

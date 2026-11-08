@@ -16,7 +16,7 @@
 
 ## 已实现
 
-- [x] 解析标准 MIDI 文件（手写二进制解析，多轨、多通道、可变速度、SysEx 里的 GS/XG 鼓模式）
+- [x] 解析标准 MIDI 文件（手写二进制解析，多轨、多通道、可变速度、SysEx 里的 GS/XG 鼓模式、Bank Select 的 XG 鼓组库与音色时间轴）
 - [x] 自动识别调性（Krumhansl-Schmuckler 算法 + 终止音加权）
 - [x] **五声音阶／民族调式**：宫、商、角、徵、羽自动判定**宫音**（简谱的 `1`）与调式。C 宫系统、终止在 G 的「G 徵调式」不再被 KS 误判成 `1=G`（整份谱子唱名全错）；页眉写 `1=C 大调 · G 徵调式（宫音 C）`，MusicXML 加调式文字标记。`--gong C` 手动指定宫音，`--no-pentatonic` 一键关掉。文件带 `0x59` 调号、七声旋律、偏音过多或宫音有歧义时**绝不介入**
 - [x] **首调记谱**：小调记作 `1=关系大调`、主音落在 `6` 上（a 小调即 `1=C`），与简谱歌本一致
@@ -60,7 +60,7 @@
 - [x] `--version` 打印版本号
 - [x] **在线 Demo**：WASM 核心，浏览器内运行 C++ 代码
 - [x] **减时线按拍连通**：一拍内的八分/十六分音符共用一条横线（十六分再叠平行线），而不是每个音各画一小段；和弦的减时线只画在最下面那个音上
-- [x] 548 项单元测试 + 50 组端到端冒烟测试 + 31 组 WASM 产物一致性检查
+- [x] 565 项单元测试 + 54 组端到端冒烟测试 + 32 组 WASM 产物一致性检查
 
 ## 在线 Demo 功能
 
@@ -699,13 +699,43 @@ part 会被当成旋律：鼓件音高 36 / 38 / 42 转出一串 `1,, 2,, #4,,` 
 CLI 页眉、HTML 页眉、网页文件面板同步写明设定数、Reset 数与跳过的鼓件音，
 新导出 `_midi2jianpu_sysex_info`。
 
+## Bank Select 不是噪音：XG 鼓组库与音色时间轴
+
+`0xB0` 的 **CC0 Bank Select MSB / CC32 Bank Select LSB** 过去和多数控制器一样被
+当成「跳过两个字节」，但 Yamaha XG 正是用 `Bn 00 7F`（MSB 127）把任意 part 切成
+鼓组——这是与 GS/XG SysEx Part Mode 并列的另一条常见路径。与此同时 `0xC0`
+Program Change 只往 `channelProgram[channel]` 写最后一个音色号，于是前半首钢琴、
+后半首小提琴的曲子，声部会被整首标成「小提琴」。
+
+现在解析时只收集原始事件（CC0 / CC32 / `0xC0` / GM-GS-XG Reset），所有轨读完后
+按 `(tick, 文件顺序)` 统一重放状态机：Bank MSB 127 且随后有 Program Change 时该
+逻辑通道切为鼓，改回其他库或收到 Reset 时恢复；只有预备的 CC0、没有 Program
+Change 不切鼓，通道 10 也不会被普通音色设定从鼓改回旋律。重放同时产出
+`programTimeline`，`programAt(通道, tick)` 让 `listParts` 与 MusicXML 按声部首音
+时刻取音色。普通 GM 文件没有 CC0 / CC32，`bankLabel()` 返回空串，三层页眉逐字节不变。
+
+| 素材 | 场景 | 旧版 | 现在 |
+| --- | --- | --- | --- |
+| `bank_xg_drum.mid` | CC0=127 把 ch0 设成 XG 鼓组 | 8 个鼓件音变假旋律、多一条假声部 | 只留 8 个旋律音 |
+| `bank_normal.mid` | CC0=0 普通音色库 | 16 个音 | 16 个音（防回归） |
+| `bank_switch_back.mid` | tick 960 把 CC0 改回 0 | 16 个音里混着 4 个鼓件音 | 12 个音，前 4 个鼓件丢掉 |
+| `bank_conductor.mid` | Bank 设定写在最后一条 setup 轨 | 8 个鼓件音全变旋律 | 8 个鼓件音丢掉 |
+| `bank_reset.mid` | 中途 GM Reset | 2 个鼓件音该丢没丢 | 只丢 Reset 之前的 2 个 |
+| `bank_port.mid` | port 1 ch0 设鼓 | 8 个鼓件音变旋律 | 只留 port 0 的 8 个音 |
+| `bank_ch9_plain.mid` | 通道 10 发普通 Bank+Program | 8 个旋律音（默认鼓过滤） | 8 个旋律音（防回归） |
+| `bank_no_program.mid` | 只有 CC0=127、没有 `0xC0` | 12 个音 | 12 个音（防回归） |
+| `program_timeline.mid` | ch0 前半钢琴、后半小提琴 | 声部整首标「小提琴」 | 声部标首音时刻的「钢琴」 |
+
+CLI 页眉、HTML 页眉、网页文件面板同步写明 Bank Select / Program Change 次数、
+XG 鼓组通道与中途换音色的通道，新导出 `_midi2jianpu_bank_info`。
+
 ## 技术选型
 
 - 核心：**C++17**，手写 SMF 二进制解析，无第三方库依赖，便于编译成 WASM
 - 调性识别：**Krumhansl-Schmuckler** 算法（音乐信息检索标准）；无调号时再由**宫商角徵羽五声调式**判定校正宫音
 - 和弦检测：按和声窗（半小节 / 附点四分 / 整小节）统计音级频率，匹配 11 种和弦类型，低音决定转位
 - 输出：文本 + 自包含 HTML（内联 CSS）+ MusicXML 3.1
-- 测试：内置断言 548 项单元测试，另有 `tests/smoke.py` 50 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`、声部乐器标注 + 倚音混合素材 `parts.mid`、和弦转位 + 七和弦素材 `chords.mid`、渐快渐慢素材 `tempo_ramp.mid`、长音跨小节素材 `long_tie.mid`、同轨复调素材 `polyphony.mid`、SMPTE 时间基准素材 `smpte.mid`、format 2 独立序列素材 `format2.mid`、复音触后素材 `aftertouch.mid`、同音重触发素材 `retrigger.mid`、轨尾悬挂音素材 `dangling.mid`、双歌词轨素材 `twolyrics.mid`、延音踏板素材 `pedal.mid`、强制清音素材 `allnotesoff.mid`、CC7 主音量素材 `cc7volume.mid`、踏板通道隔离素材 `pedal_channels.mid`、弯音范围按通道 / 按时间 / 跨轨三份素材 `bendrange_channels.mid` / `bendrange_timeline.mid` / `bendrange_crosstrack.mid`、省略状态字节四份素材 `running_meta.mid` / `running_sysex.mid` / `running_realtime.mid` / `running_standard.mid`、MIDI Port 五份素材 `port_pedal.mid` / `port_bend.mid` / `port_prefix.mid` / `port_prefix_base.mid` / `port_standard.mid`、SysEx 鼓模式 11 份 `sysex_*.mid` 素材）
+- 测试：内置断言 565 项单元测试，另有 `tests/smoke.py` 54 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`、声部乐器标注 + 倚音混合素材 `parts.mid`、和弦转位 + 七和弦素材 `chords.mid`、渐快渐慢素材 `tempo_ramp.mid`、长音跨小节素材 `long_tie.mid`、同轨复调素材 `polyphony.mid`、SMPTE 时间基准素材 `smpte.mid`、format 2 独立序列素材 `format2.mid`、复音触后素材 `aftertouch.mid`、同音重触发素材 `retrigger.mid`、轨尾悬挂音素材 `dangling.mid`、双歌词轨素材 `twolyrics.mid`、延音踏板素材 `pedal.mid`、强制清音素材 `allnotesoff.mid`、CC7 主音量素材 `cc7volume.mid`、踏板通道隔离素材 `pedal_channels.mid`、弯音范围按通道 / 按时间 / 跨轨三份素材 `bendrange_channels.mid` / `bendrange_timeline.mid` / `bendrange_crosstrack.mid`、省略状态字节四份素材 `running_meta.mid` / `running_sysex.mid` / `running_realtime.mid` / `running_standard.mid`、MIDI Port 五份素材 `port_pedal.mid` / `port_bend.mid` / `port_prefix.mid` / `port_prefix_base.mid` / `port_standard.mid`、SysEx 鼓模式 11 份 `sysex_*.mid` 素材、Bank Select 与音色时间轴 9 份 `bank_*.mid` / `program_timeline.mid` 素材）
 
 ## 路线图
 
@@ -736,6 +766,7 @@ CLI 页眉、HTML 页眉、网页文件面板同步写明设定数、Reset 数�
 - [x] 同轨复调分声部：`splitVoices()` 把一条轨里的重叠音按「同拍同值 = 和弦、其余分声部」贪心拆开（上限 3 声部，超出时对齐成同值和弦）；MusicXML 用 `<backup>` 逐声部回退游标，`<voice>` 递增，声部内各自成延音线；文本 / HTML 把每个声部排成独立谱行并标注 `声部N`；修掉「长音叠短音被当和弦」导致的小节时值溢出（4/4 写成 8 拍）；新增 `polyphony.mid` 素材，单声部文件三层输出逐字节零回归
 - [x] MIDI Port / Channel Prefix：按 `(port, channel)` 隔离踏板 / 弯音范围 / 力度 / 音色，端口不跨轨继承，`FF 20` 按规范只作用于 meta / SysEx；新增 5 份 `port_*.mid` 素材，无端口声明的文件三层输出逐字节零回归（v1.31.0）
 - [x] SysEx 鼓模式（GS/XG Part Mode / GM/GS/XG Reset）：按 `(逻辑通道, tick)` 解析任意 part 的鼓设定与中途撤销，通道 10 可被改回普通乐器；新增 11 份 `sysex_*.mid` 素材，无关 SysEx 与无设定文件三层输出逐字节零回归（v1.32.0）
+- [x] Bank Select 与音色时间轴：解析 CC0 / CC32 识别 XG 鼓组库（MSB 127），`0xC0` 按 `(逻辑通道, tick)` 记全音色设定，声部乐器名不再被曲末音色覆盖；Reset 撤销鼓组、设定写在末轨仍生效、端口隔离；新增 9 份 `bank_*.mid` / `program_timeline.mid` 素材，普通 GM 文件三层输出逐字节零回归（v1.33.0）
 
 ## 为什么开源
 
@@ -773,7 +804,7 @@ Issue / PR 都欢迎。尤其欢迎：
 提交前请跑一遍：
 
 ```bash
-cd build && ctest --output-on-failure                  # 548 项单元测试
+cd build && ctest --output-on-failure                  # 565 项单元测试
 python tests/smoke.py build/Release/midi2jianpu.exe    # 端到端冒烟（含鼓轨场景）
 node tests/wasm_smoke.mjs                              # WASM 产物与源码是否同步
 ```

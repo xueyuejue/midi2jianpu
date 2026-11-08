@@ -240,6 +240,13 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
         wasmMod._midi2jianpu_sysex_info(p, midiBytes.length));
       if (sx) hints.push(sx);
     }
+    if (wasmMod._midi2jianpu_bank_info) {
+      // Bank Select / Program Change：XG 鼓组通道与中途换音色。
+      // 返回 char*，一律走 UTF8ToString。
+      var bk = wasmMod.UTF8ToString(
+        wasmMod._midi2jianpu_bank_info(p, midiBytes.length));
+      if (bk) hints.push(bk);
+    }
     wasmMod._free(p);
     box.textContent = hints.join(' · ');
   }

@@ -1656,6 +1656,71 @@ def main():
     check(rc == 0 and "SysEx 鼓模式" in open(sph, encoding="utf-8").read(),
           "HTML 页眉同样写明 SysEx 鼓模式", err[:200])
 
+
+    print("\n[51] Bank Select：XG 鼓组通道 / 普通音色库对照")
+    bx = os.path.join(FIXTURES, "bank_xg_drum.mid")
+    rc, bo, err = run(exe, bx, "--no-pickup")
+    check(rc == 0 and "共提取 8 个音符" in bo and "已跳过 8 个打击乐音符" in bo,
+          "XG Bank MSB 127 的 ch0 鼓件音被丢，8 个旋律音全留", err[:200])
+    check("音色库/音色设定" in bo and "1 条 XG 鼓组通道" in bo and
+          "SysEx 鼓模式" not in bo, "CLI 只报 Bank 提示，不误报 SysEx")
+    bn = os.path.join(FIXTURES, "bank_normal.mid")
+    rc, no, err = run(exe, bn, "--no-pickup")
+    check(rc == 0 and "共提取 16 个音符" in no and "已跳过" not in no,
+          "CC0=0 的普通音色库：16 个音一个不少", err[:200])
+    bxm = os.path.join(tmp, "bank_xg_drum.xml")
+    run(exe, bx, "--no-pickup", "--musicxml", bxm)
+    check(len(xml_pitches(bxm)) == 8 and "<octave>2</octave>" not in open(bxm, encoding="utf-8").read(),
+          "XG 鼓组的 MusicXML 只有 8 个旋律音，没有低八度鼓件")
+    bh = os.path.join(tmp, "bank_xg_drum.html")
+    run(exe, bx, "--no-pickup", "--html", bh)
+    check("音色库/音色设定" in open(bh, encoding="utf-8").read(),
+          "HTML 页眉同样写明 Bank Select")
+
+    print("\n[52] Bank 时间轴：切回普通库 / 末尾 setup 轨 / GM Reset")
+    bs = os.path.join(FIXTURES, "bank_switch_back.mid")
+    rc, so, err = run(exe, bs, "--no-pickup")
+    check(rc == 0 and "共提取 12 个音符" in so and "已跳过 4 个打击乐音符" in so,
+          "CC0 从 127 改回 0 后，后半段 4 个旋律音恢复", err[:200])
+    check("1 条通道中途换音色（乐器名按时间取）" in so,
+          "CLI 说明同通道中途换音色已按时间轴取名")
+    bc = os.path.join(FIXTURES, "bank_conductor.mid")
+    _, co, _ = run(exe, bc, "--no-pickup")
+    check("共提取 8 个音符" in co and "已跳过 8 个打击乐音符" in co,
+          "Bank 设定写在最后一条 setup 轨（tick 0）仍生效")
+    br = os.path.join(FIXTURES, "bank_reset.mid")
+    _, ro, _ = run(exe, br, "--no-pickup")
+    check("共提取 14 个音符" in ro and "已跳过 2 个打击乐音符" in ro,
+          "GM Reset 只撤销它之前的 2 个鼓件音，之后 6 个旋律音全留")
+
+    print("\n[53] Bank 鼓组按端口隔离；两个防御性对照")
+    bp = os.path.join(FIXTURES, "bank_port.mid")
+    rc, po, err = run(exe, bp, "--no-pickup")
+    check(rc == 0 and "共提取 8 个音符" in po and "已跳过 8 个打击乐音符" in po,
+          "port 1 的 ch0 鼓件音被丢，port 0 的 ch0 旋律保留", err[:200])
+    b9 = os.path.join(FIXTURES, "bank_ch9_plain.mid")
+    _, o9, _ = run(exe, b9, "--no-pickup")
+    check("共提取 8 个音符" in o9 and "已跳过 4 个打击乐音符" in o9,
+          "通道 10 的普通 Bank+Program 不能把它从鼓改回旋律")
+    bp0 = os.path.join(FIXTURES, "bank_no_program.mid")
+    _, o0, _ = run(exe, bp0, "--no-pickup")
+    check("共提取 12 个音符" in o0 and "已跳过" not in o0,
+          "只有 CC0=127、没有 Program Change 时不切鼓")
+
+    print("\n[54] Program Change 时间轴：声部乐器名按首音时刻取")
+    pt = os.path.join(FIXTURES, "program_timeline.mid")
+    rc, to, err = run(exe, pt, "--no-pickup")
+    check(rc == 0 and "共提取 16 个音符" in to, "中途换音色不改变音符数", err[:200])
+    check("声部：Lead·钢琴" in to and "声部：Lead·小提琴" not in to,
+          "前半首钢琴、后半首小提琴：声部标前半首真正的乐器")
+    px = os.path.join(tmp, "program_timeline.xml")
+    run(exe, pt, "--no-pickup", "--musicxml", px)
+    pxtext = open(px, encoding="utf-8").read()
+    check("<instrument-name>钢琴</instrument-name>" in pxtext and
+          "<instrument-name>小提琴</instrument-name>" not in pxtext,
+          "MusicXML 的 score-part 同样标钢琴")
+    check("音色库/音色设定" not in to,
+          "只有 0xC0、没有 Bank Select 的普通 GM 文件不显示新提示")
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

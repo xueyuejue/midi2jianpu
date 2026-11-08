@@ -3138,6 +3138,166 @@ int main() {
         }
     }
 
+
+    // ---- Bank Select / Program Change 时间轴（XG 鼓组 / 中途换音色）----
+    {
+        std::cout << "\n测试 Bank Select 与音色时间轴：XG 鼓组 / 中途换音色\n";
+        auto load = [](std::vector<SmfTrack> tracks) {
+            const int n = (int)tracks.size();
+            auto bytes = buildSmfFmt(1, n, 480, std::move(tracks));
+            MidiData d;
+            const bool ok = loadMidiFromMemory(bytes.data(), bytes.size(), d);
+            return std::make_pair(ok, std::move(d));
+        };
+        // CC0 (Bank MSB) + CC32 (Bank LSB) + 0xC0 是三个独立事件，
+        // 同一 tick 靠 SmfTrack 的 stable_sort 保持写入顺序。
+        auto bank = [](SmfTrack& t, long tick, int ch, int msb, int prog) {
+            t.at(tick, ev({0xB0 | ch, 0x00, msb}));
+            t.at(tick, ev({0xB0 | ch, 0x20, 0x00}));
+            t.at(tick, ev({0xC0 | ch, prog}));
+        };
+        auto tone = [](SmfTrack& t, long tick, int ch, int pitch) {
+            t.at(tick,       ev({0x90 | ch, pitch, 90}));
+            t.at(tick + 120, ev({0x80 | ch, pitch, 0}));
+        };
+        // F0 <长度 6> <GM System On：F0 7E 7F 09 01 F7>
+        auto gmReset = []() {
+            return ev({0xF0, 0x06, 0xF0, 0x7E, 0x7F, 0x09, 0x01, 0xF7});
+        };
+
+        // 1) CC0=127 把 ch0 设为 XG 鼓组：鼓件音被删，ch1 旋律保留
+        {
+            SmfTrack setup, drums, mel;
+            bank(setup, 0, 0, 127, 0);
+            tone(drums, 0, 0, 36);
+            tone(drums, 240, 0, 38);
+            tone(mel, 0, 1, 60);
+            auto r = load({std::move(setup), std::move(drums), std::move(mel)});
+            const MidiData& d = r.second;
+            check(r.first && d.notes.size() == 1 && d.notes[0].pitch == 60,
+                  "XG Bank MSB 127 指定的鼓通道不再输出鼓件音");
+            check(d.bankSelectEvents == 2 && d.programChangeEvents == 1 &&
+                  d.bankModeEvents == 1 && d.bankDrumChannels == 1,
+                  "Bank Select / Program Change / 鼓组切换统计正确");
+            check(d.sysExModeEvents == 0 && d.sysExEvents == 0 &&
+                  sysExLabel(d).empty() && !bankLabel(d).empty(),
+                  "Bank 鼓组不污染 SysEx 统计，由 bankLabel 单独说明");
+            check(d.drumNotesSkipped == 2, "被丢的鼓件音计入总数");
+        }
+
+        // 2) CC0=0 是普通音色库：对照基线一个音都不能少
+        {
+            SmfTrack setup, ch0, mel;
+            bank(setup, 0, 0, 0, 0);
+            tone(ch0, 0, 0, 60);
+            tone(ch0, 240, 0, 62);
+            tone(mel, 0, 1, 64);
+            auto r = load({std::move(setup), std::move(ch0), std::move(mel)});
+            const MidiData& d = r.second;
+            check(r.first && d.notes.size() == 3 && d.bankModeEvents == 0 &&
+                  d.drumNotesSkipped == 0,
+                  "普通 GM 音色库不触发鼓组判定");
+            check(d.programChangeEvents == 1 &&
+                  bankLabel(d).find("Bank Select") != std::string::npos,
+                  "普通音色库仍如实记录 Bank Select");
+        }
+
+        // 3) tick 960 把 CC0 改回 0：前半鼓、后半旋律
+        {
+            SmfTrack setup, part;
+            bank(setup, 0, 0, 127, 0);
+            bank(setup, 960, 0, 0, 10);
+            tone(part, 0, 0, 36);        // 鼓组区间 -> 丢
+            tone(part, 960, 0, 60);      // 恢复普通乐器 -> 留
+            auto r = load({std::move(setup), std::move(part)});
+            const MidiData& d = r.second;
+            check(r.first && d.notes.size() == 1 && d.notes[0].pitch == 60,
+                  "Bank 时间轴：改回普通库之后的音不再被当鼓");
+            check(d.programTimeline.size() == 2 && d.programSwitchChannels == 1,
+                  "两次 0xC0 记成两个音色点，同通道中途换音色被识别");
+            check(programAt(d, 0, 0) == 0 && programAt(d, 0, 960) == 10 &&
+                  d.channelProgram.at(0) == 10,
+                  "programAt 按 tick 取音色，channelProgram 仍保留最后一个");
+        }
+
+        // 4) Bank 设定写在最后一条轨（tick 0）仍生效
+        {
+            SmfTrack drums, mel, setup;
+            tone(drums, 0, 0, 36);
+            tone(mel, 0, 1, 60);
+            bank(setup, 0, 0, 127, 0);
+            auto r = load({std::move(drums), std::move(mel), std::move(setup)});
+            check(r.first && r.second.notes.size() == 1,
+                  "Bank 设定写在文件末尾的 setup 轨仍对前面的轨生效");
+        }
+
+        // 5) GM Reset 撤销鼓组
+        {
+            SmfTrack setup, part;
+            bank(setup, 0, 0, 127, 0);
+            setup.at(480, gmReset());
+            tone(part, 0, 0, 36);        // Reset 之前 -> 丢
+            tone(part, 480, 0, 60);      // Reset 之后 -> 留
+            auto r = load({std::move(setup), std::move(part)});
+            check(r.first && r.second.notes.size() == 1 &&
+                  r.second.notes[0].pitch == 60,
+                  "GM Reset 把 Bank 状态清回默认，之后的音恢复旋律");
+        }
+
+        // 6) 端口隔离：port 1 的 ch0 设鼓，port 0 的 ch0 仍是旋律
+        {
+            SmfTrack p0, p1, setup;
+            p0.at(0, ev({0xFF, 0x21, 0x01, 0x00}));
+            tone(p0, 0, 0, 60);
+            p1.at(0, ev({0xFF, 0x21, 0x01, 0x01}));
+            tone(p1, 0, 0, 36);
+            setup.at(0, ev({0xFF, 0x21, 0x01, 0x01}));
+            bank(setup, 0, 0, 127, 0);
+            auto r = load({std::move(p0), std::move(p1), std::move(setup)});
+            check(r.first && r.second.notes.size() == 1 &&
+                  r.second.notes[0].channel == 0,
+                  "Bank 鼓组按 (port, channel) 隔离，port 0 的旋律保留");
+        }
+
+        // 7) 只有 CC0=127、没有随后的 0xC0：Bank Select 只是预备状态
+        {
+            SmfTrack setup, part;
+            setup.at(0, ev({0xB0, 0x00, 127}));
+            tone(part, 0, 0, 60);
+            auto r = load({std::move(setup), std::move(part)});
+            check(r.first && r.second.notes.size() == 1 &&
+                  r.second.bankModeEvents == 0,
+                  "缺少 Program Change 时 CC0 不切鼓（Bank 只是预备状态）");
+        }
+
+        // 8) 通道 10 发普通 Bank Select + 0xC0，仍是默认鼓通道
+        {
+            SmfTrack setup, drums, mel;
+            bank(setup, 0, 9, 0, 0);
+            tone(drums, 0, 9, 36);
+            tone(mel, 0, 1, 60);
+            auto r = load({std::move(setup), std::move(drums), std::move(mel)});
+            check(r.first && r.second.notes.size() == 1 &&
+                  r.second.notes[0].pitch == 60 &&
+                  r.second.drumNotesSkipped == 1,
+                  "通道 10 的普通音色设定不能把它从鼓改回旋律");
+        }
+
+        // 9) programAt 回退 channelProgram；普通 GM 文件不显示 Bank 提示
+        {
+            MidiData d;
+            d.channelProgram[3] = 10;
+            check(programAt(d, 3, 0) == 10 && programAt(d, 4, 0) == -1,
+                  "没有时间轴记录时 programAt 回退 channelProgram");
+            check(bankLabel(d).empty() && sysExLabel(d).empty(),
+                  "普通 GM 文件不显示 Bank / SysEx 提示");
+            SmfTrack t;
+            t.at(0, ev({0xC0, 0}));
+            auto r = load({std::move(t)});
+            check(r.first && bankLabel(r.second).empty(),
+                  "只有 0xC0、没有 CC0/CC32 时 bankLabel 仍为空");
+        }
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

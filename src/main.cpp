@@ -217,6 +217,10 @@ int main(int argc, char** argv) {
         // 否则用户会以为转换漏掉了半首曲子。
         const std::string sx = m2j::sysExLabel(data);
         if (!sx.empty()) std::cout << sx << "\n";
+        // CC0/CC32 Bank Select 指定 XG 鼓组、或 0xC0 中途换音色时，说明
+        // 乐器名是按时间轴取的，免得用户以为声部标注前后不一致。
+        const std::string bk = m2j::bankLabel(data);
+        if (!bk.empty()) std::cout << bk << "\n";
     }
 
     // --transpose 移调

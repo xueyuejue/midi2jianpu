@@ -347,6 +347,7 @@ struct DrumModeEvent {
     int channel;     // 逻辑通道；reset 时为 -1
     bool drum;       // true=鼓 / false=普通乐器；reset 时无意义
     bool reset;
+    bool fromBank;   // true=CC0/CC32 鼓组切换，false=GS/XG SysEx part mode
     int seq;
     int track;
 };
@@ -393,6 +394,93 @@ static bool parseSysExDrum(const uint8_t* p, size_t len,
     return false;
 }
 
+// Bank Select / Program Change 的**原始事件**。鼓组判定与音色名都必须在
+// 所有轨读完后按 (tick, 文件顺序) 重放：CC0 常写在 setup 轨、0xC0 写在
+// 音符轨，setup 轨甚至排在文件末尾而 tick 仍是 0；逐轨即时套用会读乱时间。
+enum class RawProgramKind { BankMsb, BankLsb, Program, Reset };
+struct RawProgramEvent {
+    long tick;
+    int channel;
+    RawProgramKind kind;
+    int value;
+    int seq;
+    int track;
+};
+
+static void resolveProgramTimeline(MidiData& out,
+                                   std::vector<RawProgramEvent>& raw,
+                                   std::vector<DrumModeEvent>& ev) {
+    std::stable_sort(raw.begin(), raw.end(),
+                     [](const RawProgramEvent& a, const RawProgramEvent& b) {
+                         if (a.tick != b.tick) return a.tick < b.tick;
+                         return a.seq < b.seq;
+                     });
+    const int kMax = 4096;   // 与解析层的 kMaxLogicalChannels 一致
+    std::vector<int> msb(kMax, 0), lsb(kMax, 0), progCount(kMax, 0);
+    std::vector<char> drumBank(kMax, 0);
+    auto pushMode = [&](const RawProgramEvent& r, bool drum) {
+        DrumModeEvent e;
+        e.tick = r.tick;
+        e.channel = r.channel;
+        e.drum = drum;
+        e.reset = false;
+        e.fromBank = true;
+        e.seq = r.seq;
+        e.track = r.track;
+        ev.push_back(e);
+    };
+    for (const auto& r : raw) {
+        if (r.channel < 0 || r.channel >= kMax) continue;
+        switch (r.kind) {
+        case RawProgramKind::BankMsb: msb[r.channel] = r.value; break;
+        case RawProgramKind::BankLsb: lsb[r.channel] = r.value; break;
+        case RawProgramKind::Reset:
+            // GM/GS/XG Reset 把整台音源恢复默认：Bank 归 0、鼓组设定撤销。
+            // SysEx 分支已往 ev 里放了 reset 事件，这里只补 bank 造成的
+            // 状态回退；通道 10 仍是默认鼓通道。
+            for (int ch = 0; ch < kMax; ++ch) {
+                if (drumBank[ch]) {
+                    RawProgramEvent x = r;
+                    x.channel = ch;
+                    pushMode(x, (ch & 0x0F) == 9);
+                    drumBank[ch] = 0;
+                }
+                msb[ch] = 0;
+                lsb[ch] = 0;
+            }
+            break;
+        case RawProgramKind::Program: {
+            const bool drum = (msb[r.channel] == 127);
+            // 只有 XG 鼓组状态真的翻转才写鼓模式事件：普通 GM 文件 bank
+            // 恒为 0，任何 0xC0 都不该把通道 10 从鼓改回旋律。
+            if (drum != (drumBank[r.channel] != 0)) {
+                pushMode(r, drum);
+                drumBank[r.channel] = drum ? 1 : 0;
+            }
+            ProgramPoint p;
+            p.tick = r.tick;
+            p.channel = r.channel;
+            p.program = r.value;
+            p.bankMsb = msb[r.channel];
+            p.bankLsb = lsb[r.channel];
+            p.drum = drum;
+            p.seq = r.seq;
+            out.programTimeline.push_back(p);
+            progCount[r.channel]++;
+            break;
+        }
+        }
+    }
+    out.programChangeEvents = (int)out.programTimeline.size();
+    out.programSwitchChannels = 0;
+    for (int n : progCount) if (n > 1) out.programSwitchChannels++;
+    std::stable_sort(out.programTimeline.begin(), out.programTimeline.end(),
+                     [](const ProgramPoint& a, const ProgramPoint& b) {
+                         if (a.tick != b.tick) return a.tick < b.tick;
+                         return a.seq < b.seq;
+                     });
+}
+
 static void applySysExDrumMode(MidiData& out,
                                const std::vector<DrumModeEvent>& raw,
                                long defaultDrumNoteOn,
@@ -423,16 +511,21 @@ static void applySysExDrumMode(MidiData& out,
 
     out.sysExModeEvents = 0;
     out.sysExResetEvents = 0;
-    std::set<int> drumChannels, normalChannels;
+    out.bankModeEvents = 0;
+    std::set<int> drumChannels, normalChannels, bankDrumChannels;
     for (const auto& e : ev) {
-        if (e.reset) out.sysExResetEvents++;
-        else {
+        if (e.reset) { out.sysExResetEvents++; continue; }
+        if (e.fromBank) {
+            out.bankModeEvents++;
+            if (e.drum) bankDrumChannels.insert(e.channel);
+        } else {
             out.sysExModeEvents++;
             (e.drum ? drumChannels : normalChannels).insert(e.channel);
         }
     }
     out.sysExDrumChannels = (int)drumChannels.size();
     out.sysExNormalChannels = (int)normalChannels.size();
+    out.bankDrumChannels = (int)bankDrumChannels.size();
 
     // 时间轴：每个逻辑通道一条「(tick, 状态)」序列。默认状态就是 GM 的
     // 「通道 10 是鼓」；Reset 把已知通道一律写回各自的默认状态。
@@ -481,7 +574,7 @@ static void applySysExDrumMode(MidiData& out,
 
     // 只有「本来不是鼓、却被 SysEx 设成鼓」的通道才需要清残留事件表：
     // 默认鼓通道的力度/弯音在旧实现里就是留着的，动它会破坏零回归。
-    if (out.sysExModeEvents > 0) {
+    if (out.sysExModeEvents > 0 || out.bankModeEvents > 0) {
         auto dropDrumEvents = [&](auto& v) {
             v.erase(std::remove_if(v.begin(), v.end(),
                                    [&](const auto& p) {
@@ -609,7 +702,11 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
 
     // SysEx 里的 GS/XG 鼓模式：先收齐，所有轨读完后按时间轴统一套用。
     std::vector<DrumModeEvent> drumModeEvents;
-    int sysexSeq = 0;
+    // SysEx part mode、Bank Select、Program Change 共用一套序号：按
+    // (tick, seq) 排序时，「先设鼓组再 Reset」「Bank 写在后面的轨」才能
+    // 按文件里的真实顺序正确重放。
+    std::vector<RawProgramEvent> rawProgramEvents;
+    int modeSeq = 0;
     // 旧实现在解析阶段直接丢掉通道 9 的音符并累加 drumNotesSkipped。现在鼓
     // 判定统一延后（GS/XG 可以把通道 10 改回普通乐器），这里只照抄「通道 9
     // 的 note-on 个数」，让既有曲目的谱面页眉计数逐字节不变。
@@ -817,6 +914,22 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                 } else if (ctrl == 0x78u || ctrl == 0x7Bu) {  // All Sound/Notes Off
                     allOffEvents.push_back({absTick, (int)channel, ctrlSeq++});
                 }
+                // CC0 Bank MSB / CC32 Bank LSB：XG 用 MSB 127 指定鼓组，
+                // GS/XG 也靠它选变体音色。旧实现把这两个控制器当普通两字节
+                // 跳过，鼓件音高于是全被当成旋律。先攒着，全部轨读完后按
+                // 时间轴重放（setup 轨常排在文件末尾而 tick 是 0）。
+                if (ctrl == 0x00u || ctrl == 0x20u) {
+                    out.bankSelectEvents++;
+                    RawProgramEvent r;
+                    r.tick = absTick;
+                    r.channel = (int)channel;
+                    r.kind = (ctrl == 0x00u) ? RawProgramKind::BankMsb
+                                             : RawProgramKind::BankLsb;
+                    r.value = (int)val;
+                    r.seq = modeSeq++;
+                    r.track = trackIdx;
+                    rawProgramEvents.push_back(r);
+                }
                 // ---- RPN 0x0000：弯音灵敏度（每通道、可中途改）----
                 // 标准序列 CC101(0x65)=0、CC100(0x64)=0、CC6(0x06)=半音数，
                 // 可选 CC38(0x26)=音分微调；很多导出器随后用 127/127 退出 RPN，
@@ -860,9 +973,22 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                         e.channel = sxReset ? -1 : currentPort * 16 + sxCh;
                         e.drum = sxDrum;
                         e.reset = sxReset;
-                        e.seq = sysexSeq++;
+                        e.seq = modeSeq++;
                         e.track = trackIdx;
+                        e.fromBank = false;
                         drumModeEvents.push_back(e);
+                        if (sxReset) {
+                            // Reset 同时把各通道的 Bank 状态清回默认，
+                            // 否则撤销鼓组后下一个 0xC0 还会读成鼓。
+                            RawProgramEvent r;
+                            r.tick = absTick;
+                            r.channel = 0;
+                            r.kind = RawProgramKind::Reset;
+                            r.value = 0;
+                            r.seq = e.seq;
+                            r.track = trackIdx;
+                            rawProgramEvents.push_back(r);
+                        }
                     }
                 }
                 pos += sxLen;
@@ -870,7 +996,16 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                 // 音色号（GM program change）。旧实现直接跳过，于是「这条轨是
                 // 笛子/二胡/钢琴」这种对读谱极有用的信息被丢掉了；现在按通道
                 // 记下来，输出层据此给每条声部标出乐器名。
-                out.channelProgram[channel] = (int)d[pos++];
+                const int progValue = (int)d[pos++];
+                out.channelProgram[channel] = progValue;
+                RawProgramEvent r;
+                r.tick = absTick;
+                r.channel = (int)channel;
+                r.kind = RawProgramKind::Program;
+                r.value = progValue;
+                r.seq = modeSeq++;
+                r.track = trackIdx;
+                rawProgramEvents.push_back(r);
             } else if (type == 0xA0u) {
                 // 复音触后：状态 + 音高 + 压力 = 3 字节。旧实现落到末尾的
                 // 兜底 pos += 1，每遇到一个就少读一个字节，事件流从那里开始
@@ -918,6 +1053,9 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
     // notes 再统一删，若让 format 2 先按轨统计，一条只有鼓的轨会被当成
     // 「第一段」，整首曲子被判成只有打击乐。先删鼓音，段判定看到的音符
     // 集合就与旧实现完全一致。
+    // 先重放 Bank/Program（会往 drumModeEvents 里补 XG 鼓组切换），
+    // 再统一套用鼓判定；两者共用 (tick, seq) 时间轴。
+    resolveProgramTimeline(out, rawProgramEvents, drumModeEvents);
     applySysExDrumMode(out, drumModeEvents, defaultDrumNoteOn, keepAllFormat2);
     normalizeFormat2(out, keepAllFormat2);
     resolveBendRanges(out);
@@ -1037,6 +1175,31 @@ std::string sysExLabel(const MidiData& data) {
         os << "，" << data.sysExResetEvents << " 处 GM/GS/XG Reset 恢复默认";
     if (data.sysExDrumNotesSkipped > 0)
         os << "，已跳过 " << data.sysExDrumNotesSkipped << " 个鼓件音";
+    return os.str();
+}
+
+int programAt(const MidiData& data, int channel, long tick) {
+    int result = -1;
+    for (const auto& p : data.programTimeline) {
+        if (p.tick > tick) break;      // 全表按 tick 升序
+        if (p.channel == channel) result = p.program;
+    }
+    if (result >= 0) return result;
+    auto it = data.channelProgram.find(channel);
+    return it == data.channelProgram.end() ? -1 : it->second;
+}
+
+std::string bankLabel(const MidiData& data) {
+    // 普通 GM 文件只有 0xC0、没有 CC0/CC32：不显示这一行，既有谱面页眉
+    // 才能逐字节不变。
+    if (data.bankSelectEvents <= 0 && data.bankModeEvents <= 0) return "";
+    std::ostringstream os;
+    os << "音色库/音色设定：" << data.bankSelectEvents << " 处 Bank Select，"
+       << data.programChangeEvents << " 次 Program Change";
+    if (data.bankDrumChannels > 0)
+        os << "，" << data.bankDrumChannels << " 条 XG 鼓组通道";
+    if (data.programSwitchChannels > 0)
+        os << "，" << data.programSwitchChannels << " 条通道中途换音色（乐器名按时间取）";
     return os.str();
 }
 

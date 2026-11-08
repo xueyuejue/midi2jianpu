@@ -1678,6 +1678,128 @@ def build_sysex_port_drum() -> bytes:
     return _port_smf([_port_conductor(), p0, p1])
 
 
+
+# ---- Bank Select / Program Change 时间轴（Yamaha XG 鼓组库）----
+# CC0 Bank MSB = 127 是 XG 的鼓组库：任意 part 都能被切成节奏声部，和
+# GS/XG SysEx 的 Part Mode 是并列的两条路径。旧实现把 CC0 / CC32 当普通
+# 两字节跳过，鼓件音高就变成了 `1,, 2,, #4,,` 假旋律。0xC0 过去也只往
+# channelProgram 写最后一个音色号，中途换乐器时前半首的声部会被错标。
+def _bank_events(track: Track, tick: int, ch: int, msb: int,
+                 lsb: int = 0, program: int = 0) -> None:
+    """CC0 + CC32 + 0xC0 三个独立 SMF 事件，每个都自带 delta-time。"""
+    track.cc(ch, 0, msb, tick)
+    track.cc(ch, 32, lsb, tick)
+    track.program(ch, program, tick)
+
+
+def _bank_setup(tick: int, ch: int, msb: int, name: bytes = b"XG Setup") -> Track:
+    t = Track()
+    t.add(0, meta(0x03, name))
+    _bank_events(t, tick, ch, msb)
+    return t
+
+
+def _bank_piano_ch0() -> Track:
+    t = Track()
+    t.add(0, meta(0x03, b"Ch0 Piano"))
+    for i, p in enumerate([60, 62, 64, 65, 67, 65, 64, 62]):
+        t.note(0, p, 90, i * (DIV // 2), DIV // 2 - 20)
+    return t
+
+
+def build_bank_xg_drum() -> bytes:
+    """CC0=127 把 ch0 设成 XG 鼓组：8 个鼓件音丢，8 个旋律音留。"""
+    return _port_smf([_port_conductor(), _bank_setup(0, 0, 0x7F),
+                      _sysex_drums(0), _sysex_melody(1)])
+
+
+def build_bank_normal() -> bytes:
+    """CC0=0 的普通音色库：对照基线，16 个音一个都不能少。"""
+    return _port_smf([_port_conductor(), _bank_setup(0, 0, 0x00, b"GM Setup"),
+                      _bank_piano_ch0(), _sysex_melody(1)])
+
+
+def build_bank_switch_back() -> bytes:
+    """tick 960 把 CC0 改回 0：前半鼓件丢，后半 4 个旋律音留。"""
+    setup = Track()
+    setup.add(0, meta(0x03, b"Bank Switch"))
+    _bank_events(setup, 0, 0, 0x7F)
+    _bank_events(setup, 2 * DIV, 0, 0x00)
+    t = Track()
+    t.add(0, meta(0x03, b"Ch0 Split"))
+    for i, p in enumerate([36, 38, 42, 36]):
+        t.note(0, p, 100, i * (DIV // 2), DIV // 4)
+    for i, p in enumerate([60, 62, 64, 65]):
+        t.note(0, p, 90, 2 * DIV + i * (DIV // 2), DIV // 2 - 20)
+    return _port_smf([_port_conductor(), setup, t, _sysex_melody(1)])
+
+
+def build_bank_conductor() -> bytes:
+    """Bank 设定写在文件最后一条轨（tick 0）：解析顺序不能压过时间顺序。"""
+    return _port_smf([_port_conductor(), _sysex_drums(0), _sysex_melody(1),
+                      _bank_setup(0, 0, 0x7F, b"Late Setup")])
+
+
+def build_bank_port() -> bytes:
+    """FF 21 port 1 的 ch0 设鼓组，port 0 的 ch0 仍是旋律。"""
+    p0 = Track()
+    p0.add(0, meta(0x03, b"Port0 Ch0"))
+    for i, p in enumerate([60, 62, 64, 65, 67, 65, 64, 62]):
+        p0.note(0, p, 90, i * (DIV // 2), DIV // 2 - 20)
+    p1 = Track()
+    p1.add(0, meta(0x03, b"Port1 Ch0"))
+    p1.add(0, meta(0x21, bytes([1])))
+    for i, p in enumerate([36, 38, 42, 36, 38, 42, 36, 38]):
+        p1.note(0, p, 100, i * (DIV // 2), DIV // 4)
+    late = Track()
+    late.add(0, meta(0x21, bytes([1])))
+    _bank_events(late, 0, 0, 0x7F)
+    return _port_smf([_port_conductor(), p0, p1, late])
+
+
+def build_bank_reset() -> bytes:
+    """GM Reset 撤销鼓组：只有 Reset 之前的 2 个鼓件音该丢。"""
+    setup = Track()
+    setup.add(0, meta(0x03, b"Reset Setup"))
+    _bank_events(setup, 0, 0, 0x7F)
+    setup.add(DIV, GM_RESET)
+    return _port_smf([_port_conductor(), setup, _bank_piano_ch0(),
+                      _sysex_melody(1)])
+
+
+def build_bank_ch9_plain() -> bytes:
+    """通道 10 发普通 Bank Select + 0xC0：默认鼓通道不能被改回旋律。"""
+    t = Track()
+    t.add(0, meta(0x03, b"Ch9 Drums"))
+    _bank_events(t, 0, 9, 0x00)
+    for i, p in enumerate([36, 38, 42, 36]):
+        t.note(9, p, 100, i * (DIV // 2), DIV // 4)
+    return _port_smf([_port_conductor(), t, _sysex_melody(1)])
+
+
+def build_bank_no_program() -> bytes:
+    """只有 CC0=127、没有随后的 0xC0：Bank Select 只是预备状态，不切鼓。"""
+    t = Track()
+    t.add(0, meta(0x03, b"No Program"))
+    t.cc(0, 0, 0x7F, 0)
+    for i, p in enumerate([60, 62, 64, 65]):
+        t.note(0, p, 90, i * (DIV // 2), DIV // 2 - 20)
+    return _port_smf([_port_conductor(), t, _sysex_melody(1)])
+
+
+def build_program_timeline() -> bytes:
+    """ch0 前半钢琴 prog 0、后半小提琴 prog 40：声部乐器名按首音时刻取。"""
+    tl = Track()
+    tl.add(0, meta(0x03, b"Lead"))
+    tl.program(0, 0, 0)
+    for i, p in enumerate([60, 62, 64, 65]):
+        tl.note(0, p, 90, i * (DIV // 2), DIV // 2 - 20)
+    tl.program(0, 40, 2 * DIV)
+    for i, p in enumerate([67, 69, 71, 72]):
+        tl.note(0, p, 90, 2 * DIV + i * (DIV // 2), DIV // 2 - 20)
+    return _port_smf([_port_conductor(), tl, _sysex_melody(1)])
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -1922,6 +2044,24 @@ def main() -> None:
         ("sysex_ch9_drum", build_sysex_ch9_drum),
         ("sysex_unknown", build_sysex_unknown),
         ("sysex_port_drum", build_sysex_port_drum),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # Bank Select / Program Change 素材（XG 鼓组 / 时间轴 / 端口 / 零回归对照）
+    for name, builder in (
+        ("bank_xg_drum", build_bank_xg_drum),
+        ("bank_normal", build_bank_normal),
+        ("bank_switch_back", build_bank_switch_back),
+        ("bank_conductor", build_bank_conductor),
+        ("bank_port", build_bank_port),
+        ("bank_reset", build_bank_reset),
+        ("bank_ch9_plain", build_bank_ch9_plain),
+        ("bank_no_program", build_bank_no_program),
+        ("program_timeline", build_program_timeline),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

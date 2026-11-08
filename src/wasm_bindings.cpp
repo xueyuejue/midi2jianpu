@@ -266,6 +266,16 @@ const char* midi2jianpu_sysex_info(const uint8_t* midiData, int size) {
     return buf.c_str();
 }
 
+// Bank Select / Program Change：XG 鼓组通道、按时间轴取乐器名、中途换音色。
+// 返回 char*，网页必须过 UTF8ToString。
+const char* midi2jianpu_bank_info(const uint8_t* midiData, int size) {
+    static std::string buf;
+    m2j::MidiData data;
+    if (!m2j::loadMidiFromMemory(midiData, size, data)) { buf.clear(); return buf.c_str(); }
+    buf = m2j::bankLabel(data);
+    return buf.c_str();
+}
+
 // 获取MIDI音符数据(JSON格式, 用于播放)
 const char* midi2jianpu_get_notes_json(const uint8_t* midiData, int size) {
     m2j::MidiData data;
