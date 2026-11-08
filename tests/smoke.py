@@ -1721,6 +1721,62 @@ def main():
           "MusicXML 的 score-part 同样标钢琴")
     check("音色库/音色设定" not in to,
           "只有 0xC0、没有 Bank Select 的普通 GM 文件不显示新提示")
+
+    print("\n[55] --track 按轨隔离：别轨歌词 / 力度不许串进选中轨")
+    tl = os.path.join(FIXTURES, "track_leak.mid")
+    tb = os.path.join(FIXTURES, "track_leak_base.mid")
+    rc, lall, err = run(exe, tl, "--no-pickup")
+    check(rc == 0 and "MIDI 内置歌词: 16 个音节" in lall and "力度 1" in lall,
+          "不带 --track 时两轨的歌词 / 力度都在", err[:200])
+    rc, l0, err = run(exe, tl, "--no-pickup", "--track", "0")
+    _, base, _ = run(exe, tb, "--no-pickup")
+    stripped0 = "".join(x for x in l0.splitlines(True)
+                        if not x.startswith("按轨隔离："))
+    check(rc == 0 and stripped0 == base,
+          "--track 0 去掉新提示行后与单轨基线逐字节一致", err[:200])
+    check("MIDI 内置歌词" not in l0 and "力度 1" not in l0,
+          "--track 0 不再冒出别轨的内置歌词与力度记号")
+    check("按轨隔离：只转换轨 0「Vocal」" in l0 and "另丢弃 8 个音符" in l0,
+          "--track 0 的页眉写明隔离范围与丢弃的音符数")
+    _, l1, _ = run(exe, tl, "--no-pickup", "--track", "1")
+    check("MIDI 内置歌词: 16 个音节" in l1 and "力度 1" in l1 and
+          "只转换轨 1「Guitar」" in l1,
+          "--track 1 反过来保留该轨自己的歌词 / 力度")
+
+    print("\n[56] 按轨隔离：踏板隔开，全局音源设定照常保留")
+    tp = os.path.join(FIXTURES, "track_pedal.mid")
+    _, pall, _ = run(exe, tp, "--no-pickup")
+    _, p0, _ = run(exe, tp, "--no-pickup", "--track", "0")
+    check("延音踏板：补长 8 个音" in pall,
+          "全轨时别轨的 CC64 踏板确实补长了 8 个音")
+    check("延音踏板" not in p0 and "按轨隔离" in p0,
+          "--track 0 完全不受别轨踏板影响（踏板与旋律同通道）")
+    tr = os.path.join(FIXTURES, "track_rpn_setup.mid")
+    _, r1, _ = run(exe, tr, "--no-pickup", "--track", "1")
+    check("弯音范围：±12 半音" in r1,
+          "--track 1 仍读到别轨 setup 的 RPN ±12 半音")
+    tc = os.path.join(FIXTURES, "track_conductor.mid")
+    _, c1, _ = run(exe, tc, "--no-pickup", "--track", "1")
+    check("拍号=3/4" in c1 and "1=D 大调" in c1 and "♩=90" in c1 and
+          "[Verse]" in c1,
+          "--track 1 仍读到别轨 conductor 的速度 / 拍号 / 调号 / Marker")
+
+    print("\n[57] format 2 选段、空轨报错与默认零回归")
+    tf = os.path.join(FIXTURES, "track_fmt2.mid")
+    _, f1, _ = run(exe, tf, "--track", "1")
+    check("共 2 段，只转换轨 1「SongB」" in f1 and "共提取 4 个音符" in f1 and
+          "按轨隔离" in f1,
+          "format 2 选第 2 段时段数提示不消失、只留该段 4 个音")
+    te = os.path.join(FIXTURES, "track_empty.mid")
+    rc, _, ee = run(exe, te, "--track", "0")
+    check(rc == 4 and "轨道 0 无音符" in ee,
+          "--track 指向只有 meta 的空轨时明确报错并返回 4")
+    rc, _, e9 = run(exe, tf, "--track", "9")
+    check(rc == 4 and "轨道 9 无音符" in e9,
+          "--track 越界时明确报错并返回 4")
+    _, sm, _ = run(exe, os.path.join(FIXTURES, "sample.mid"))
+    check("按轨隔离" not in sm,
+          "不带 --track 的普通文件不显示按轨隔离提示（页眉零回归）")
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

@@ -4,7 +4,7 @@
 //       鼓轨过滤、旋律轨判定、变速（tempo map）换算、内置歌词规整、
 //       拍号 map 与逐小节网格、调号 map（中途转调 / KeyMap）、
 //       五声调式（宫商角徵羽）宫音判定与校正、tempo map 时间轴与 LRC 对齐、
-//       SysEx 里的 GS/XG 鼓模式与 GM/GS/XG Reset。
+//       SysEx 里的 GS/XG 鼓模式与 GM/GS/XG Reset、--track 按轨隔离。
 #include "midi2jianpu/notation.hpp"
 #include "midi2jianpu/musicxml_writer.hpp"
 
@@ -3296,6 +3296,130 @@ int main() {
             auto r = load({std::move(t)});
             check(r.first && bankLabel(r.second).empty(),
                   "只有 0xC0、没有 CC0/CC32 时 bankLabel 仍为空");
+        }
+    }
+
+    // ---- v1.34.0：--track / 网页段落选择的按轨隔离 ----
+    // 旧实现只在 main.cpp 末尾按 track 丢音符，歌词 / 力度 / 踏板 / 弯音
+    // 事件表仍来自全部轨，而且踏板等语义修正在解析阶段就改过时值了。
+    // 这里直接调 loadMidiFromMemory 的 trackFilter 参数，锁住解析层行为。
+    {
+        auto loadTrack = [](std::vector<SmfTrack> tracks, int track) {
+            auto bytes = buildSmf((int)tracks.size(), 480, std::move(tracks));
+            MidiData d;
+            const bool ok = loadMidiFromMemory(bytes.data(), bytes.size(), d,
+                                              track >= 0, track);
+            return std::make_pair(ok, std::move(d));
+        };
+        // 两条轨**故意用同一个通道 0**：按 liveChannels 兜底是挡不住串味的，
+        // 只有解析阶段真的按轨门控才能把这些事件全隔开。
+        auto makeLeak = []() {
+            std::vector<SmfTrack> v(2);
+            v[0].at(0, ev({0xFF, 0x03, 0x05, 'V','o','c','a','l'}));
+            v[0].at(0, ev({0x90, 60, 100}));
+            v[0].at(240, ev({0x80, 60, 0}));
+            v[0].at(480, ev({0x90, 62, 100}));
+            v[0].at(720, ev({0x80, 62, 0}));
+            v[1].at(0, ev({0xFF, 0x03, 0x06, 'G','u','i','t','a','r'}));
+            v[1].at(0, ev({0x90, 64, 100}));
+            v[1].at(240, ev({0x80, 64, 0}));
+            v[1].at(480, ev({0x90, 65, 100}));
+            v[1].at(720, ev({0x80, 65, 0}));
+            v[1].at(0, ev({0xFF, 0x05, 0x01, 'A'}));
+            v[1].at(0, ev({0xB0, 0x0B, 20}));       // CC11
+            v[1].at(0, ev({0xB0, 0x07, 20}));       // CC7
+            v[1].at(0, ev({0xB0, 0x40, 127}));      // 踏板踩下
+            v[1].at(2000, ev({0xB0, 0x40, 0}));     // 踏板抬起
+            v[1].at(0, ev({0xE0, 0x7F, 0x7F}));     // 弯音推到顶
+            return v;
+        };
+
+        // 1) 不指定轨：行为与旧版一致，四音个都在，提示为空
+        auto all = loadTrack(makeLeak(), -1);
+        check(all.first && all.second.notes.size() == 4 &&
+              all.second.selectedTrack == -1 && trackLabel(all.second).empty(),
+              "不指定轨时四音个全在、selectedTrack 为 -1、trackLabel 为空");
+
+        // 2) 选轨 0：歌词 / 力度 / 踏板 / 弯音一个都不许串
+        auto t0 = loadTrack(makeLeak(), 0);
+        check(t0.first && t0.second.notes.size() == 2 &&
+              t0.second.notes[0].track == 0 && t0.second.notes[1].track == 0,
+              "--track 0 只剩该轨的 2 个音符");
+        check(t0.second.midiLyrics.empty() && t0.second.dynamics.empty() &&
+              t0.second.pitchBends.empty() && t0.second.pedalEvents == 0,
+              "--track 0 隔离掉别轨的歌词 / CC11 / CC7 / 踏板 / 弯音");
+        check(t0.second.selectedTrack == 0 && t0.second.trackFilteredNotes == 2 &&
+              trackLabel(t0.second).find("轨 0") != std::string::npos,
+              "--track 0 记下选中轨与丢弃音符数，trackLabel 如实说明");
+
+        // 3) 选轨 1：该轨自己的歌词 / 力度 / 弯音必须完整保留
+        auto t1 = loadTrack(makeLeak(), 1);
+        check(t1.first && t1.second.notes.size() == 2 &&
+              t1.second.midiLyrics.size() == 1 && !t1.second.dynamics.empty() &&
+              t1.second.pitchBends.size() == 1,
+              "--track 1 保留该轨自己的歌词 / 力度 / 弯音事件");
+
+        // 4) 踏板在别轨且同通道：选中的轨不该被补长时值
+        {
+            std::vector<SmfTrack> v(2);
+            v[0].at(0, ev({0x90, 60, 100}));
+            v[0].at(120, ev({0x80, 60, 0}));
+            v[1].at(0, ev({0xB0, 0x40, 127}));
+            v[1].at(1920, ev({0xB0, 0x40, 0}));
+            auto full = loadTrack(v, -1);
+            auto only = loadTrack(v, 0);
+            check(full.second.pedalExtendedNotes > 0 &&
+                  only.second.pedalExtendedNotes == 0 && only.second.pedalEvents == 0,
+                  "别轨的 CC64 踏板不再给选中轨补长时值");
+        }
+
+        // 5) 全局设定写在 conductor 轨：选别的轨也要照常生效
+        {
+            std::vector<SmfTrack> v(2);
+            v[0].at(0, ev({0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20}));   // 120 BPM
+            v[0].at(0, ev({0xFF, 0x58, 0x04, 0x03, 0x02, 0x18, 0x08})); // 3/4
+            v[0].at(0, ev({0xFF, 0x59, 0x02, 0x02, 0x00}));          // D 大调
+            v[0].at(0, ev({0xFF, 0x06, 0x05, 'V','e','r','s','e'}));
+            v[1].at(0, ev({0x90, 60, 100}));
+            v[1].at(480, ev({0x80, 60, 0}));
+            auto r = loadTrack(v, 1);
+            check(r.first && r.second.tempoChanges.size() == 1 &&
+                  r.second.timeSig.numerator == 3 &&
+                  r.second.keySig.sharpsFlats == 2 && r.second.markers.size() == 1,
+                  "--track 1 仍读到别轨 conductor 的速度 / 拍号 / 调号 / Marker");
+        }
+
+        // 6) RPN 写在 setup 轨：选中的轨仍按 ±12 半音解算弯音
+        {
+            std::vector<SmfTrack> v(2);
+            v[0].at(0, ev({0xB0, 0x65, 0}));
+            v[0].at(0, ev({0xB0, 0x64, 0}));
+            v[0].at(0, ev({0xB0, 0x06, 12}));
+            v[1].at(0, ev({0xE0, 0x7F, 0x7F}));
+            v[1].at(0, ev({0x90, 60, 100}));
+            v[1].at(480, ev({0x80, 60, 0}));
+            auto r = loadTrack(v, 1);
+            check(r.first && r.second.bendRangeEvents == 1 &&
+                  r.second.pitchBends.size() == 1 &&
+                  std::fabs(r.second.pitchBends[0].range - 12.0) < 1e-6,
+                  "--track 1 仍读到别轨 setup 的 RPN ±12 半音");
+        }
+
+        // 7) format 2：段数按整份文件报，实际转换轨跟着 --track 改口
+        {
+            std::vector<SmfTrack> v(2);
+            v[0].at(0, ev({0xFF, 0x03, 0x05, 'S','o','n','g','A'}));
+            v[0].at(0, ev({0x90, 60, 100}));
+            v[0].at(480, ev({0x80, 60, 0}));
+            v[1].at(0, ev({0xFF, 0x03, 0x05, 'S','o','n','g','B'}));
+            v[1].at(0, ev({0x90, 67, 100}));
+            v[1].at(480, ev({0x80, 67, 0}));
+            auto bytes = buildSmfFmt(2, 2, 480, std::move(v));
+            MidiData d;
+            const bool ok = loadMidiFromMemory(bytes.data(), bytes.size(), d, true, 1);
+            check(ok && d.format2SequenceCount == 2 && d.format2UsedTrack == 1 &&
+                  d.notes.size() == 1 && d.notes[0].track == 1,
+                  "format 2 选第 2 段：段数仍是 2、只转换轨 1");
         }
     }
     std::cout << "\n------------------------------------------------\n";

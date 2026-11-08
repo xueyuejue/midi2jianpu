@@ -15,6 +15,7 @@ static std::string g_title;   // 谱面标题（网页传文件名进来）
 static bool g_useMidiLyrics = true;  // 是否使用 MIDI 自带的 0x05 歌词
 static bool g_usePentatonic = true;  // 是否按五声调式校正宫音
 static bool g_useDynamics = true;    // 是否写出力度 / 演奏法 / 段落标记
+static int g_trackFilter = -1;       // 网页段落选择：-1 = 全部轨，与 CLI --track 共用
 
 // 网页上的两个渲染开关。清空内置歌词事件表而不是只跳过渲染：歌词事件同时
 // 参与旋律轨判定，关掉就得连证据一起去掉。五声开关则直接落在 MidiData 上，
@@ -27,6 +28,25 @@ static void applyRenderOptions(m2j::MidiData& data) {
 
 extern "C" {
 
+// 网页端的段落选择：与 CLI --track 走同一条解析层按轨隔离路径。
+// -1 表示全部轨（默认）。网页每次转换与每次刷新文件提示前都会重设。
+void midi2jianpu_set_track(int track) {
+    g_trackFilter = track;
+}
+
+// 按轨隔离提示：网页选段后说明只留下了哪一轨、丢了多少音符。
+// 返回 char*，网页必须过 UTF8ToString。
+const char* midi2jianpu_track_info(const uint8_t* midiData, int size) {
+    static std::string buf;
+    m2j::MidiData data;
+    if (!m2j::loadMidiFromMemory(midiData, size, data,
+                                 g_trackFilter >= 0, g_trackFilter)) {
+        buf.clear(); return buf.c_str();
+    }
+    buf = m2j::trackLabel(data);
+    return buf.c_str();
+}
+
 // 解析MIDI并返回文本简谱
 // midiData: MIDI二进制数据指针
 // size: 数据大小
@@ -34,7 +54,7 @@ extern "C" {
 // isMajor: 是否大调
 const char* midi2jianpu_parse(const uint8_t* midiData, int size, int keyPitch, int isMajor) {
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data)) {
+    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) {
         g_result = "错误: 无法解析MIDI文件";
         return g_result.c_str();
     }
@@ -63,7 +83,7 @@ const char* midi2jianpu_parse(const uint8_t* midiData, int size, int keyPitch, i
 // 生成HTML谱面
 const char* midi2jianpu_html(const uint8_t* midiData, int size, int keyPitch, int isMajor) {
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data)) {
+    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) {
         g_result = "<p>错误: 无法解析MIDI文件</p>";
         return g_result.c_str();
     }
@@ -122,7 +142,7 @@ void midi2jianpu_set_title(const char* title) {
 // 只是读文件，不受「忽略内置歌词」开关影响；解析失败返回 0。
 int midi2jianpu_midi_lyric_count(const uint8_t* midiData, int size) {
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data)) return 0;
+    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) return 0;
     return (int)m2j::normalizeMidiLyrics(data).size();
 }
 
@@ -142,7 +162,7 @@ void midi2jianpu_set_use_pentatonic(int on) {
 int midi2jianpu_pentatonic_info(const uint8_t* midiData, int size) {
     if (!g_usePentatonic) return 0;
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data)) return 0;
+    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) return 0;
     if (data.keySig.valid) return 0;
     const m2j::PentatonicEstimate p = m2j::detectPentatonic(data);
     if (!p.detected) return 0;
@@ -153,7 +173,7 @@ int midi2jianpu_pentatonic_info(const uint8_t* midiData, int size) {
 // 与内置歌词计数一样只读文件，不受任何渲染开关影响；解析失败返回 0。
 int midi2jianpu_key_change_count(const uint8_t* midiData, int size) {
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data)) return 0;
+    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) return 0;
     return (int)m2j::keyChangesOf(data).size();
 }
 
@@ -161,7 +181,7 @@ int midi2jianpu_key_change_count(const uint8_t* midiData, int size) {
 // 用户看不出「后半段歌词为什么没跑偏」是刻意做的还是碰巧。
 int midi2jianpu_tempo_change_count(const uint8_t* midiData, int size) {
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data)) return 0;
+    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) return 0;
     return m2j::tempoChangeCount(data);
 }
 
@@ -171,7 +191,7 @@ int midi2jianpu_tempo_change_count(const uint8_t* midiData, int size) {
 // 谱面上却只标一个「rit. 120→60」。不说明的话用户会以为漏了速度数据。
 int midi2jianpu_tempo_ramp_count(const uint8_t* midiData, int size) {
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data)) return 0;
+    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) return 0;
     int n = 0;
     for (const auto& m : m2j::tempoMarksOf(data))
         if (m.kind != m2j::TempoMarkKind::Step) n++;
@@ -188,7 +208,7 @@ void midi2jianpu_set_use_dynamics(int on) {
 int midi2jianpu_expression_count(const uint8_t* midiData, int size) {
     if (!g_useDynamics) return 0;
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data)) return 0;
+    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) return 0;
     return m2j::ExpressionMap(data).totalCount();
 }
 
@@ -197,7 +217,7 @@ int midi2jianpu_expression_count(const uint8_t* midiData, int size) {
 const char* midi2jianpu_part_info(const uint8_t* midiData, int size) {
     static std::string buf;
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data)) { buf.clear(); return buf.c_str(); }
+    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
     buf = m2j::partSummary(data);
     return buf.c_str();
 }
@@ -208,7 +228,7 @@ const char* midi2jianpu_part_info(const uint8_t* midiData, int size) {
 const char* midi2jianpu_file_header_info(const uint8_t* midiData, int size) {
     static std::string buf;
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data)) { buf.clear(); return buf.c_str(); }
+    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
     buf = m2j::timeBaseLabel(data);
     const std::string fl = m2j::formatLabel(data);
     if (!fl.empty()) buf += (buf.empty() ? "" : " ｜ ") + fl;
@@ -221,7 +241,7 @@ const char* midi2jianpu_file_header_info(const uint8_t* midiData, int size) {
 const char* midi2jianpu_controller_info(const uint8_t* midiData, int size) {
     static std::string buf;
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data)) { buf.clear(); return buf.c_str(); }
+    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
     buf = m2j::controllerLabel(data);
     return buf.c_str();
 }
@@ -231,7 +251,7 @@ const char* midi2jianpu_controller_info(const uint8_t* midiData, int size) {
 const char* midi2jianpu_bend_range_info(const uint8_t* midiData, int size) {
     static std::string buf;
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data)) { buf.clear(); return buf.c_str(); }
+    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
     buf = m2j::bendRangeLabel(data);
     return buf.c_str();
 }
@@ -241,7 +261,7 @@ const char* midi2jianpu_bend_range_info(const uint8_t* midiData, int size) {
 const char* midi2jianpu_running_status_info(const uint8_t* midiData, int size) {
     static std::string buf;
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data)) { buf.clear(); return buf.c_str(); }
+    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
     buf = m2j::runningStatusLabel(data);
     return buf.c_str();
 }
@@ -250,7 +270,7 @@ const char* midi2jianpu_running_status_info(const uint8_t* midiData, int size) {
 const char* midi2jianpu_port_info(const uint8_t* midiData, int size) {
     static std::string buf;
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data)) { buf.clear(); return buf.c_str(); }
+    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
     buf = m2j::portLabel(data);
     return buf.c_str();
 }
@@ -261,7 +281,7 @@ const char* midi2jianpu_port_info(const uint8_t* midiData, int size) {
 const char* midi2jianpu_sysex_info(const uint8_t* midiData, int size) {
     static std::string buf;
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data)) { buf.clear(); return buf.c_str(); }
+    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
     buf = m2j::sysExLabel(data);
     return buf.c_str();
 }
@@ -271,7 +291,7 @@ const char* midi2jianpu_sysex_info(const uint8_t* midiData, int size) {
 const char* midi2jianpu_bank_info(const uint8_t* midiData, int size) {
     static std::string buf;
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data)) { buf.clear(); return buf.c_str(); }
+    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
     buf = m2j::bankLabel(data);
     return buf.c_str();
 }
@@ -279,7 +299,7 @@ const char* midi2jianpu_bank_info(const uint8_t* midiData, int size) {
 // 获取MIDI音符数据(JSON格式, 用于播放)
 const char* midi2jianpu_get_notes_json(const uint8_t* midiData, int size) {
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data)) {
+    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) {
         g_result = "[]";
         return g_result.c_str();
     }
@@ -305,7 +325,7 @@ const char* midi2jianpu_get_notes_json(const uint8_t* midiData, int size) {
 // 生成MusicXML
 const char* midi2jianpu_musicxml(const uint8_t* midiData, int size, int keyPitch, int isMajor) {
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data)) {
+    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) {
         g_result = "<error>无法解析MIDI</error>";
         return g_result.c_str();
     }

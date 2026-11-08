@@ -655,7 +655,7 @@ static void normalizeKeyMap(MidiData& out) {
 
 // 核心解析：从内存buffer解析MIDI
 static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
-                        bool keepAllFormat2) {
+                        bool keepAllFormat2, int trackFilter) {
     if (size < 14) return false;
     size_t pos = 0;
 
@@ -752,6 +752,12 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
     // ---- 逐轨 ----
     while (pos + 8 <= size && std::memcmp(d + pos, "MTrk", 4) == 0) {
         pos += 4;
+        // --track / 网页段落选择：只收集指定轨的**演奏事件**。全局音源设定
+        // （set_tempo、拍号、调号、SysEx 鼓模式、Bank / Program、RPN、
+        // marker）仍要按整份文件读取——GS 设定和速度表几乎总写在
+        // conductor / setup 轨上，按轨丢掉会把选中轨的音色与速度算错。
+        // 别的轨照样完整解析，只是不往结果里塞演奏数据。
+        const bool keepTrack = (trackFilter < 0 || trackIdx == trackFilter);
         uint32_t trkLen = rd32(d + pos); pos += 4;
         size_t trkEnd = pos + trkLen;
 
@@ -812,7 +818,7 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                 // 但 GS/XG 可以把它改回普通乐器，所以这里只记 note-on 个数，
                 // 真正丢不丢留到 applySysExDrumMode 按时间轴决定——那时所有轨
                 // 的 SysEx 都读齐了，设定写在文件末尾也能生效。
-                if (rawChannel == 9 && type == 0x90u && vel > 0)
+                if (keepTrack && rawChannel == 9 && type == 0x90u && vel > 0)
                     defaultDrumNoteOn++;
                 {
                     uint64_t key = ((uint64_t)channel << 24) |
@@ -888,7 +894,7 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                 } else if (metaType == 0x05u) {  // lyric event
                     std::string lyric((const char*)&d[pos], metaLen);
                     // 保留空事件：很多文件用空 lyric 表示换行/段落，规整阶段再决定
-                    out.midiLyrics.push_back({absTick, lyric, trackIdx});
+                    if (keepTrack) out.midiLyrics.push_back({absTick, lyric, trackIdx});
                 } else if (metaType == 0x01u) {  // text event
                     std::string text((const char*)&d[pos], metaLen);
                     // 只存非空的文本
@@ -905,14 +911,18 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
             } else if (type == 0xB0u) {
                 uint8_t ctrl = d[pos++];
                 uint8_t val = d[pos++];
-                if (ctrl == 0x0Bu) {  // Expression
-                    out.dynamics.push_back({absTick, (int)val, (int)channel});
-                } else if (ctrl == 0x07u) {  // 主音量：和 CC11 一样承载渐强渐弱
-                    volumeCc7.push_back({absTick, (int)val, (int)channel});
-                } else if (ctrl == 0x40u) {  // CC64 延音踏板，>=64 算踩下
-                    pedalEvents.push_back({absTick, (int)channel, val >= 64, ctrlSeq++});
-                } else if (ctrl == 0x78u || ctrl == 0x7Bu) {  // All Sound/Notes Off
-                    allOffEvents.push_back({absTick, (int)channel, ctrlSeq++});
+                // 演奏事件按轨隔离；下面的 Bank Select 与 RPN 是音源状态，
+                // 常写在别的 setup 轨上，必须继续按整份文件收集。
+                if (keepTrack) {
+                    if (ctrl == 0x0Bu) {  // Expression
+                        out.dynamics.push_back({absTick, (int)val, (int)channel});
+                    } else if (ctrl == 0x07u) {  // 主音量：和 CC11 一样承载渐强渐弱
+                        volumeCc7.push_back({absTick, (int)val, (int)channel});
+                    } else if (ctrl == 0x40u) {  // CC64 延音踏板，>=64 算踩下
+                        pedalEvents.push_back({absTick, (int)channel, val >= 64, ctrlSeq++});
+                    } else if (ctrl == 0x78u || ctrl == 0x7Bu) {  // All Sound/Notes Off
+                        allOffEvents.push_back({absTick, (int)channel, ctrlSeq++});
+                    }
                 }
                 // CC0 Bank MSB / CC32 Bank LSB：XG 用 MSB 127 指定鼓组，
                 // GS/XG 也靠它选变体音色。旧实现把这两个控制器当普通两字节
@@ -954,7 +964,7 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                 uint8_t lsb = d[pos++];
                 uint8_t msb = d[pos++];
                 int bend = (msb << 7) | lsb;
-                out.pitchBends.push_back({absTick, bend, (int)channel});
+                if (keepTrack) out.pitchBends.push_back({absTick, bend, (int)channel});
             } else if (status == 0xF0u || status == 0xF7u) {
                 // SysEx：按长度整体跳过，否则会把后续事件错位解析。
                 // 但 GS/XG 的「Use for Rhythm Part / Part Mode」与 GM/GS/XG
@@ -1049,6 +1059,29 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
     out.bendRanges = std::move(bendRanges);
     normalizeMeterMap(out);
     normalizeKeyMap(out);
+
+    // ---- 按轨隔离（--track / 网页段落选择）----
+    // 必须排在踏板 / 力度 / 清音的语义修正**之前**：那些处理会按「还活着
+    // 的通道」把别的轨的踏板、CC11 并进谱面，等 parseBuffer 返回再丢音符，
+    // 谱面时值早就被别轨的控制器改过了。演奏事件表已在解析循环里按轨
+    // 门控，这里只丢音符，并记下 format 2 的**全文件**段数。
+    int f2SeqBefore = 0;
+    if (out.format == 2 && trackFilter >= 0) {
+        std::set<int> seqTracks;
+        for (const auto& n : out.notes) seqTracks.insert(n.track);
+        f2SeqBefore = (int)seqTracks.size();
+    }
+    if (trackFilter >= 0) {
+        out.selectedTrack = trackFilter;
+        std::vector<NoteEvent> kept;
+        kept.reserve(out.notes.size());
+        for (auto& n : out.notes) {
+            if (n.track == trackFilter) kept.push_back(n);
+            else out.trackFilteredNotes++;
+        }
+        out.notes.swap(kept);
+    }
+
     // 鼓过滤必须排在 normalizeFormat2 **之前**：通道 9 的音符现在会先收进
     // notes 再统一删，若让 format 2 先按轨统计，一条只有鼓的轨会被当成
     // 「第一段」，整首曲子被判成只有打击乐。先删鼓音，段判定看到的音符
@@ -1057,7 +1090,16 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
     // 再统一套用鼓判定；两者共用 (tick, seq) 时间轴。
     resolveProgramTimeline(out, rawProgramEvents, drumModeEvents);
     applySysExDrumMode(out, drumModeEvents, defaultDrumNoteOn, keepAllFormat2);
-    normalizeFormat2(out, keepAllFormat2);
+    if (trackFilter >= 0) {
+        // format 2 的段数要按**整份文件**报，不能按隔离后只剩一轨的
+        // notes 重算，否则「共 N 段」的提示会凭空消失。
+        if (out.format == 2) {
+            out.format2SequenceCount = f2SeqBefore;
+            out.format2UsedTrack = trackFilter;
+        }
+    } else {
+        normalizeFormat2(out, keepAllFormat2);
+    }
     resolveBendRanges(out);
     applyControllerSemantics(out, pedalEvents, allOffEvents, volumeCc7);
     applySmpteTimeBase(out);
@@ -1067,18 +1109,19 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
     return true;
 }
 
-bool loadMidiFile(const std::string& path, MidiData& out, bool keepAllFormat2) {
+bool loadMidiFile(const std::string& path, MidiData& out,
+                  bool keepAllFormat2, int trackFilter) {
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;
     std::string buf((std::istreambuf_iterator<char>(f)),
                     std::istreambuf_iterator<char>());
     return parseBuffer(reinterpret_cast<const uint8_t*>(buf.data()), buf.size(), out,
-                       keepAllFormat2);
+                       keepAllFormat2, trackFilter);
 }
 
 bool loadMidiFromMemory(const uint8_t* data, size_t size, MidiData& out,
-                        bool keepAllFormat2) {
-    return parseBuffer(data, size, out, keepAllFormat2);
+                        bool keepAllFormat2, int trackFilter) {
+    return parseBuffer(data, size, out, keepAllFormat2, trackFilter);
 }
 
 // 这两个说明文本放在解析层而不是输出层：它们是「文件头怎么读的」这一事实，
@@ -1200,6 +1243,19 @@ std::string bankLabel(const MidiData& data) {
         os << "，" << data.bankDrumChannels << " 条 XG 鼓组通道";
     if (data.programSwitchChannels > 0)
         os << "，" << data.programSwitchChannels << " 条通道中途换音色（乐器名按时间取）";
+    return os.str();
+}
+
+std::string trackLabel(const MidiData& data) {
+    if (data.selectedTrack < 0) return "";
+    std::ostringstream os;
+    os << "按轨隔离：只转换轨 " << data.selectedTrack;
+    auto it = data.trackNames.find(data.selectedTrack);
+    if (it != data.trackNames.end() && !it->second.empty())
+        os << "「" << it->second << "」";
+    os << "，该轨以外的歌词 / 力度 / 踏板 / 弯音事件已忽略";
+    if (data.trackFilteredNotes > 0)
+        os << "（另丢弃 " << data.trackFilteredNotes << " 个音符）";
     return os.str();
 }
 

@@ -75,6 +75,10 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
       <option value="5:0">f 小调（1=Ab）</option>
     </optgroup>
   </select>
+  <label for="track">段落/轨道：</label>
+  <select id="track" title="多轨 MIDI 可只转换其中一条轨；该轨以外的歌词、力度、踏板、弯音也会一并隔离">
+    <option value="-1">自动（全部轨）</option>
+  </select>
   <label class="hint"><input type="checkbox" id="usePentatonic" checked> 五声调式宫音校正</label>
   <label class="hint"><input type="checkbox" id="useDynamics" checked> 力度与演奏法</label>
 </div>
@@ -152,6 +156,8 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     if (!box) return;
     if (!wasmMod || !midiBytes) return;
     var hints = [];
+    // 文件提示也要按当前选中轨解析，否则切换段落后统计还是上一条轨的
+    if (wasmMod._midi2jianpu_set_track) wasmMod._midi2jianpu_set_track(currentTrack());
     var p = wasmMod._malloc(midiBytes.length);
     wasmMod.HEAPU8.set(midiBytes, p);
     if (wasmMod._midi2jianpu_midi_lyric_count) {
@@ -247,6 +253,13 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
         wasmMod._midi2jianpu_bank_info(p, midiBytes.length));
       if (bk) hints.push(bk);
     }
+    if (wasmMod._midi2jianpu_track_info) {
+      // 按轨隔离：只保留哪一轨、丢了多少音符与别轨的演奏事件。
+      // 返回 char*，一律走 UTF8ToString。
+      var tk = wasmMod.UTF8ToString(
+        wasmMod._midi2jianpu_track_info(p, midiBytes.length));
+      if (tk) hints.push(tk);
+    }
     wasmMod._free(p);
     box.textContent = hints.join(' · ');
   }
@@ -264,6 +277,23 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     if (fileInput.files.length) loadMidi(fileInput.files[0]);
   };
 
+  function currentTrack() {
+    var v = parseInt($('track').value, 10);
+    return isNaN(v) ? -1 : v;
+  }
+
+  function fillTrackOptions(count) {
+    var sel = $('track');
+    sel.innerHTML = '<option value="-1">自动（全部轨）</option>';
+    for (var i = 0; i < count; i++) {
+      var op = document.createElement('option');
+      op.value = String(i);
+      op.textContent = '轨 ' + i;
+      sel.appendChild(op);
+    }
+    sel.value = '-1';
+  }
+
   function loadMidi(f) {
     if (!f) return;
     clearErr();
@@ -273,6 +303,13 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     fr.onload = function () {
       midiBytes = new Uint8Array(fr.result);
       $('meta').textContent = f.name + ' · ' + (midiBytes.length / 1024).toFixed(1) + ' KB';
+      // MThd 的 trackCount 在大端 offset 10..11。format 1 的卡拉 OK 文件常把
+      // 歌词、伴奏、旋律分轨，format 2 则是几首独立的曲子，都该让用户挑。
+      var isMThd = midiBytes.length >= 14 && midiBytes[0] === 0x4d &&
+                   midiBytes[1] === 0x54 && midiBytes[2] === 0x68 &&
+                   midiBytes[3] === 0x64;
+      var tc = isMThd ? ((midiBytes[10] << 8) | midiBytes[11]) : 0;
+      fillTrackOptions(tc);
       updateFileHints();
       convert();
     };
@@ -285,6 +322,10 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
   var useMidiBox = $('useMidiLyrics');
   var usePentBox = $('usePentatonic');
   var useDynBox = $('useDynamics');
+  var trackBox = $('track');
+  trackBox.onchange = function () {
+    if (midiBytes && wasmReady) { updateFileHints(); convert(); }
+  };
   useMidiBox.onchange = function () {
     if (midiBytes && wasmReady) convert();
   };
@@ -333,6 +374,9 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
 
     var ptr = wasmMod._malloc(midiBytes.length);
     wasmMod.HEAPU8.set(midiBytes, ptr);
+
+    // 段落选择每次都重设：wasm 里是全局状态，换文件不能沿用上一段
+    if (wasmMod._midi2jianpu_set_track) wasmMod._midi2jianpu_set_track(currentTrack());
 
     // 歌词每次都重新设置：wasm 里是全局缓冲，不清空会串到下一次转换
     if (wasmMod._midi2jianpu_set_lyrics) {

@@ -285,6 +285,14 @@ struct MidiData {
     // 是否把力度 / 断音 / 滑音 / 段落标记写进谱面。CLI --no-dynamics 关掉，
     // 网页上是「力度与演奏法」复选框。关掉只影响输出层，事件表仍完整保留。
     bool useDynamics = true;
+
+    // ---- --track / 网页段落选择 ----
+    // 旧实现只在 main.cpp 末尾按 track 丢音符：歌词、CC11 / CC7、踏板、
+    // 清音、弯音事件表仍来自全部轨，而且踏板 / 力度等语义修正在解析阶段
+    // 就已经用全轨数据改过时值了，等返回再丢音符根本救不回来。现在把
+    // 轨号一路传进 parseBuffer，在语义修正之前统一隔离。
+    int selectedTrack = -1;        // 实际隔离的轨号；-1 表示全部轨
+    int trackFilteredNotes = 0;    // 因按轨隔离丢掉的音符数
 };
 
 // ---- 时间轴（tick <-> 秒）----
@@ -349,11 +357,17 @@ inline long barEndTick(long bar, long barLen, long pickupTicks) {
 // keepAllFormat2 只对 format 2 文件有意义：默认只保留第一条含音符的序列
 // （其余轨属别的曲子），传 true 则原样保留全部轨——CLI 的 --track 要靠它
 // 才能选到第 2 段以后。
-bool loadMidiFile(const std::string& path, MidiData& out, bool keepAllFormat2 = false);
+//
+// trackFilter >= 0 时只保留该轨的**演奏事件**（音符 / 歌词 / CC11 / CC7 /
+// CC64 / CC120-123 / 弯音）。全局音源设定——set_tempo、拍号、调号、
+// SysEx 鼓模式、Bank / Program、RPN、marker——仍按整份文件读取，因为它们
+// 几乎总写在 conductor / setup 轨上。默认 -1 表示全部轨，输出与旧版一致。
+bool loadMidiFile(const std::string& path, MidiData& out,
+                  bool keepAllFormat2 = false, int trackFilter = -1);
 
 // 从内存加载MIDI
 bool loadMidiFromMemory(const uint8_t* data, size_t size, MidiData& out,
-                        bool keepAllFormat2 = false);
+                        bool keepAllFormat2 = false, int trackFilter = -1);
 
 // ---- 文件头的一句话说明（CLI 提示 / HTML 页眉 / WASM 共用）----
 // 普通 PPQ 文件返回空串，调用方不必判断。
@@ -379,6 +393,9 @@ std::string sysExLabel(const MidiData& data);
 // 普通 GM 文件只有 0xC0、没有 CC0/CC32 时返回空串，保证既有谱面页眉
 // 逐字节不变。
 std::string bankLabel(const MidiData& data);
+// 按轨隔离：--track / 网页段落选择实际留下了哪一轨、丢了多少音符。
+// 没有指定轨时返回空串，保证普通文件的页眉逐字节不变。
+std::string trackLabel(const MidiData& data);
 // 返回 channel 在 tick 时刻生效的 GM 音色号；没有时间轴记录时回退
 // channelProgram，两处都没有则返回 -1。
 int programAt(const MidiData& data, int channel, long tick);

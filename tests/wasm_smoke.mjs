@@ -1143,6 +1143,84 @@ for (const name of ['program_timeline.mid', 'sample.mid', 'sysex_gs_drum.mid']) 
 }
 check(/UTF8ToString\(\s*wasmMod\._midi2jianpu_bank_info/.test(pageHtml2),
   'docs/index.html 的 bank_info 用 UTF8ToString 取了字符串');
+
+
+// ---- 33. --track 按轨隔离：网页端段落选择 ----
+// CLI 的 --track 过去只在末尾丢音符，网页则根本没法选段落。现在两者共用
+// 解析层的 trackFilter，网页通过 _midi2jianpu_set_track 设置。
+check(typeof mod._midi2jianpu_set_track === 'function',
+  'WASM 导出 _midi2jianpu_set_track');
+check(typeof mod._midi2jianpu_track_info === 'function',
+  'WASM 导出 _midi2jianpu_track_info');
+
+function withBytes(name, fn) {
+  const bytes = readFixture(name);
+  if (!bytes) return;
+  const ptr = mod._malloc(bytes.length);
+  mod.HEAPU8.set(bytes, ptr);
+  try { fn(ptr, bytes.length); } finally { mod._free(ptr); }
+}
+function trackInfo(bytes) {
+  const ptr = mod._malloc(bytes.length);
+  mod.HEAPU8.set(bytes, ptr);
+  const s = mod.UTF8ToString(mod._midi2jianpu_track_info(ptr, bytes.length));
+  mod._free(ptr);
+  return s || '';
+}
+const tlWasm = readFixture('track_leak.mid');
+if (tlWasm) {
+  mod._midi2jianpu_set_track(-1);
+  check(trackInfo(tlWasm) === '', '默认不指定轨时 track_info 返回空串');
+  withBytes('track_leak.mid', (p, n) => {
+    check(mod._midi2jianpu_midi_lyric_count(p, n) === 16,
+      '默认读取两轨共 16 个歌词音节');
+  });
+
+  mod._midi2jianpu_set_track(0);
+  const ti0 = trackInfo(tlWasm);
+  check(/按轨隔离/.test(ti0) && /轨 0/.test(ti0),
+    `选中轨 0 后 track_info 说明隔离范围，实际：${ti0}`);
+  withBytes('track_leak.mid', (p, n) => {
+    check(mod._midi2jianpu_midi_lyric_count(p, n) === 0,
+      '选中轨 0 后网页读到的内置歌词音节数为 0');
+  });
+  const callerT0 = makeCaller(mod);
+  callerT0.setMidi(tlWasm);
+  const txt0 = callerT0.call('midi2jianpu_parse', -1, 1) || '';
+  check(!/歌词|力度/.test(txt0) || !/p\b/.test(txt0),
+    '选中轨 0 后网页简谱不混入别轨的力度记号');
+
+  mod._midi2jianpu_set_track(1);
+  withBytes('track_leak.mid', (p, n) => {
+    check(mod._midi2jianpu_midi_lyric_count(p, n) === 16,
+      '切到轨 1 后网页又读回该轨的 16 个歌词音节');
+  });
+  check(/轨 1/.test(trackInfo(tlWasm)), 'track_info 跟着段落切换改口');
+
+  // 全局状态：测试完必须复位，否则后面的断言会沿用上一段选择
+  mod._midi2jianpu_set_track(-1);
+  check(trackInfo(tlWasm) === '', '复位到 -1 后 track_info 重新为空');
+}
+const tcWasm = readFixture('track_conductor.mid');
+if (tcWasm) {
+  mod._midi2jianpu_set_track(1);
+  withBytes('track_conductor.mid', (p, n) => {
+    const fh = mod.UTF8ToString(mod._midi2jianpu_file_header_info(p, n));
+    check(typeof fh === 'string', '选段后文件头提示仍能正常返回');
+  });
+  const callerTc = makeCaller(mod);
+  callerTc.setMidi(tcWasm);
+  const xmlTc = callerTc.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(/<beats>3<\/beats>/.test(xmlTc),
+    '选中轨 1 后网页 MusicXML 仍用别轨 conductor 的 3/4 拍');
+  mod._midi2jianpu_set_track(-1);
+}
+check(/UTF8ToString\(\s*wasmMod\._midi2jianpu_track_info/.test(pageHtml2),
+  'docs/index.html 的 track_info 用 UTF8ToString 取了字符串');
+check(/_midi2jianpu_set_track\(currentTrack\(\)\)/.test(pageHtml2),
+  'docs/index.html 转换前按当前下拉框重设段落');
+check(/<select id="track"/.test(pageHtml2) && /function fillTrackOptions/.test(pageHtml2),
+  'docs/index.html 提供段落下拉框并按 MThd 轨数填充');
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

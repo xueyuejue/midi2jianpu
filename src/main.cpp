@@ -139,10 +139,16 @@ int main(int argc, char** argv) {
     if (input.empty()) { printHelp(); return 1; }
 
     m2j::MidiData data;
-    // --track 要在 format 2 里挑段落，此时不能提前丢掉别的轨
-    if (!m2j::loadMidiFile(input, data, trackFilter >= 0)) {
+    // --track 要在 format 2 里挑段落，此时不能提前丢掉别的轨。轨号一路
+    // 传进解析层：歌词 / 力度 / 踏板 / 清音 / 弯音事件都要按轨隔离，
+    // 只在末尾丢音符的话，谱面时值早被别轨的控制器改过了。
+    if (!m2j::loadMidiFile(input, data, trackFilter >= 0, trackFilter)) {
         std::cerr << "错误: 无法读取或解析 MIDI 文件: " << input << "\n";
         return 2;
+    }
+    if (trackFilter >= 0 && data.notes.empty()) {
+        std::cerr << "轨道 " << trackFilter << " 无音符。\n";
+        return 4;
     }
     // 中途转调（0x59 map）默认生效。关掉时保留事件表本身：曲首调号还要
     // 用来判调性，清空数据会把「忽略转调」和「没有调号」混为一谈。
@@ -179,15 +185,8 @@ int main(int argc, char** argv) {
                       << "--no-midi-lyrics 可关闭）\n";
     }
 
-    // --track 过滤指定轨道
-    if (trackFilter >= 0) {
-        std::vector<m2j::NoteEvent> filtered;
-        for (auto& n : data.notes) if (n.track == trackFilter) filtered.push_back(n);
-        data.notes = filtered;
-        if (data.notes.empty()) { std::cerr << "轨道 " << trackFilter << " 无音符。\n"; return 4; }
-        // 手动挑段落后，文件头提示里的「第 N 轨」要跟着改口
-        if (data.format == 2) data.format2UsedTrack = trackFilter;
-    }
+    // --track 的轨道隔离已在解析层完成（含 format 2 的「实际转换第 N 轨」
+    // 改口）。页眉统一放在下面打印，保证提示与实际转换的轨一致。
 
     // 文件头读法的提示。放在 --track 之后：format 2 的提示要报「实际转了哪一轨」，
     // 提前打印就会和用户手动指定的轨道互相矛盾。
@@ -221,6 +220,10 @@ int main(int argc, char** argv) {
         // 乐器名是按时间轴取的，免得用户以为声部标注前后不一致。
         const std::string bk = m2j::bankLabel(data);
         if (!bk.empty()) std::cout << bk << "\n";
+        // 手动选段落时说清「另外几轨的歌词 / 力度 / 踏板 / 弯音也一起隔离了」，
+        // 否则用户会奇怪为什么谱面上的力度记号和 DAW 里看到的不一样。
+        const std::string tk = m2j::trackLabel(data);
+        if (!tk.empty()) std::cout << tk << "\n";
     }
 
     // --transpose 移调

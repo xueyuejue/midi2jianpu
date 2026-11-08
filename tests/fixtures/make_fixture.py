@@ -2,7 +2,7 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 50 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 66 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
@@ -42,7 +42,13 @@ sysex_gs_reset / sysex_gm_reset / sysex_xg_reset 在 tick 960 发三种 Reset，
 前半段的鼓设定应被撤销；sysex_conductor 把 SysEx 放到文件最后一条轨，
 锁住「解析顺序不能决定时间顺序」；sysex_ch9_normal 把通道 10 改回普通
 钢琴，sysex_ch9_drum 则显式设回鼓；sysex_unknown 是不相干的 SysEx，
-必须零回归；sysex_port_drum 验证鼓模式同样按 FF 21 端口隔离。
+必须零回归；sysex_port_drum 验证鼓模式同样按 FF 21 端口隔离。bank_xg_drum /
+bank_normal / bank_switch_back / bank_conductor / bank_port / bank_reset /
+bank_ch9_plain / bank_no_program / program_timeline 覆盖 CC0/CC32 Bank Select
+与 Program Change 的时间轴。track_pedal / track_rpn_setup / track_conductor /
+track_leak / track_leak_base / track_empty / track_fmt2 是 --track 按轨隔离的
+回归闸门：踏板、CC11/CC7、歌词、弯音写在别的轨上时不许串进选中轨，而
+RPN、速度、拍号、调号、Marker 这些全局设定仍要按整份文件生效。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -1800,6 +1806,96 @@ def build_program_timeline() -> bytes:
     return _port_smf([_port_conductor(), tl, _sysex_melody(1)])
 
 
+
+# ---- --track / 网页段落选择：按轨隔离的回归素材 ----
+#
+# 旧实现只在 main.cpp 末尾按 track 丢音符，歌词 / CC11 / CC7 / 踏板 / 清音 /
+# 弯音事件表仍来自全部轨，而且踏板等语义修正在解析阶段就改过时值了。
+# 下面几份素材分别把「该隔离的」放到别的轨、把「必须保留的」放到别的轨。
+_TRACK_MELODY = (60, 62, 64, 65, 67, 65, 64, 62)
+
+
+def _track_melody(ch=0, name=b"Vocal", count=8, dur=120) -> Track:
+    t = Track()
+    t.add(0, meta(0x03, name))
+    for i in range(count):
+        t.note(ch, _TRACK_MELODY[i % 8], 90, i * DIV, dur)
+    return t
+
+
+def build_track_pedal() -> bytes:
+    """CC64 踏板写在轨 1、且与旋律**同一通道**：--track 0 不该补长任何音。"""
+    ped = Track()
+    ped.add(0, meta(0x03, b"Pedal"))
+    ped.cc(0, 64, 127, 0)
+    ped.cc(0, 64, 0, 8 * DIV)
+    return _port_smf([_track_melody(), ped])
+
+
+def build_track_rpn_setup() -> bytes:
+    """RPN 弯音范围写在轨 0 的 setup 上：--track 1 仍要读到 ±12 半音。"""
+    setup = Track()
+    setup.add(0, meta(0x03, b"Setup"))
+    setup.bend_range(0, 12, 0)
+    voc = Track()
+    voc.add(0, meta(0x03, b"Vocal"))
+    voc.bend(0, 16383, 0)
+    for i in range(4):
+        voc.note(0, 60 + 2 * i, 90, i * DIV, DIV - 40)
+    return _port_smf([setup, voc])
+
+
+def build_track_conductor() -> bytes:
+    """速度 / 拍号 / 调号 / Marker 全在轨 0：--track 1 必须照常生效。"""
+    c = Track()
+    c.add(0, meta(0x03, b"Conductor"))
+    c.add(0, meta(0x51, bytes([0x0A, 0x2C, 0x2A])))   # 666666us -> 90 BPM
+    c.add(0, meta(0x58, bytes([3, 2, 24, 8])))        # 3/4
+    c.add(0, meta(0x59, bytes([2, 0])))               # D 大调
+    c.add(0, meta(0x06, b"Verse"))
+    return _port_smf([c, _track_melody()])
+
+
+def build_track_leak() -> bytes:
+    """歌词 / CC11 / CC7 / 弯音 / 8 个音符全在轨 1：--track 0 一个都不许串。"""
+    other = Track()
+    other.add(0, meta(0x03, b"Guitar"))
+    for i in range(8):
+        other.note(1, 48 + i, 60, i * DIV, DIV - 40)
+        other.cc(1, 11, 20, i * DIV)
+        other.cc(1, 7, 20, i * DIV)
+        other.add(i * DIV, meta(0x05, ("伴%d" % i).encode()))
+    other.bend(1, 16383, 0)
+    return _port_smf([_track_melody(), other])
+
+
+def build_track_leak_base() -> bytes:
+    """只含轨 0 的基线：--track 0 的谱面应与它逐行一致。"""
+    return _port_smf([_track_melody()])
+
+
+def build_track_empty() -> bytes:
+    """轨 0 只有 meta 没有音符：--track 0 应明确报「轨道 0 无音符」。"""
+    empty = Track()
+    empty.add(0, meta(0x03, b"Empty"))
+    return _port_smf([empty, _track_melody()])
+
+
+def build_track_fmt2() -> bytes:
+    """format 2 两段：选第 2 段时「共 2 段」的提示不能因为只剩一轨而消失。"""
+    a = Track()
+    a.add(0, meta(0x03, b"SongA"))
+    for i in range(4):
+        a.note(0, 60 + i, 90, i * DIV, DIV - 40)
+    b = Track()
+    b.add(0, meta(0x03, b"SongB"))
+    for i in range(4):
+        b.note(1, 67 - i, 90, i * DIV, DIV - 40)
+        b.add(i * DIV, meta(0x05, ("乙%d" % i).encode()))
+    return (b"MThd" + struct.pack(">IHHH", 6, 2, 2, DIV)
+            + a.render() + b.render())
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -2062,6 +2158,22 @@ def main() -> None:
         ("bank_ch9_plain", build_bank_ch9_plain),
         ("bank_no_program", build_bank_no_program),
         ("program_timeline", build_program_timeline),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # --track / 网页段落选择素材（演奏事件隔离 + 全局设定保留）
+    for name, builder in (
+        ("track_pedal", build_track_pedal),
+        ("track_rpn_setup", build_track_rpn_setup),
+        ("track_conductor", build_track_conductor),
+        ("track_leak", build_track_leak),
+        ("track_leak_base", build_track_leak_base),
+        ("track_empty", build_track_empty),
+        ("track_fmt2", build_track_fmt2),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:
