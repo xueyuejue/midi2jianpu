@@ -226,6 +226,18 @@ struct MidiData {
     // 所以解析阶段就丢弃，这里只留下数量供 CLI 提示用户。
     int drumNotesSkipped = 0;
 
+    // ---- 0xF0 SysEx 里的鼓模式（Roland GS / Yamaha XG）----
+    // GS/XG 允许把任意 part 指定为节奏声部（鼓），也允许把通道 10 改回普通
+    // 乐器；GM/GS/XG Reset 则把整台音源恢复成「只有通道 10 是鼓」。这三件事
+    // 都写在 SysEx 数据里，过去整段跳过，于是非通道 10 的鼓件音高会被当成
+    // 旋律输出。设定按 (逻辑通道, tick) 生效，端口隔离同样适用于它。
+    int sysExEvents = 0;              // F0 开头的 SysEx 包总数
+    int sysExModeEvents = 0;          // GS/XG part mode 设定数
+    int sysExResetEvents = 0;         // GM/GS/XG Reset 数
+    int sysExDrumChannels = 0;        // 被 SysEx 指定为鼓的逻辑通道数
+    int sysExNormalChannels = 0;      // 被 SysEx 改回普通乐器的逻辑通道数
+    int sysExDrumNotesSkipped = 0;    // 因 SysEx 鼓设定丢掉的音符数
+
     // 弱起（anacrusis）小节长度，单位 tick；-1 表示自动判定（见 notation.hpp
     // 的 detectPickupTicks），0 表示明确没有弱起。
     //
@@ -333,6 +345,9 @@ std::string runningStatusLabel(const MidiData& data);
 // MIDI Port / Channel Prefix：声明次数、端口数，以及「相同通道号跨端口已隔离」。
 // 文件里没有这两类 meta 时返回空串。
 std::string portLabel(const MidiData& data);
+// SysEx 鼓模式：GS/XG 指定了哪些鼓通道、Reset 恢复了默认、跳过了多少鼓件音。
+// 文件里没有这类 SysEx 时返回空串。
+std::string sysExLabel(const MidiData& data);
 
 std::string formatLabel(const MidiData& data);
 

@@ -1573,6 +1573,89 @@ def main():
     check(xml_dur_by_pitch(psx) == {("C", "4"): 1920, ("D", "4"): 1440},
           "无端口声明的时值与旧版完全相同")
 
+
+    print("\n[47] SysEx 鼓模式：GS/XG 指定的鼓通道不能转成假旋律")
+    for name in ("sysex_gs_drum", "sysex_xg_drum"):
+        f = os.path.join(FIXTURES, name + ".mid")
+        rc, out, err = run(exe, f, "--no-pickup")
+        check(rc == 0, f"{name} 解析成功", err[:200])
+        check("共提取 8 个音符" in out and "已跳过 8 个打击乐音符" in out,
+              f"{name}：只留 8 个旋律音，8 个鼓件音被跳过")
+        check("SysEx 鼓模式：1 处 GS/XG 设定，1 条鼓通道，已跳过 8 个鼓件音" in out,
+              f"{name}：CLI 页眉说清鼓模式与跳过数量")
+        check("#4,," not in out and "1,," not in out,
+              f"{name}：谱面正文里没有鼓件音高转出的低音垃圾")
+        x = os.path.join(tmp, name + ".xml")
+        rc, _, err = run(exe, f, "--no-pickup", "--musicxml", x)
+        check(rc == 0 and len(xml_pitches(x)) == 8,
+              f"{name}：MusicXML 也只有 8 个旋律音", err[:200])
+    _, gso, _ = run(exe, os.path.join(FIXTURES, "sysex_gs_drum.mid"), "--no-pickup")
+    _, xgo, _ = run(exe, os.path.join(FIXTURES, "sysex_xg_drum.mid"), "--no-pickup")
+    check(body(gso) == body(xgo) and "1=" in gso,
+          "GS 与 XG 两种 SysEx 写法得到完全相同的谱面正文")
+    gn = os.path.join(FIXTURES, "sysex_gs_normal.mid")
+    _, no, _ = run(exe, gn, "--no-pickup")
+    check("共提取 16 个音符" in no and "已跳过" not in no,
+          "mode=0 对照：普通乐器一个音都不丢")
+    check("1 条恢复普通乐器" in no, "mode=0：CLI 说明通道恢复普通乐器")
+
+    print("\n[48] GM/GS/XG Reset 按时间撤销鼓设定；SysEx 写在末轨也生效")
+    for name in ("sysex_gs_reset", "sysex_gm_reset", "sysex_xg_reset"):
+        f = os.path.join(FIXTURES, name + ".mid")
+        rc, out, err = run(exe, f, "--no-pickup")
+        check(rc == 0 and "共提取 12 个音符" in out and "已跳过 4 个打击乐音符" in out,
+              f"{name}：前 4 个鼓件音丢、后 4 个恢复成普通乐器", err[:200])
+        check("1 处 GM/GS/XG Reset 恢复默认" in out,
+              f"{name}：CLI 报出 Reset 恢复默认")
+        x = os.path.join(tmp, name + ".xml")
+        rc, _, err = run(exe, f, "--no-pickup", "--musicxml", x)
+        check(rc == 0 and len(xml_pitches(x)) == 12,
+              f"{name}：MusicXML 同样是 12 个音", err[:200])
+    cd = os.path.join(FIXTURES, "sysex_conductor.mid")
+    _, co, _ = run(exe, cd, "--no-pickup")
+    check("共提取 8 个音符" in co and "已跳过 8 个打击乐音符" in co,
+          "SysEx 在最后一条轨（tick 0）仍对前面的轨生效")
+    cx = os.path.join(tmp, "sysex_conductor.xml")
+    run(exe, cd, "--no-pickup", "--musicxml", cx)
+    check(xml_pitches(cx) == xml_pitches(os.path.join(tmp, "sysex_gs_drum.xml")),
+          "末轨 SysEx 与首轨 SysEx 的 MusicXML 音高序列一致")
+
+    print("\n[49] 通道 10 改回普通乐器；无关 SysEx 零回归")
+    ch9 = os.path.join(FIXTURES, "sysex_ch9_normal.mid")
+    rc, c9, err = run(exe, ch9, "--no-pickup")
+    check(rc == 0 and "共提取 16 个音符" in c9 and "已跳过" not in c9,
+          "GS 把通道 10 改回钢琴：ch9 的 8 个旋律音全部留下", err[:200])
+    check("1 条恢复普通乐器" in c9, "CLI 说明通道 10 恢复普通乐器")
+    c9x = os.path.join(tmp, "sysex_ch9_normal.xml")
+    run(exe, ch9, "--no-pickup", "--musicxml", c9x)
+    check(len(xml_pitches(c9x)) == 16, "MusicXML 同样有 16 个音")
+    cd9 = os.path.join(FIXTURES, "sysex_ch9_drum.mid")
+    _, c9d, _ = run(exe, cd9, "--no-pickup")
+    check("共提取 8 个音符" in c9d and "已跳过 8 个打击乐音符" in c9d,
+          "显式把通道 10 设回鼓：仍按鼓跳过")
+    uk = os.path.join(FIXTURES, "sysex_unknown.mid")
+    rc, uo, err = run(exe, uk, "--no-pickup")
+    check(rc == 0 and "共提取 16 个音符" in uo and "SysEx 鼓模式" not in uo,
+          "不相干的 SysEx 不触发任何鼓模式提示，也不丢音", err[:200])
+    ux = os.path.join(tmp, "sysex_unknown.xml")
+    run(exe, uk, "--no-pickup", "--musicxml", ux)
+    gnh = os.path.join(tmp, "sysex_gs_normal.xml")
+    run(exe, gn, "--no-pickup", "--musicxml", gnh)
+    check(xml_pitches(ux) == xml_pitches(gnh) and len(xml_pitches(ux)) == 17,
+          "无关 SysEx 的 MusicXML 音高序列与 mode=0 基线完全一致")
+
+    print("\n[50] SysEx 鼓模式按端口隔离；HTML 页眉同样写明")
+    sp = os.path.join(FIXTURES, "sysex_port_drum.mid")
+    rc, so, err = run(exe, sp, "--no-pickup")
+    check(rc == 0 and "共提取 4 个音符" in so and "已跳过 4 个打击乐音符" in so,
+          "port 1 的 ch0 鼓件音被丢，port 0 的 ch0 旋律保留", err[:200])
+    check("MIDI Port：1 处声明，共 2 个端口（0～1）" in so and
+          "已跳过 4 个鼓件音" in so, "端口与鼓模式两条提示同时出现")
+    sph = os.path.join(tmp, "sysex_port_drum.html")
+    rc, _, err = run(exe, sp, "--no-pickup", "--html", sph)
+    check(rc == 0 and "SysEx 鼓模式" in open(sph, encoding="utf-8").read(),
+          "HTML 页眉同样写明 SysEx 鼓模式", err[:200])
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

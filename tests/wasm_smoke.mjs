@@ -1039,6 +1039,60 @@ for (const name of ['port_prefix_base.mid', 'port_standard.mid', 'sample.mid']) 
 check(/UTF8ToString\(\s*wasmMod\._midi2jianpu_port_info/.test(pageHtml2),
   'docs/index.html 的 port_info 用 UTF8ToString 取了字符串');
 
+
+// ---- 31. SysEx 鼓模式：网页端也要按 GS/XG 设定丢掉鼓件音 ----
+// 旧实现把 0xF0 整段跳过，只按「通道 9 是鼓」硬判定，于是 GS/XG 文件里
+// 被 SysEx 设成鼓的 part 会转成 `1,, 2,, #4,,` 一串低音垃圾。这里锁住新
+// 导出、文件面板与网页 MusicXML。
+function sysExInfo(bytes) {
+  if (!mod._midi2jianpu_sysex_info) return '';
+  const ptr = mod._malloc(bytes.length);
+  mod.HEAPU8.set(bytes, ptr);
+  const s = mod.UTF8ToString(mod._midi2jianpu_sysex_info(ptr, bytes.length));
+  mod._free(ptr);
+  return s || '';
+}
+check(typeof mod._midi2jianpu_sysex_info === 'function',
+  'WASM 导出 _midi2jianpu_sysex_info');
+const sxGsBytes = readFixture('sysex_gs_drum.mid');
+if (sxGsBytes) {
+  const info = sysExInfo(sxGsBytes);
+  check(/1 处 GS\/XG 设定/.test(info) && /已跳过 8 个鼓件音/.test(info),
+    `sysex_gs_drum：WASM 报出鼓模式与跳过数，实际：${info}`);
+  const caller = makeCaller(mod);
+  caller.setMidi(sxGsBytes);
+  const xml = caller.call('midi2jianpu_musicxml', -1, 1) || '';
+  const steps = [...xml.matchAll(/<step>[A-G]<\/step>/g)];
+  check(steps.length === 8 && !/<octave>2<\/octave>/.test(xml),
+    'sysex_gs_drum：网页 MusicXML 只有 8 个旋律音，没有低八度鼓件音');
+}
+const sxXgBytes = readFixture('sysex_xg_drum.mid');
+if (sxXgBytes) {
+  check(/已跳过 8 个鼓件音/.test(sysExInfo(sxXgBytes)),
+    'sysex_xg_drum：XG 写法同样被 WASM 认出');
+}
+const sxResetBytes = readFixture('sysex_gs_reset.mid');
+if (sxResetBytes) {
+  check(/1 处 GM\/GS\/XG Reset 恢复默认/.test(sysExInfo(sxResetBytes)) &&
+        /已跳过 4 个鼓件音/.test(sysExInfo(sxResetBytes)),
+    'sysex_gs_reset：WASM 报出 Reset 只撤销后半段');
+}
+const sxCh9Bytes = readFixture('sysex_ch9_normal.mid');
+if (sxCh9Bytes) {
+  const caller = makeCaller(mod);
+  caller.setMidi(sxCh9Bytes);
+  const xml = caller.call('midi2jianpu_musicxml', -1, 1) || '';
+  check([...xml.matchAll(/<step>[A-G]<\/step>/g)].length === 16,
+    'sysex_ch9_normal：通道 10 改回钢琴后网页 MusicXML 有 16 个音');
+}
+for (const name of ['sysex_unknown.mid', 'sample.mid', 'port_standard.mid']) {
+  const bytes = readFixture(name);
+  if (!bytes) continue;
+  check(sysExInfo(bytes) === '', `${name}：无 GS/XG 设定时返回空串`);
+}
+check(/UTF8ToString\(\s*wasmMod\._midi2jianpu_sysex_info/.test(pageHtml2),
+  'docs/index.html 的 sysex_info 用 UTF8ToString 取了字符串');
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

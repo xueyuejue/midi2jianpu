@@ -3,7 +3,8 @@
 //       和弦检测、同音合并、MusicXML 相关的基础数据结构、
 //       鼓轨过滤、旋律轨判定、变速（tempo map）换算、内置歌词规整、
 //       拍号 map 与逐小节网格、调号 map（中途转调 / KeyMap）、
-//       五声调式（宫商角徵羽）宫音判定与校正、tempo map 时间轴与 LRC 对齐。
+//       五声调式（宫商角徵羽）宫音判定与校正、tempo map 时间轴与 LRC 对齐、
+//       SysEx 里的 GS/XG 鼓模式与 GM/GS/XG Reset。
 #include "midi2jianpu/notation.hpp"
 #include "midi2jianpu/musicxml_writer.hpp"
 
@@ -2933,6 +2934,207 @@ int main() {
             check(d.notes.size() == 1 && d.notes[0].channel == 0,
                   "无端口时逻辑通道与旧值完全一致");
             check(portLabel(d).empty(), "无 FF 21 / FF 20 时 portLabel 为空串");
+        }
+    }
+
+    // ---- SysEx 鼓模式（GS/XG Part Mode / GM-GS-XG Reset）----
+    {
+        std::cout << "\n测试 SysEx 鼓模式：任意 part 设为鼓 / Reset 恢复默认 / 端口隔离\n";
+        auto load = [](std::vector<SmfTrack> tracks) {
+            const int n = (int)tracks.size();
+            auto bytes = buildSmfFmt(1, n, 480, std::move(tracks));
+            MidiData d;
+            const bool ok = loadMidiFromMemory(bytes.data(), bytes.size(), d);
+            return std::make_pair(ok, std::move(d));
+        };
+        // SMF 的 SysEx 事件：F0 <长度> <完整包 F0 ... F7>
+        auto sx = [](std::vector<int> payload) {
+            std::vector<uint8_t> v = {0xF0, (uint8_t)payload.size()};
+            for (int b : payload) v.push_back((uint8_t)b);
+            return v;
+        };
+        auto gsMode = [&](int ch, int mode) {
+            return sx({0xF0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x10 + ch, 0x15,
+                       mode, 0x00, 0xF7});
+        };
+        auto xgMode = [&](int ch, int mode) {
+            return sx({0xF0, 0x43, 0x10, 0x4C, 0x08, ch, 0x07, mode, 0xF7});
+        };
+        auto gmReset = [&]() {
+            return sx({0xF0, 0x7E, 0x7F, 0x09, 0x01, 0xF7});
+        };
+        auto gsReset = [&]() {
+            return sx({0xF0, 0x41, 0x10, 0x42, 0x12,
+                       0x40, 0x00, 0x7F, 0x00, 0x41, 0xF7});
+        };
+        auto xgReset = [&]() {
+            return sx({0xF0, 0x43, 0x10, 0x4C, 0x00, 0x00, 0x7E, 0x00, 0xF7});
+        };
+        // 鼓件 36 / 38 与旋律 C4 / D4 分列两条轨，tick 完全相同。
+        auto drumTrack = [](int ch) {
+            SmfTrack t;
+            t.at(0,   ev({0x90 | ch, 36, 100}));
+            t.at(240, ev({0x80 | ch, 36, 0}));
+            t.at(480, ev({0x90 | ch, 38, 100}));
+            t.at(720, ev({0x80 | ch, 38, 0}));
+            return t;
+        };
+        auto melodyTrack = [](int ch) {
+            SmfTrack t;
+            t.at(0,   ev({0x90 | ch, 60, 90}));
+            t.at(480, ev({0x80 | ch, 60, 0}));
+            t.at(480, ev({0x90 | ch, 62, 90}));
+            t.at(960, ev({0x80 | ch, 62, 0}));
+            return t;
+        };
+        auto setup = [&](std::vector<uint8_t> mode, std::vector<uint8_t> reset,
+                         long resetTick, bool lastTrack) {
+            SmfTrack s;
+            s.at(0, std::move(mode));
+            if (!reset.empty()) s.at(resetTick, std::move(reset));
+            SmfTrack d = drumTrack(0), m = melodyTrack(1);
+            if (lastTrack) return load({std::move(d), std::move(m), std::move(s)});
+            return load({std::move(s), std::move(d), std::move(m)});
+        };
+
+        // 1) GS / XG 把 ch0 设成鼓：两个鼓件音丢掉，两个旋律音留下
+        for (int kind = 0; kind < 2; ++kind) {
+            auto r = setup(kind == 0 ? gsMode(0, 1) : xgMode(0, 1), {}, 0, false);
+            const MidiData& d = r.second;
+            check(r.first && d.notes.size() == 2 &&
+                  d.notes[0].pitch == 60 && d.notes[1].pitch == 62,
+                  kind == 0 ? "GS Part Mode：只留下 C4 / D4 两个旋律音"
+                            : "XG Part Mode：只留下 C4 / D4 两个旋律音");
+            check(d.sysExEvents == 1 && d.sysExModeEvents == 1 &&
+                  d.sysExDrumChannels == 1 && d.sysExDrumNotesSkipped == 2 &&
+                  d.drumNotesSkipped == 2,
+                  "SysEx 统计：1 个包 / 1 处设定 / 1 条鼓通道 / 跳过 2 个鼓件音");
+            check(sysExLabel(d).find("已跳过 2 个鼓件音") != std::string::npos,
+                  "sysExLabel 报出跳过的鼓件音数量");
+        }
+
+        // 2) mode=0 是普通乐器：对照，一个音都不能丢
+        {
+            auto r = setup(gsMode(0, 0), {}, 0, false);
+            const MidiData& d = r.second;
+            check(d.notes.size() == 4 && d.sysExDrumNotesSkipped == 0 &&
+                  d.drumNotesSkipped == 0,
+                  "GS mode=0：普通乐器不丢音，也不算鼓");
+            check(d.sysExNormalChannels == 1 &&
+                  sysExLabel(d).find("恢复普通乐器") != std::string::npos,
+                  "GS mode=0：如实记为「恢复普通乐器」");
+        }
+
+        // 3) 三种 Reset 在 tick 480 撤销设定：前面的鼓丢，后面的鼓留
+        const char* resetNames[3] = {"GM Reset", "GS Reset", "XG Reset"};
+        for (int kind = 0; kind < 3; ++kind) {
+            auto rst = kind == 0 ? gmReset() : (kind == 1 ? gsReset() : xgReset());
+            auto r = setup(gsMode(0, 1), std::move(rst), 480, false);
+            const MidiData& d = r.second;
+            check(d.notes.size() == 3 && d.sysExDrumNotesSkipped == 1 &&
+                  d.sysExResetEvents == 1 && d.drumNotesSkipped == 1,
+                  std::string(resetNames[kind]) + "：只撤销其后的鼓设定");
+            check(sysExLabel(d).find("Reset 恢复默认") != std::string::npos,
+                  std::string(resetNames[kind]) + "：sysExLabel 报出 Reset");
+        }
+
+        // 4) SysEx 写在最后一条轨：解析顺序不能决定时间顺序
+        {
+            auto r = setup(gsMode(0, 1), {}, 0, true);
+            check(r.second.notes.size() == 2 &&
+                  r.second.sysExDrumNotesSkipped == 2,
+                  "SysEx 在最后一条轨（tick 0）仍对前面的轨生效");
+        }
+
+        // 5) 通道 10 改回普通乐器 / 显式设回鼓
+        {
+            SmfTrack s, t9, m = melodyTrack(1);
+            s.at(0, gsMode(9, 0));
+            t9.at(0,   ev({0x99, 60, 90}));
+            t9.at(480, ev({0x89, 60, 0}));
+            auto r = load({std::move(s), std::move(t9), std::move(m)});
+            const MidiData& d = r.second;
+            check(d.notes.size() == 3 && d.drumNotesSkipped == 0,
+                  "GS 把通道 10 改回钢琴：ch9 的旋律音全部留下");
+            check(d.sysExNormalChannels == 1,
+                  "通道 10 的 mode=0 记为恢复普通乐器");
+        }
+        {
+            SmfTrack s, t9;
+            s.at(0, gsMode(9, 1));
+            t9.at(0,   ev({0x99, 60, 90}));
+            t9.at(480, ev({0x89, 60, 0}));
+            auto r = load({std::move(s), std::move(t9)});
+            check(r.second.notes.empty() && r.second.drumNotesSkipped == 1,
+                  "显式把通道 10 设为鼓：与默认判定一致");
+        }
+
+        // 6) 无关 SysEx + 默认鼓轨零回归
+        {
+            SmfTrack s, t9, m = melodyTrack(1);
+            s.at(0, sx({0xF0, 0x7D, 0x01, 0x02, 0x03, 0xF7}));
+            t9.at(0,   ev({0x99, 36, 100}));
+            t9.at(240, ev({0x89, 36, 0}));
+            auto r = load({std::move(s), std::move(t9), std::move(m)});
+            const MidiData& d = r.second;
+            check(d.sysExEvents == 1 && d.sysExModeEvents == 0 &&
+                  d.notes.size() == 2 && d.drumNotesSkipped == 1,
+                  "不相干的 SysEx 零回归：仍只按通道 9 判鼓");
+            check(sysExLabel(d).empty(),
+                  "没有 part mode 设定时 sysExLabel 为空串");
+        }
+
+        // 7) 同 tick 多次设定按文件顺序（seq）定序
+        {
+            SmfTrack s;
+            s.at(0, gsMode(0, 1));
+            s.at(0, gsMode(0, 0));
+            auto r = load({std::move(s), drumTrack(0), melodyTrack(1)});
+            check(r.second.notes.size() == 4,
+                  "同 tick 先设鼓后设普通：后写覆盖，4 个音都留");
+            SmfTrack s2;
+            s2.at(0, gsMode(0, 0));
+            s2.at(0, gsMode(0, 1));
+            auto r2 = load({std::move(s2), drumTrack(0), melodyTrack(1)});
+            check(r2.second.notes.size() == 2,
+                  "同 tick 先设普通后设鼓：后写覆盖，2 个鼓件音丢掉");
+        }
+
+        // 8) 端口隔离：port 1 ch0 设鼓，port 0 ch0 仍是旋律
+        {
+            SmfTrack p0, p1;
+            p0.at(0,   ev({0x90, 60, 90}));
+            p0.at(480, ev({0x80, 60, 0}));
+            p1.at(0,   ev({0xFF, 0x21, 0x01, 0x01}));   // FF 21 port 1
+            p1.at(0,   gsMode(0, 1));
+            p1.at(0,   ev({0x90, 36, 100}));
+            p1.at(240, ev({0x80, 36, 0}));
+            auto r = load({std::move(p0), std::move(p1)});
+            const MidiData& d = r.second;
+            check(d.notes.size() == 1 && d.notes[0].channel == 0 &&
+                  d.notes[0].pitch == 60,
+                  "鼓模式按 (port, channel) 隔离：只丢 port 1 的鼓件音");
+            check(d.sysExDrumNotesSkipped == 1 && d.drumNotesSkipped == 1,
+                  "端口鼓通道的跳过数单独计入总数");
+        }
+
+        // 9) format 2 的首轨只有鼓：段判定不能被新收进来的鼓音带偏
+        {
+            SmfTrack drums, a, b;
+            drums.at(0,   ev({0x99, 36, 100}));
+            drums.at(240, ev({0x89, 36, 0}));
+            a.at(0,   ev({0x90, 60, 90}));
+            a.at(480, ev({0x80, 60, 0}));
+            b.at(0,   ev({0x91, 67, 90}));
+            b.at(480, ev({0x81, 67, 0}));
+            auto bytes = buildSmfFmt(2, 3, 480, {drums, a, b});
+            MidiData d;
+            const bool ok = loadMidiFromMemory(bytes.data(), bytes.size(), d);
+            check(ok && d.format2UsedTrack == 1 && d.notes.size() == 1 &&
+                  d.notes[0].pitch == 60,
+                  "format 2 首轨只有鼓：仍挑中真正含旋律的第一条轨");
+            check(d.drumNotesSkipped == 1 && d.format2SequenceCount == 2,
+                  "format 2 的鼓音仍计数，独立序列数不含纯鼓轨");
         }
     }
 

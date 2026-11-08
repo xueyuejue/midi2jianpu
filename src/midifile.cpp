@@ -332,6 +332,169 @@ static void applyControllerSemantics(MidiData& out,
     }
 }
 
+// Roland GS / Yamaha XG 允许把**任意** part 指定为节奏声部，也可以发
+// GM/GS/XG Reset 把整台音源恢复成默认（只有通道 10 是鼓）。SMF 里这些设定
+// 都是 0xF0 SysEx；旧实现「按长度整体跳过」，于是 GS/XG 文件里被设成鼓的
+// 通道被当成旋律：36/38/42 这些鼓件音高转成一串 `1,, 2,, #4,,`，还会因为
+// 音符最多抢走旋律轨身份，调性识别也跟着跑偏。
+//
+// 鼓模式本质是「(逻辑通道, 时间) → 是否鼓」的函数，而 SysEx 常被写在文件
+// 末尾的 setup / conductor 轨上（tick 却是 0）。逐轨即时套用会把写在后面的
+// 设定整个漏掉，也会读成「先处理轨 0 的所有未来事件，再处理轨 1 的过去
+// 事件」。所以这里先收齐全部事件，按 (tick, 文件顺序) 排好，再回头删音符。
+struct DrumModeEvent {
+    long tick;
+    int channel;     // 逻辑通道；reset 时为 -1
+    bool drum;       // true=鼓 / false=普通乐器；reset 时无意义
+    bool reset;
+    int seq;
+    int track;
+};
+
+// 返回 true 表示这条 SysEx 会改变鼓模式。不校验 Roland 校验和：损坏或变体
+// 文件的校验和经常对不上，但地址与数据字节仍然完整可用。
+static bool parseSysExDrum(const uint8_t* p, size_t len,
+                           int& channel, bool& drum, bool& reset) {
+    reset = false;
+    drum = false;
+    channel = 0;
+    if (len < 5 || p[0] != 0xF0u) return false;
+    // GM / GM2 System On / Off: F0 7E 7F 09 0x F7
+    if (p[1] == 0x7Eu && p[3] == 0x09u &&
+        (p[4] == 0x01u || p[4] == 0x02u || p[4] == 0x03u)) {
+        reset = true;
+        return true;
+    }
+    // Roland GS DT1「Use for Rhythm Part」: F0 41 1d 42 12 40 1n 15 mm cs F7
+    if (p[1] == 0x41u && len >= 9 && p[3] == 0x42u &&
+        p[4] == 0x12u && p[5] == 0x40u) {
+        if (p[6] == 0x00u && p[7] == 0x7Fu) {   // GS Reset
+            reset = true;
+            return true;
+        }
+        if ((p[6] & 0xF0u) == 0x10u && p[7] == 0x15u) {
+            channel = (int)(p[6] & 0x0Fu);
+            drum = p[8] != 0u;
+            return true;
+        }
+    }
+    // Yamaha XG「Part Mode」: F0 43 1d 4C 08 pp 07 mm F7
+    if (p[1] == 0x43u && len >= 8 && p[3] == 0x4Cu) {
+        if (p[4] == 0x00u && p[5] == 0x00u && p[6] == 0x7Eu) {
+            reset = true;                        // XG System On
+            return true;
+        }
+        if (p[4] == 0x08u && p[6] == 0x07u) {
+            channel = (int)(p[5] & 0x0Fu);
+            drum = p[7] != 0u;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void applySysExDrumMode(MidiData& out,
+                               const std::vector<DrumModeEvent>& raw,
+                               long defaultDrumNoteOn,
+                               bool keepAllFormat2) {
+    std::vector<DrumModeEvent> ev = raw;
+    // format 2 的其它轨属于别的曲子：normalizeFormat2 会只保留第一条含音符
+    // 的轨，鼓设定也必须跟着只认那一条，否则 B 段的 GS Reset 会去改 A 段
+    // 的通道。本函数在 normalizeFormat2 **之前**跑（见下方调用顺序的注释），
+    // 那时还没有 format2UsedTrack，于是按「含非默认鼓音符的轨」自己算一次。
+    // --track 手动挑段落时不丢（调用方随后按轨过滤音符）。
+    if (!keepAllFormat2 && out.format == 2 && !out.notes.empty()) {
+        std::set<int> liveTracks;
+        for (const auto& n : out.notes)
+            if ((n.channel & 0x0F) != 9) liveTracks.insert(n.track);
+        if (liveTracks.size() > 1) {
+            const int keep = *liveTracks.begin();   // std::set 按轨号升序
+            ev.erase(std::remove_if(ev.begin(), ev.end(),
+                                    [&](const DrumModeEvent& e) {
+                                        return e.track != keep;
+                                    }), ev.end());
+        }
+    }
+    std::stable_sort(ev.begin(), ev.end(),
+                     [](const DrumModeEvent& a, const DrumModeEvent& b) {
+                         if (a.tick != b.tick) return a.tick < b.tick;
+                         return a.seq < b.seq;
+                     });
+
+    out.sysExModeEvents = 0;
+    out.sysExResetEvents = 0;
+    std::set<int> drumChannels, normalChannels;
+    for (const auto& e : ev) {
+        if (e.reset) out.sysExResetEvents++;
+        else {
+            out.sysExModeEvents++;
+            (e.drum ? drumChannels : normalChannels).insert(e.channel);
+        }
+    }
+    out.sysExDrumChannels = (int)drumChannels.size();
+    out.sysExNormalChannels = (int)normalChannels.size();
+
+    // 时间轴：每个逻辑通道一条「(tick, 状态)」序列。默认状态就是 GM 的
+    // 「通道 10 是鼓」；Reset 把已知通道一律写回各自的默认状态。
+    std::map<int, std::vector<std::pair<long, bool>>> timeline;
+    std::set<int> known;
+    for (const auto& e : ev) {
+        if (e.reset) {
+            for (int ch : known)
+                timeline[ch].push_back({e.tick, (ch & 0x0F) == 9});
+        } else {
+            known.insert(e.channel);
+            timeline[e.channel].push_back({e.tick, e.drum});
+        }
+    }
+    auto drumAt = [&](int channel, long tick) {
+        bool state = (channel & 0x0F) == 9;
+        auto it = timeline.find(channel);
+        if (it != timeline.end()) {
+            for (const auto& p : it->second) {
+                if (p.first > tick) break;
+                state = p.second;
+            }
+        }
+        return state;
+    };
+
+    long removedExtra = 0, keptDefault = 0;
+    out.notes.erase(
+        std::remove_if(out.notes.begin(), out.notes.end(),
+                       [&](const NoteEvent& n) {
+                           const bool isDefaultDrum = (n.channel & 0x0F) == 9;
+                           if (!drumAt(n.channel, n.startTicks)) {
+                               if (isDefaultDrum) keptDefault++;
+                               return false;
+                           }
+                           if (!isDefaultDrum) removedExtra++;
+                           return true;
+                       }),
+        out.notes.end());
+    out.sysExDrumNotesSkipped = (int)removedExtra;
+    // 旧实现的计数是「通道 9 的 note-on 个数」，重复触键 / 悬挂音都算在内；
+    // 照抄这个数才不会让既有曲目的谱面页眉发生任何变化。通道 10 被 SysEx
+    // 改回普通乐器时，扣掉那些实际留在谱里的音。
+    out.drumNotesSkipped = (int)std::max<long>(0, defaultDrumNoteOn - keptDefault)
+                           + (int)removedExtra;
+
+    // 只有「本来不是鼓、却被 SysEx 设成鼓」的通道才需要清残留事件表：
+    // 默认鼓通道的力度/弯音在旧实现里就是留着的，动它会破坏零回归。
+    if (out.sysExModeEvents > 0) {
+        auto dropDrumEvents = [&](auto& v) {
+            v.erase(std::remove_if(v.begin(), v.end(),
+                                   [&](const auto& p) {
+                                       if ((p.channel & 0x0F) == 9) return false;
+                                       return drumAt(p.channel, p.tick);
+                                   }), v.end());
+        };
+        dropDrumEvents(out.dynamics);
+        dropDrumEvents(out.pitchBends);
+        dropDrumEvents(out.bendRanges);
+    }
+}
+
 // 按 set_tempo 分段，把 tick 精确映射为秒。
 //
 // 旧实现是在解析过程中用一个可变的 tempo 变量即时换算（tick2sec 闭包），
@@ -444,6 +607,14 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
     std::vector<DynPoint> volumeCc7;
     int ctrlSeq = 0;
 
+    // SysEx 里的 GS/XG 鼓模式：先收齐，所有轨读完后按时间轴统一套用。
+    std::vector<DrumModeEvent> drumModeEvents;
+    int sysexSeq = 0;
+    // 旧实现在解析阶段直接丢掉通道 9 的音符并累加 drumNotesSkipped。现在鼓
+    // 判定统一延后（GS/XG 可以把通道 10 改回普通乐器），这里只照抄「通道 9
+    // 的 note-on 个数」，让既有曲目的谱面页眉计数逐字节不变。
+    long defaultDrumNoteOn = 0;
+
     // RPN 状态是**通道级**的，并且跨轨沿用（format 1 常把 RPN 写在 setup 轨、
     // 音符写在另一条轨）。旧实现是「每轨一对局部 int」：同一条轨上两个通道
     // 交错发 CC101/CC100/CC6 就会串味；也不能用 static，否则连续解析两份
@@ -539,11 +710,14 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
             if (type == 0x90u || type == 0x80u) {
                 uint8_t note = d[pos++];
                 uint8_t vel = d[pos++];
-                // 通道 10（index 9）是打击乐：音高是鼓件编号，不是音级。
+                // 通道 10（index 9）默认就是打击乐：音高是鼓件编号，不是音级。
                 // 简谱没有鼓谱记法，留着只会污染调性识别、和弦检测和旋律轨判定。
-                if (rawChannel == 9) {
-                    if (type == 0x90u && vel > 0) out.drumNotesSkipped++;
-                } else {
+                // 但 GS/XG 可以把它改回普通乐器，所以这里只记 note-on 个数，
+                // 真正丢不丢留到 applySysExDrumMode 按时间轴决定——那时所有轨
+                // 的 SysEx 都读齐了，设定写在文件末尾也能生效。
+                if (rawChannel == 9 && type == 0x90u && vel > 0)
+                    defaultDrumNoteOn++;
+                {
                     uint64_t key = ((uint64_t)channel << 24) |
                                    ((uint64_t)note << 8) | (uint64_t)trackIdx;
                     if (type == 0x90u && vel > 0) {
@@ -669,8 +843,28 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                 int bend = (msb << 7) | lsb;
                 out.pitchBends.push_back({absTick, bend, (int)channel});
             } else if (status == 0xF0u || status == 0xF7u) {
-                // SysEx：按长度整体跳过，否则会把后续事件错位解析
+                // SysEx：按长度整体跳过，否则会把后续事件错位解析。
+                // 但 GS/XG 的「Use for Rhythm Part / Part Mode」与 GM/GS/XG
+                // Reset 就藏在这些字节里，先看一眼再跳。
                 uint32_t sxLen = readVarLen(d, size, pos);
+                const size_t hardEnd = std::min<size_t>(trkEnd, size);
+                if (pos + sxLen > hardEnd)
+                    sxLen = (uint32_t)(hardEnd > pos ? hardEnd - pos : 0);
+                if (status == 0xF0u && sxLen > 0) {
+                    out.sysExEvents++;
+                    int sxCh = 0;
+                    bool sxDrum = false, sxReset = false;
+                    if (parseSysExDrum(d + pos, sxLen, sxCh, sxDrum, sxReset)) {
+                        DrumModeEvent e;
+                        e.tick = absTick;
+                        e.channel = sxReset ? -1 : currentPort * 16 + sxCh;
+                        e.drum = sxDrum;
+                        e.reset = sxReset;
+                        e.seq = sysexSeq++;
+                        e.track = trackIdx;
+                        drumModeEvents.push_back(e);
+                    }
+                }
                 pos += sxLen;
             } else if (type == 0xC0u) {
                 // 音色号（GM program change）。旧实现直接跳过，于是「这条轨是
@@ -720,6 +914,11 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
     out.bendRanges = std::move(bendRanges);
     normalizeMeterMap(out);
     normalizeKeyMap(out);
+    // 鼓过滤必须排在 normalizeFormat2 **之前**：通道 9 的音符现在会先收进
+    // notes 再统一删，若让 format 2 先按轨统计，一条只有鼓的轨会被当成
+    // 「第一段」，整首曲子被判成只有打击乐。先删鼓音，段判定看到的音符
+    // 集合就与旧实现完全一致。
+    applySysExDrumMode(out, drumModeEvents, defaultDrumNoteOn, keepAllFormat2);
     normalizeFormat2(out, keepAllFormat2);
     resolveBendRanges(out);
     applyControllerSemantics(out, pedalEvents, allOffEvents, volumeCc7);
@@ -824,6 +1023,21 @@ std::string portLabel(const MidiData& data) {
         out += parts[i];
     }
     return out;
+}
+
+std::string sysExLabel(const MidiData& data) {
+    if (data.sysExModeEvents <= 0) return "";
+    std::ostringstream os;
+    os << "SysEx 鼓模式：" << data.sysExModeEvents << " 处 GS/XG 设定";
+    if (data.sysExDrumChannels > 0)
+        os << "，" << data.sysExDrumChannels << " 条鼓通道";
+    if (data.sysExNormalChannels > 0)
+        os << "，" << data.sysExNormalChannels << " 条恢复普通乐器";
+    if (data.sysExResetEvents > 0)
+        os << "，" << data.sysExResetEvents << " 处 GM/GS/XG Reset 恢复默认";
+    if (data.sysExDrumNotesSkipped > 0)
+        os << "，已跳过 " << data.sysExDrumNotesSkipped << " 个鼓件音";
+    return os.str();
 }
 
 std::string formatLabel(const MidiData& data) {

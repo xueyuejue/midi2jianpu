@@ -2,15 +2,17 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 39 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 50 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
 pedal / allnotesoff / cc7volume / pedal_channels /
 bendrange_channels / bendrange_timeline / bendrange_crosstrack /
 running_meta / running_sysex / running_realtime / running_standard /
-port_pedal / port_bend / port_prefix / port_prefix_base / port_standard
-（另配 3 份 LRC 歌词）。
+port_pedal / port_bend / port_prefix / port_prefix_base / port_standard /
+sysex_gs_drum / sysex_xg_drum / sysex_gs_normal / sysex_gs_reset /
+sysex_gm_reset / sysex_xg_reset / sysex_conductor / sysex_ch9_normal /
+sysex_ch9_drum / sysex_unknown / sysex_port_drum（另配 3 份 LRC 歌词）。
 meter 是把变拍号、变速、鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」，
 modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五声调式
 （C 宫、G 徵调式，故意不写 0x59 逼自动猜调暴露宫音判错），tempo_ramp 用
@@ -33,7 +35,14 @@ port_pedal 让 port 0 ch0 踩踏板、port 1 ch0 不踩，第三条轨不写端�
 端口不跨轨继承）；port_bend 让两个端口的 ch0 分别用 ±12 / ±2 弯音范围，
 两份都是 FF 21 端口隔离的回归闸门。port_prefix 与 port_prefix_base 是同一首
 曲子写 / 不写 FF 20（按规范 FF 20 只作用于 meta / SysEx，不重定向通道消息，
-两份输出应逐字节一致），port_standard 则完全不写端口声明，锁住零回归。
+两份输出应逐字节一致），port_standard 则完全不写端口声明，锁住零回归。sysex_gs_drum / sysex_xg_drum
+用 Roland GS / Yamaha XG 的 SysEx 把 ch0 指定为鼓，鼓件音高 36/38/42 不该
+变成简谱里的低音；sysex_gs_normal 是 mode=0 的对照，一个音都不能丢；
+sysex_gs_reset / sysex_gm_reset / sysex_xg_reset 在 tick 960 发三种 Reset，
+前半段的鼓设定应被撤销；sysex_conductor 把 SysEx 放到文件最后一条轨，
+锁住「解析顺序不能决定时间顺序」；sysex_ch9_normal 把通道 10 改回普通
+钢琴，sysex_ch9_drum 则显式设回鼓；sysex_unknown 是不相干的 SysEx，
+必须零回归；sysex_port_drum 验证鼓模式同样按 FF 21 端口隔离。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -1524,6 +1533,151 @@ def build_port_standard() -> bytes:
     return _port_smf([_port_conductor(), t])
 
 
+
+# ---- SysEx 鼓模式（Roland GS / Yamaha XG）----
+# GS/XG 可以用 0xF0 SysEx 把任意 part 指定为节奏声部（鼓），也可以把通道 10
+# 改回普通乐器；GM/GS/XG Reset 则恢复「只有通道 10 是鼓」的默认设定。旧实现
+# 把 SysEx 整段跳过、只按「通道 9 是鼓」硬判定，于是 GS/XG 文件里被设成鼓的
+# 通道会输出一串 `1,, 2,, #4,,` 假旋律，还会因为音符最多抢走旋律轨身份。
+def sysex(payload: bytes) -> bytes:
+    """把完整 SysEx（F0 ... F7）包成 SMF 的 F0 <len> <payload> 事件。"""
+    return b"\xF0" + vlq(len(payload)) + payload
+
+
+def _gs_checksum(addr_data) -> int:
+    return (128 - (sum(addr_data) & 0x7F)) & 0x7F
+
+
+def gs_part_mode(ch: int, mode: int) -> bytes:
+    """F0 41 10 42 12 40 1n 15 mm cs F7 : GS 'Use for Rhythm Part'。"""
+    addr = [0x40, 0x10 + (ch & 0x0F), 0x15]
+    return sysex(bytes([0xF0, 0x41, 0x10, 0x42, 0x12] + addr +
+                       [mode & 0x7F, _gs_checksum(addr + [mode & 0x7F]), 0xF7]))
+
+
+def xg_part_mode(ch: int, mode: int) -> bytes:
+    """F0 43 10 4C 08 pp 07 mm F7 : XG 'Part Mode' 参数变更。"""
+    return sysex(bytes([0xF0, 0x43, 0x10, 0x4C, 0x08, ch & 0x0F,
+                        0x07, mode & 0x7F, 0xF7]))
+
+
+GS_RESET = sysex(bytes([0xF0, 0x41, 0x10, 0x42, 0x12,
+                        0x40, 0x00, 0x7F, 0x00, 0x41, 0xF7]))
+XG_RESET = sysex(bytes([0xF0, 0x43, 0x10, 0x4C, 0x00, 0x00, 0x7E, 0x00, 0xF7]))
+GM_RESET = sysex(bytes([0xF0, 0x7E, 0x7F, 0x09, 0x01, 0xF7]))
+OTHER_SYSEX = sysex(bytes([0xF0, 0x7D, 0x01, 0x02, 0x03, 0xF7]))
+
+
+def _sysex_conductor(*events) -> Track:
+    t = _port_conductor()
+    for tick, raw in events:
+        t.add(tick, raw)
+    return t
+
+
+def _sysex_drums(ch: int = 0) -> Track:
+    """36 底鼓 / 38 军鼓 / 42 闭镲：当旋律转出来就是一串低音垃圾。"""
+    t = Track()
+    t.add(0, meta(0x03, b"Drums"))
+    for i, p in enumerate([36, 38, 42, 36, 38, 42, 36, 38]):
+        t.note(ch, p, 100, i * (DIV // 2), DIV // 4)
+    return t
+
+
+def _sysex_melody(ch: int = 1) -> Track:
+    t = Track()
+    t.add(0, meta(0x03, b"Melody"))
+    for i, p in enumerate([60, 62, 64, 65, 67, 65, 64, 62]):
+        t.note(ch, p, 90, i * (DIV // 2), DIV // 2 - 20)
+    return t
+
+
+def _sysex_ch9_melody() -> Track:
+    t = Track()
+    t.add(0, meta(0x03, b"Ch9 Piano"))
+    for i, p in enumerate([60, 62, 64, 65, 67, 65, 64, 62]):
+        t.note(9, p, 90, i * (DIV // 2), DIV // 2 - 20)
+    return t
+
+
+def build_sysex_gs_drum() -> bytes:
+    """GS 把 ch0 设成鼓：8 个鼓件音必须丢，8 个旋律音必须留。"""
+    return _port_smf([_sysex_conductor((0, gs_part_mode(0, 1))),
+                      _sysex_drums(0), _sysex_melody(1)])
+
+
+def build_sysex_xg_drum() -> bytes:
+    """同一首曲子改用 Yamaha XG 的 Part Mode 设定，结果应完全一致。"""
+    return _port_smf([_sysex_conductor((0, xg_part_mode(0, 1))),
+                      _sysex_drums(0), _sysex_melody(1)])
+
+
+def build_sysex_gs_normal() -> bytes:
+    """mode=0 是「普通乐器」：对照基线，16 个音一个都不能少。"""
+    return _port_smf([_sysex_conductor((0, gs_part_mode(0, 0))),
+                      _sysex_drums(0), _sysex_melody(1)])
+
+
+def build_sysex_gs_reset() -> bytes:
+    """tick 960 发 GS Reset：前 4 个鼓件音丢、后 4 个恢复成普通乐器。"""
+    return _port_smf([_sysex_conductor((0, gs_part_mode(0, 1)),
+                                       (2 * DIV, GS_RESET)),
+                      _sysex_drums(0), _sysex_melody(1)])
+
+
+def build_sysex_gm_reset() -> bytes:
+    """GM System On 同样把音源恢复默认。"""
+    return _port_smf([_sysex_conductor((0, gs_part_mode(0, 1)),
+                                       (2 * DIV, GM_RESET)),
+                      _sysex_drums(0), _sysex_melody(1)])
+
+
+def build_sysex_xg_reset() -> bytes:
+    """XG System On 同样把音源恢复默认。"""
+    return _port_smf([_sysex_conductor((0, gs_part_mode(0, 1)),
+                                       (2 * DIV, XG_RESET)),
+                      _sysex_drums(0), _sysex_melody(1)])
+
+
+def build_sysex_conductor() -> bytes:
+    """SysEx 写在文件最后一条轨（tick 仍是 0）：解析顺序不能决定时间顺序。"""
+    return _port_smf([_sysex_drums(0), _sysex_melody(1),
+                      _sysex_conductor((0, gs_part_mode(0, 1)))])
+
+
+def build_sysex_ch9_normal() -> bytes:
+    """GS 把通道 10 改回普通钢琴：ch9 上的 8 个旋律音必须全部留下。"""
+    return _port_smf([_sysex_conductor((0, gs_part_mode(9, 0))),
+                      _sysex_ch9_melody(), _sysex_melody(1)])
+
+
+def build_sysex_ch9_drum() -> bytes:
+    """显式把通道 10 设为鼓：与默认判定一致，8 个音仍应丢掉。"""
+    return _port_smf([_sysex_conductor((0, gs_part_mode(9, 1))),
+                      _sysex_ch9_melody(), _sysex_melody(1)])
+
+
+def build_sysex_unknown() -> bytes:
+    """无关 SysEx 零回归：识别不了就不能改动任何音符。"""
+    return _port_smf([_sysex_conductor((0, OTHER_SYSEX)),
+                      _sysex_drums(0), _sysex_melody(1)])
+
+
+def build_sysex_port_drum() -> bytes:
+    """port 1 的 ch0 设鼓，port 0 的 ch0 仍是旋律：鼓模式也按端口隔离。"""
+    p0 = Track()
+    p0.add(0, meta(0x03, b"Port0 Melody"))
+    for i, p in enumerate([60, 62, 64, 65]):
+        p0.note(0, p, 90, i * DIV, DIV - 80)
+    p1 = Track()
+    p1.add(0, meta(0x03, b"Port1 Drums"))
+    p1.add(0, meta(0x21, bytes([1])))
+    p1.add(0, gs_part_mode(0, 1))
+    for i, p in enumerate([36, 38, 42, 36]):
+        p1.note(0, p, 100, i * DIV, 200)
+    return _port_smf([_port_conductor(), p0, p1])
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -1748,6 +1902,26 @@ def main() -> None:
         ("port_prefix", build_port_prefix),
         ("port_prefix_base", build_port_prefix_base),
         ("port_standard", build_port_standard),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # SysEx 鼓模式素材（GS/XG 指定鼓通道 / 三种 Reset / 端口隔离 / 零回归）
+    for name, builder in (
+        ("sysex_gs_drum", build_sysex_gs_drum),
+        ("sysex_xg_drum", build_sysex_xg_drum),
+        ("sysex_gs_normal", build_sysex_gs_normal),
+        ("sysex_gs_reset", build_sysex_gs_reset),
+        ("sysex_gm_reset", build_sysex_gm_reset),
+        ("sysex_xg_reset", build_sysex_xg_reset),
+        ("sysex_conductor", build_sysex_conductor),
+        ("sysex_ch9_normal", build_sysex_ch9_normal),
+        ("sysex_ch9_drum", build_sysex_ch9_drum),
+        ("sysex_unknown", build_sysex_unknown),
+        ("sysex_port_drum", build_sysex_port_drum),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

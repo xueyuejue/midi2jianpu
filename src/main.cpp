@@ -213,6 +213,10 @@ int main(int argc, char** argv) {
         // 串味是转换器的 bug，其实是文件本身把两件乐器放在了不同设备上。
         const std::string pl = m2j::portLabel(data);
         if (!pl.empty()) std::cout << pl << "\n";
+        // GS/XG 用 SysEx 指定鼓通道时，被丢掉的鼓件音必须有个交代；
+        // 否则用户会以为转换漏掉了半首曲子。
+        const std::string sx = m2j::sysExLabel(data);
+        if (!sx.empty()) std::cout << sx << "\n";
     }
 
     // --transpose 移调

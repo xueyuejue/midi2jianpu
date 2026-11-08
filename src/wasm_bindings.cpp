@@ -255,6 +255,17 @@ const char* midi2jianpu_port_info(const uint8_t* midiData, int size) {
     return buf.c_str();
 }
 
+// SysEx 鼓模式：GS/XG 把非通道 10 指定为节奏声部时，被删掉的鼓件音、
+// 被改回普通乐器的通道、以及 GM/GS/XG Reset 恢复默认，都要在网页文件面板
+// 里说清楚。返回 char*，网页必须过 UTF8ToString。
+const char* midi2jianpu_sysex_info(const uint8_t* midiData, int size) {
+    static std::string buf;
+    m2j::MidiData data;
+    if (!m2j::loadMidiFromMemory(midiData, size, data)) { buf.clear(); return buf.c_str(); }
+    buf = m2j::sysExLabel(data);
+    return buf.c_str();
+}
+
 // 获取MIDI音符数据(JSON格式, 用于播放)
 const char* midi2jianpu_get_notes_json(const uint8_t* midiData, int size) {
     m2j::MidiData data;
