@@ -1948,6 +1948,35 @@ def main():
     _, ex_out, _ = run(exe, os.path.join(FIXTURES, "expression.mid"))
     check("[cresc.]" in ex_out or "[dim.]" in ex_out,
           "单通道表情素材的渐变记号不受影响（零回归）")
+    print("\n[64] CC67 软踏板只衰减力度、不改时值")
+    # 8 个音里两处强音(110)本该各印一个 '>'；软踏板 [1200,2000) 把其中
+    # 一处降到 77，重音记号从 2 个变成 1 个，时值与 CC11/CC7 力度表不动。
+    sp = os.path.join(FIXTURES, "soft_pedal.mid")
+    rc, out, err = run(exe, sp)
+    check(rc == 0, "软踏板素材解析成功", err[:200])
+    check("软踏板：衰减 2 个音的力度" in out,
+          "页眉写明软踏板衰减的音符数", out[:300])
+    score = "\n".join(l for l in out.splitlines() if "|" in l)
+    n_acc = score.count(">")
+    check(n_acc == 1, f"踏板内的重音被衰减，谱面只剩 1 个 >，实际 {n_acc}",
+          score[:300])
+
+    sph = os.path.join(tmp, "soft_pedal.html")
+    rc, _, err = run(exe, sp, "--html", sph)
+    check(rc == 0, "软踏板素材导出 HTML", err[:200])
+    html_sp = open(sph, encoding="utf-8").read()
+    check("软踏板" in html_sp, "HTML 页眉写明软踏板")
+
+    spx = os.path.join(tmp, "soft_pedal.xml")
+    rc, _, err = run(exe, sp, "--musicxml", spx)
+    check(rc == 0, "软踏板素材导出 MusicXML", err[:200])
+    xml_sp = open(spx, encoding="utf-8").read()
+    n_xacc = xml_sp.count("<accent/>")
+    check(n_xacc == 1, f"MusicXML 只剩 1 个重音记号，实际 {n_xacc}")
+
+    _, ph_out, _ = run(exe, os.path.join(FIXTURES, "pedal_hysteresis.mid"))
+    check("软踏板" not in ph_out, "CC64 素材不误报软踏板（零回归）")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

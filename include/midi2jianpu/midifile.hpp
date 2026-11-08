@@ -89,13 +89,14 @@ struct KeySigPoint {
 // 但有四类控制器直接决定谱面长什么样：
 //   CC64 延音踏板：琴键抬手不等于消音，音要响到踏板抬起（或同键重新按下）；
 //   CC66 持音踏板：只保持踩下那一刻正按着的键，之后新弹的音不受影响；
+//   CC67 软踏板：踩下期间起音的音符力度衰减（只改 velocity，不动时值）；
 //   CC120 / CC123：强制清音，是某些导出器代替 note-off 的写法；
 //   CC7 主音量：与 CC11 一样是渐强渐弱的来源，只认 CC11 会整段丢掉力度。
 // seq 是文件里的出现顺序；同一 tick 上多个事件要靠它定序（跨轨时 tick 相同）。
 struct PedalPoint {
     long tick;
     int channel;
-    int value;      // 原始 CC64 / CC66 值 0..127；迟滞判定在 buildPedalRanges() 里做
+    int value;      // 原始 CC64 / CC66 / CC67 值 0..127；迟滞判定在 buildPedalRanges() 里做
     int seq;
 };
 struct AllNotesOffPoint {
@@ -218,6 +219,8 @@ struct MidiData {
     int pedalExtendedNotes = 0;    // 因延音踏板补长的音符数
     int sostenutoEvents = 0;       // CC66 事件数（踩下 + 抬起）
     int sostenutoExtendedNotes = 0;// 踩下瞬间正按着、被持音踏板保持的音符数
+    int softPedalEvents = 0;       // CC67 事件数（踩下 + 抬起）
+    int softPedalNotes = 0;        // 软踏板踩下期间起音、力度被衰减的音符数
     int allNotesOffEvents = 0;     // CC120 / CC123 事件数
     int allNotesOffTrimmed = 0;    // 被清音事件截尾的音符数
     int cc7Dynamics = 0;           // 由 CC7 主音量补入力度表的点数

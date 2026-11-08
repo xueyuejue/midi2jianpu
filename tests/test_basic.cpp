@@ -3949,6 +3949,146 @@ int main() {
         }
         check(sectionFirst, "全局段落名排在通道级标记之前（旧输出顺序不变）");
     }
+    // -------------------------------------------------------------------
+    // CC67 软踏板（Soft Pedal）：只衰减踩下期间起音音符的 velocity，
+    // 不动时值，也不改 CC11 / CC7 力度表。与 CC64/CC66 共用迟滞配对。
+    // -------------------------------------------------------------------
+    std::cout << "\n测试控制器语义：CC67 软踏板 (v1.41.0)\n";
+    {
+        auto load = [](const std::vector<uint8_t>& bytes, int filter = -1) {
+            MidiData d;
+            bool ok = loadMidiFromMemory(bytes.data(), bytes.size(), d, false, filter);
+            return std::make_pair(ok, d);
+        };
+        auto velOf = [](const MidiData& d, long tick) -> int {
+            for (const auto& n : d.notes)
+                if (n.startTicks == tick) return n.velocity;
+            return -1;
+        };
+        auto durOf = [](const MidiData& d, long tick) -> long {
+            for (const auto& n : d.notes)
+                if (n.startTicks == tick) return n.durationTicks;
+            return -1;
+        };
+        const int vels[8] = {60, 110, 60, 110, 60, 60, 60, 60};
+        auto melody = [&](bool soft, int softCh = 0, int deadZone = -1,
+                          bool release = true) {
+            SmfTrack t;
+            t.at(0, ev({0xFF, 0x58, 0x04, 4, 2, 24, 8}));
+            if (soft) t.at(1200, ev({0xB0 | softCh, 0x43, 127}));
+            if (deadZone >= 0) t.at(1500, ev({0xB0 | softCh, 0x43, deadZone}));
+            if (soft && release) t.at(2000, ev({0xB0 | softCh, 0x43, 0}));
+            for (int i = 0; i < 8; i++) {
+                t.at(i * 480, ev({0x90, 60 + i, vels[i]}));
+                t.at(i * 480 + 400, ev({0x80, 60 + i, 0x40}));
+            }
+            return t;
+        };
+
+        // 1) 基本语义：区间内起音的 2 个音力度 ×0.7，时值一个都不动
+        {
+            auto b = buildSmf(1, 480, {melody(true)});
+            auto r = load(b);
+            const MidiData& d = r.second;
+            check(r.first && d.notes.size() == 8, "CC67 样本读出 8 个音");
+            check(d.softPedalEvents == 2, "记下 2 个 CC67 事件");
+            check(d.softPedalNotes == 2, "只有踩下区间内起音的 2 个音被衰减");
+            check(velOf(d, 1440) == 77 && velOf(d, 1920) == 42,
+                  "110→77、60→42（×0.7 四舍五入）");
+            check(velOf(d, 480) == 110 && velOf(d, 0) == 60,
+                  "区间外的强音与弱音力度原样保留");
+            check(durOf(d, 1440) == 400 && durOf(d, 480) == 400,
+                  "软踏板不改按键时值");
+            check(d.pedalEvents == 0 && d.sostenutoEvents == 0 &&
+                  d.pedalExtendedNotes == 0 && d.sostenutoExtendedNotes == 0,
+                  "纯 CC67 不误算成 CC64 / CC66");
+            check(controllerLabel(d).find("软踏板") == 0,
+                  "页眉诊断写明「软踏板：衰减 ... 个音的力度」");
+            check(d.dynamics.empty(), "CC11 / CC7 力度表不被软踏板改写");
+        }
+        // 2) 没有 CC67 的同一份文件：力度逐字节不变（零回归）
+        {
+            auto b = buildSmf(1, 480, {melody(false)});
+            auto r = load(b);
+            const MidiData& d = r.second;
+            check(d.softPedalEvents == 0 && d.softPedalNotes == 0,
+                  "无 CC67 时不记任何软踏板统计（零回归）");
+            check(velOf(d, 1440) == 110 && velOf(d, 1920) == 60 &&
+                  velOf(d, 480) == 110, "无 CC67 的对照样本力度逐字节不变");
+            check(controllerLabel(d).find("软踏板") == std::string::npos,
+                  "无 CC67 时诊断不出现软踏板");
+        }
+        // 3) 通道隔离：ch1 踩 CC67 不该衰减 ch0 的音
+        {
+            auto b = buildSmf(1, 480, {melody(true, 1)});
+            auto r = load(b);
+            check(r.second.softPedalNotes == 0 && velOf(r.second, 1440) == 110,
+                  "CC67 按逻辑通道隔离：ch1 的踏板不影响 ch0");
+        }
+        // 4) 迟滞：33..63 保持前态，<=32 才真的抬起
+        {
+            auto bh = buildSmf(1, 480, {melody(true, 0, 50)});
+            auto rh = load(bh);
+            check(rh.second.softPedalNotes == 2 && velOf(rh.second, 1440) == 77,
+                  "CC67 也走迟滞：死区 50 不提前抬踏板");
+            auto bl = buildSmf(1, 480, {melody(true, 0, 20)});
+            auto rl = load(bl);
+            check(rl.second.softPedalNotes == 1 && velOf(rl.second, 1920) == 60,
+                  "死区下方的 20 是真抬起，之后的音不再衰减");
+        }
+        // 5) 到曲尾都没抬：用 maxTick 收束，不能让衰减无限延续
+        {
+            auto b = buildSmf(1, 480, {melody(true, 0, -1, false)});
+            auto r = load(b);
+            check(r.second.softPedalNotes == 5,
+                  "未抬起的 CC67 用最后一个音的结尾收束（5 个音）");
+        }
+        // 6) 别轨的 CC67 按全文件时间轴生效；--track 0 则隔离掉
+        {
+            std::vector<SmfTrack> v(2);
+            v[0].at(0, ev({0x90, 60, 110}));
+            v[0].at(400, ev({0x80, 60, 0x40}));
+            v[1].at(0, ev({0xB0, 0x43, 127}));
+            v[1].at(2000, ev({0xB0, 0x43, 0}));
+            auto b = buildSmf(2, 480, v);
+            auto full = load(b, -1);
+            auto only = load(b, 0);
+            check(full.second.softPedalNotes == 1 &&
+                  full.second.notes[0].velocity == 77,
+                  "别轨的 CC67 按全文件时间轴生效");
+            check(only.second.softPedalEvents == 0 &&
+                  only.second.softPedalNotes == 0 &&
+                  only.second.notes.size() == 1 &&
+                  only.second.notes[0].velocity == 110,
+                  "--track 0 隔离掉别轨的 CC67");
+        }
+        // 7) 与 CC64 同曲：一个只改力度，一个只改时值，互不干扰
+        {
+            SmfTrack t = melody(true);
+            t.at(600, ev({0xB0, 0x40, 127}));
+            t.at(1920, ev({0xB0, 0x40, 0}));
+            auto b = buildSmf(1, 480, {t});
+            auto r = load(b);
+            check(r.second.softPedalNotes == 2 &&
+                  r.second.pedalExtendedNotes >= 1 &&
+                  velOf(r.second, 1440) == 77,
+                  "CC67 与 CC64 同曲时各管各的：力度 / 时值分开");
+        }
+        // 8) 力度下限：vel=1 衰减后仍夹到 1，不会出现 0 力度
+        {
+            SmfTrack t;
+            t.at(0, ev({0xB0, 0x43, 127}));
+            t.at(0, ev({0x90, 60, 1}));
+            t.at(400, ev({0x80, 60, 0x40}));
+            t.at(480, ev({0xB0, 0x43, 0}));
+            auto b = buildSmf(1, 480, {t});
+            auto r = load(b);
+            check(r.second.softPedalNotes == 1 &&
+                  r.second.notes[0].velocity == 1,
+                  "velocity 衰减后夹到 1，不出现 0 力度");
+        }
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

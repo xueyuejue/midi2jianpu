@@ -1321,6 +1321,28 @@ if (existsSync(dcPath)) {
     '网页 WASM 的 HTML 只写旋律通道的渐弱', dcHtml.slice(0, 200));
   check(/Verse/.test(dcHtml), '网页 WASM 仍显示全局段落名');
 }
+
+
+// ---- 39. v1.41.0 CC67 软踏板：网页端也要衰减起音力度 ----
+// 旧 WASM 把 CC67 当普通控制器跳过，播放 JSON 里全是原始 velocity，
+// 两处重音都还在；controller_info 也不会提「软踏板」。
+const spPath = path.join(FIXTURES, 'soft_pedal.mid');
+if (existsSync(spPath)) {
+  const sp = makeCaller(mod);
+  sp.setMidi(new Uint8Array(readFileSync(spPath)));
+  sp.setLyrics('');
+  const spNotes = JSON.parse(sp.call('midi2jianpu_get_notes_json', -1, 1) || '[]');
+  const spVel = spNotes.map((n) => n.velocity);
+  check(spVel.includes(77) && spVel.includes(42) && spVel.includes(110),
+    'WASM 播放 JSON 里踏板内 110→77、60→42，踏板外仍是 110', spVel.join(','));
+  const spXml = sp.call('midi2jianpu_musicxml', -1, 1) || '';
+  check((spXml.match(/<accent\/>/g) || []).length === 1,
+    '网页 WASM 的 MusicXML 只剩 1 个重音记号');
+  withBytes('soft_pedal.mid', (p, n) => {
+    const ci = mod.UTF8ToString(mod._midi2jianpu_controller_info(p, n));
+    check(/软踏板/.test(ci), 'controller_info 向网页报告软踏板', ci);
+  });
+}
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

@@ -2,7 +2,7 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 71 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 72 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
@@ -56,6 +56,8 @@ RPN、速度、拍号、调号、Marker 这些全局设定仍要按整份文件�
 正确行为是只输出前两个真音并提示数据不完整，不能越过 buffer 末尾读幻影音符。
 dyn_channels 让旋律(ch0)渐弱、伴奏(ch1)渐强，锁住渐强渐弱记号按通道归属：
 伴奏的 cresc. 不该印到旋律谱上，全局段落名 marker 则仍要照常显示。
+soft_pedal 在 [1200, 2000) 踩 CC67 软踏板，两处强音里只有踏板内的那一处
+力度被衰减（110→77），谱面的 '>' 从 2 个变成 1 个，时值完全不变。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -1928,6 +1930,36 @@ def build_dyn_channels() -> bytes:
     return header + t0.render() + t1.render()
 
 
+def build_soft_pedal() -> bytes:
+    """CC67 软踏板只衰减踩下期间起音音符的力度（v1.41.0）。
+
+    旧实现把 CC67 当普通控制器跳过：踩不踩软踏板，谱面逐字节相同。
+    真钢琴踩左踏板是击弦变轻，按键时长不变，所以正确行为是只改 velocity：
+    重音记号、力度变化分析、网页播放用的音符 JSON 都会跟着变，时值不动。
+
+    结构：2 小节 8 个四分音符，力度 60/110/60/110/60/60/60/60 —— 两处
+    110 本该各印一个 '>'。软踏板只在 [1200, 2000) 踩下，第 4 个音
+    (tick 1440, vel 110) 与第 5 个音 (tick 1920, vel 60) 落在区间内，
+    110→77、60→42，于是第 2 个 '>' 消失，谱面只剩 1 个。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Piano"))
+    vels = (60, 110, 60, 110, 60, 60, 60, 60)
+    for i, v in enumerate(vels):
+        t1.note(0, 60 + i, v, i * DIV, 400)
+    t1.cc(0, 67, 127, 1200)
+    t1.cc(0, 67, 0, 2000)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + t1.render()
+
+
 def build_truncated() -> bytes:
     """MTrk 声明长度越过文件末尾，轨尾只剩半个 note-on（v1.38.0）。
 
@@ -2341,6 +2373,16 @@ def main() -> None:
     # CC11 渐强渐弱按通道归属：伴奏的 cresc. 不能印到旋律谱上
     for name, builder in (
         ("dyn_channels", build_dyn_channels),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # CC67 软踏板：只改 velocity，不改时值，也不动 CC11 / CC7 力度表
+    for name, builder in (
+        ("soft_pedal", build_soft_pedal),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:
