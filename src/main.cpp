@@ -209,6 +209,10 @@ int main(int argc, char** argv) {
         // 否则用户不知道这份 MIDI 本来会少掉半首曲子。
         const std::string rs = m2j::runningStatusLabel(data);
         if (!rs.empty()) std::cout << rs << "\n";
+        // FF 21 让不同端口复用同一个通道号；不点明会让人以为踏板 / 弯音
+        // 串味是转换器的 bug，其实是文件本身把两件乐器放在了不同设备上。
+        const std::string pl = m2j::portLabel(data);
+        if (!pl.empty()) std::cout << pl << "\n";
     }
 
     // --transpose 移调

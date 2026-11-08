@@ -1504,6 +1504,75 @@ def main():
     check(xml_pitches(rsx) == [("C", "4"), ("D", "4")],
           "规范写法仍是 C4/D4 两个八分音符")
 
+    # ---- MIDI Port / Channel Prefix ----
+    def xml_dur_by_pitch(path):
+        root = ETC.fromstring(open(path, encoding="utf-8").read())
+        out = {}
+        for n in root.iter("note"):
+            if n.find("rest") is not None or n.find("chord") is not None:
+                continue
+            p = n.find("pitch")
+            if p is None:
+                continue
+            key = (p.findtext("step"), p.findtext("octave"))
+            out[key] = out.get(key, 0) + int(n.findtext("duration") or 0)
+        return out
+
+    print("\n[44] MIDI Port：踏板按 (port, channel) 隔离，端口不跨轨继承")
+    pp = os.path.join(FIXTURES, "port_pedal.mid")
+    rc, out, err = run(exe, pp, "--no-pickup")
+    check(rc == 0, "端口踏板素材解析成功", err[:200])
+    check("MIDI Port：2 处声明，共 2 个端口（0～1）" in out,
+          "CLI 页眉报出端口数与隔离说明")
+    check("延音踏板：补长 2 个音" in out,
+          "只有 port 0 的两个音被补长（旧版是 3 个）")
+    ppx = os.path.join(tmp, "port_pedal.xml")
+    rc, _, err = run(exe, pp, "--no-pickup", "--musicxml", ppx)
+    check(rc == 0, "端口踏板导出 MusicXML", err[:200])
+    pd = xml_dur_by_pitch(ppx)
+    check(pd.get(("C", "4")) == 1920 and pd.get(("D", "4")) == 480
+          and pd.get(("E", "4")) == 960,
+          "C4=1920 / D4=480 / E4=960（D4 没被 port 0 的踏板串到）", str(pd))
+    pph = os.path.join(tmp, "port_pedal.html")
+    rc, _, err = run(exe, pp, "--no-pickup", "--html", pph)
+    check(rc == 0, "端口踏板导出 HTML", err[:200])
+    check("同通道号跨端口已隔离" in open(pph, encoding="utf-8").read(),
+          "HTML 页眉同样写明端口隔离")
+
+    print("\n[45] MIDI Port：弯音范围按端口独立；FF 20 不重定向通道消息")
+    pb = os.path.join(FIXTURES, "port_bend.mid")
+    rc, bout, err = run(exe, pb, "--no-pickup")
+    check(rc == 0, "端口弯音素材解析成功", err[:200])
+    check("弯音范围：±12 半音" in bout, "RPN ±12 只被记了一次")
+    pbx = os.path.join(tmp, "port_bend.xml")
+    rc, _, err = run(exe, pb, "--no-pickup", "--musicxml", pbx)
+    check(rc == 0, "端口弯音导出 MusicXML", err[:200])
+    check(xml_pitches(pbx) == [("C", "5"), ("E", "4")],
+          "C4→C5（±12）、D4→E4（默认 ±2），不是两个都 ±12")
+    pre = os.path.join(FIXTURES, "port_prefix.mid")
+    base = os.path.join(FIXTURES, "port_prefix_base.mid")
+    _, po, _ = run(exe, pre, "--no-pickup")
+    _, bo, _ = run(exe, base, "--no-pickup")
+    body = lambda s: s[s.find("1="):]
+    check(body(po) == body(bo) and "1=" in po,
+          "FF 20 前后谱面正文逐字符一致（没有把 ch0 重定向成 ch2）")
+    check("通道前缀：1 处（按规范不影响通道消息）" in po,
+          "CLI 页眉如实说明 FF 20 的作用域")
+    check("通道前缀" not in bo, "不写 FF 20 的基线没有多余提示")
+
+    print("\n[46] 无端口声明零回归：单通道踏板行为与旧版一致")
+    ps = os.path.join(FIXTURES, "port_standard.mid")
+    rc, sout, err = run(exe, ps, "--no-pickup")
+    check(rc == 0, "无端口基线解析成功", err[:200])
+    check("MIDI Port" not in sout and "通道前缀" not in sout,
+          "没有 FF 21 / FF 20 时不输出任何端口提示")
+    check("延音踏板：补长 2 个音" in sout, "单通道踏板照常补长两个音")
+    psx = os.path.join(tmp, "port_standard.xml")
+    rc, _, err = run(exe, ps, "--no-pickup", "--musicxml", psx)
+    check(rc == 0, "无端口基线导出 MusicXML", err[:200])
+    check(xml_dur_by_pitch(psx) == {("C", "4"): 1920, ("D", "4"): 1440},
+          "无端口声明的时值与旧版完全相同")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

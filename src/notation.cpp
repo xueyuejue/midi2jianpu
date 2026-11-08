@@ -1336,7 +1336,8 @@ std::vector<std::pair<std::string, std::string>> listParts(const MidiData& data)
     // 统计每条声部轨（跳过打击乐通道 9）的主导通道 -> 音色号
     std::map<int, std::map<int, int>> trackChanCount;  // track -> channel -> count
     for (const auto& n : data.notes) {
-        if (n.channel == 9) continue;  // 鼓轨已在解析阶段丢弃，防御性再跳一次
+        // 逻辑通道是 port*16+ch，鼓件看低 4 位；port 0 时仍是原来的 9。
+        if ((n.channel & 0x0F) == 9) continue;  // 鼓轨已在解析阶段丢弃，防御性再跳一次
         trackChanCount[n.track][n.channel]++;
     }
     std::vector<std::pair<std::string, std::string>> out;

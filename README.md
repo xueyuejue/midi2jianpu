@@ -60,7 +60,7 @@
 - [x] `--version` 打印版本号
 - [x] **在线 Demo**：WASM 核心，浏览器内运行 C++ 代码
 - [x] **减时线按拍连通**：一拍内的八分/十六分音符共用一条横线（十六分再叠平行线），而不是每个音各画一小段；和弦的减时线只画在最下面那个音上
-- [x] 500 项单元测试 + 43 组端到端冒烟测试 + WASM 产物一致性检查
+- [x] 522 项单元测试 + 46 组端到端冒烟测试 + WASM 产物一致性检查
 
 ## 在线 Demo 功能
 
@@ -639,13 +639,38 @@ MIDI 为了省字节允许「省略状态字节」：连续同类事件只写一
 | `running_realtime.mid` | 音符流中插入 `0xF8` 时钟 | 只有 C4 | C4 / D4（且无需补回） |
 | `running_standard.mid` | meta 后规规矩矩重写状态字节 | C4 / D4 | C4 / D4（防回归） |
 
+## 端口不是注释：FF 21 与 FF 20
+
+SMF 里 `FF 21 01 pp` 是 **MIDI Port / Cable Number**，指定本轨后续事件送往哪个
+端口；`FF 20 01 cc` 是 **Channel Prefix**，指定其后的 meta / SysEx 关联到哪个
+通道。端口号是 `(port, channel)` 二元组的一半：port 0 ch0 与 port 1 ch0 是两台
+设备上的两件乐器，踏板、弯音范围、力度、GM 音色都不能互相串。
+
+旧实现只读状态字节低 4 位的通道号，两类 meta 都当普通字节跳过：
+
+| 素材 | 场景 | 旧版 | 现在 |
+| --- | --- | --- | --- |
+| `port_pedal.mid` | port 0 ch0 踩踏板、port 1 ch0 不踩 | 3 个音全被补长 | 只补长 port 0 的 2 个音 |
+| `port_bend.mid` | port 0 设 RPN ±12、port 1 默认 ±2 | C5 / D5 | C5 / E4 |
+| `port_prefix.mid` / `port_prefix_base.mid` | 写 / 不写 FF 20 | — | 谱面正文逐字符一致 |
+| `port_standard.mid` | 全程不写端口声明 | 与旧版一致 | 与旧版一致（防回归） |
+
+现在把逻辑通道编码成 `port * 16 + ch`，端口**不跨轨继承**（轨首重置为 0，
+所以 `port_pedal.mid` 里第三条没写 `FF 21` 的轨仍归 port 0）。`port 0` 时编码
+值与旧值完全相同，没有端口声明的文件三层输出逐字节零回归。`FF 20` 按规范
+只记数、不重定向通道消息——把它当通道号会把 port 0 ch0 的旋律错记成 ch2
+的乐器。鼓轨判定仍看低 4 位（任何端口上的 ch9 都是打击乐）。
+
+CLI 页眉、HTML 页眉、网页文件面板同步写明端口数与隔离结果，新导出
+`_midi2jianpu_port_info`。
+
 ## 技术选型
 
 - 核心：**C++17**，手写 SMF 二进制解析，无第三方库依赖，便于编译成 WASM
 - 调性识别：**Krumhansl-Schmuckler** 算法（音乐信息检索标准）；无调号时再由**宫商角徵羽五声调式**判定校正宫音
 - 和弦检测：按和声窗（半小节 / 附点四分 / 整小节）统计音级频率，匹配 11 种和弦类型，低音决定转位
 - 输出：文本 + 自包含 HTML（内联 CSS）+ MusicXML 3.1
-- 测试：内置断言 500 项单元测试，另有 `tests/smoke.py` 43 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`、声部乐器标注 + 倚音混合素材 `parts.mid`、和弦转位 + 七和弦素材 `chords.mid`、渐快渐慢素材 `tempo_ramp.mid`、长音跨小节素材 `long_tie.mid`、同轨复调素材 `polyphony.mid`、SMPTE 时间基准素材 `smpte.mid`、format 2 独立序列素材 `format2.mid`、复音触后素材 `aftertouch.mid`、同音重触发素材 `retrigger.mid`、轨尾悬挂音素材 `dangling.mid`、双歌词轨素材 `twolyrics.mid`、延音踏板素材 `pedal.mid`、强制清音素材 `allnotesoff.mid`、CC7 主音量素材 `cc7volume.mid`、踏板通道隔离素材 `pedal_channels.mid`、弯音范围按通道 / 按时间 / 跨轨三份素材 `bendrange_channels.mid` / `bendrange_timeline.mid` / `bendrange_crosstrack.mid`、省略状态字节四份素材 `running_meta.mid` / `running_sysex.mid` / `running_realtime.mid` / `running_standard.mid`）
+- 测试：内置断言 522 项单元测试，另有 `tests/smoke.py` 46 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`、声部乐器标注 + 倚音混合素材 `parts.mid`、和弦转位 + 七和弦素材 `chords.mid`、渐快渐慢素材 `tempo_ramp.mid`、长音跨小节素材 `long_tie.mid`、同轨复调素材 `polyphony.mid`、SMPTE 时间基准素材 `smpte.mid`、format 2 独立序列素材 `format2.mid`、复音触后素材 `aftertouch.mid`、同音重触发素材 `retrigger.mid`、轨尾悬挂音素材 `dangling.mid`、双歌词轨素材 `twolyrics.mid`、延音踏板素材 `pedal.mid`、强制清音素材 `allnotesoff.mid`、CC7 主音量素材 `cc7volume.mid`、踏板通道隔离素材 `pedal_channels.mid`、弯音范围按通道 / 按时间 / 跨轨三份素材 `bendrange_channels.mid` / `bendrange_timeline.mid` / `bendrange_crosstrack.mid`、省略状态字节四份素材 `running_meta.mid` / `running_sysex.mid` / `running_realtime.mid` / `running_standard.mid`、MIDI Port 五份素材 `port_pedal.mid` / `port_bend.mid` / `port_prefix.mid` / `port_prefix_base.mid` / `port_standard.mid`）
 
 ## 路线图
 
@@ -674,6 +699,7 @@ MIDI 为了省字节允许「省略状态字节」：连续同类事件只写一
 - [x] 渐快渐慢折叠：`tempoMarksOf()` 把几十个连续 `set_tempo` 收成一个 `rit.` / `accel.`（间隔 ≤ 1 拍聚簇、≥3 点单调、跨度 ≥ 5%），页眉 / HTML / MusicXML 三层同步，MusicXML 补终点速度保播放；新增 `tempo_ramp.mid` 素材，单调速曲目零回归
 - [x] 长音跨小节延音：`snapBeats()` 不再把超过全音符的时值钳到 4 拍，长音的真实时值保住并靠延音线跨小节分写（文本/HTML 续写 `-`，MusicXML 写 `<tie>` 链）；门限还原改为只作用于 3 拍以下的音符，复调轨上 4 拍柱式和弦不再被放大成 4.75 拍；新增 `long_tie.mid` 素材（6 拍 + 10 拍长音 + 每小节 4 拍三和弦），真实曲目三层输出逐字节零回归
 - [x] 同轨复调分声部：`splitVoices()` 把一条轨里的重叠音按「同拍同值 = 和弦、其余分声部」贪心拆开（上限 3 声部，超出时对齐成同值和弦）；MusicXML 用 `<backup>` 逐声部回退游标，`<voice>` 递增，声部内各自成延音线；文本 / HTML 把每个声部排成独立谱行并标注 `声部N`；修掉「长音叠短音被当和弦」导致的小节时值溢出（4/4 写成 8 拍）；新增 `polyphony.mid` 素材，单声部文件三层输出逐字节零回归
+- [x] MIDI Port / Channel Prefix：按 `(port, channel)` 隔离踏板 / 弯音范围 / 力度 / 音色，端口不跨轨继承，`FF 20` 按规范只作用于 meta / SysEx；新增 5 份 `port_*.mid` 素材，无端口声明的文件三层输出逐字节零回归（v1.31.0）
 
 ## 为什么开源
 
@@ -711,7 +737,7 @@ Issue / PR 都欢迎。尤其欢迎：
 提交前请跑一遍：
 
 ```bash
-cd build && ctest --output-on-failure                  # 500 项单元测试
+cd build && ctest --output-on-failure                  # 522 项单元测试
 python tests/smoke.py build/Release/midi2jianpu.exe    # 端到端冒烟（含鼓轨场景）
 node tests/wasm_smoke.mjs                              # WASM 产物与源码是否同步
 ```

@@ -226,6 +226,13 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
         wasmMod._midi2jianpu_running_status_info(p, midiBytes.length));
       if (rs) hints.push(rs);
     }
+    if (wasmMod._midi2jianpu_port_info) {
+      // MIDI Port / Channel Prefix：不同端口复用同一通道号时说明已隔离。
+      // char* 一律走 UTF8ToString。
+      var pi = wasmMod.UTF8ToString(
+        wasmMod._midi2jianpu_port_info(p, midiBytes.length));
+      if (pi) hints.push(pi);
+    }
     wasmMod._free(p);
     box.textContent = hints.join(' · ');
   }

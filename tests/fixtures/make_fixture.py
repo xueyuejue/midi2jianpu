@@ -2,13 +2,14 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 34 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 39 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
 pedal / allnotesoff / cc7volume / pedal_channels /
 bendrange_channels / bendrange_timeline / bendrange_crosstrack /
-running_meta / running_sysex / running_realtime / running_standard
+running_meta / running_sysex / running_realtime / running_standard /
+port_pedal / port_bend / port_prefix / port_prefix_base / port_standard
 （另配 3 份 LRC 歌词）。
 meter 是把变拍号、变速、鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」，
 modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五声调式
@@ -28,6 +29,11 @@ pedal_channels 则验证踏板不会给没踩的通道补时值。bendrange_chan
 meta、SysEx 之后仍省略状态字节，running_realtime 在音符流里插 0xF8 时钟
 （规范不改变 running status），running_standard 则是重写状态字节的规范基线：
 四份都应读出 C4、D4 两个八分音符，少一个就说明事件流又错位了。
+port_pedal 让 port 0 ch0 踩踏板、port 1 ch0 不踩，第三条轨不写端口（验证
+端口不跨轨继承）；port_bend 让两个端口的 ch0 分别用 ±12 / ±2 弯音范围，
+两份都是 FF 21 端口隔离的回归闸门。port_prefix 与 port_prefix_base 是同一首
+曲子写 / 不写 FF 20（按规范 FF 20 只作用于 meta / SysEx，不重定向通道消息，
+两份输出应逐字节一致），port_standard 则完全不写端口声明，锁住零回归。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -1422,6 +1428,102 @@ def build_running_standard() -> bytes:
     return _running_smf(_running_melody(meta(0x05, b"a"), tail_full_status=True))
 
 
+# ---- MIDI Port（FF 21）与 Channel Prefix（FF 20）----
+# 端口是 (port, channel) 二元组的一半：port 0 ch0 与 port 1 ch0 是两台设备
+# 上的两件乐器。旧实现只读低 4 位通道号，踏板 / 弯音范围 / 力度 / 音色全串。
+def _port_smf(tracks) -> bytes:
+    return (b"MThd" + struct.pack(">IHHH", 6, 1, len(tracks), DIV)
+            + b"".join(t.render() for t in tracks))
+
+
+def _port_conductor() -> Track:
+    t = Track()
+    t.add(0, meta(0x03, b"Conductor"))
+    t.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t.add(0, meta(0x59, bytes([0, 0])))
+    return t
+
+
+def build_port_pedal() -> bytes:
+    """port 0 ch0 踩踏板；port 1 ch0 不踩；第三条轨不写端口（应重置回 0）。
+
+    三个音错开一拍、音高各不同，都在踏板区间 [0, 4 拍) 内。
+    正确：C4 补长到 4 拍、D4 保持 1 拍、E4 补长到踏板抬起；
+    错误：三个音全被补长（全被当成 channel 0）。
+    """
+    p0 = Track()
+    p0.add(0, meta(0x21, bytes([0])))
+    p0.add(0, meta(0x03, b"Piano port 0"))
+    p0.cc(0, 64, 127, 0)
+    p0.note(0, 60, 96, 0, DIV)
+    p0.cc(0, 64, 0, 4 * DIV)
+
+    p1 = Track()
+    p1.add(0, meta(0x21, bytes([1])))
+    p1.add(0, meta(0x03, b"Flute port 1"))
+    p1.note(0, 62, 96, DIV, DIV)
+
+    inherited = Track()
+    inherited.add(0, meta(0x03, b"Pad no port meta"))
+    inherited.note(0, 64, 96, 2 * DIV, DIV)
+    return _port_smf([_port_conductor(), p0, p1, inherited])
+
+
+def build_port_bend() -> bytes:
+    """port 0 ch0 设 RPN ±12 半音；port 1 ch0 用默认 ±2，两者都推满弯音轮。
+
+    正确：C4 -> C5、D4 -> E4；错误：两者都按 ±12 变成 C5 / D5。
+    """
+    p0 = Track()
+    p0.add(0, meta(0x21, bytes([0])))
+    p0.add(0, meta(0x03, b"Lead port 0"))
+    p0.bend_range(0, 12, 0)
+    p0.note(0, 60, 96, 0, DIV)
+    p0.bend(0, 16383, 0)
+    p0.bend(0, 8192, DIV + 1)
+
+    p1 = Track()
+    p1.add(0, meta(0x21, bytes([1])))
+    p1.add(0, meta(0x03, b"Flute port 1"))
+    p1.note(0, 62, 96, 2 * DIV, DIV)
+    p1.bend(0, 16383, 2 * DIV)
+    p1.bend(0, 8192, 3 * DIV + 1)
+    return _port_smf([_port_conductor(), p0, p1])
+
+
+def _port_prefix(with_prefix: bool) -> bytes:
+    t = Track()
+    if with_prefix:
+        t.add(0, meta(0x20, bytes([2])))
+    t.add(0, meta(0x03, b"Prefix"))
+    t.cc(0, 11, 40, 0)
+    t.note(0, 60, 96, 0, DIV)
+    t.note(0, 62, 96, DIV, DIV)
+    return _port_smf([_port_conductor(), t])
+
+
+def build_port_prefix() -> bytes:
+    """FF 20 按规范只作用于后续 meta / SysEx，不能把 ch0 音重定向到 ch2。"""
+    return _port_prefix(True)
+
+
+def build_port_prefix_base() -> bytes:
+    """同一份音乐但不写 FF 20：两份输出应逐字节一致。"""
+    return _port_prefix(False)
+
+
+def build_port_standard() -> bytes:
+    """全程不写端口声明的单通道踏板：行为必须与旧版逐字节一致。"""
+    t = Track()
+    t.add(0, meta(0x03, b"Piano"))
+    t.cc(0, 64, 127, 0)
+    t.note(0, 60, 96, 0, DIV)
+    t.cc(0, 64, 0, 4 * DIV)
+    t.note(0, 62, 96, DIV, DIV)
+    return _port_smf([_port_conductor(), t])
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -1632,6 +1734,20 @@ def main() -> None:
         ("running_sysex", build_running_sysex),
         ("running_realtime", build_running_realtime),
         ("running_standard", build_running_standard),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # MIDI Port / Channel Prefix 素材（端口隔离 / 弯音范围 / 前缀 / 两份基线）
+    for name, builder in (
+        ("port_pedal", build_port_pedal),
+        ("port_bend", build_port_bend),
+        ("port_prefix", build_port_prefix),
+        ("port_prefix_base", build_port_prefix_base),
+        ("port_standard", build_port_standard),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

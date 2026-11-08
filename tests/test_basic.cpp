@@ -2783,6 +2783,159 @@ int main() {
         check(hasCc11, "被补回的 CC11 进了力度表");
     }
 
+    // ---- MIDI Port (FF 21) / Channel Prefix (FF 20) ----
+    {
+        std::cout << "\n测试 MIDI Port：端口隔离 / 不跨轨继承 / FF 20 不重定向通道\n";
+        auto load = [](std::vector<SmfTrack> tracks) {
+            const int n = (int)tracks.size();
+            auto bytes = buildSmfFmt(1, n, 480, std::move(tracks));
+            MidiData d;
+            const bool ok = loadMidiFromMemory(bytes.data(), bytes.size(), d);
+            return std::make_pair(ok, std::move(d));
+        };
+        auto portMeta = [](int p) { return ev({0xFF, 0x21, 0x01, p}); };
+        auto prefixMeta = [](int ch) { return ev({0xFF, 0x20, 0x01, ch}); };
+        auto rpn = [](SmfTrack& t, long tick, int ch, int semis) {
+            t.at(tick, ev({0xB0 | ch, 101, 0}));
+            t.at(tick, ev({0xB0 | ch, 100, 0}));
+            t.at(tick, ev({0xB0 | ch, 6, semis}));
+        };
+
+        // 1) 踏板：port 0 踩、port 1 不踩、第三条轨不写端口（应重置回 0）
+        {
+            SmfTrack p0, p1, p2;
+            p0.at(0, portMeta(0));
+            p0.at(0, ev({0xB0, 64, 127}));
+            p0.at(0, ev({0x90, 60, 96}));
+            p0.at(480, ev({0x80, 60, 0}));
+            p0.at(1920, ev({0xB0, 64, 0}));
+            p1.at(0, portMeta(1));
+            p1.at(480, ev({0x90, 62, 96}));
+            p1.at(960, ev({0x80, 62, 0}));
+            p2.at(960, ev({0x90, 64, 96}));
+            p2.at(1440, ev({0x80, 64, 0}));
+            auto r = load({p0, p1, p2});
+            const MidiData& d = r.second;
+            check(r.first && d.notes.size() == 3, "端口踏板素材解析出 3 个音");
+            check(d.midiPortEvents == 2 && d.midiPortCount == 2 && d.midiPortMax == 1,
+                  "FF 21 计数：2 处声明、2 个端口、最大端口 1");
+            check(d.notes.size() == 3 && d.notes[0].channel == 0 &&
+                  d.notes[1].channel == 16 && d.notes[2].channel == 0,
+                  "逻辑通道分别是 0 / 16 / 0（第三条轨端口重置）");
+            check(d.pedalExtendedNotes == 2,
+                  "只有 port 0 的两个音被踏板补长，port 1 的音没被串");
+            check(d.notes.size() == 3 && d.notes[1].durationTicks == 480,
+                  "port 1 的 D4 仍是 1 拍（480 tick）");
+            check(d.notes.size() == 3 && d.notes[0].durationTicks == 1920 &&
+                  d.notes[2].durationTicks == 960,
+                  "port 0 的 C4 / E4 分别补长到 1920 / 960 tick");
+            check(portLabel(d).find("MIDI Port") != std::string::npos &&
+                  portLabel(d).find("已隔离") != std::string::npos,
+                  "portLabel 说明端口数与隔离结果");
+        }
+
+        // 2) 弯音范围：两个端口复用 ch0，一个 ±12、一个用默认 ±2
+        {
+            SmfTrack p0, p1;
+            p0.at(0, portMeta(0));
+            rpn(p0, 0, 0, 12);
+            p0.at(0, ev({0xE0, 0x7F, 0x7F}));
+            p0.at(0, ev({0x90, 60, 96}));
+            p0.at(480, ev({0x80, 60, 0}));
+            p1.at(0, portMeta(1));
+            p1.at(480, ev({0xE0, 0x7F, 0x7F}));
+            p1.at(480, ev({0x90, 62, 96}));
+            p1.at(960, ev({0x80, 62, 0}));
+            auto r = load({p0, p1});
+            const MidiData& d = r.second;
+            check(r.first && d.notes.size() == 2, "端口弯音素材解析出 2 个音");
+            check(d.bendRanges.size() == 1 && d.bendRanges[0].channel == 0 &&
+                  d.bendRangeChannels == 1,
+                  "RPN 只落在 port 0 的通道，不覆盖 port 1");
+            check(d.pitchBends.size() == 2 &&
+                  std::abs(d.pitchBends[0].range - 12.0) < 1e-9 &&
+                  std::abs(d.pitchBends[1].range - 2.0) < 1e-9,
+                  "两个端口的弯音轮各自解算成 ±12 / ±2 半音");
+        }
+
+        // 3) RPN 状态按端口隔离：两个端口都设范围，不能互相覆盖
+        {
+            SmfTrack p0, p1;
+            p0.at(0, portMeta(0));
+            rpn(p0, 0, 0, 12);
+            p1.at(0, portMeta(1));
+            rpn(p1, 0, 0, 5);
+            auto r = load({p0, p1});
+            const MidiData& d = r.second;
+            check(d.bendRanges.size() == 2 && d.bendRangeChannels == 2,
+                  "两个端口各设一次 RPN，状态表互不覆盖");
+            bool chanOk = d.bendRanges.size() == 2;
+            if (chanOk)
+                chanOk = d.bendRanges[0].channel != d.bendRanges[1].channel;
+            check(chanOk, "两次 RPN 的逻辑通道分别是 0 与 16");
+        }
+
+        // 4) FF 20 不重定向通道消息；同轨中途改端口立即生效
+        {
+            SmfTrack t;
+            t.at(0, prefixMeta(2));
+            t.at(0, ev({0x90, 60, 96}));
+            t.at(480, ev({0x80, 60, 0}));
+            t.at(480, portMeta(3));
+            t.at(480, ev({0x90, 62, 96}));
+            t.at(960, ev({0x80, 62, 0}));
+            auto r = load({t});
+            const MidiData& d = r.second;
+            check(d.channelPrefixEvents == 1 && d.midiPortEvents == 1 &&
+                  d.midiPortMax == 3,
+                  "FF 20 / FF 21 计数与最大端口号");
+            check(d.notes.size() == 2 && d.notes[0].channel == 0 &&
+                  d.notes[1].channel == 48,
+                  "FF 20 没把 ch0 重定向成 ch2；FF 21 后逻辑通道是 3*16=48");
+            check(portLabel(d).find("通道前缀") != std::string::npos &&
+                  portLabel(d).find("不影响通道消息") != std::string::npos,
+                  "portLabel 如实说明 FF 20 不改变通道消息");
+        }
+
+        // 5) 最大端口 / 鼓轨 / 音色 / 力度都跟着逻辑通道走
+        {
+            SmfTrack t;
+            t.at(0, portMeta(255));
+            t.at(0, ev({0xC0, 20}));
+            t.at(0, ev({0xB0, 11, 80}));
+            t.at(0, ev({0x99, 36, 100}));
+            t.at(0, ev({0x90, 60, 96}));
+            t.at(480, ev({0x80, 60, 0}));
+            auto r = load({t});
+            const MidiData& d = r.second;
+            check(d.midiPortMax == 255 && d.notes.size() == 1 &&
+                  d.notes[0].channel == 4080,
+                  "端口 255 的逻辑通道 4080 不越界");
+            check(d.drumNotesSkipped == 1,
+                  "port 255 的 ch9 仍判为鼓轨（鼓按低 4 位通道号）");
+            check(d.channelProgram.count(4080) == 1 &&
+                  d.channelProgram.at(4080) == 20,
+                  "GM 音色按 (port, channel) 记录，不覆盖默认端口");
+            check(!d.dynamics.empty() && d.dynamics[0].channel == 4080,
+                  "CC11 力度点归到 port 255 的通道");
+        }
+
+        // 6) 零回归：没有 FF 21 / FF 20 的文件一切照旧
+        {
+            SmfTrack t;
+            t.at(0, ev({0x90, 60, 96}));
+            t.at(480, ev({0x80, 60, 0}));
+            auto r = load({t});
+            const MidiData& d = r.second;
+            check(d.midiPortEvents == 0 && d.channelPrefixEvents == 0 &&
+                  d.midiPortCount == 1 && d.midiPortMax == 0,
+                  "无端口声明时计数全是默认值");
+            check(d.notes.size() == 1 && d.notes[0].channel == 0,
+                  "无端口时逻辑通道与旧值完全一致");
+            check(portLabel(d).empty(), "无 FF 21 / FF 20 时 portLabel 为空串");
+        }
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

@@ -246,6 +246,15 @@ const char* midi2jianpu_running_status_info(const uint8_t* midiData, int size) {
     return buf.c_str();
 }
 
+// MIDI Port / Channel Prefix 的文件提示。返回 char*，网页必须过 UTF8ToString。
+const char* midi2jianpu_port_info(const uint8_t* midiData, int size) {
+    static std::string buf;
+    m2j::MidiData data;
+    if (!m2j::loadMidiFromMemory(midiData, size, data)) { buf.clear(); return buf.c_str(); }
+    buf = m2j::portLabel(data);
+    return buf.c_str();
+}
+
 // 获取MIDI音符数据(JSON格式, 用于播放)
 const char* midi2jianpu_get_notes_json(const uint8_t* midiData, int size) {
     m2j::MidiData data;

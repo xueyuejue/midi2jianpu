@@ -996,6 +996,49 @@ for (const [name, needHint] of [
 check(/UTF8ToString\(\s*wasmMod\._midi2jianpu_running_status_info/.test(pageHtml2),
   'docs/index.html 的 running_status_info 用 UTF8ToString 取了字符串');
 
+// ---- 30. MIDI Port：网页端同样按 (port, channel) 隔离控制器 ----
+// FF 21 被忽略时，port 0 的踏板会补长 port 1 的音、port 0 的 RPN ±12
+// 会把 port 1 的默认 ±2 弯音一起放大。这里锁住新导出与文件面板。
+function portInfo(bytes) {
+  if (!mod._midi2jianpu_port_info) return '';
+  const ptr = mod._malloc(bytes.length);
+  mod.HEAPU8.set(bytes, ptr);
+  const s = mod.UTF8ToString(mod._midi2jianpu_port_info(ptr, bytes.length));
+  mod._free(ptr);
+  return s || '';
+}
+check(typeof mod._midi2jianpu_port_info === 'function',
+  'WASM 导出 _midi2jianpu_port_info');
+const portPedalBytes = readFixture('port_pedal.mid');
+if (portPedalBytes) {
+  const info = portInfo(portPedalBytes);
+  check(/MIDI Port：2 处声明，共 2 个端口/.test(info),
+    `port_pedal：WASM 报出端口数，实际：${info}`);
+  check(/同通道号跨端口已隔离/.test(info),
+    'port_pedal：WASM 说明端口隔离结果');
+}
+const portBendBytes = readFixture('port_bend.mid');
+if (portBendBytes) {
+  const caller = makeCaller(mod);
+  caller.setMidi(portBendBytes);
+  const xml = caller.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(/<step>C<\/step><octave>5<\/octave>/.test(xml) &&
+        /<step>E<\/step><octave>4<\/octave>/.test(xml),
+    'port_bend：网页 MusicXML 是 C5 / E4，不是两个都按 ±12 推到 C5 / D5');
+}
+const portPrefixBytes = readFixture('port_prefix.mid');
+if (portPrefixBytes) {
+  check(/通道前缀：1 处（按规范不影响通道消息）/.test(portInfo(portPrefixBytes)),
+    'port_prefix：WASM 报出 FF 20 但不重定向通道');
+}
+for (const name of ['port_prefix_base.mid', 'port_standard.mid', 'sample.mid']) {
+  const bytes = readFixture(name);
+  if (!bytes) continue;
+  check(portInfo(bytes) === '', `${name}：无端口声明时返回空串`);
+}
+check(/UTF8ToString\(\s*wasmMod\._midi2jianpu_port_info/.test(pageHtml2),
+  'docs/index.html 的 port_info 用 UTF8ToString 取了字符串');
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

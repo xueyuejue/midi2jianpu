@@ -208,6 +208,18 @@ struct MidiData {
     // 消失；这里按「上一条通道消息的状态」宽容补回，并记下补了几处。
     int runningStatusRecovered = 0;
 
+    // SMF 的 FF 21 01 pp（MIDI Port / Cable Number）与 FF 20 01 cc（Channel
+    // Prefix）。端口是「(port, channel) 二元组」的一部分：port 0 ch0 和
+    // port 1 ch0 是两台设备上的两件乐器，踏板 / 弯音范围 / 力度 / 音色都
+    // 不能串。解析层把逻辑通道编码成 port * 16 + ch，port 0 时与旧值完全
+    // 相同，所以没有端口声明的文件逐字节零回归。端口不跨轨继承（轨首重置）。
+    // FF 20 按规范只影响其后的 meta / SysEx 关联到哪个通道，**不**重定向
+    // 通道消息，所以这里只记录、不拿它改写 channel。
+    int midiPortEvents = 0;        // FF 21 声明次数
+    int midiPortCount = 0;         // 实际用到的端口数（含默认的 0）
+    int midiPortMax = 0;           // 最大端口号
+    int channelPrefixEvents = 0;   // FF 20 声明次数
+
     // MIDI 通道 10（channel index 9）是打击乐专用通道：音高代表底鼓/军鼓/踩镲
     // 这些鼓件，而不是音级。简谱没有对应的记法，把它当旋律转出来只会得到
     // `1,, #4,, #6,,` 这种垃圾，并且会因为音符数最多而抢走「旋律轨」身份。
@@ -318,6 +330,9 @@ std::string bendRangeLabel(const MidiData& data);
 // 省略状态字节：被系统事件取消 running status 后宽容补回的处数。
 // 没有补回时返回空串。
 std::string runningStatusLabel(const MidiData& data);
+// MIDI Port / Channel Prefix：声明次数、端口数，以及「相同通道号跨端口已隔离」。
+// 文件里没有这两类 meta 时返回空串。
+std::string portLabel(const MidiData& data);
 
 std::string formatLabel(const MidiData& data);
 

@@ -900,6 +900,7 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
          << (controllerLabel(data).empty() ? "" : " ｜ " + controllerLabel(data))
          << (bendRangeLabel(data).empty() ? "" : " ｜ " + bendRangeLabel(data))
          << (runningStatusLabel(data).empty() ? "" : " ｜ " + runningStatusLabel(data))
+         << (portLabel(data).empty() ? "" : " ｜ " + portLabel(data))
          << (data.drumNotesSkipped > 0 ? " ｜ 已跳过鼓轨" : "")
          << (lyricLabel.empty() ? "" : " ｜ " + lyricLabel)
          << (expr.summary().empty() ? "" : " ｜ " + expr.summary())

@@ -280,7 +280,7 @@ static void applyControllerSemantics(MidiData& out,
 
     // ---- 3) 同键重新击打：前一个音的音响到此为止 ----
     auto keyOf = [](const NoteEvent& n) -> uint64_t {
-        return ((uint64_t)(n.channel & 0x0F) << 24) |
+        return ((uint64_t)(n.channel & 0xFFFF) << 24) |
                ((uint64_t)(n.pitch & 0xFF) << 8) |
                (uint64_t)(n.track & 0xFF);
     };
@@ -448,12 +448,17 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
     // 音符写在另一条轨）。旧实现是「每轨一对局部 int」：同一条轨上两个通道
     // 交错发 CC101/CC100/CC6 就会串味；也不能用 static，否则连续解析两份
     // 文件会互相污染。这里是 parseBuffer 的局部数组，随一次解析一起生灭。
-    int rpnMSB[16], rpnLSB[16], rpnDataMSB[16], rpnLastSeq[16];
-    for (int i = 0; i < 16; i++) {
-        rpnMSB[i] = -1; rpnLSB[i] = -1; rpnDataMSB[i] = -1; rpnLastSeq[i] = -1;
-    }
+    // 下标是「逻辑通道」port*16+ch（端口号 1 字节，最大 4095），不再是原始
+    // 0-15 通道号：两台设备上都叫 ch0 时，RPN 状态不能互相覆盖。
+    const int kMaxLogicalChannels = 4096;
+    std::vector<int> rpnMSB(kMaxLogicalChannels, -1),
+                     rpnLSB(kMaxLogicalChannels, -1),
+                     rpnDataMSB(kMaxLogicalChannels, -1),
+                     rpnLastSeq(kMaxLogicalChannels, -1);
     int rpnSeq = 0;
     std::vector<BendRangePoint> bendRanges;
+    // 实际用到的端口集合。轨首默认 0，FF 21 追加新端口。
+    std::set<int> portsUsed;
 
     // 把一个按下的音在 endTick 收尾。key 里已经带了 通道/音高/轨号
     // （见下面的拼法），所以这里不必再传一遍。
@@ -470,7 +475,7 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
         ne.velocity = it->second.second;
         ne.rawDurationTicks = ne.durationTicks;
         ne.pitch = (int)((key >> 8) & 0xFFu);
-        ne.channel = (int)((key >> 24) & 0x0Fu);
+        ne.channel = (int)((key >> 24) & 0xFFFFu);
         ne.track = (int)(key & 0xFFu);
         out.notes.push_back(ne);
         active.erase(it);
@@ -484,6 +489,10 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
 
         long absTick = 0;
         uint8_t runningStatus = 0;
+        // FF 21 的端口是轨内上下文，每条轨开头重置为 0：SMF 不跨轨继承端口
+        // （老导出器常在 A 轨写 port 1，B 轨不写，B 仍是默认端口 0）。
+        int currentPort = 0;
+        portsUsed.insert(0);
         // running status 只由通道消息（0x80-0xEF）建立。旧实现把每个状态字节
         // 都记成 runningStatus，于是 0xFF（meta）/ 0xF0（SysEx）之后遇到省略
         // 状态字节的音符时，会把音符的音高字节当成 meta 类型、力度字节当成
@@ -521,14 +530,18 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
             }
 
             uint8_t type = status & 0xF0u;
-            uint8_t channel = status & 0x0Fu;
+            const uint8_t rawChannel = status & 0x0Fu;
+            // 逻辑通道 = 端口 × 16 + 通道号。port 0 时与旧值完全相同，所以
+            // 没有 FF 21 声明的文件逐字节零回归；只有声明了端口的文件才会把
+            // 不同端口上复用的通道号拆成彼此独立的乐器。
+            const int channel = currentPort * 16 + (int)rawChannel;
 
             if (type == 0x90u || type == 0x80u) {
                 uint8_t note = d[pos++];
                 uint8_t vel = d[pos++];
                 // 通道 10（index 9）是打击乐：音高是鼓件编号，不是音级。
                 // 简谱没有鼓谱记法，留着只会污染调性识别、和弦检测和旋律轨判定。
-                if (channel == 9) {
+                if (rawChannel == 9) {
                     if (type == 0x90u && vel > 0) out.drumNotesSkipped++;
                 } else {
                     uint64_t key = ((uint64_t)channel << 24) |
@@ -558,7 +571,18 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                 if (pos + metaLen > trkEnd) {
                     metaLen = (trkEnd > pos) ? (uint32_t)(trkEnd - pos) : 0;
                 }
-                if (metaType == 0x51u && metaLen >= 3) {  // set_tempo
+                if (metaType == 0x21u && metaLen >= 1) {  // MIDI Port / Cable Number
+                    // 从本条 meta 起，本轨的通道消息都送到这个端口。
+                    currentPort = (int)d[pos];
+                    portsUsed.insert(currentPort);
+                    out.midiPortEvents++;
+                } else if (metaType == 0x20u && metaLen >= 1) {  // Channel Prefix
+                    // SMF 规范：它只决定**其后 meta / SysEx** 关联到哪个通道，
+                    // 不重定向通道消息。当前 meta 一律按 trackIdx 归属，所以
+                    // 这里只记数并在页眉如实说明，不能拿它改写 channel——
+                    // 那会把 port 0 ch0 的旋律错记成 ch2 的乐器。
+                    out.channelPrefixEvents++;
+                } else if (metaType == 0x51u && metaLen >= 3) {  // set_tempo
                     // 只记下 tick 与 BPM，秒数在全部事件解析完后统一换算
                     long us = (long)((d[pos] << 16) | (d[pos+1] << 8) | d[pos+2]);
                     if (us > 0) out.tempoChanges.push_back({absTick, 60000000.0 / (double)us});
@@ -652,7 +676,7 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                 // 音色号（GM program change）。旧实现直接跳过，于是「这条轨是
                 // 笛子/二胡/钢琴」这种对读谱极有用的信息被丢掉了；现在按通道
                 // 记下来，输出层据此给每条声部标出乐器名。
-                if (channel < 16) out.channelProgram[(int)channel] = (int)d[pos++];
+                out.channelProgram[channel] = (int)d[pos++];
             } else if (type == 0xA0u) {
                 // 复音触后：状态 + 音高 + 压力 = 3 字节。旧实现落到末尾的
                 // 兜底 pos += 1，每遇到一个就少读一个字节，事件流从那里开始
@@ -700,6 +724,8 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
     resolveBendRanges(out);
     applyControllerSemantics(out, pedalEvents, allOffEvents, volumeCc7);
     applySmpteTimeBase(out);
+    out.midiPortCount = (int)portsUsed.size();
+    out.midiPortMax = portsUsed.empty() ? 0 : *portsUsed.rbegin();
     recomputeSeconds(out);
     return true;
 }
@@ -777,6 +803,27 @@ std::string runningStatusLabel(const MidiData& data) {
     if (data.runningStatusRecovered <= 0) return "";
     return "省略状态字节：系统事件之后按上一条通道状态补回 " +
            std::to_string(data.runningStatusRecovered) + " 处（否则音符会整段丢失）";
+}
+
+std::string portLabel(const MidiData& data) {
+    if (data.midiPortEvents <= 0 && data.channelPrefixEvents <= 0) return "";
+    std::vector<std::string> parts;
+    if (data.midiPortEvents > 0) {
+        std::ostringstream os;
+        os << "MIDI Port：" << data.midiPortEvents << " 处声明，共 "
+           << data.midiPortCount << " 个端口（0～" << data.midiPortMax
+           << "），同通道号跨端口已隔离";
+        parts.push_back(os.str());
+    }
+    if (data.channelPrefixEvents > 0)
+        parts.push_back("通道前缀：" + std::to_string(data.channelPrefixEvents) +
+                        " 处（按规范不影响通道消息）");
+    std::string out;
+    for (size_t i = 0; i < parts.size(); i++) {
+        if (i) out += " ｜ ";
+        out += parts[i];
+    }
+    return out;
 }
 
 std::string formatLabel(const MidiData& data) {
