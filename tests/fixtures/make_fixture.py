@@ -2,11 +2,11 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 66 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 67 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
-pedal / allnotesoff / cc7volume / pedal_channels /
+pedal / allnotesoff / cc7volume / pedal_channels / pedal_hysteresis /
 bendrange_channels / bendrange_timeline / bendrange_crosstrack /
 running_meta / running_sysex / running_realtime / running_standard /
 port_pedal / port_bend / port_prefix / port_prefix_base / port_standard /
@@ -1318,6 +1318,32 @@ def build_pedal_channels() -> bytes:
     return header + t0.render() + t1.render() + t2.render()
 
 
+def build_pedal_hysteresis() -> bytes:
+    """CC64 踏板迟滞素材：连续踏板包络 127 → 50 → 0。
+
+    真实踏板（尤其连续量输出）松开时不会一步从 127 蹦到 0，而是在中间值
+    停留——50 恰好落在迟滞死区 33..63。旧实现用二值 value>=64 判定，50 一出现
+    就当「抬起」，音符只延到 1 拍；正确的迟滞判定让 50 保持踩下、音延到真正的
+    释放点 0（第 2 拍）。一个音 C4 只按 1/4 拍，踏板 0 踩、480 半踩、960 松。
+    预期：补长 1 个音（3 个踏板事件）、音符时值 960 tick（2 拍）。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Piano"))
+    t1.cc(0, 64, 127, 0)                     # 踩下
+    t1.cc(0, 64, 50, DIV)                    # 死区中间值：迟滞后仍算踩着
+    t1.cc(0, 64, 0, 2 * DIV)                 # 第 2 拍真正松开
+    t1.note(0, 60, 96, 0, DIV // 4)          # C4 只按 1/4 拍
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + t1.render()
+
+
 def build_bendrange_channels() -> bytes:
     """RPN 弯音范围按通道隔离：通道 0 设 ±12，通道 1 仍是默认 ±2。
 
@@ -2093,6 +2119,7 @@ def main() -> None:
         ("allnotesoff", build_allnotesoff),
         ("cc7volume", build_cc7volume),
         ("pedal_channels", build_pedal_channels),
+        ("pedal_hysteresis", build_pedal_hysteresis),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

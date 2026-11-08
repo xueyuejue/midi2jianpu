@@ -1799,6 +1799,30 @@ def main():
     rc2, _, err2 = run(exe, bad, "--list-tracks")
     check(rc2 != 0 and ("错误" in err2 or "无法" in err2),
           "对非法文件给出错误而非崩溃", err2)
+
+    print("\n[59] CC64 踏板迟滞：死区中间值不提前抬起")
+    # 连续踏板 127→50→0，50 落在迟滞死区 33..63：踩着不放，音延到真正的
+    # 释放点 0（第 2 拍）；旧二值判定会在 50 处当成抬起，只延到 1 拍。
+    ph = os.path.join(FIXTURES, "pedal_hysteresis.mid")
+    rc, out, err = run(exe, ph)
+    check(rc == 0, "迟滞踏板文件解析成功", err[:200])
+    check("延音踏板：补长 1 个音（3 个踏板事件）" in out,
+          "CLI 报出补长 1 个音 / 3 个踏板事件")
+    body = out.split("---")[-1]
+    check("1 -" in body,
+          f"死区 50 不中断，音延到真正释放点（2 拍），实际: {body.strip()}")
+    check("1  |" not in body, "不再是旧行为的 1 拍（在 50 处提前断开）")
+
+    phx = os.path.join(tmp, "pedal_hysteresis.xml")
+    rc, _, err = run(exe, ph, "--musicxml", phx)
+    check(rc == 0, "迟滞踏板导出 MusicXML", err[:200])
+    root_ph = ETC.fromstring(open(phx, encoding="utf-8").read())
+    phnotes = [n for n in root_ph.iter("note") if n.find("rest") is None]
+    phdurs = [int(n.findtext("duration")) for n in phnotes]
+    phtypes = [n.findtext("type") for n in phnotes]
+    check(phdurs == [960], f"音符时值 960 tick（2 拍），实际 {phdurs}")
+    check(phtypes == ["half"], f"MusicXML 记为 half，实际 {phtypes}")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

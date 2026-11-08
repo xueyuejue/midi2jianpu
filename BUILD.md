@@ -50,7 +50,7 @@ Emscripten 的 sanity 检查误判配置变化，清掉 sysroot 缓存并重编�
 
 ## 测试
 
-### 单元测试（574 项）
+### 单元测试（581 项）
 
 ```bash
 cd build && ctest --output-on-failure
@@ -58,7 +58,7 @@ cd build && ctest --output-on-failure
 ./build/test_basic
 ```
 
-成功时输出 `共 574 项，失败 0 项 -> 全部通过`。
+成功时输出 `共 581 项，失败 0 项 -> 全部通过`。
 
 覆盖范围：调性识别、各调八度基准、升降号书写（含降号调）、时值后缀、三连音、同音合并、和弦检测、移调、MusicXML 小节时长与 `<chord/>`，以及二十组解析层回归——**鼓轨过滤**、**旋律轨判定**、**变速 tempo map 秒数换算**、**弱起小节网格**、**歌词分配与一字多音区间**、**MIDI 内置歌词规整与精确对齐**、**拍号 map 与逐小节网格**、**调号 map（中途转调 / KeyMap）**、**五声调式宫音判定**、**TempoTimeline 与 LRC 变速对齐（tick/秒往返、乱序去重、offset、多时间戳、旧签名对照）**、**ExpressionMap 演奏表情（力度六档 / 渐变 / 断奏 / 重音 / 滑音 / 颤音 / 段落 / 通道隔离 / 开关 / 节奏混合时不误判）与解析层 velocity、原始时值、多轨事件排序**、**GM 音色名（英文全名 / 中文译名覆盖）、`0xC0` 解析（通道 → GM 音色号）、声部乐器标注 `listParts` / `partSummary`、倚音检测与通道隔离、无 0xC0 / 等间隔流零标注回归**、**和弦转位（低音非根音才写斜杠 / 和弦外音不写）、`Bm7b5` 与 `G7sus4` 的类型扩充、`ChordMark` 的结构化字段（rootPc / kind / kindText / bassPc）**、**速度曲线折叠（`tempoMarksOf`：渐变 / 阶跃 / 抖动退化 / 5% 跨度阈值 / 一拍聚簇阈值 / 曲首独立阶跃 / 页眉文案）**、**长音跨小节（6 拍 / 10 拍时值不被截断、延音段写成 `-` 而非休止符、复调轨 4 拍和弦不被门限放大、断奏轨门限还原仍生效）**、**同轨复调（`splitVoices`：同拍同值算和弦 / 同拍不同值拆声部 / 重叠拆声部 / 超上限退化并截短 / 倚音 skip）、复调 MusicXML 的 `<backup>` 与逐小节时值守恒、单声部零 `<backup>` 回归**、**RPN 弯音范围（按通道隔离 / 中途改范围不倒灌 / 跨轨设定 / CC38 音分微调 / 同 tick 后写覆盖 / 非法值兜底 / 提示文案）**、**running status 生命周期（歌词 meta / SysEx / System Common 之后取消、0xF8 与 0xFE 实时消息不改变、省略状态字节按最后一条通道状态补回、补回 CC 的两字节数据、通道归属不变、规范写法零回归、提示文案）**、**MIDI Port / Channel Prefix（端口隔离踏板 / 弯音范围 / RPN 状态表、端口不跨轨继承、同轨中途改端口、FF 20 不重定向通道消息、端口 255 逻辑通道不越界、鼓轨按低 4 位、GM 音色与 CC11 归逻辑通道、无端口声明零回归、提示文案）**、**SysEx 鼓模式（GS/XG 把任意 part 设为鼓 / mode=0 普通乐器对照 / 三种 Reset 按时间撤销 / 末轨 SysEx / 通道 10 改回钢琴 / 无关 SysEx 零回归 / 同 tick 后写覆盖 / 端口隔离 / 提示文案）**、**Bank Select 与音色时间轴（CC0=127 指定 XG 鼓组 / 普通音色库对照 / CC0 改回 0 后恢复旋律 / 末轨 setup / GM Reset 撤销 / 端口隔离 / 缺 0xC0 不切鼓 / 通道 10 普通音色设定不改回旋律 / programAt 按 tick 取音色 / channelProgram 兼容回退 / 普通 GM 文件无提示）`、`--track` 全事件表隔离（默认不隔离 / 选中轨只留该轨音符 / 别轨歌词·CC11·CC7·CC64 踏板·弯音不串入 / 别轨踏板不给选中轨补长时值 / 全局速度·拍号·调号·Marker·RPN 弯音仍保留 / 空轨与越界报错 / format 2 选段 / 提示文案）**（都在内存里现构造最小 SMF，不依赖 fixture 文件）。
 
@@ -67,7 +67,7 @@ cd build && ctest --output-on-failure
 需要 Python 3（只用标准库）：
 
 ```bash
-python tests/fixtures/make_fixture.py     # 生成 66 份 .mid 素材（含 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony / smpte / format2 / aftertouch / retrigger / dangling / twolyrics / pedal / allnotesoff / cc7volume / pedal_channels / bendrange_channels / bendrange_timeline / bendrange_crosstrack / running_meta / running_sysex / running_realtime / running_standard / port_pedal / port_bend / port_prefix / port_prefix_base / port_standard / sysex_gs_drum / sysex_xg_drum / sysex_gs_normal / sysex_gs_reset / sysex_gm_reset / sysex_xg_reset / sysex_conductor / sysex_ch9_normal / sysex_ch9_drum / sysex_unknown / sysex_port_drum / bank_xg_drum / bank_normal / bank_switch_back / bank_conductor / bank_port / bank_reset / bank_ch9_plain / bank_no_program / program_timeline / track_pedal / track_rpn_setup / track_conductor / track_leak / track_leak_base / track_empty / track_fmt2）+ 3 份变速 LRC
+python tests/fixtures/make_fixture.py     # 生成 67 份 .mid 素材（含 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony / smpte / format2 / aftertouch / retrigger / dangling / twolyrics / pedal / allnotesoff / cc7volume / pedal_channels / pedal_hysteresis / bendrange_channels / bendrange_timeline / bendrange_crosstrack / running_meta / running_sysex / running_realtime / running_standard / port_pedal / port_bend / port_prefix / port_prefix_base / port_standard / sysex_gs_drum / sysex_xg_drum / sysex_gs_normal / sysex_gs_reset / sysex_gm_reset / sysex_xg_reset / sysex_conductor / sysex_ch9_normal / sysex_ch9_drum / sysex_unknown / sysex_port_drum / bank_xg_drum / bank_normal / bank_switch_back / bank_conductor / bank_port / bank_reset / bank_ch9_plain / bank_no_program / program_timeline / track_pedal / track_rpn_setup / track_conductor / track_leak / track_leak_base / track_empty / track_fmt2）+ 3 份变速 LRC
 python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2jianpu.exe
 ```
 
