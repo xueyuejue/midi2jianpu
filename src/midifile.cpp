@@ -262,14 +262,19 @@ static void applyControllerSemantics(MidiData& out,
     std::map<int, std::vector<std::pair<long, long>>> ranges;  // 通道 -> 踏板区间
     std::map<int, bool> isDown;
     std::map<int, long> onTick;
+    // 迟滞（hysteresis）：踩下判 value >= 64，抬起判 value <= 32，中间
+    // 33..63 保持前态。真实的连续踏板包络 127→20→0 不会被 20 处的「半踩」
+    // 误判成抬起，音会延到真正的释放点 0；纯 0/127 文件行为不变（零回归）。
     for (const auto& p : ps) {
-        if (p.down) {
+        if (p.value >= 64) {
             if (!isDown[p.channel]) { isDown[p.channel] = true; onTick[p.channel] = p.tick; }
-        } else if (isDown[p.channel]) {
-            // 同 tick 的 127→0→127 是「重新踩踏板」，零长区间直接丢掉。
-            if (p.tick > onTick[p.channel])
-                ranges[p.channel].push_back({onTick[p.channel], p.tick});
-            isDown[p.channel] = false;
+        } else if (p.value <= 32) {
+            if (isDown[p.channel]) {
+                // 同 tick 的 127→0→127 是「重新踩踏板」，零长区间直接丢掉。
+                if (p.tick > onTick[p.channel])
+                    ranges[p.channel].push_back({onTick[p.channel], p.tick});
+                isDown[p.channel] = false;
+            }
         }
     }
     for (const auto& kv : isDown) {
@@ -924,8 +929,8 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                         out.dynamics.push_back({absTick, (int)val, (int)channel});
                     } else if (ctrl == 0x07u) {  // 主音量：和 CC11 一样承载渐强渐弱
                         volumeCc7.push_back({absTick, (int)val, (int)channel});
-                    } else if (ctrl == 0x40u) {  // CC64 延音踏板，>=64 算踩下
-                        pedalEvents.push_back({absTick, (int)channel, val >= 64, ctrlSeq++});
+                    } else if (ctrl == 0x40u) {  // CC64 延音踏板，存原始值，迟滞判定后做
+                        pedalEvents.push_back({absTick, (int)channel, (int)val, ctrlSeq++});
                     } else if (ctrl == 0x78u || ctrl == 0x7Bu) {  // All Sound/Notes Off
                         allOffEvents.push_back({absTick, (int)channel, ctrlSeq++});
                     }

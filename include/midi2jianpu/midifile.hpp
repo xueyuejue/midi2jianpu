@@ -94,7 +94,7 @@ struct KeySigPoint {
 struct PedalPoint {
     long tick;
     int channel;
-    bool down;      // CC64 值 >= 64 为踩下，< 64 为抬起
+    int value;      // 原始 CC64 值 0..127；踩下 / 抬起的迟滞判定在 applyControllerSemantics 里做
     int seq;
 };
 struct AllNotesOffPoint {

@@ -2474,6 +2474,58 @@ int main() {
               "时值为 1920 / 120 / 120 / 120（通道 1 与抬踏板后都不补）");
     }
 
+    // ---- 控制器语义：CC64 踏板迟滞（hysteresis）----
+    {
+        std::cout << "\n测试控制器语义：CC64 踏板迟滞\n";
+        // 真实连续踏板包络常在 33..63 之间停留（半踩 / 释放途中）。
+        // 旧实现用二值 value>=64 判定：一旦落到 63 以下就当抬起，
+        // 导致 127→50→0 这种平滑释放在 50 处提前断开，音只延到 50 那一拍。
+        // 迟滞：踩下判 >=64，抬起判 <=32，中间 33..63 保持前态。
+        SmfTrack cond, piano;
+        cond.at(0, ev({0xFF, 0x58, 0x04, 4, 2, 24, 8}));
+        piano.at(0, ev({0xB0, 0x40, 127}));   // 踩下
+        piano.at(480, ev({0xB0, 0x40, 50}));  // 死区：保持踩下
+        piano.at(960, ev({0xB0, 0x40, 0}));   // 真正释放
+        piano.at(0, ev({0x90, 60, 96}));
+        piano.at(120, ev({0x80, 60, 0x40}));  // 键盘只按 1/4 拍
+        auto bytes = buildSmf(2, 480, {cond, piano});
+        MidiData md;
+        loadMidiFromMemory(bytes.data(), bytes.size(), md);
+        check(md.notes.size() == 1, "1 个音符在，实际: " + std::to_string(md.notes.size()));
+        check(md.pedalEvents == 3, "记下 3 个踏板事件，实际: " + std::to_string(md.pedalEvents));
+        check(md.pedalExtendedNotes == 1, "补长 1 个音，实际: " + std::to_string(md.pedalExtendedNotes));
+        check(md.notes[0].durationTicks == 960,
+              "死区不中断：音延到真正释放点 960，实际: " + std::to_string(md.notes[0].durationTicks));
+        check(md.notes[0].rawDurationTicks == 120, "rawDurationTicks 仍是按键 1/4 拍");
+
+        // 死区下方（value<=32）仍是真正的释放：127→20→0 在 20 处断开
+        SmfTrack cond2, piano2;
+        cond2.at(0, ev({0xFF, 0x58, 0x04, 4, 2, 24, 8}));
+        piano2.at(0, ev({0xB0, 0x40, 127}));
+        piano2.at(480, ev({0xB0, 0x40, 20}));
+        piano2.at(960, ev({0xB0, 0x40, 0}));
+        piano2.at(0, ev({0x90, 60, 96}));
+        piano2.at(120, ev({0x80, 60, 0x40}));
+        auto b2 = buildSmf(2, 480, {cond2, piano2});
+        MidiData m2;
+        loadMidiFromMemory(b2.data(), b2.size(), m2);
+        check(m2.notes[0].durationTicks == 480,
+              "value=20 是真正释放（<=32），音延到 480，实际: " + std::to_string(m2.notes[0].durationTicks));
+
+        // 纯 0/127 文件行为不变（零回归）：与旧二值判定完全一致
+        SmfTrack cond3, piano3;
+        cond3.at(0, ev({0xFF, 0x58, 0x04, 4, 2, 24, 8}));
+        piano3.at(0, ev({0xB0, 0x40, 127}));
+        piano3.at(480, ev({0xB0, 0x40, 0}));
+        piano3.at(0, ev({0x90, 60, 96}));
+        piano3.at(120, ev({0x80, 60, 0x40}));
+        auto b3 = buildSmf(2, 480, {cond3, piano3});
+        MidiData m3;
+        loadMidiFromMemory(b3.data(), b3.size(), m3);
+        check(m3.notes[0].durationTicks == 480,
+              "纯 0/127 行为不变，时值仍是 480，实际: " + std::to_string(m3.notes[0].durationTicks));
+    }
+
     // ---- 控制器语义：CC120 / CC123 强制清音 ----
     {
         std::cout << "\n测试控制器语义：All Notes Off\n";
