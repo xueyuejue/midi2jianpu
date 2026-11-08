@@ -90,24 +90,21 @@ static bool parseBeats(const char* s, double& out) {
 static void printTrackList(const m2j::MidiData& data) {
     struct TrackStat {
         int notes = 0;
-        std::map<int, int> chCount;   // 逻辑通道 -> 出现次数
         int lyrics = 0;
     };
     std::map<int, TrackStat> st;
-    for (const auto& n : data.notes) { st[n.track].notes++; st[n.track].chCount[n.channel]++; }
+    for (const auto& n : data.notes) st[n.track].notes++;
     for (const auto& ly : data.midiLyrics)
         if (ly.track >= 0) st[ly.track].lyrics++;
 
-    // 每轨取使用最多的那个逻辑通道，去查它的 GM 乐器名。
+    // 乐器名必须和谱面页眉同源：直接用 partPrograms() 的按轨音色时间轴表。
+    // 旧实现在这里读 channelProgram（只留最后一个 0xC0 音色号），中途换
+    // 乐器的曲子会报「小提琴」而谱面写「钢琴」，用户照诊断选轨反而被误导。
+    const auto progs = m2j::partPrograms(data);
     auto instOf = [&](int track) -> std::string {
-        auto it = st.find(track);
-        if (it == st.end() || it->second.chCount.empty()) return "";
-        int bestCh = it->second.chCount.begin()->first, best = -1;
-        for (auto& c : it->second.chCount)
-            if (c.second > best) { best = c.second; bestCh = c.first; }
-        auto p = data.channelProgram.find(bestCh);
-        if (p == data.channelProgram.end()) return "";
-        return m2j::gmInstrumentName(p->second);
+        auto it = progs.find(track);
+        if (it == progs.end() || it->second < 0) return "";
+        return m2j::gmInstrumentName(it->second);
     };
 
     std::cout << "轨道列表 (format " << data.format << ", 共 " << data.trackCount << " 轨):\n";

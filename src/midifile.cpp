@@ -566,7 +566,17 @@ static void applySysExDrumMode(MidiData& out,
                                if (isDefaultDrum) keptDefault++;
                                return false;
                            }
-                           if (!isDefaultDrum) removedExtra++;
+                           if (!isDefaultDrum) {
+                               removedExtra++;
+                               // GS/XG（SysEx Part Mode 或 Bank MSB 127）把非默认
+                               // 鼓通道切成鼓组时，这些鼓件音在解析阶段没被计进
+                               // drumNotesByTrack（那里只认通道 9 的 note-on），
+                               // 于是 --list-tracks 会把整条鼓轨显示成「旋律 0 音」。
+                               // 这里按轨补记；该字段只被诊断读取，转换输出不碰它。
+                               // 与 removedExtra 一样依赖 remove_if 对每个元素
+                               // 恰好调用一次谓词的标准保证，不会重复累加。
+                               out.drumNotesByTrack[n.track]++;
+                           }
                            return true;
                        }),
         out.notes.end());

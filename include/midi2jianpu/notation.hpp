@@ -360,9 +360,17 @@ std::string tempoSummary(const MidiData& data);
 // Tremolo Strings 等通用音色，所以中文译名只覆盖标准 GM 集，不臆造民族乐器名。
 std::string gmInstrumentName(int prog);
 
+// 每条「含音符」声部轨的代表音色号：按该轨音符最多的逻辑通道，在该轨首音
+// 那一刻用 programAt() 从音色时间轴取值（中途 0xC0 换乐器的曲子取首音乐器，
+// 没有时间轴记录时回退到 channelProgram）。跳过打击乐通道 9，查不到返回 -1。
+// 谱面页眉（listParts）与 --list-tracks 诊断必须共用这一张表，否则两处各算
+// 一套就会分叉：诊断读「最后一个音色」、谱面读「首音音色」，同一条轨给出
+// 两种互相矛盾的乐器名。
+std::map<int, int> partPrograms(const MidiData& data);
+
 // 列出所有「含音符」的声部（跳过打击乐通道 9）。返回 (声部名, 乐器名)，
-// 声部名取轨道名（0x03），没有就回落到「轨 N」；乐器名来自该声部主导通道的
-// 0xC0 音色号，查不到则空串。
+// 声部名取轨道名（0x03），没有就回落到「轨 N」；乐器名来自 partPrograms()，
+// 查不到则空串。
 std::vector<std::pair<std::string, std::string>> listParts(const MidiData& data);
 
 // 页眉用的声部摘要，如 "声部：Vocal·钢琴, Piano·钢琴"；没有可标注的声部时返回空串。

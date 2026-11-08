@@ -1823,6 +1823,41 @@ def main():
     check(phdurs == [960], f"音符时值 960 tick（2 拍），实际 {phdurs}")
     check(phtypes == ["half"], f"MusicXML 记为 half，实际 {phtypes}")
 
+    print("\n[60] --list-tracks 诊断与谱面标注一致性")
+    # 旧实现两处各算一套：乐器名读 channelProgram 末值（谱面读 programAt 首音），
+    # 鼓件音只按默认通道 9 统计（GS/XG 切出来的鼓组漏标）。同一首曲子里，
+    # 诊断说「小提琴 + 旋律 0 音」，谱面却是「钢琴 + 鼓轨」，选轨会被误导。
+    dc = os.path.join(FIXTURES, "diag_consistency.mid")
+    rc, lst, err = run(exe, dc, "--list-tracks")
+    check(rc == 0, "诊断一致性素材解析成功", err[:200])
+    _, score, _ = run(exe, dc)
+    # A) 中途换音色：Lead 前半钢琴(0) / 后半小提琴(40)，诊断必须报首音乐器
+    check("乐器: 钢琴" in lst and "乐器: 小提琴" not in lst,
+          "诊断按首音报「钢琴」，不再读末值报「小提琴」")
+    check("Lead·钢琴" in score,
+          "谱面声部仍是 Lead·钢琴，诊断与谱面同源")
+    # B) XG Part Mode 切出的鼓组：8 个鼓件音按轨补记，标成鼓轨
+    drums_line = next((ln for ln in lst.splitlines() if '"Drums"' in ln), "")
+    check("鼓轨 (跳过 8 鼓件音)" in drums_line,
+          "XG 鼓组轨标成「鼓轨 (跳过 8 鼓件音)」", drums_line)
+    check("旋律 0 音" not in drums_line,
+          "不再把整条鼓轨显示成「旋律 0 音」", drums_line)
+    # C) 纯诊断：不参与转换，也不碰既有谱面
+    check("共提取" not in lst, "只列轨道、不参与转换（无「共提取」行）")
+    check("Melody" in lst and "Lead" in lst, "旋律轨仍照常列出")
+
+    # 既有素材零回归：meter.mid 的鼓轨与乐器名都不受改动影响
+    rc2, lst2, _ = run(exe, os.path.join(FIXTURES, "meter.mid"), "--list-tracks")
+    check(rc2 == 0 and "鼓轨 (跳过 6 鼓件音)" in lst2 and
+          "乐器: 合成人声" in lst2 and "乐器: 钢琴" in lst2,
+          "meter.mid 的鼓轨 / 乐器名逐字不变（零回归）")
+
+    # Bank MSB 127 切出的鼓组同样要标鼓轨（与 SysEx 共用鼓模式时间轴）
+    rc3, lst3, _ = run(exe, os.path.join(FIXTURES, "bank_xg_drum.mid"),
+                       "--list-tracks")
+    check(rc3 == 0 and "鼓轨 (跳过 8 鼓件音)" in lst3,
+          "Bank MSB 127 的 XG 鼓组轨也标成鼓轨", lst3)
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

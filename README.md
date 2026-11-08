@@ -61,7 +61,7 @@
 - [x] `--version` 打印版本号
 - [x] **在线 Demo**：WASM 核心，浏览器内运行 C++ 代码
 - [x] **减时线按拍连通**：一拍内的八分/十六分音符共用一条横线（十六分再叠平行线），而不是每个音各画一小段；和弦的减时线只画在最下面那个音上
-- [x] 581 项单元测试 + 59 组端到端冒烟测试 + 33 组 WASM 产物一致性检查
+- [x] 594 项单元测试 + 60 组端到端冒烟测试 + 33 组 WASM 产物一致性检查
 
 ## 在线 Demo 功能
 
@@ -741,7 +741,7 @@ XG 鼓组通道与中途换音色的通道，新导出 `_midi2jianpu_bank_info`�
 - 调性识别：**Krumhansl-Schmuckler** 算法（音乐信息检索标准）；无调号时再由**宫商角徵羽五声调式**判定校正宫音
 - 和弦检测：按和声窗（半小节 / 附点四分 / 整小节）统计音级频率，匹配 11 种和弦类型，低音决定转位
 - 输出：文本 + 自包含 HTML（内联 CSS）+ MusicXML 3.1
-- 测试：内置断言 581 项单元测试，另有 `tests/smoke.py` 59 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`、声部乐器标注 + 倚音混合素材 `parts.mid`、和弦转位 + 七和弦素材 `chords.mid`、渐快渐慢素材 `tempo_ramp.mid`、长音跨小节素材 `long_tie.mid`、同轨复调素材 `polyphony.mid`、SMPTE 时间基准素材 `smpte.mid`、format 2 独立序列素材 `format2.mid`、复音触后素材 `aftertouch.mid`、同音重触发素材 `retrigger.mid`、轨尾悬挂音素材 `dangling.mid`、双歌词轨素材 `twolyrics.mid`、延音踏板素材 `pedal.mid`、强制清音素材 `allnotesoff.mid`、CC7 主音量素材 `cc7volume.mid`、踏板通道隔离素材 `pedal_channels.mid`、踏板迟滞素材 `pedal_hysteresis.mid`、弯音范围按通道 / 按时间 / 跨轨三份素材 `bendrange_channels.mid` / `bendrange_timeline.mid` / `bendrange_crosstrack.mid`、省略状态字节四份素材 `running_meta.mid` / `running_sysex.mid` / `running_realtime.mid` / `running_standard.mid`、MIDI Port 五份素材 `port_pedal.mid` / `port_bend.mid` / `port_prefix.mid` / `port_prefix_base.mid` / `port_standard.mid`、SysEx 鼓模式 11 份 `sysex_*.mid` 素材、Bank Select 与音色时间轴 9 份 `bank_*.mid` / `program_timeline.mid` 素材、按轨隔离 7 份素材 `track_pedal.mid` / `track_rpn_setup.mid` / `track_conductor.mid` / `track_leak.mid` / `track_leak_base.mid` / `track_empty.mid` / `track_fmt2.mid`）
+- 测试：内置断言 594 项单元测试，另有 `tests/smoke.py` 60 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`、声部乐器标注 + 倚音混合素材 `parts.mid`、和弦转位 + 七和弦素材 `chords.mid`、渐快渐慢素材 `tempo_ramp.mid`、长音跨小节素材 `long_tie.mid`、同轨复调素材 `polyphony.mid`、SMPTE 时间基准素材 `smpte.mid`、format 2 独立序列素材 `format2.mid`、复音触后素材 `aftertouch.mid`、同音重触发素材 `retrigger.mid`、轨尾悬挂音素材 `dangling.mid`、双歌词轨素材 `twolyrics.mid`、延音踏板素材 `pedal.mid`、强制清音素材 `allnotesoff.mid`、CC7 主音量素材 `cc7volume.mid`、踏板通道隔离素材 `pedal_channels.mid`、踏板迟滞素材 `pedal_hysteresis.mid`、诊断一致性素材 `diag_consistency.mid`、弯音范围按通道 / 按时间 / 跨轨三份素材 `bendrange_channels.mid` / `bendrange_timeline.mid` / `bendrange_crosstrack.mid`、省略状态字节四份素材 `running_meta.mid` / `running_sysex.mid` / `running_realtime.mid` / `running_standard.mid`、MIDI Port 五份素材 `port_pedal.mid` / `port_bend.mid` / `port_prefix.mid` / `port_prefix_base.mid` / `port_standard.mid`、SysEx 鼓模式 11 份 `sysex_*.mid` 素材、Bank Select 与音色时间轴 9 份 `bank_*.mid` / `program_timeline.mid` 素材、按轨隔离 7 份素材 `track_pedal.mid` / `track_rpn_setup.mid` / `track_conductor.mid` / `track_leak.mid` / `track_leak_base.mid` / `track_empty.mid` / `track_fmt2.mid`）
 
 ## 路线图
 
@@ -776,6 +776,7 @@ XG 鼓组通道与中途换音色的通道，新导出 `_midi2jianpu_bank_info`�
 - [x] `--track` 全事件表隔离：把按轨过滤下沉到解析层（在踏板 / 力度语义修正之前），`--track N` 只转换第 N 轨音符，且别轨的内置歌词 / CC11 / CC7 / CC64 踏板 / 弯音不再串进选中轨，页眉 `trackLabel` 如实说明；速度 / 拍号 / 调号 / Marker / 鼓组 / 弯音范围等全局音源设定仍保留；网页端新增段落下拉框与 `_midi2jianpu_set_track` / `_midi2jianpu_track_info` 导出；新增 7 份 `track_*.mid` 素材，普通文件三层输出逐字节零回归（v1.34.0）
 - [x] **轨道列表诊断**：新增 `--list-tracks` 纯命令行诊断模式，列清每条轨的序号 / 名称 / 旋律音数 / GM 乐器名 / 歌词字数 / 是否鼓轨，让用户选 `--track N` 前先看清该选哪条；该模式不参与转换、不产生任何谱面，因此完全不改变既有 txt / HTML / MusicXML 输出，三层零回归保持不变（v1.35.0）
 - [x] **CC64 延音踏板迟滞（hysteresis）**：踏板判定从二值 `value >= 64` 改为迟滞——踩下判 `>= 64`、抬起判 `<= 32`、中间 33..63 保持前态。旧实现把任何 63 以下的值都当抬起，导致真实连续踏板包络（半踩 / 释放途中在死区停留）在中间值处提前断开，音符只延到那个中间拍；现在音会正确延到真正的释放点。纯 0/127 文件行为完全不变（零回归），死区下方（`< 32` 的 genuine 低值）仍是真正的释放。新增 7 项内存建 MIDI 单元测试锁死三种情形，另加 `pedal_hysteresis.mid` 素材与 `tests/smoke.py` 第 [59] 组做端到端覆盖；66 份既有 fixture 三层输出逐字节零回归，仅新素材按预期改变（v1.36.0）
+- [x] **`--list-tracks` 诊断与谱面标注一致性**：修掉两处「诊断与真实转换各算一套」的分叉。① 乐器名旧读 `channelProgram`（只留最后一个 0xC0），中途换音色的曲子会报「小提琴」而谱面写「钢琴」；现抽出公共 `partPrograms()`（按轨主导通道 + 首音 tick 查音色时间轴），`listParts()` 与 `printTrackList()` 共用同一张表，从根上杜绝分叉。② GS/XG 用 SysEx Part Mode 或 Bank MSB 127 切出来的鼓组，鼓件音在时间轴删掉时没按轨记进 `drumNotesByTrack`，整条鼓轨被显示成「旋律 0 音」；现于鼓过滤处按轨补记，正确标成「鼓轨 (跳过 N 鼓件音)」，默认鼓通道 9 的旧计数语义不变。新增 `diag_consistency.mid` 素材、13 项单元测试与冒烟第 [60] 组；68 份 fixture 与真实曲目的 txt/html/xml 逐字节零回归，改动只落在纯诊断路径（v1.37.0）
 
 ## 为什么开源
 
@@ -813,7 +814,7 @@ Issue / PR 都欢迎。尤其欢迎：
 提交前请跑一遍：
 
 ```bash
-cd build && ctest --output-on-failure                  # 581 项单元测试
+cd build && ctest --output-on-failure                  # 594 项单元测试
 python tests/smoke.py build/Release/midi2jianpu.exe    # 端到端冒烟（含鼓轨场景）
 node tests/wasm_smoke.mjs                              # WASM 产物与源码是否同步
 ```

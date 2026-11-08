@@ -3351,6 +3351,113 @@ int main() {
         }
     }
 
+    // ---- v1.37.0：--list-tracks 诊断与谱面标注一致性 ----
+    // 旧实现里 listParts() 走 programAt(首音 tick) 时间轴，printTrackList()
+    // 却读 channelProgram（只留最后一个 0xC0）；GS/XG 切出来的鼓组也没按轨
+    // 记进 drumNotesByTrack。两者都会让「选轨前看的诊断」和真实谱面对不上。
+    {
+        std::cout << "\n测试诊断一致性：partPrograms 时间轴 / 鼓件音按轨统计\n";
+        auto load = [](std::vector<SmfTrack> tracks) {
+            const int n = (int)tracks.size();
+            auto bytes = buildSmfFmt(1, n, 480, std::move(tracks));
+            MidiData d;
+            const bool ok = loadMidiFromMemory(bytes.data(), bytes.size(), d);
+            return std::make_pair(ok, std::move(d));
+        };
+        auto tone = [](SmfTrack& t, long tick, int ch, int pitch) {
+            t.at(tick,       ev({0x90 | ch, pitch, 90}));
+            t.at(tick + 120, ev({0x80 | ch, pitch, 0}));
+        };
+
+        // 1) 中途换音色：partPrograms 取首音乐器，channelProgram 留末值。
+        //    诊断与谱面都必须报「钢琴」，不能一个说小提琴一个说钢琴。
+        {
+            SmfTrack cond, lead, mel;
+            cond.at(0, ev({0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20}));
+            lead.at(0, ev({0xFF, 0x03, 0x04, 'L', 'e', 'a', 'd'}));
+            lead.at(0, ev({0xC1, 0}));                 // 钢琴
+            tone(lead, 0, 1, 60); tone(lead, 240, 1, 62);
+            lead.at(960, ev({0xC1, 40}));               // 小提琴
+            tone(lead, 960, 1, 64); tone(lead, 1200, 1, 65);
+            mel.at(0, ev({0xFF, 0x03, 0x06, 'M', 'e', 'l', 'o', 'd', 'y'}));
+            tone(mel, 0, 2, 67);
+            auto r = load({std::move(cond), std::move(lead), std::move(mel)});
+            const MidiData& d = r.second;
+            const auto progs = partPrograms(d);
+            check(r.first && progs.at(1) == 0,
+                  "partPrograms 按首音取钢琴(0)，不是末值小提琴(40)");
+            check(d.channelProgram.at(1) == 40,
+                  "channelProgram 仍保留最后一个音色号（旧字段语义不变）");
+            const auto parts = listParts(d);
+            check(parts.size() == 2 && parts[0].first == "Lead" &&
+                  parts[0].second == "钢琴",
+                  "谱面 Lead 标钢琴，与 partPrograms 同源");
+            check(gmInstrumentName(progs.at(1)) == parts[0].second,
+                  "诊断与谱面共用同一张音色表，不再分叉");
+            check(progs.at(2) == -1 && parts[1].second.empty(),
+                  "没有 0xC0 的轨音色号为 -1，不臆造乐器名");
+        }
+
+        // 2) XG Part Mode 把 ch0 设为鼓组：被删的鼓件音要按轨补记，
+        //    否则 --list-tracks 会把整条鼓轨显示成「旋律 0 音」。
+        {
+            auto sx = [](std::vector<int> payload) {
+                std::vector<uint8_t> v = {0xF0, (uint8_t)payload.size()};
+                for (int b : payload) v.push_back((uint8_t)b);
+                return v;
+            };
+            SmfTrack cond, drums, mel;
+            cond.at(0, ev({0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20}));
+            cond.at(0, sx({0xF0, 0x43, 0x10, 0x4C, 0x08, 0, 0x07, 1, 0xF7}));
+            tone(drums, 0, 0, 36); tone(drums, 240, 0, 38);
+            tone(mel, 0, 1, 60);
+            auto r = load({std::move(cond), std::move(drums), std::move(mel)});
+            const MidiData& d = r.second;
+            check(r.first && d.notes.size() == 1 && d.notes[0].pitch == 60,
+                  "XG 鼓组的鼓件音被删、旋律保留");
+            check(d.drumNotesByTrack.at(1) == 2,
+                  "XG 鼓组的 2 个鼓件音按轨补记进 drumNotesByTrack");
+            check(d.drumNotesByTrack.find(2) == d.drumNotesByTrack.end(),
+                  "旋律轨不被误记鼓件音");
+            const auto xgProgs = partPrograms(d);
+            check(xgProgs.find(1) == xgProgs.end(),
+                  "整条鼓轨不参与声部乐器标注");
+        }
+
+        // 3) Bank MSB 127 切出的鼓组同样按轨补记（与 SysEx 共用时间轴）。
+        {
+            SmfTrack setup, drums, mel;
+            setup.at(0, ev({0xB0, 0x00, 127}));
+            setup.at(0, ev({0xB0, 0x20, 0x00}));
+            setup.at(0, ev({0xC0, 0}));
+            tone(drums, 0, 0, 36); tone(drums, 240, 0, 38);
+            tone(mel, 0, 1, 60);
+            auto r = load({std::move(setup), std::move(drums), std::move(mel)});
+            const MidiData& d = r.second;
+            check(r.first && d.drumNotesByTrack.at(1) == 2,
+                  "XG Bank 鼓组的鼓件音也按轨补记");
+            check(d.drumNotesSkipped == 2,
+                  "drumNotesSkipped 页眉计数不受补记影响");
+        }
+
+        // 4) 默认鼓通道 9 的旧语义零回归：解析阶段照旧按所有轨统计，
+        //    鼓过滤处不重复累加。
+        {
+            SmfTrack cond, drums, mel;
+            cond.at(0, ev({0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20}));
+            tone(drums, 0, 9, 36); tone(drums, 240, 9, 38);
+            tone(mel, 0, 1, 60);
+            auto r = load({std::move(cond), std::move(drums), std::move(mel)});
+            const MidiData& d = r.second;
+            check(r.first && d.drumNotesByTrack.at(1) == 2 &&
+                  d.drumNotesSkipped == 2,
+                  "默认鼓通道 9 仍按轨统计 2 个鼓件音且只计一次");
+            const auto gmProgs = partPrograms(d);
+            check(gmProgs.find(1) == gmProgs.end(),
+                  "默认鼓轨不出现在 partPrograms 里");
+        }
+    }
+
     // ---- v1.34.0：--track / 网页段落选择的按轨隔离 ----
     // 旧实现只在 main.cpp 末尾按 track 丢音符，歌词 / 力度 / 踏板 / 弯音
     // 事件表仍来自全部轨，而且踏板等语义修正在解析阶段就改过时值了。

@@ -2,7 +2,7 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 67 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 68 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
@@ -45,7 +45,9 @@ sysex_gs_reset / sysex_gm_reset / sysex_xg_reset 在 tick 960 发三种 Reset，
 必须零回归；sysex_port_drum 验证鼓模式同样按 FF 21 端口隔离。bank_xg_drum /
 bank_normal / bank_switch_back / bank_conductor / bank_port / bank_reset /
 bank_ch9_plain / bank_no_program / program_timeline 覆盖 CC0/CC32 Bank Select
-与 Program Change 的时间轴。track_pedal / track_rpn_setup / track_conductor /
+与 Program Change 的时间轴。diag_consistency 把中途换音色与 XG 鼓组放进同一首，
+锁住 --list-tracks 诊断的乐器名与鼓轨标记必须和真实谱面一致。
+track_pedal / track_rpn_setup / track_conductor /
 track_leak / track_leak_base / track_empty / track_fmt2 是 --track 按轨隔离的
 回归闸门：踏板、CC11/CC7、歌词、弯音写在别的轨上时不许串进选中轨，而
 RPN、速度、拍号、调号、Marker 这些全局设定仍要按整份文件生效。
@@ -1832,6 +1834,26 @@ def build_program_timeline() -> bytes:
     return _port_smf([_port_conductor(), tl, _sysex_melody(1)])
 
 
+def build_diag_consistency() -> bytes:
+    """--list-tracks 诊断一致性：中途换音色 + XG 鼓组同曲（v1.37.0）。
+
+    Lead 轨 ch1 前半钢琴(prog 0)、后半小提琴(prog 40)：诊断与谱面都必须
+    标「钢琴」，旧实现读 channelProgram 末值会报「小提琴」。
+    XG Part Mode 把 ch0 设成鼓组，Drums 轨 8 个鼓件音必须被标成「鼓轨
+    (跳过 8 鼓件音)」，旧实现漏记按轨鼓件音、只显示「旋律 0 音」。
+    """
+    lead = Track()
+    lead.add(0, meta(0x03, b"Lead"))
+    lead.program(1, 0, 0)
+    for i, p in enumerate([60, 62, 64, 65]):
+        lead.note(1, p, 90, i * (DIV // 2), DIV // 2 - 20)
+    lead.program(1, 40, 4 * DIV)
+    for i, p in enumerate([67, 69, 71, 72]):
+        lead.note(1, p, 90, 4 * DIV + i * (DIV // 2), DIV // 2 - 20)
+    return _port_smf([_sysex_conductor((0, xg_part_mode(0, 1))),
+                      _sysex_drums(0), lead, _sysex_melody(2)])
+
+
 
 # ---- --track / 网页段落选择：按轨隔离的回归素材 ----
 #
@@ -2185,6 +2207,16 @@ def main() -> None:
         ("bank_ch9_plain", build_bank_ch9_plain),
         ("bank_no_program", build_bank_no_program),
         ("program_timeline", build_program_timeline),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # --list-tracks 诊断一致性素材（中途换音色 + XG 鼓组同曲）
+    for name, builder in (
+        ("diag_consistency", build_diag_consistency),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

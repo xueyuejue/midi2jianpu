@@ -242,8 +242,9 @@ struct MidiData {
     // 所以解析阶段就丢弃，这里只留下数量供 CLI 提示用户。
     int drumNotesSkipped = 0;
 
-    // 各轨的鼓件音计数（通道 9 的 note-on，按轨统计）。`--list-tracks` 用它把
-    // 鼓轨在轨道列表里标出来；普通转换不读它，所以这是新增字段、零回归。
+    // 各轨的鼓件音计数，按轨统计：默认鼓通道 9 的 note-on 在解析阶段计入，
+    // GS/XG 用 SysEx / Bank 切出来的非默认鼓通道鼓件音则在鼓过滤时补记。
+    // `--list-tracks` 用它把鼓轨在轨道列表里标出来；普通转换不读它，零回归。
     std::map<int, int> drumNotesByTrack;
 
     // ---- 0xF0 SysEx 里的鼓模式（Roland GS / Yamaha XG）----

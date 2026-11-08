@@ -1332,8 +1332,11 @@ std::string gmInstrumentName(int prog) {
     return std::string(GM_NAMES[prog]);
 }
 
-std::vector<std::pair<std::string, std::string>> listParts(const MidiData& data) {
-    // 统计每条声部轨（跳过打击乐通道 9）的主导通道 -> 音色号
+std::map<int, int> partPrograms(const MidiData& data) {
+    // 统计每条声部轨（跳过打击乐通道 9）的主导通道与首音 tick。
+    // 这张表是谱面页眉与 --list-tracks 诊断唯一的乐器名来源，两边都不能
+    // 再各自去读 channelProgram，否则中途换音色的曲子会出现「诊断说小提琴、
+    // 谱面写钢琴」这种自相矛盾的输出。
     std::map<int, std::map<int, int>> trackChanCount;  // track -> channel -> count
     std::map<int, long> trackFirstTick;                 // track -> 首音 tick
     for (const auto& n : data.notes) {
@@ -1344,23 +1347,31 @@ std::vector<std::pair<std::string, std::string>> listParts(const MidiData& data)
         if (fit == trackFirstTick.end() || n.startTicks < fit->second)
             trackFirstTick[n.track] = n.startTicks;
     }
-    std::vector<std::pair<std::string, std::string>> out;
+    std::map<int, int> out;
     for (auto& [tr, chans] : trackChanCount) {
         if (chans.empty()) continue;
         // 取音符最多的通道作为该声部的代表通道
         int bestCh = chans.begin()->first, bestN = -1;
         for (auto& [ch, c] : chans)
             if (c > bestN) { bestN = c; bestCh = ch; }
+        // 按声部首音那一刻生效的音色取名：一首曲子中途 0xC0 换乐器时，
+        // 前半首不该被标成最后那件乐器。没有时间轴记录时 programAt 会
+        // 自动回退到 channelProgram，普通 GM 文件行为逐字节不变。
+        const long firstTick = trackFirstTick.count(tr) ? trackFirstTick[tr] : 0;
+        out[tr] = programAt(data, bestCh, firstTick);
+    }
+    return out;
+}
+
+std::vector<std::pair<std::string, std::string>> listParts(const MidiData& data) {
+    const auto progs = partPrograms(data);
+    std::vector<std::pair<std::string, std::string>> out;
+    for (const auto& [tr, prg] : progs) {
         std::string name;
         auto it = data.trackNames.find(tr);
         if (it != data.trackNames.end() && !it->second.empty()) name = it->second;
         else name = "轨 " + std::to_string(tr);
-        // 按声部首音那一刻生效的音色取名：一首曲子中途 0xC0 换乐器时，
-        // 前半首不该被标成最后那件乐器。没有时间轴记录时 programAt 会
-        // 自动回退到 channelProgram，普通 GM 文件行为逐字节不变。
         std::string inst;
-        const long firstTick = trackFirstTick.count(tr) ? trackFirstTick[tr] : 0;
-        const int prg = programAt(data, bestCh, firstTick);
         if (prg >= 0) inst = gmInstrumentName(prg);
         out.emplace_back(std::move(name), std::move(inst));
     }
