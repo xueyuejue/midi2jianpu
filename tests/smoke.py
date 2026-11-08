@@ -1858,6 +1858,34 @@ def main():
     check(rc3 == 0 and "鼓轨 (跳过 8 鼓件音)" in lst3,
           "Bank MSB 127 的 XG 鼓组轨也标成鼓轨", lst3)
 
+    print("\n[61] 截断 MIDI：不越过文件末尾读幻影音符与乱码歌词")
+    # MTrk 长度字段写着原值、文件却只下载到一半，轨尾只剩半个 note-on。
+    # 旧实现从 buffer 末尾继续读堆内存：2 音素材冒出 10 个幻影音符，调性
+    # 也被带偏；被截断的 lyric meta 还会冒出 9 个乱码歌词音节。
+    tm = os.path.join(FIXTURES, "truncated.mid")
+    rc, out, err = run(exe, tm)
+    check(rc == 0, "截断文件仍能按可用字节出谱", err[:200])
+    check("共提取 2 个音符" in out, "只读出 2 个真音，不再冒出幻影音符", out[:300])
+    check("文件数据不完整" in out and "丢弃" in out,
+          "CLI 明确提示数据被截断、丢弃了不完整事件")
+    check("MIDI 内置歌词" not in out, "截断的 meta 不产生乱码歌词")
+
+    tmx = os.path.join(tmp, "truncated.xml")
+    rc, _, err = run(exe, tm, "--musicxml", tmx)
+    check(rc == 0, "截断文件导出 MusicXML", err[:200])
+    root_t = ETC.fromstring(open(tmx, encoding="utf-8").read())
+    pitched_t = [n for n in root_t.iter("note") if n.find("rest") is None]
+    check(len(pitched_t) == 2, f"MusicXML 也只有 2 个实音，实际 {len(pitched_t)}")
+
+    tmh = os.path.join(tmp, "truncated.html")
+    rc, _, err = run(exe, tm, "--html", tmh)
+    check(rc == 0, "截断文件导出 HTML", err[:200])
+    html_t = open(tmh, encoding="utf-8").read()
+    check("文件数据不完整" in html_t, "HTML 页眉也写明数据不完整")
+
+    _, normal_out, _ = run(exe, os.path.join(FIXTURES, "sample.mid"))
+    check("文件数据不完整" not in normal_out, "正常文件不出现截断提示（零回归）")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

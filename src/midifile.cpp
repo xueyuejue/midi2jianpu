@@ -775,6 +775,12 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
         const bool keepTrack = (trackFilter < 0 || trackIdx == trackFilter);
         uint32_t trkLen = rd32(d + pos); pos += 4;
         size_t trkEnd = pos + trkLen;
+        // 文件可能在下载 / 拷贝途中被截断，MTrk 的长度字段却仍写着原值。
+        // 解析边界一律夹到 buffer 末尾：越过 d+size 读到的不是 MIDI 数据，
+        // 而是相邻内存，会被当成 delta / 状态字节继续解析，凭空多出幻影
+        // 音符和乱码歌词（探针 trunc_tail.mid 曾读出 10 个音，实际只有 2 个）。
+        const size_t hardEnd = std::min<size_t>(trkEnd, size);
+        if (trkEnd > size) out.truncatedTracks++;
 
         long absTick = 0;
         uint8_t runningStatus = 0;
@@ -791,9 +797,11 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
         // 兜底：不少导出器在系统事件之后仍省略状态字节，严格跳过就整轨报废。
         uint8_t lastChannelStatus = 0;
 
-        while (pos < trkEnd) {
+        while (pos < hardEnd) {
             uint32_t delta = readVarLen(d, size, pos);
             absTick += (long)delta;
+            // VLQ 本身可能一路吃到文件末尾；不挡住的话 b = d[pos] 就越界。
+            if (pos >= hardEnd) { out.truncatedEvents++; break; }
 
             uint8_t b = d[pos];
             uint8_t status;
@@ -824,6 +832,22 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
             // 没有 FF 21 声明的文件逐字节零回归；只有声明了端口的文件才会把
             // 不同端口上复用的通道号拆成彼此独立的乐器。
             const int channel = currentPort * 16 + (int)rawChannel;
+
+            // 读数据字节之前先确认还剩得下。通道消息固定 1~2 字节；
+            // meta / SysEx 的长度写在变长字段里，由各自分支再夹一次。
+            // 不够就停在本轨、保留此前读到的完整事件，绝不越过 hardEnd。
+            size_t need = 0;
+            if (status < 0xF0u) {
+                need = (type == 0xC0u || type == 0xD0u) ? 1u : 2u;
+            } else if (status == 0xFFu || status == 0xF0u || status == 0xF7u) {
+                need = 1;   // meta 至少要有 type，SysEx 至少要有长度字节
+            } else if (status == 0xF1u || status == 0xF3u) {
+                need = 1;
+            } else if (status == 0xF2u) {
+                need = 2;
+            }
+            // 0xF6 Tune Request 与 0xF8-0xFE 系统实时消息没有数据字节。
+            if (pos + need > hardEnd) { out.truncatedEvents++; break; }
 
             if (type == 0x90u || type == 0x80u) {
                 uint8_t note = d[pos++];
@@ -862,12 +886,16 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                     }
                 }
             } else if (status == 0xFFu) {
-                if (pos >= trkEnd) break;
+                if (pos >= hardEnd) break;
                 uint8_t metaType = d[pos++];
                 uint32_t metaLen = readVarLen(d, size, pos);
-                // 越界保护：损坏文件里 meta 长度可能超出轨道范围
-                if (pos + metaLen > trkEnd) {
-                    metaLen = (trkEnd > pos) ? (uint32_t)(trkEnd - pos) : 0;
+                // 越界保护：损坏文件里 meta 长度可能超出轨道范围。
+                // 整份文件已被截断时（trkEnd > size）这条事件本身就是残骸：
+                // 夹紧后把残字节当歌词读会多出乱码音节，直接丢弃并停在本轨。
+                if (pos + metaLen > hardEnd) {
+                    out.truncatedEvents++;
+                    if (trkEnd > size) break;
+                    metaLen = (hardEnd > pos) ? (uint32_t)(hardEnd - pos) : 0;
                 }
                 if (metaType == 0x21u && metaLen >= 1) {  // MIDI Port / Cable Number
                     // 从本条 meta 起，本轨的通道消息都送到这个端口。
@@ -991,9 +1019,13 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                 // 但 GS/XG 的「Use for Rhythm Part / Part Mode」与 GM/GS/XG
                 // Reset 就藏在这些字节里，先看一眼再跳。
                 uint32_t sxLen = readVarLen(d, size, pos);
-                const size_t hardEnd = std::min<size_t>(trkEnd, size);
-                if (pos + sxLen > hardEnd)
+                // hardEnd 已提到轨级（原先只有 SysEx 分支自己夹了一次），
+                // meta / 通道消息现在同样不会越过 buffer 末尾。
+                if (pos + sxLen > hardEnd) {
+                    out.truncatedEvents++;
+                    if (trkEnd > size) break;
                     sxLen = (uint32_t)(hardEnd > pos ? hardEnd - pos : 0);
+                }
                 if (status == 0xF0u && sxLen > 0) {
                     out.sysExEvents++;
                     int sxCh = 0;
@@ -1277,6 +1309,20 @@ std::string trackLabel(const MidiData& data) {
     os << "，该轨以外的歌词 / 力度 / 踏板 / 弯音事件已忽略";
     if (data.trackFilteredNotes > 0)
         os << "（另丢弃 " << data.trackFilteredNotes << " 个音符）";
+    return os.str();
+}
+
+std::string truncationLabel(const MidiData& data) {
+    if (data.truncatedTracks <= 0 && data.truncatedEvents <= 0) return "";
+    std::ostringstream os;
+    os << "文件数据不完整：";
+    if (data.truncatedTracks > 0)
+        os << data.truncatedTracks << " 条轨道在声明结尾前被截断";
+    else
+        os << "轨尾有未写完的事件";
+    os << "，已按实际字节生成谱面";
+    if (data.truncatedEvents > 0)
+        os << "（丢弃 " << data.truncatedEvents << " 个不完整事件）";
     return os.str();
 }
 

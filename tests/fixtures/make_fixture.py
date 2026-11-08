@@ -2,7 +2,7 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 68 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 69 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
@@ -50,7 +50,9 @@ bank_ch9_plain / bank_no_program / program_timeline 覆盖 CC0/CC32 Bank Select
 track_pedal / track_rpn_setup / track_conductor /
 track_leak / track_leak_base / track_empty / track_fmt2 是 --track 按轨隔离的
 回归闸门：踏板、CC11/CC7、歌词、弯音写在别的轨上时不许串进选中轨，而
-RPN、速度、拍号、调号、Marker 这些全局设定仍要按整份文件生效。
+RPN、速度、拍号、调号、Marker 这些全局设定仍要按整份文件生效。truncated 是
+「下载到一半」的损坏文件：MTrk 长度字段仍写着原值，轨尾只剩半个 note-on，
+正确行为是只输出前两个真音并提示数据不完整，不能越过 buffer 末尾读幻影音符。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -1855,6 +1857,27 @@ def build_diag_consistency() -> bytes:
 
 
 
+def build_truncated() -> bytes:
+    """MTrk 声明长度越过文件末尾，轨尾只剩半个 note-on（v1.38.0）。
+
+    旧解析器的通道消息分支直接 d[pos++] 不检查边界，越过文件末尾后会把
+    堆里相邻内存当成 delta / 状态字节继续解析：这份 2 音素材曾读出 10 个
+    幻影音符，调性也被带偏。修复后应只读出 2 个音并提示「文件数据不完整」。
+    """
+    t = Track()
+    t.add(0, meta(0x03, b"Vocal"))
+    t.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t.note(0, 60, 90, 0, DIV)
+    t.note(0, 62, 90, DIV, DIV)
+    blob = bytearray(b"MThd" + struct.pack(">IHHH", 6, 0, 1, DIV) + t.render())
+    # MThd 固定 14 字节，第一轨的 MTrk 长度字段在 offset 18。
+    declared = struct.unpack(">I", bytes(blob[18:22]))[0] + 200
+    blob[18:22] = struct.pack(">I", declared)
+    blob += bytes([0x00, 0x90, 0x3C])   # delta 0 + note-on + 音高，缺 velocity
+    return bytes(blob)
+
+
 # ---- --track / 网页段落选择：按轨隔离的回归素材 ----
 #
 # 旧实现只在 main.cpp 末尾按 track 丢音符，歌词 / CC11 / CC7 / 踏板 / 清音 /
@@ -2217,6 +2240,16 @@ def main() -> None:
     # --list-tracks 诊断一致性素材（中途换音色 + XG 鼓组同曲）
     for name, builder in (
         ("diag_consistency", build_diag_consistency),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # 截断 / 损坏文件：解析必须停在 buffer 末尾，不产生幻影音符
+    for name, builder in (
+        ("truncated", build_truncated),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

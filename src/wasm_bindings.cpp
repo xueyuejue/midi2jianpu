@@ -222,14 +222,17 @@ const char* midi2jianpu_part_info(const uint8_t* midiData, int size) {
     return buf.c_str();
 }
 
-// 文件头读法提示：SMPTE 时间基准 + format 2 独立序列，两段文字用「 ｜ 」拼。
+// 文件头读法提示：截断告警 + SMPTE 时间基准 + format 2 独立序列，用「 ｜ 」拼。
 // 网页版读到 SMPTE 文件时，用户看到的 division 会和常见 PPQ 完全不同，
 // 不说一句「已按 SMPTE 折算」就会被当成解析错误。都没触发时返回空串。
 const char* midi2jianpu_file_header_info(const uint8_t* midiData, int size) {
     static std::string buf;
     m2j::MidiData data;
     if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
-    buf = m2j::timeBaseLabel(data);
+    // 浏览器里喂进来的可能就是下载到一半的 .mid，必须先说明数据不完整。
+    buf = m2j::truncationLabel(data);
+    const std::string tb = m2j::timeBaseLabel(data);
+    if (!tb.empty()) buf += (buf.empty() ? "" : " ｜ ") + tb;
     const std::string fl = m2j::formatLabel(data);
     if (!fl.empty()) buf += (buf.empty() ? "" : " ｜ ") + fl;
     return buf.c_str();

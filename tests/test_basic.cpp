@@ -4,7 +4,8 @@
 //       鼓轨过滤、旋律轨判定、变速（tempo map）换算、内置歌词规整、
 //       拍号 map 与逐小节网格、调号 map（中途转调 / KeyMap）、
 //       五声调式（宫商角徵羽）宫音判定与校正、tempo map 时间轴与 LRC 对齐、
-//       SysEx 里的 GS/XG 鼓模式与 GM/GS/XG Reset、--track 按轨隔离。
+//       SysEx 里的 GS/XG 鼓模式与 GM/GS/XG Reset、--track 按轨隔离、
+//       截断 / 损坏 MIDI 的边界安全。
 #include "midi2jianpu/notation.hpp"
 #include "midi2jianpu/musicxml_writer.hpp"
 
@@ -3581,6 +3582,112 @@ int main() {
                   "format 2 选第 2 段：段数仍是 2、只转换轨 1");
         }
     }
+    // -------------------------------------------------------------------
+    // 截断 / 损坏 MIDI：MTrk 声明长度 > 文件实际字节，或轨尾只剩半个事件。
+    // 旧解析器会越过 d+size 读堆里相邻内存，把垃圾字节当成新事件继续解析，
+    // 一份 2 音素材能读出 10 个幻影音符、9 个乱码歌词音节。
+    // -------------------------------------------------------------------
+    std::cout << "\n测试 MTrk 截断文件的安全解析\n";
+    {
+        auto makeBase = []() {
+            SmfTrack t;
+            t.at(0, ev({0xFF, 0x03, 0x05, 'V','o','c','a','l'}));
+            t.at(0, ev({0x90, 60, 100}));
+            t.at(480, ev({0x80, 60, 0}));
+            t.at(480, ev({0x90, 62, 100}));
+            t.at(960, ev({0x80, 62, 0}));
+            return buildSmf(1, 480, {t});
+        };
+        auto inflate = [](std::vector<uint8_t> b, std::initializer_list<int> tail,
+                          uint32_t extra, int whichTrack = 0) {
+            // MThd 固定 14 字节；第 N 轨的长度字段 = 前一轨终点 + 4。
+            size_t p = 18;
+            if (whichTrack > 0) {
+                const uint32_t first = ((uint32_t)b[18] << 24) |
+                                       ((uint32_t)b[19] << 16) |
+                                       ((uint32_t)b[20] << 8) | (uint32_t)b[21];
+                p = 14 + 8 + first + 4;
+            }
+            const uint32_t len = ((uint32_t)b[p] << 24) | ((uint32_t)b[p+1] << 16) |
+                                 ((uint32_t)b[p+2] << 8) | (uint32_t)b[p+3];
+            const uint32_t big = len + extra;
+            b[p] = (uint8_t)(big >> 24); b[p+1] = (uint8_t)(big >> 16);
+            b[p+2] = (uint8_t)(big >> 8);  b[p+3] = (uint8_t)big;
+            for (int x : tail) b.push_back((uint8_t)x);
+            return b;
+        };
+        auto parse = [](const std::vector<uint8_t>& b) {
+            MidiData d;
+            const bool ok = loadMidiFromMemory(b.data(), b.size(), d);
+            return std::make_pair(ok, std::move(d));
+        };
+
+        {
+            auto r = parse(makeBase());
+            check(r.first && r.second.notes.size() == 2 &&
+                  r.second.truncatedTracks == 0 && r.second.truncatedEvents == 0 &&
+                  truncationLabel(r.second).empty(),
+                  "正常文件：2 个音、无截断计数、无告警");
+        }
+        {
+            auto r = parse(inflate(makeBase(), {0x00, 0x90, 0x3C}, 200));
+            check(r.first && r.second.notes.size() == 2,
+                  "轨尾半个 note-on：只读出 2 个真音，不产生幻影音符");
+            check(r.second.truncatedTracks == 1 && r.second.truncatedEvents >= 1,
+                  "截断计数：1 条轨道越界 + 至少 1 个不完整事件");
+            check(truncationLabel(r.second).find("文件数据不完整") == 0,
+                  "页眉提示「文件数据不完整」");
+            check(r.second.notes.size() == 2 &&
+                  r.second.notes[0].pitch == 60 && r.second.notes[0].durationTicks == 480 &&
+                  r.second.notes[1].pitch == 62,
+                  "截断前的两个音音高 / 时值不受影响");
+        }
+        {
+            // lyric meta 声明 32 字节，实际只剩 3 字节：旧实现读进乱码歌词
+            auto r = parse(inflate(makeBase(), {0x00, 0xFF, 0x05, 0x20, 'a','b','c'}, 200));
+            check(r.first && r.second.notes.size() == 2 && r.second.midiLyrics.empty(),
+                  "被截断的 lyric meta 整条丢弃，不再冒出乱码歌词");
+        }
+        {
+            // SysEx 声明 24 字节，实际只剩 3 字节
+            auto r = parse(inflate(makeBase(), {0x00, 0xF0, 0x18, 0x7E, 0x7F, 0x09}, 200));
+            check(r.first && r.second.notes.size() == 2 && r.second.sysExEvents == 0,
+                  "被截断的 SysEx 整条丢弃，不产生鼓模式误判");
+        }
+        {
+            // 只剩 delta，连状态字节都没有
+            auto r = parse(inflate(makeBase(), {0x00}, 200));
+            check(r.first && r.second.notes.size() == 2 && r.second.truncatedEvents >= 1,
+                  "只剩 delta 的不完整事件停在 buffer 末尾");
+        }
+        {
+            // 1 字节事件（0xC0 program）缺数据字节
+            auto r = parse(inflate(makeBase(), {0x00, 0xC0}, 200));
+            check(r.first && r.second.notes.size() == 2 &&
+                  r.second.programChangeEvents == 0,
+                  "缺 program 号的 0xC0 被丢弃，音色时间轴不受污染");
+        }
+        {
+            // 两轨：只有第二轨的长度声明越过文件末尾
+            SmfTrack a, b2;
+            a.at(0, ev({0x90, 60, 100}));  a.at(480, ev({0x80, 60, 0}));
+            b2.at(0, ev({0x90, 64, 100})); b2.at(480, ev({0x80, 64, 0}));
+            auto r = parse(inflate(buildSmf(2, 480, {a, b2}),
+                                   {0x00, 0x90, 0x3C}, 200, 1));
+            check(r.first && r.second.notes.size() == 2 &&
+                  r.second.truncatedTracks == 1,
+                  "多轨文件：完整轨的音符保留，只有越界轨被截断");
+        }
+        {
+            // 长度字段把残片也算进去了（trkEnd == size），只是这半个事件
+            // 本身缺一个数据字节：记不完整事件，但不误报「整份文件被截断」。
+            auto r = parse(inflate(makeBase(), {0x00, 0x90, 0x3C}, 3));
+            check(r.first && r.second.notes.size() == 2 &&
+                  r.second.truncatedTracks == 0 && r.second.truncatedEvents >= 1,
+                  "长度字段正确时只记不完整事件，不误报轨道越界");
+        }
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

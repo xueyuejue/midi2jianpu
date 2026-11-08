@@ -1252,6 +1252,32 @@ if (existsSync(phPath)) {
     pitched[0] || '');
 }
 
+// ---- 36. 截断 MIDI：网页端同样不能越过 buffer 末尾读幻影音符 ----
+// 浏览器里最容易遇到的就是「下载到一半的 .mid」。旧 WASM 会继续读线性内存
+// 里相邻堆块，2 音素材冒出 10 个音；修复后停在文件末尾并报告数据不完整。
+const truncPath = path.join(FIXTURES, 'truncated.mid');
+if (existsSync(truncPath)) {
+  const tmCaller = makeCaller(mod);
+  tmCaller.setMidi(new Uint8Array(readFileSync(truncPath)));
+  tmCaller.setLyrics('');
+  const tmXml = tmCaller.call('midi2jianpu_musicxml', -1, 1) || '';
+  const tmNotes = [...tmXml.matchAll(/<note\b[\s\S]*?<\/note>/g)]
+    .map((m) => m[0]).filter((b) => !/<rest\b/.test(b));
+  check(tmNotes.length === 2,
+    '截断 MIDI 在网页 WASM 里也只出 2 个实音（旧产物会冒出幻影音符）',
+    tmXml.slice(0, 200));
+  const tmRaw = new Uint8Array(readFileSync(truncPath));
+  const tmPtr = mod._malloc(tmRaw.length);
+  mod.HEAPU8.set(tmRaw, tmPtr);
+  const tmLyric = mod._midi2jianpu_midi_lyric_count(tmPtr, tmRaw.length);
+  mod._free(tmPtr);
+  check(tmLyric === 0, '截断 MIDI 在网页端不冒出乱码歌词音节');
+  withBytes('truncated.mid', (p, n) => {
+    const fh = mod.UTF8ToString(mod._midi2jianpu_file_header_info(p, n));
+    check(/文件数据不完整/.test(fh), 'file_header_info 向网页报告数据被截断', fh);
+  });
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

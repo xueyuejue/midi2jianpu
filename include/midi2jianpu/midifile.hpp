@@ -224,6 +224,13 @@ struct MidiData {
     // 消失；这里按「上一条通道消息的状态」宽容补回，并记下补了几处。
     int runningStatusRecovered = 0;
 
+    // 轨道数据被截断：MTrk 声明的结尾越过文件实际字节（下载不完整、导出器
+    // 写错长度），或轨尾只剩半个事件。解析一律停在 buffer 末尾，绝不越过
+    // d+size 读相邻内存——那会凭空解析出幻影音符与乱码歌词。合法文件里
+    // 这两项恒为 0，既有输出逐字节不变。
+    int truncatedTracks = 0;          // 声明结尾越过文件末尾的轨道数
+    int truncatedEvents = 0;          // 因数据不完整被丢弃的事件数
+
     // SMF 的 FF 21 01 pp（MIDI Port / Cable Number）与 FF 20 01 cc（Channel
     // Prefix）。端口是「(port, channel) 二元组」的一部分：port 0 ch0 和
     // port 1 ch0 是两台设备上的两件乐器，踏板 / 弯音范围 / 力度 / 音色都
@@ -401,6 +408,9 @@ std::string bankLabel(const MidiData& data);
 // 按轨隔离：--track / 网页段落选择实际留下了哪一轨、丢了多少音符。
 // 没有指定轨时返回空串，保证普通文件的页眉逐字节不变。
 std::string trackLabel(const MidiData& data);
+// 损坏 / 截断文件：说明只按实际读到的字节生成谱面，避免用户把缺失的
+// 后半首当成转换器的 bug。正常文件返回空串。
+std::string truncationLabel(const MidiData& data);
 // 返回 channel 在 tick 时刻生效的 GM 音色号；没有时间轴记录时回退
 // channelProgram，两处都没有则返回 -1。
 int programAt(const MidiData& data, int channel, long tick);

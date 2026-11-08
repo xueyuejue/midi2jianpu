@@ -252,6 +252,10 @@ int main(int argc, char** argv) {
     // SMPTE 文件若不说明，用户看到 division=500 会以为解析错了；
     // format 2 若不说明，用户会怀疑「另几段音乐去哪了」。
     {
+        // 损坏 / 截断文件必须明确告知：谱面只按实际读到的字节生成，
+        // 用户才不会以为「后面的小节是转换器漏掉的」。
+        const std::string tn = m2j::truncationLabel(data);
+        if (!tn.empty()) std::cout << tn << "\n";
         const std::string tb = m2j::timeBaseLabel(data);
         if (!tb.empty()) std::cout << tb << "\n";
         const std::string fl = m2j::formatLabel(data);

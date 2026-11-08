@@ -63,7 +63,8 @@
 - [x] `--version` 打印版本号
 - [x] **在线 Demo**：WASM 核心，浏览器内运行 C++ 代码
 - [x] **减时线按拍连通**：一拍内的八分/十六分音符共用一条横线（十六分再叠平行线），而不是每个音各画一小段；和弦的减时线只画在最下面那个音上
-- [x] 594 项单元测试 + 60 组端到端冒烟测试 + 35 组 WASM 产物一致性检查（含产物版本号与源码一致性守护）
+- [x] **损坏 / 截断 MIDI 的安全解析**：`MTrk` 长度字段写着原值、文件却只下载到一半时，不再越过 buffer 末尾把堆里相邻内存当成新事件继续解析（那会凭空冒出幻影音符与乱码歌词）。所有事件统一按 `min(trkEnd, size)` 取硬边界，残缺事件整条丢弃，CLI / HTML / 网页文件面板写明「文件数据不完整」并按可用字节正常出谱；合法文件逐字节零回归
+- [x] 605 项单元测试 + 61 组端到端冒烟测试 + 36 组 WASM 产物一致性检查（含产物版本号与源码一致性守护）
 
 ## 在线 Demo 功能
 
@@ -647,6 +648,32 @@ MIDI 为了省字节允许「省略状态字节」：连续同类事件只写一
 | `running_realtime.mid` | 音符流中插入 `0xF8` 时钟 | 只有 C4 | C4 / D4（且无需补回） |
 | `running_standard.mid` | meta 后规规矩矩重写状态字节 | C4 / D4 | C4 / D4（防回归） |
 
+## 文件被截断时不要读到 buffer 外面
+
+浏览器里最容易碰到的坏文件是「下载到一半的 `.mid`」：`MThd` / `MTrk` 头都在，
+长度字段还写着原值，数据却少了几十字节。旧解析器只在 SysEx 分支用
+`min(trkEnd, size)` 夹过一次，meta 分支只夹到 `trkEnd`（它本身可能已经越过
+文件末尾），通道消息分支更是直接 `d[pos++]` 不检查。于是解析器会越过 buffer
+末尾，把堆里相邻内存当成 delta / 状态字节继续解析下去。
+
+探针里一份只有 2 个音的截断 MIDI 被读出 **10 个幻影音符**，调性从 `1=F` 被
+带偏成 `1=Eb`；另一份被截断的 `0x05` lyric meta 冒出 **9 个乱码歌词音节**，
+还顺带触发了一次「省略状态字节补回」。WASM 里同样会读到线性内存里相邻的堆块。
+
+现在每条轨开头统一取 `hardEnd = min(trkEnd, size)`，内层事件循环、VLQ、固定
+长度通道消息、meta 与 SysEx 全用这一个硬边界：读任何数据字节之前先确认剩余
+长度，不够就**停在本轨、保留此前读完的完整事件**，残片整条丢弃。CLI / HTML
+页眉 / 网页文件面板都会写明「文件数据不完整：N 条轨道在声明结尾前被截断，已按
+实际字节生成谱面（丢弃 M 个不完整事件）」，用户不会把缺失的后半首当成转换器
+漏掉了小节。
+
+| 素材 | 场景 | 旧版 | 现在 |
+| --- | --- | --- | --- |
+| `truncated.mid` | 长度声明 +200，轨尾只剩半个 note-on | 10 个音、调性被带偏 | 2 个音 + 页眉告警 |
+
+合法文件的 `trkEnd` 恒等于可用字节，所有新检查都不会触发：68 份既有素材与真实
+人声曲目的 txt / HTML / MusicXML 逐字节零差异。
+
 ## 端口不是注释：FF 21 与 FF 20
 
 SMF 里 `FF 21 01 pp` 是 **MIDI Port / Cable Number**，指定本轨后续事件送往哪个
@@ -743,7 +770,7 @@ XG 鼓组通道与中途换音色的通道，新导出 `_midi2jianpu_bank_info`�
 - 调性识别：**Krumhansl-Schmuckler** 算法（音乐信息检索标准）；无调号时再由**宫商角徵羽五声调式**判定校正宫音
 - 和弦检测：按和声窗（半小节 / 附点四分 / 整小节）统计音级频率，匹配 11 种和弦类型，低音决定转位
 - 输出：文本 + 自包含 HTML（内联 CSS）+ MusicXML 3.1
-- 测试：内置断言 594 项单元测试，另有 `tests/smoke.py` 60 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`、声部乐器标注 + 倚音混合素材 `parts.mid`、和弦转位 + 七和弦素材 `chords.mid`、渐快渐慢素材 `tempo_ramp.mid`、长音跨小节素材 `long_tie.mid`、同轨复调素材 `polyphony.mid`、SMPTE 时间基准素材 `smpte.mid`、format 2 独立序列素材 `format2.mid`、复音触后素材 `aftertouch.mid`、同音重触发素材 `retrigger.mid`、轨尾悬挂音素材 `dangling.mid`、双歌词轨素材 `twolyrics.mid`、延音踏板素材 `pedal.mid`、强制清音素材 `allnotesoff.mid`、CC7 主音量素材 `cc7volume.mid`、踏板通道隔离素材 `pedal_channels.mid`、踏板迟滞素材 `pedal_hysteresis.mid`、诊断一致性素材 `diag_consistency.mid`、弯音范围按通道 / 按时间 / 跨轨三份素材 `bendrange_channels.mid` / `bendrange_timeline.mid` / `bendrange_crosstrack.mid`、省略状态字节四份素材 `running_meta.mid` / `running_sysex.mid` / `running_realtime.mid` / `running_standard.mid`、MIDI Port 五份素材 `port_pedal.mid` / `port_bend.mid` / `port_prefix.mid` / `port_prefix_base.mid` / `port_standard.mid`、SysEx 鼓模式 11 份 `sysex_*.mid` 素材、Bank Select 与音色时间轴 9 份 `bank_*.mid` / `program_timeline.mid` 素材、按轨隔离 7 份素材 `track_pedal.mid` / `track_rpn_setup.mid` / `track_conductor.mid` / `track_leak.mid` / `track_leak_base.mid` / `track_empty.mid` / `track_fmt2.mid`）
+- 测试：内置断言 605 项单元测试，另有 `tests/smoke.py` 61 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`、声部乐器标注 + 倚音混合素材 `parts.mid`、和弦转位 + 七和弦素材 `chords.mid`、渐快渐慢素材 `tempo_ramp.mid`、长音跨小节素材 `long_tie.mid`、同轨复调素材 `polyphony.mid`、SMPTE 时间基准素材 `smpte.mid`、format 2 独立序列素材 `format2.mid`、复音触后素材 `aftertouch.mid`、同音重触发素材 `retrigger.mid`、轨尾悬挂音素材 `dangling.mid`、双歌词轨素材 `twolyrics.mid`、延音踏板素材 `pedal.mid`、强制清音素材 `allnotesoff.mid`、CC7 主音量素材 `cc7volume.mid`、踏板通道隔离素材 `pedal_channels.mid`、踏板迟滞素材 `pedal_hysteresis.mid`、诊断一致性素材 `diag_consistency.mid`、弯音范围按通道 / 按时间 / 跨轨三份素材 `bendrange_channels.mid` / `bendrange_timeline.mid` / `bendrange_crosstrack.mid`、省略状态字节四份素材 `running_meta.mid` / `running_sysex.mid` / `running_realtime.mid` / `running_standard.mid`、MIDI Port 五份素材 `port_pedal.mid` / `port_bend.mid` / `port_prefix.mid` / `port_prefix_base.mid` / `port_standard.mid`、SysEx 鼓模式 11 份 `sysex_*.mid` 素材、Bank Select 与音色时间轴 9 份 `bank_*.mid` / `program_timeline.mid` 素材、按轨隔离 7 份素材 `track_pedal.mid` / `track_rpn_setup.mid` / `track_conductor.mid` / `track_leak.mid` / `track_leak_base.mid` / `track_empty.mid` / `track_fmt2.mid`、截断文件素材 `truncated.mid`）
 
 ## 路线图
 
@@ -779,6 +806,7 @@ XG 鼓组通道与中途换音色的通道，新导出 `_midi2jianpu_bank_info`�
 - [x] **轨道列表诊断**：新增 `--list-tracks` 纯命令行诊断模式，列清每条轨的序号 / 名称 / 旋律音数 / GM 乐器名 / 歌词字数 / 是否鼓轨，让用户选 `--track N` 前先看清该选哪条；该模式不参与转换、不产生任何谱面，因此完全不改变既有 txt / HTML / MusicXML 输出，三层零回归保持不变（v1.35.0）
 - [x] **CC64 延音踏板迟滞（hysteresis）**：踏板判定从二值 `value >= 64` 改为迟滞——踩下判 `>= 64`、抬起判 `<= 32`、中间 33..63 保持前态。旧实现把任何 63 以下的值都当抬起，导致真实连续踏板包络（半踩 / 释放途中在死区停留）在中间值处提前断开，音符只延到那个中间拍；现在音会正确延到真正的释放点。纯 0/127 文件行为完全不变（零回归），死区下方（`< 32` 的 genuine 低值）仍是真正的释放。新增 7 项内存建 MIDI 单元测试锁死三种情形，另加 `pedal_hysteresis.mid` 素材与 `tests/smoke.py` 第 [59] 组做端到端覆盖；66 份既有 fixture 三层输出逐字节零回归，仅新素材按预期改变（v1.36.0）
 - [x] **`--list-tracks` 诊断与谱面标注一致性**：修掉两处「诊断与真实转换各算一套」的分叉。① 乐器名旧读 `channelProgram`（只留最后一个 0xC0），中途换音色的曲子会报「小提琴」而谱面写「钢琴」；现抽出公共 `partPrograms()`（按轨主导通道 + 首音 tick 查音色时间轴），`listParts()` 与 `printTrackList()` 共用同一张表，从根上杜绝分叉。② GS/XG 用 SysEx Part Mode 或 Bank MSB 127 切出来的鼓组，鼓件音在时间轴删掉时没按轨记进 `drumNotesByTrack`，整条鼓轨被显示成「旋律 0 音」；现于鼓过滤处按轨补记，正确标成「鼓轨 (跳过 N 鼓件音)」，默认鼓通道 9 的旧计数语义不变。新增 `diag_consistency.mid` 素材、13 项单元测试与冒烟第 [60] 组；68 份 fixture 与真实曲目的 txt/html/xml 逐字节零回归，改动只落在纯诊断路径；同版随后用便携 emsdk 把 `docs/wasm/` 产物重编到 1.37.0，网页端至此才真正拿到 v1.35.0 以来的全部修复，并新增 WASM 版本号一致性守护，杜绝「CLI 发版了、网页产物还停在旧版」的静默滞后（v1.37.0）
+- [x] **损坏 / 截断 MIDI 的边界安全**：把 SysEx 分支独有的 `min(trkEnd, size)` 提到轨级，统一管住 VLQ、通道消息、meta 与 SysEx；残缺事件整条丢弃，而不是夹紧后把相邻内存当歌词读，三处页眉写明「文件数据不完整」。新增 `truncated.mid` 素材、11 项单元测试、CLI 冒烟第 [61] 组与 WASM 冒烟第 36 组；2 音截断素材从 10 个幻影音符回落到 2 个真音，68 份既有素材 + 4 组 `--track` + 真实曲目共 73 组输出逐字节零回归（v1.38.0）
 
 ## 为什么开源
 
@@ -816,13 +844,13 @@ Issue / PR 都欢迎。尤其欢迎：
 提交前请跑一遍：
 
 ```bash
-cd build && ctest --output-on-failure                  # 594 项单元测试
+cd build && ctest --output-on-failure                  # 605 项单元测试
 python tests/smoke.py build/Release/midi2jianpu.exe    # 端到端冒烟（含鼓轨场景）
 node tests/wasm_smoke.mjs                              # WASM 产物与源码是否同步（含版本号）
 python tests/check_wasm_exports.py                     # WASM 导出清单五处一致性
 ```
 
-推送后 `.github/workflows/ci.yml` 还会在 Ubuntu 上再跑一遍两个 job：CMake 编译 + 594 项单测 + 60 组 CLI 冒烟 + 68 份素材可复现校验，以及 35 组 WASM 冒烟 + 导出清单守护。`docs/wasm/` 漏重编会让 CI 直接变红。
+推送后 `.github/workflows/ci.yml` 还会在 Ubuntu 上再跑一遍两个 job：CMake 编译 + 605 项单测 + 61 组 CLI 冒烟 + 69 份素材可复现校验，以及 36 组 WASM 冒烟 + 导出清单守护。`docs/wasm/` 漏重编会让 CI 直接变红。
 
 构建细节、记谱对照表、WASM 编译与常见编译问题见 [BUILD.md](./BUILD.md)。
 
