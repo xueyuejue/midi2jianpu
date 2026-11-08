@@ -2,11 +2,12 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 69 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 70 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
 pedal / allnotesoff / cc7volume / pedal_channels / pedal_hysteresis /
+sostenuto /
 bendrange_channels / bendrange_timeline / bendrange_crosstrack /
 running_meta / running_sysex / running_realtime / running_standard /
 port_pedal / port_bend / port_prefix / port_prefix_base / port_standard /
@@ -1857,6 +1858,38 @@ def build_diag_consistency() -> bytes:
 
 
 
+def build_sostenuto() -> bytes:
+    """CC66 持音踏板：只保持踩下那一刻正按着的键（v1.39.0）。
+
+    真钢琴的中踏板（Sostenuto）与右踏板（CC64）语义相反：CC64 是「抬手时
+    踩着就延长」，会把踩下之后新弹的音也留住；CC66 是「踩下时已按着的键
+    被保持」，之后新弹的音照常结束。旧实现把 0xB0 里的 CC66 当普通两字节
+    跳过，和弦音只写 1 拍，谱面缺掉整个持续声部。
+
+    结构：C4/E4/G4 在 tick 0 按下 -> tick 240 踩 CC66 -> tick 480 抬手，
+    同 tick 新弹 D4（tick 960 抬手）-> tick 1920 抬 CC66。
+    预期：三个和弦音 1920 tick（whole），D4 仍是 480 tick（quarter）。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Piano"))
+    for pit in (60, 64, 67):
+        t1.add(0, bytes([0x90, pit, 96]))          # 和弦先按下
+    t1.cc(0, 66, 127, 240)                        # 踩下 Sostenuto
+    for pit in (60, 64, 67):
+        t1.add(480, bytes([0x80, pit, 0x40]))     # 琴键抬手
+    t1.note(0, 62, 96, 480, 480)                  # 之后新弹的音，不该被保持
+    t1.cc(0, 66, 0, 1920)                         # 抬起 Sostenuto
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + t1.render()
+
+
 def build_truncated() -> bytes:
     """MTrk 声明长度越过文件末尾，轨尾只剩半个 note-on（v1.38.0）。
 
@@ -2250,6 +2283,16 @@ def main() -> None:
     # 截断 / 损坏文件：解析必须停在 buffer 末尾，不产生幻影音符
     for name, builder in (
         ("truncated", build_truncated),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # CC66 持音踏板：踩下瞬间正按着的键被保持，之后新弹的音不受影响
+    for name, builder in (
+        ("sostenuto", build_sostenuto),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

@@ -1278,6 +1278,31 @@ if (existsSync(truncPath)) {
   });
 }
 
+
+// ---- 37. v1.39.0 CC66 持音踏板：网页端也要保持踩下瞬间正按着的键 ----
+// 3 个和弦音应延到 1920 tick，踩下之后新弹的 D4 仍是 480 tick。旧 WASM 会把
+// CC66 当普通控制器跳过，四个音全是 480；controller_info 也要向网页说明。
+const sostPath = path.join(FIXTURES, 'sostenuto.mid');
+if (existsSync(sostPath)) {
+  const sostCaller = makeCaller(mod);
+  sostCaller.setMidi(new Uint8Array(readFileSync(sostPath)));
+  sostCaller.setLyrics('');
+  const sostXml = sostCaller.call('midi2jianpu_musicxml', -1, 1) || '';
+  const sostNotes = [...sostXml.matchAll(/<note\b[\s\S]*?<\/note>/g)]
+    .map((m) => m[0]).filter((b) => !/<rest\b/.test(b));
+  const sostDurs = sostNotes
+    .map((b) => (b.match(/<duration>(\d+)<\/duration>/) || [])[1] || '?');
+  check(sostDurs.length === 4 &&
+    sostDurs.filter((d) => d === '1920').length === 3 &&
+    sostDurs.filter((d) => d === '480').length === 1,
+    'CC66 在网页 WASM 里保持 3 个和弦音（1920），新弹的音仍是 480',
+    sostDurs.join(','));
+  withBytes('sostenuto.mid', (p, n) => {
+    const ci = mod.UTF8ToString(mod._midi2jianpu_controller_info(p, n));
+    check(/持音踏板/.test(ci), 'controller_info 向网页报告持音踏板', ci);
+  });
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

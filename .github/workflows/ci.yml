@@ -1,9 +1,11 @@
 name: 构建与回归测试
 
-# 客户端可以忘了跑测试，这里在服务端把三层都兜住：
-#   C++ 单测 / CLI 端到端冒烟 / WASM 产物一致性。
+# 客户端可以忘了跑测试，这里在服务端把四层都兜住：
+#   C++ 单测 / CLI 端到端冒烟 / WASM 产物一致性 / 源码与产物的同步。
 # 尤其 wasm_smoke 第 34 组会比对 docs/wasm 页脚版本与 version.hpp：
 # 升过版本号却忘了重编 wasm，CI 会直接红（v1.35~v1.37 曾连续三版漏重编）。
+# check_wasm_sync.py 再补一层纯 git 检查：改了 src/ 却连版本号都没升、也没
+# 重编时，页脚仍「一致」，只有它能拦住这类静默滞后。
 # 本机没有 Linux 编译器时，至少可以在本地跑对应命令自查，见 BUILD.md。
 on:
   push:
@@ -28,19 +30,19 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 2
 
-      - name: 单元测试（605 项）
+      - name: 单元测试（625 项）
         working-directory: build
         run: ctest --output-on-failure
 
       - name: 素材生成器可复现
-        # 全量重生成 69 份 .mid 后不得有字节差异，也不得多出未跟踪素材。
+        # 全量重生成 70 份 .mid 后不得有字节差异，也不得多出未跟踪素材。
         # 只比二进制素材：.lrc 是文本，交给 git 的行尾归一化处理。
         run: |
           python3 tests/fixtures/make_fixture.py > /dev/null
           git diff --exit-code -- 'tests/fixtures/*.mid'
           test -z "$(git status --porcelain --untracked-files=all -- tests/fixtures/)"
 
-      - name: CLI 端到端冒烟（61 组）
+      - name: CLI 端到端冒烟（62 组）
         run: python3 tests/smoke.py build/midi2jianpu
 
   wasm:
@@ -48,6 +50,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 同步守护要 diff 到 push 前的 base commit，浅克隆会拿不到。
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -55,10 +60,17 @@ jobs:
         with:
           python-version: '3.x'
 
+      - name: WASM 产物同步（源码变更必须重编）
+        # 第 34 组只比版本号：改了 src/ 却不升版本、也不重编 wasm 时会静默
+        # 放过。这一步纯 git 比对本次变更文件，不编译、不加载 wasm。
+        run: |
+          python3 tests/check_wasm_sync.py --self-test
+          python3 tests/check_wasm_sync.py
+
       - name: WASM 导出清单一致性
         # 校验 build_wasm.cmd / CMakeLists.txt / wasm_bindings.cpp / 网页 / 冒烟
         # 五处导出符号没有漂移，不编译、不加载 wasm。
         run: python3 tests/check_wasm_exports.py
 
-      - name: WASM 产物冒烟（36 组，含版本号守护）
+      - name: WASM 产物冒烟（37 组，含版本号守护）
         run: node tests/wasm_smoke.mjs

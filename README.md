@@ -52,7 +52,7 @@
 - [x] **SMPTE 时间基准**：MV / 视频配乐导出的 MIDI 常用 `division` 高字节为负的 SMPTE 记法（`0xE728` = 25 fps × 40 tick）。旧版把它当无符号 PPQ 读成 **59176**，一首 16 拍的曲子被压进 1 小节、还被拆成 3 个假声部。现在识别帧率与每帧 tick 数，按曲首速度折算成「每拍多少 tick」（本例 `500 tick/拍`），并把 SMPTE 下无意义的中途 `set_tempo` 归一掉（否则秒数与歌词会被二次缩放）；CLI / HTML 页眉 / 网页文件面板都写明「时间基准 SMPTE 25 fps × 40 tick → 500 tick/拍」
 - [x] **format 2 独立序列**：format 2 的每条轨是**各自独立的曲子**（pattern），不是同一首的各声部。旧版把它们并到同一条时间轴：两段各 4 小节的音乐互相错位，同拍音被判成和弦。现在只转文件顺序里第一条含音符的轨，按轨 / 通道一并过滤轨名、歌词、力度、弯音、音色，页眉说明「共 N 段，只转换轨 K」；要别的段落用 `--track` 指定（从 0 起）
 - [x] **事件流对齐与音符配对**：解析器过去对「文件写法不标准」太乐观，四个坑都是静默出错。`0xA0` 复音触后是 3 字节事件（状态 + 音高 + 压力），旧版落到兜底分支只跳 1 字节，遇到第一个就与事件流错位——一条 16 个音的轨最后报「未提取到音符」；同一个键还没抬手又按下（重复触键、转录软件常见）时旧版直接覆盖，前一个音凭空消失；轨结束时还按着没抬手的悬挂音被整条丢掉（少掉的音甚至把 C 大调带偏成 F / D 小调、还多判一个「弱起 3 拍」）；0x05 歌词分散在多轨时（两段词各一轨）按 tick 合并成一行，得到「春夜来风雨声花落」这种交错乱码。现在分别修成：按 2 字节跳过触后、重触发先收尾再起音、轨尾补收悬挂音、歌词只取音节最多的那条轨并说明忽略了另一条
-- [x] **控制器语义**：`0xB0` 分支过去只认 CC11（表情）与 RPN，其余控制器一律「跳过两个字节」。但有三类控制器直接决定谱面：**CC64 延音踏板**（钢琴导出里琴键只按 1/4 拍，真正的音响由踏板决定，旧版写出 `1= 3= 5= 0 - - -`）、**CC120 / CC123 强制清音**（某些导出器拿它代替 note-off，旧版把悬挂音补成横跨全曲的幽灵长音，还拆出假声部）、**CC7 主音量**（与 CC11 同为渐强渐弱来源，只认 CC11 会整段丢掉力度记号）。现在收集三类事件、所有轨读完后统一后处理：踏板补时值到「抬起 / 同键重按」较早者并按通道隔离，清音截到正确 tick，CC7 并入力度表（同 tick 同通道让位给 CC11）；CLI / HTML 页眉 / 网页文件面板都写明改了什么
+- [x] **控制器语义**：`0xB0` 分支过去只认 CC11（表情）与 RPN，其余控制器一律「跳过两个字节」。但有四类控制器直接决定谱面：**CC64 延音踏板**（钢琴导出里琴键只按 1/4 拍，真正的音响由踏板决定，旧版写出 `1= 3= 5= 0 - - -`）、**CC120 / CC123 强制清音**（某些导出器拿它代替 note-off，旧版把悬挂音补成横跨全曲的幽灵长音，还拆出假声部）、**CC7 主音量**（与 CC11 同为渐强渐弱来源，只认 CC11 会整段丢掉力度记号）。现在收集四类事件、所有轨读完后统一后处理：踏板补时值到「抬起 / 同键重按」较早者并按通道隔离，清音截到正确 tick，CC7 并入力度表（同 tick 同通道让位给 CC11）；CLI / HTML 页眉 / 网页文件面板都写明改了什么；另支持 **CC66 持音踏板（Sostenuto）**：只保持踩下那一刻正按着的键，之后新弹的音不受影响，与 CC64「抬手时踩着就延长」的判定方向正好相反，两者共用一套迟滞配对、各算各的作用规则
 - [x] **HTML 谱面导出**：自包含网页，浏览器打开即可打印 PDF，含和弦标记、小节号、和弦竖向叠写；小节号/力度/速度独占标记行，和弦则挂在它管的那个音符正上方（标记行是从左往右排的，写在那里会被别的标记顶偏），三层互不侵入
 - [x] **MusicXML 导出**：`--musicxml out.xml`，符合 3.1 规范（整数 `duration`、`<chord/>`、`<tie>` 跨小节延音、正确 `<fifths>`/`<clef>`/速度标记、和弦 `<harmony>` 含 `<root>`/`<kind>`/`<bass>`）；配合 `--lyrics` 还会写出 `<lyric>`（syllabic begin/middle/end）与一字多音的 `<slur>`，导进 MuseScore 有词可看、和弦符号也能显示
 - [x] **歌词写入**：`--lyrics lyrics.lrc` 支持 LRC 格式，按时间戳精确对齐；一行词跨多小节、旋律音数多于字数（一字多音）时按行内音数铺开，不会全挤在第一小节，并在这些音上方画出连音线弧线
@@ -64,7 +64,7 @@
 - [x] **在线 Demo**：WASM 核心，浏览器内运行 C++ 代码
 - [x] **减时线按拍连通**：一拍内的八分/十六分音符共用一条横线（十六分再叠平行线），而不是每个音各画一小段；和弦的减时线只画在最下面那个音上
 - [x] **损坏 / 截断 MIDI 的安全解析**：`MTrk` 长度字段写着原值、文件却只下载到一半时，不再越过 buffer 末尾把堆里相邻内存当成新事件继续解析（那会凭空冒出幻影音符与乱码歌词）。所有事件统一按 `min(trkEnd, size)` 取硬边界，残缺事件整条丢弃，CLI / HTML / 网页文件面板写明「文件数据不完整」并按可用字节正常出谱；合法文件逐字节零回归
-- [x] 605 项单元测试 + 61 组端到端冒烟测试 + 36 组 WASM 产物一致性检查（含产物版本号与源码一致性守护）
+- [x] 625 项单元测试 + 62 组端到端冒烟测试 + 37 组 WASM 产物一致性检查（含产物版本号、源码一致性与「改了源码必须重编」的纯 git 守护）
 
 ## 在线 Demo 功能
 
@@ -542,7 +542,7 @@ CLI 只报一句「未提取到音符」——看起来像文件坏了，其实�
 ## 控制器不是可以跳过的字节
 
 事件流对齐之后，`0xB0`（控制器）分支还有一层假设：除了 CC11 表情和 RPN，
-其余控制器都只是「读过两个字节然后丢掉」。但其中三类直接决定谱面长什么样，
+其余控制器都只是「读过两个字节然后丢掉」。但其中四类直接决定谱面长什么样，
 而且旧版全都不会报错。
 
 **CC64 延音踏板：抬手不等于消音。** 钢琴 MIDI 里非常常见的写法是 DAW 把
@@ -562,6 +562,16 @@ note-off 紧贴 note-on 导出（每个键只按 1/4 拍），真正的音响长
 再处理轨 1 的过去事件。`rawDurationTicks` 故意不改，它是量化前的按键时长，
 断奏 / 倚音判据靠它——踏板带来的共鸣不是按键时长，写回去会把整首判成连奏。
 
+**CC66 持音踏板：只保持踩下那一刻正按着的键。** 真钢琴的中踏板（Sostenuto）
+与右踏板语义相反：CC64 看「抬手时踏板是否踩着」，会把踩下之后新弹的音也留住；
+CC66 看「踩下时这个键是否已经按着」，之后新弹的键照常在 note-off 结束。所以
+两种踏板**不能合并成一条时间轴**。`buildPedalRanges()` 让它们共用同一套迟滞
+配对（踩下 `>= 64`、抬起 `<= 32`、中间值保持前态），但作用到音符时各走各的
+判据，最后取更晚的终点；同键重击与强制清音对两者一视同仁。`sostenuto.mid`
+里 C4 / E4 / G4 在 tick 0 按下、tick 240 踩下 CC66、tick 480 抬手、tick 1920
+抬起，同 tick 480 新弹一个 D4：三个和弦音写全音符（1920 tick），D4 仍是四分
+音符（480 tick）。旧实现把 CC66 当普通两字节跳过，和弦只剩一拍。
+
 **CC120 / CC123 强制清音。** 有些导出器不写 note-off，改用 All Notes Off 收尾。
 旧版不认这个控制器，于是那个音被「轨尾悬挂音补收」逻辑一路补到曲末，
 横跨整首曲子，还会因为与其他声部重叠被 `splitVoices` 拆成假声部：
@@ -579,14 +589,15 @@ note-off 紧贴 note-on 导出（每个键只按 1/4 拍），真正的音响长
 
 | 输出 | 说明 |
 | --- | --- |
-| CLI | 转换前打印 `延音踏板：补长 6 个音（2 个踏板事件）` / `强制清音：截尾 1 个音` / `CC7 主音量：补入 8 个力度点` |
+| CLI | 转换前打印 `延音踏板：补长 6 个音（2 个踏板事件）` / `持音踏板：保持 3 个音（2 个事件）` / `强制清音：截尾 1 个音` / `CC7 主音量：补入 8 个力度点` |
 | HTML | 页眉元信息行追加同一段文字 |
 | 网页版 | 文件面板用新导出 `_midi2jianpu_controller_info` 取同一段文字 |
 
-四个素材分别锁住这三条：`pedal.mid`（踩到全曲第 8 拍，第 4 拍同键重按，
+五个素材分别锁住这四条：`pedal.mid`（踩到全曲第 8 拍，第 4 拍同键重按，
 用来验证「重按截断」）、`allnotesoff.mid`、`cc7volume.mid`、
 `pedal_channels.mid`（通道 0 踩 / 通道 1 不踩，并含一个「抬踏板之后才松键」
-的音）。最后一素材刻意稀疏，冒烟测试用 `--no-pickup` 固定网格，
+的音）、`sostenuto.mid`（CC66 只保持踩下瞬间正按着的三个和弦音）。最后一份
+踏板通道隔离素材刻意稀疏，冒烟测试用 `--no-pickup` 固定网格，
 只检查四个音各自的时值 `1920 / 120 / 120 / 120`。
 
 | 素材 | 旧版 | 现在 |
@@ -770,7 +781,7 @@ XG 鼓组通道与中途换音色的通道，新导出 `_midi2jianpu_bank_info`�
 - 调性识别：**Krumhansl-Schmuckler** 算法（音乐信息检索标准）；无调号时再由**宫商角徵羽五声调式**判定校正宫音
 - 和弦检测：按和声窗（半小节 / 附点四分 / 整小节）统计音级频率，匹配 11 种和弦类型，低音决定转位
 - 输出：文本 + 自包含 HTML（内联 CSS）+ MusicXML 3.1
-- 测试：内置断言 605 项单元测试，另有 `tests/smoke.py` 61 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`、声部乐器标注 + 倚音混合素材 `parts.mid`、和弦转位 + 七和弦素材 `chords.mid`、渐快渐慢素材 `tempo_ramp.mid`、长音跨小节素材 `long_tie.mid`、同轨复调素材 `polyphony.mid`、SMPTE 时间基准素材 `smpte.mid`、format 2 独立序列素材 `format2.mid`、复音触后素材 `aftertouch.mid`、同音重触发素材 `retrigger.mid`、轨尾悬挂音素材 `dangling.mid`、双歌词轨素材 `twolyrics.mid`、延音踏板素材 `pedal.mid`、强制清音素材 `allnotesoff.mid`、CC7 主音量素材 `cc7volume.mid`、踏板通道隔离素材 `pedal_channels.mid`、踏板迟滞素材 `pedal_hysteresis.mid`、诊断一致性素材 `diag_consistency.mid`、弯音范围按通道 / 按时间 / 跨轨三份素材 `bendrange_channels.mid` / `bendrange_timeline.mid` / `bendrange_crosstrack.mid`、省略状态字节四份素材 `running_meta.mid` / `running_sysex.mid` / `running_realtime.mid` / `running_standard.mid`、MIDI Port 五份素材 `port_pedal.mid` / `port_bend.mid` / `port_prefix.mid` / `port_prefix_base.mid` / `port_standard.mid`、SysEx 鼓模式 11 份 `sysex_*.mid` 素材、Bank Select 与音色时间轴 9 份 `bank_*.mid` / `program_timeline.mid` 素材、按轨隔离 7 份素材 `track_pedal.mid` / `track_rpn_setup.mid` / `track_conductor.mid` / `track_leak.mid` / `track_leak_base.mid` / `track_empty.mid` / `track_fmt2.mid`、截断文件素材 `truncated.mid`）
+- 测试：内置断言 625 项单元测试，另有 `tests/smoke.py` 62 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`、声部乐器标注 + 倚音混合素材 `parts.mid`、和弦转位 + 七和弦素材 `chords.mid`、渐快渐慢素材 `tempo_ramp.mid`、长音跨小节素材 `long_tie.mid`、同轨复调素材 `polyphony.mid`、SMPTE 时间基准素材 `smpte.mid`、format 2 独立序列素材 `format2.mid`、复音触后素材 `aftertouch.mid`、同音重触发素材 `retrigger.mid`、轨尾悬挂音素材 `dangling.mid`、双歌词轨素材 `twolyrics.mid`、延音踏板素材 `pedal.mid`、强制清音素材 `allnotesoff.mid`、CC7 主音量素材 `cc7volume.mid`、踏板通道隔离素材 `pedal_channels.mid`、踏板迟滞素材 `pedal_hysteresis.mid`、持音踏板素材 `sostenuto.mid`、诊断一致性素材 `diag_consistency.mid`、弯音范围按通道 / 按时间 / 跨轨三份素材 `bendrange_channels.mid` / `bendrange_timeline.mid` / `bendrange_crosstrack.mid`、省略状态字节四份素材 `running_meta.mid` / `running_sysex.mid` / `running_realtime.mid` / `running_standard.mid`、MIDI Port 五份素材 `port_pedal.mid` / `port_bend.mid` / `port_prefix.mid` / `port_prefix_base.mid` / `port_standard.mid`、SysEx 鼓模式 11 份 `sysex_*.mid` 素材、Bank Select 与音色时间轴 9 份 `bank_*.mid` / `program_timeline.mid` 素材、按轨隔离 7 份素材 `track_pedal.mid` / `track_rpn_setup.mid` / `track_conductor.mid` / `track_leak.mid` / `track_leak_base.mid` / `track_empty.mid` / `track_fmt2.mid`、截断文件素材 `truncated.mid`）
 
 ## 路线图
 
@@ -807,6 +818,7 @@ XG 鼓组通道与中途换音色的通道，新导出 `_midi2jianpu_bank_info`�
 - [x] **CC64 延音踏板迟滞（hysteresis）**：踏板判定从二值 `value >= 64` 改为迟滞——踩下判 `>= 64`、抬起判 `<= 32`、中间 33..63 保持前态。旧实现把任何 63 以下的值都当抬起，导致真实连续踏板包络（半踩 / 释放途中在死区停留）在中间值处提前断开，音符只延到那个中间拍；现在音会正确延到真正的释放点。纯 0/127 文件行为完全不变（零回归），死区下方（`< 32` 的 genuine 低值）仍是真正的释放。新增 7 项内存建 MIDI 单元测试锁死三种情形，另加 `pedal_hysteresis.mid` 素材与 `tests/smoke.py` 第 [59] 组做端到端覆盖；66 份既有 fixture 三层输出逐字节零回归，仅新素材按预期改变（v1.36.0）
 - [x] **`--list-tracks` 诊断与谱面标注一致性**：修掉两处「诊断与真实转换各算一套」的分叉。① 乐器名旧读 `channelProgram`（只留最后一个 0xC0），中途换音色的曲子会报「小提琴」而谱面写「钢琴」；现抽出公共 `partPrograms()`（按轨主导通道 + 首音 tick 查音色时间轴），`listParts()` 与 `printTrackList()` 共用同一张表，从根上杜绝分叉。② GS/XG 用 SysEx Part Mode 或 Bank MSB 127 切出来的鼓组，鼓件音在时间轴删掉时没按轨记进 `drumNotesByTrack`，整条鼓轨被显示成「旋律 0 音」；现于鼓过滤处按轨补记，正确标成「鼓轨 (跳过 N 鼓件音)」，默认鼓通道 9 的旧计数语义不变。新增 `diag_consistency.mid` 素材、13 项单元测试与冒烟第 [60] 组；68 份 fixture 与真实曲目的 txt/html/xml 逐字节零回归，改动只落在纯诊断路径；同版随后用便携 emsdk 把 `docs/wasm/` 产物重编到 1.37.0，网页端至此才真正拿到 v1.35.0 以来的全部修复，并新增 WASM 版本号一致性守护，杜绝「CLI 发版了、网页产物还停在旧版」的静默滞后（v1.37.0）
 - [x] **损坏 / 截断 MIDI 的边界安全**：把 SysEx 分支独有的 `min(trkEnd, size)` 提到轨级，统一管住 VLQ、通道消息、meta 与 SysEx；残缺事件整条丢弃，而不是夹紧后把相邻内存当歌词读，三处页眉写明「文件数据不完整」。新增 `truncated.mid` 素材、11 项单元测试、CLI 冒烟第 [61] 组与 WASM 冒烟第 36 组；2 音截断素材从 10 个幻影音符回落到 2 个真音，68 份既有素材 + 4 组 `--track` + 真实曲目共 73 组输出逐字节零回归（v1.38.0）
+- [x] **CC66 持音踏板（Sostenuto）+ 发布链路的产物同步守护**：① 解析层新增 CC66 事件表，与 CC64 共用 `buildPedalRanges()` 迟滞配对，但按「踩下瞬间该键是否正按着」判定，只保持这三个和弦音、不碰之后新弹的音；两条时间轴取更晚终点，同键重击 / 强制清音 / 通道隔离 / `--track` 按轨门控 / 未抬踏板收束全部覆盖，页眉 `controllerLabel()` 一处改动即同步 CLI、HTML 与网页文件面板。② 新增 `tests/check_wasm_sync.py`：纯 git 比对本次变更文件，堵住「改了源码但既不升版本也不重编 wasm」的漏检，CI `wasm` job 加 `--self-test` 与实跑两步，`actions/checkout` 改为 `fetch-depth: 0`。新增 `sostenuto.mid` 素材、20 项单元测试、CLI 冒烟第 [62] 组与 WASM 冒烟第 37 组；69 份既有素材 + 4 组 `--track` + 真实曲目逐字节零回归（v1.39.0）
 
 ## 为什么开源
 
@@ -844,13 +856,16 @@ Issue / PR 都欢迎。尤其欢迎：
 提交前请跑一遍：
 
 ```bash
-cd build && ctest --output-on-failure                  # 605 项单元测试
+cd build && ctest --output-on-failure                  # 625 项单元测试
 python tests/smoke.py build/Release/midi2jianpu.exe    # 端到端冒烟（含鼓轨场景）
 node tests/wasm_smoke.mjs                              # WASM 产物与源码是否同步（含版本号）
 python tests/check_wasm_exports.py                     # WASM 导出清单五处一致性
+python tests/check_wasm_sync.py --self-test             # WASM 产物同步守护自测
 ```
 
-推送后 `.github/workflows/ci.yml` 还会在 Ubuntu 上再跑一遍两个 job：CMake 编译 + 605 项单测 + 61 组 CLI 冒烟 + 69 份素材可复现校验，以及 36 组 WASM 冒烟 + 导出清单守护。`docs/wasm/` 漏重编会让 CI 直接变红。
+推送后 `.github/workflows/ci.yml` 还会在 Ubuntu 上再跑一遍两个 job：CMake 编译 + 625 项单测 + 62 组 CLI 冒烟 + 70 份素材可复现校验，以及 37 组 WASM 冒烟 + 导出清单守护 + 产物同步守护。`docs/wasm/` 漏重编会让 CI 直接变红。
+
+产物同步守护是纯 git 检查（`tests/check_wasm_sync.py`）：`wasm_smoke.mjs` 第 34 组只比对 `version.hpp` 与 wasm 页脚版本，若有人**改了 `src/` 却不升版本、也不重编**，页脚仍然「一致」，那道守护会静默放过。同步守护直接看本次提交动了哪些文件：`src/**`、`include/**`、`cmake/**`、`CMakeLists.txt`、`build/build_wasm.cmd` 里只要有一个变更，`docs/wasm/midi2jianpu.wasm` 就必须一起变；胶水层 `.js` 单独变也不行。只改测试 / 文档 / CI 配置不要求重编。
 
 构建细节、记谱对照表、WASM 编译与常见编译问题见 [BUILD.md](./BUILD.md)。
 

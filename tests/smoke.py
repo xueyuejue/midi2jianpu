@@ -1886,6 +1886,37 @@ def main():
     _, normal_out, _ = run(exe, os.path.join(FIXTURES, "sample.mid"))
     check("文件数据不完整" not in normal_out, "正常文件不出现截断提示（零回归）")
 
+    print("\n[62] CC66 持音踏板：只保持踩下瞬间正按着的键")
+    # 真钢琴中踏板：踩下时正按着的 C/E/G 延到抬起，之后新弹的 D4 不受影响。
+    # 旧实现把 0xB0 里的 CC66 当普通两字节跳过，和弦只写 1 拍。
+    so = os.path.join(FIXTURES, "sostenuto.mid")
+    rc, out, err = run(exe, so)
+    check(rc == 0, "持音踏板文件解析成功", err[:200])
+    check("持音踏板：保持 3 个音（2 个事件）" in out,
+          "CLI 报出保持 3 个音 / 2 个 CC66 事件")
+    check("延音踏板" not in out, "纯 CC66 文件不误报 CC64 延音踏板")
+
+    sox = os.path.join(tmp, "sostenuto.xml")
+    rc, _, err = run(exe, so, "--musicxml", sox)
+    check(rc == 0, "持音踏板导出 MusicXML", err[:200])
+    root_so = ETC.fromstring(open(sox, encoding="utf-8").read())
+    pitched_so = [n for n in root_so.iter("note") if n.find("rest") is None]
+    so_durs = sorted(int(n.findtext("duration")) for n in pitched_so)
+    so_types = [n.findtext("type") for n in pitched_so]
+    check(so_durs == [480, 1920, 1920, 1920],
+          f"3 个和弦音 1920 tick、新弹的音 480 tick，实际 {so_durs}")
+    check(so_types.count("whole") == 3 and so_types.count("quarter") == 1,
+          f"MusicXML 记为 3 个 whole + 1 个 quarter，实际 {so_types}")
+
+    soh = os.path.join(tmp, "sostenuto.html")
+    rc, _, err = run(exe, so, "--html", soh)
+    check(rc == 0, "持音踏板导出 HTML", err[:200])
+    html_so = open(soh, encoding="utf-8").read()
+    check("持音踏板" in html_so, "HTML 页眉写明持音踏板")
+
+    _, ph_out, _ = run(exe, os.path.join(FIXTURES, "pedal_hysteresis.mid"))
+    check("持音踏板" not in ph_out, "CC64 素材不误报持音踏板（零回归）")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

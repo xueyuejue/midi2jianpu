@@ -50,7 +50,7 @@ Emscripten 的 sanity 检查误判配置变化，清掉 sysroot 缓存并重编�
 
 ## 测试
 
-### 单元测试（605 项）
+### 单元测试（625 项）
 
 ```bash
 cd build && ctest --output-on-failure
@@ -58,16 +58,16 @@ cd build && ctest --output-on-failure
 ./build/test_basic
 ```
 
-成功时输出 `共 605 项，失败 0 项 -> 全部通过`。
+成功时输出 `共 625 项，失败 0 项 -> 全部通过`。
 
-覆盖范围：调性识别、各调八度基准、升降号书写（含降号调）、时值后缀、三连音、同音合并、和弦检测、移调、MusicXML 小节时长与 `<chord/>`，以及二十组解析层回归——**鼓轨过滤**、**旋律轨判定**、**变速 tempo map 秒数换算**、**弱起小节网格**、**歌词分配与一字多音区间**、**MIDI 内置歌词规整与精确对齐**、**拍号 map 与逐小节网格**、**调号 map（中途转调 / KeyMap）**、**五声调式宫音判定**、**TempoTimeline 与 LRC 变速对齐（tick/秒往返、乱序去重、offset、多时间戳、旧签名对照）**、**ExpressionMap 演奏表情（力度六档 / 渐变 / 断奏 / 重音 / 滑音 / 颤音 / 段落 / 通道隔离 / 开关 / 节奏混合时不误判）与解析层 velocity、原始时值、多轨事件排序**、**GM 音色名（英文全名 / 中文译名覆盖）、`0xC0` 解析（通道 → GM 音色号）、声部乐器标注 `listParts` / `partSummary`、倚音检测与通道隔离、无 0xC0 / 等间隔流零标注回归**、**和弦转位（低音非根音才写斜杠 / 和弦外音不写）、`Bm7b5` 与 `G7sus4` 的类型扩充、`ChordMark` 的结构化字段（rootPc / kind / kindText / bassPc）**、**速度曲线折叠（`tempoMarksOf`：渐变 / 阶跃 / 抖动退化 / 5% 跨度阈值 / 一拍聚簇阈值 / 曲首独立阶跃 / 页眉文案）**、**长音跨小节（6 拍 / 10 拍时值不被截断、延音段写成 `-` 而非休止符、复调轨 4 拍和弦不被门限放大、断奏轨门限还原仍生效）**、**同轨复调（`splitVoices`：同拍同值算和弦 / 同拍不同值拆声部 / 重叠拆声部 / 超上限退化并截短 / 倚音 skip）、复调 MusicXML 的 `<backup>` 与逐小节时值守恒、单声部零 `<backup>` 回归**、**RPN 弯音范围（按通道隔离 / 中途改范围不倒灌 / 跨轨设定 / CC38 音分微调 / 同 tick 后写覆盖 / 非法值兜底 / 提示文案）**、**running status 生命周期（歌词 meta / SysEx / System Common 之后取消、0xF8 与 0xFE 实时消息不改变、省略状态字节按最后一条通道状态补回、补回 CC 的两字节数据、通道归属不变、规范写法零回归、提示文案）**、**MIDI Port / Channel Prefix（端口隔离踏板 / 弯音范围 / RPN 状态表、端口不跨轨继承、同轨中途改端口、FF 20 不重定向通道消息、端口 255 逻辑通道不越界、鼓轨按低 4 位、GM 音色与 CC11 归逻辑通道、无端口声明零回归、提示文案）**、**SysEx 鼓模式（GS/XG 把任意 part 设为鼓 / mode=0 普通乐器对照 / 三种 Reset 按时间撤销 / 末轨 SysEx / 通道 10 改回钢琴 / 无关 SysEx 零回归 / 同 tick 后写覆盖 / 端口隔离 / 提示文案）**、**Bank Select 与音色时间轴（CC0=127 指定 XG 鼓组 / 普通音色库对照 / CC0 改回 0 后恢复旋律 / 末轨 setup / GM Reset 撤销 / 端口隔离 / 缺 0xC0 不切鼓 / 通道 10 普通音色设定不改回旋律 / programAt 按 tick 取音色 / channelProgram 兼容回退 / 普通 GM 文件无提示）`、`--track` 全事件表隔离（默认不隔离 / 选中轨只留该轨音符 / 别轨歌词·CC11·CC7·CC64 踏板·弯音不串入 / 别轨踏板不给选中轨补长时值 / 全局速度·拍号·调号·Marker·RPN 弯音仍保留 / 空轨与越界报错 / format 2 选段 / 提示文案）**（都在内存里现构造最小 SMF，不依赖 fixture 文件）。
+覆盖范围：调性识别、各调八度基准、升降号书写（含降号调）、时值后缀、三连音、同音合并、和弦检测、移调、MusicXML 小节时长与 `<chord/>`，以及二十组解析层回归——**鼓轨过滤**、**旋律轨判定**、**变速 tempo map 秒数换算**、**弱起小节网格**、**歌词分配与一字多音区间**、**MIDI 内置歌词规整与精确对齐**、**拍号 map 与逐小节网格**、**调号 map（中途转调 / KeyMap）**、**五声调式宫音判定**、**TempoTimeline 与 LRC 变速对齐（tick/秒往返、乱序去重、offset、多时间戳、旧签名对照）**、**ExpressionMap 演奏表情（力度六档 / 渐变 / 断奏 / 重音 / 滑音 / 颤音 / 段落 / 通道隔离 / 开关 / 节奏混合时不误判）与解析层 velocity、原始时值、多轨事件排序**、**GM 音色名（英文全名 / 中文译名覆盖）、`0xC0` 解析（通道 → GM 音色号）、声部乐器标注 `listParts` / `partSummary`、倚音检测与通道隔离、无 0xC0 / 等间隔流零标注回归**、**和弦转位（低音非根音才写斜杠 / 和弦外音不写）、`Bm7b5` 与 `G7sus4` 的类型扩充、`ChordMark` 的结构化字段（rootPc / kind / kindText / bassPc）**、**速度曲线折叠（`tempoMarksOf`：渐变 / 阶跃 / 抖动退化 / 5% 跨度阈值 / 一拍聚簇阈值 / 曲首独立阶跃 / 页眉文案）**、**长音跨小节（6 拍 / 10 拍时值不被截断、延音段写成 `-` 而非休止符、复调轨 4 拍和弦不被门限放大、断奏轨门限还原仍生效）**、**同轨复调（`splitVoices`：同拍同值算和弦 / 同拍不同值拆声部 / 重叠拆声部 / 超上限退化并截短 / 倚音 skip）、复调 MusicXML 的 `<backup>` 与逐小节时值守恒、单声部零 `<backup>` 回归**、**RPN 弯音范围（按通道隔离 / 中途改范围不倒灌 / 跨轨设定 / CC38 音分微调 / 同 tick 后写覆盖 / 非法值兜底 / 提示文案）**、**running status 生命周期（歌词 meta / SysEx / System Common 之后取消、0xF8 与 0xFE 实时消息不改变、省略状态字节按最后一条通道状态补回、补回 CC 的两字节数据、通道归属不变、规范写法零回归、提示文案）**、**MIDI Port / Channel Prefix（端口隔离踏板 / 弯音范围 / RPN 状态表、端口不跨轨继承、同轨中途改端口、FF 20 不重定向通道消息、端口 255 逻辑通道不越界、鼓轨按低 4 位、GM 音色与 CC11 归逻辑通道、无端口声明零回归、提示文案）**、**SysEx 鼓模式（GS/XG 把任意 part 设为鼓 / mode=0 普通乐器对照 / 三种 Reset 按时间撤销 / 末轨 SysEx / 通道 10 改回钢琴 / 无关 SysEx 零回归 / 同 tick 后写覆盖 / 端口隔离 / 提示文案）**、**Bank Select 与音色时间轴（CC0=127 指定 XG 鼓组 / 普通音色库对照 / CC0 改回 0 后恢复旋律 / 末轨 setup / GM Reset 撤销 / 端口隔离 / 缺 0xC0 不切鼓 / 通道 10 普通音色设定不改回旋律 / programAt 按 tick 取音色 / channelProgram 兼容回退 / 普通 GM 文件无提示）`、`--track` 全事件表隔离（默认不隔离 / 选中轨只留该轨音符 / 别轨歌词·CC11·CC7·CC64 踏板·弯音不串入 / 别轨踏板不给选中轨补长时值 / 全局速度·拍号·调号·Marker·RPN 弯音仍保留 / 空轨与越界报错 / format 2 选段 / 提示文案）**、**CC66 持音踏板（只保持踩下瞬间正按着的键 / 与 CC64 叠加 / 迟滞死区 / 通道隔离 / 同键重击 / 强制清音 / 未抬踏板收束 / --track 隔离 / 诊断文案）**（都在内存里现构造最小 SMF，不依赖 fixture 文件）。
 
 ### 冒烟测试（端到端，验证 README 承诺的每个参数）
 
 需要 Python 3（只用标准库）：
 
 ```bash
-python tests/fixtures/make_fixture.py     # 生成 69 份 .mid 素材（含 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony / smpte / format2 / aftertouch / retrigger / dangling / twolyrics / pedal / allnotesoff / cc7volume / pedal_channels / pedal_hysteresis / bendrange_channels / bendrange_timeline / bendrange_crosstrack / running_meta / running_sysex / running_realtime / running_standard / port_pedal / port_bend / port_prefix / port_prefix_base / port_standard / sysex_gs_drum / sysex_xg_drum / sysex_gs_normal / sysex_gs_reset / sysex_gm_reset / sysex_xg_reset / sysex_conductor / sysex_ch9_normal / sysex_ch9_drum / sysex_unknown / sysex_port_drum / bank_xg_drum / bank_normal / bank_switch_back / bank_conductor / bank_port / bank_reset / bank_ch9_plain / bank_no_program / program_timeline / diag_consistency / track_pedal / track_rpn_setup / track_conductor / track_leak / track_leak_base / track_empty / track_fmt2 / truncated）+ 3 份变速 LRC
+python tests/fixtures/make_fixture.py     # 生成 70 份 .mid 素材（含 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony / smpte / format2 / aftertouch / retrigger / dangling / twolyrics / pedal / allnotesoff / cc7volume / pedal_channels / pedal_hysteresis / bendrange_channels / bendrange_timeline / bendrange_crosstrack / running_meta / running_sysex / running_realtime / running_standard / port_pedal / port_bend / port_prefix / port_prefix_base / port_standard / sysex_gs_drum / sysex_xg_drum / sysex_gs_normal / sysex_gs_reset / sysex_gm_reset / sysex_xg_reset / sysex_conductor / sysex_ch9_normal / sysex_ch9_drum / sysex_unknown / sysex_port_drum / bank_xg_drum / bank_normal / bank_switch_back / bank_conductor / bank_port / bank_reset / bank_ch9_plain / bank_no_program / program_timeline / diag_consistency / track_pedal / track_rpn_setup / track_conductor / track_leak / track_leak_base / track_empty / track_fmt2 / truncated / sostenuto）+ 3 份变速 LRC
 python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2jianpu.exe
 ```
 
@@ -175,7 +175,7 @@ node tests/wasm_smoke.mjs build-wasm/midi2jianpu.js        # 或测新编的
 
 需要 Node 18+。它走的是 `docs/index.html` 里 `callWasm()` 的同一条调用路径，
 逐项检查网页每个按钮背后的导出符号是否存在、返回内容是否合法、坏数据会不会崩。
-共 36 组，其中第 34 组直接比对 `version.hpp` 的 `M2J_VERSION` 与 WASM 生成的页脚版本号，第 35 组用 `pedal_hysteresis.mid` 校验网页端也带上了 CC64 迟滞修复，第 36 组用 `truncated.mid` 校验网页端遇到下载到一半的 MIDI 不会冒出幻影音符、且文件面板会报告数据被截断。
+共 37 组，其中第 34 组直接比对 `version.hpp` 的 `M2J_VERSION` 与 WASM 生成的页脚版本号，第 35 组用 `pedal_hysteresis.mid` 校验网页端也带上了 CC64 迟滞修复，第 36 组用 `truncated.mid` 校验网页端遇到下载到一半的 MIDI 不会冒出幻影音符、且文件面板会报告数据被截断，第 37 组用 `sostenuto.mid` 校验网页端 CC66 只保持三个和弦音、`controller_info` 也会说明。
 
 **这个测试的存在理由**：仓库曾出现「源码加了 `_midi2jianpu_musicxml`，但
 `docs/wasm/` 里还是旧产物」的静默回归——CLI 测试全绿，网页按钮点了没反应。
@@ -197,17 +197,34 @@ python3 tests/check_wasm_exports.py
 「谁独有、谁缺了」并返回非 0。实测能拦住 cmd 单侧改名、源码新增导出漏登记、
 网页 / 冒烟调用了未导出符号这几类问题。
 
+### WASM 产物同步守护（改了源码必须重编）
+
+```bash
+python3 tests/check_wasm_sync.py --self-test     # 12 组纯逻辑自测
+python3 tests/check_wasm_sync.py                 # 自动推 base..head 实跑
+python3 tests/check_wasm_sync.py --base HEAD~3 --head HEAD
+python3 tests/check_wasm_sync.py --changed src/midifile.cpp    # 本地演示「漏重编」
+```
+
+第 34 组的版本号比对有一个盲区：**改了 `src/` 却不升版本、也不重编 wasm**，
+页脚版本与源码仍然一致，守护会静默放过。本脚本退到更下一层，纯 git 比对本次
+变更文件：`src/**`、`include/**`、`cmake/**`、`CMakeLists.txt`、
+`build/build_wasm.cmd` 任一变更都要求 `docs/wasm/midi2jianpu.wasm` 同时变更；
+胶水层 `.js` 变了也要求 `.wasm` 一起变。只改测试 / 文档 / CI 配置不要求重编，
+宁可多重编一次也不要网页端静默滞后。CI 里 `actions/checkout` 必须带
+`fetch-depth: 0`，否则 base commit 不在本地，脚本会明确报错而不是假装通过。
+
 ### GitHub Actions CI
 
 `.github/workflows/ci.yml` 在 `push` / `pull_request` / 手动触发时跑两个 Ubuntu job：
 
 | job | 步骤 |
 | --- | --- |
-| `cpp` | CMake 编译 CLI 与单测 → `ctest`（605 项）→ 全量重生成 69 份 `.mid` 并要求零 diff、无未跟踪素材 → `smoke.py` 61 组 |
-| `wasm` | `check_wasm_exports.py` → `wasm_smoke.mjs` 36 组（含产物版本号与 `version.hpp` 比对） |
+| `cpp` | CMake 编译 CLI 与单测 → `ctest`（625 项）→ 全量重生成 70 份 `.mid` 并要求零 diff、无未跟踪素材 → `smoke.py` 62 组 |
+| `wasm` | `check_wasm_sync.py --self-test` + 实跑 → `check_wasm_exports.py` → `wasm_smoke.mjs` 37 组（含产物版本号与 `version.hpp` 比对） |
 
 客户端可以忘了跑测试，这里在服务端兜底；**升过版本号却忘了重编 `docs/wasm/`，
-`wasm` job 会直接红**。两个 job 只依赖 runner 预装的 cmake / g++ / python 和
+第 34 组会红；连版本号都没升、只改了源码却没重编，产物同步守护会红**。两个 job 只依赖 runner 预装的 cmake / g++ / python 和
 `setup-node` 提供的 Node 22，不需要 emsdk——CI 不重编 wasm，只校验提交的产物。
 本地自查直接跑上面几条命令；Windows 上编 CLI 用 `build\build_local.cmd`。
 
@@ -401,7 +418,7 @@ _midi2jianpu_result_len     结果长度
 _midi2jianpu_copy_result    拷出结果
 _midi2jianpu_part_info      声部 / 乐器构成（文件面板提示，返回 char*）
 _midi2jianpu_file_header_info   SMPTE 时间基准 / format 2 独立序列（char*）
-_midi2jianpu_controller_info    踏板 / 清音 / CC7 改了什么（char*）
+_midi2jianpu_controller_info    延音 / 持音踏板 / 清音 / CC7 改了什么（char*）
 _midi2jianpu_bend_range_info    RPN 弯音范围按通道与时间的设定（char*）
 _midi2jianpu_running_status_info  省略状态字节补回了几处（char*）
 _midi2jianpu_port_info          MIDI Port / Channel Prefix 的端口隔离说明（char*）

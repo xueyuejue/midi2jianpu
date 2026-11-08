@@ -3688,6 +3688,185 @@ int main() {
         }
     }
 
+    // -------------------------------------------------------------------
+    // CC66 持音踏板（Sostenuto）：只保持踩下那一刻正按着的键。
+    // 与 CC64 的判定方向相反，绝不能把两种踏板合并进一条时间轴。
+    // -------------------------------------------------------------------
+    std::cout << "\n测试控制器语义：CC66 持音踏板\n";
+    {
+        auto durOf = [](const MidiData& d, int pitch) -> long {
+            for (const auto& n : d.notes)
+                if (n.pitch == pitch) return n.durationTicks;
+            return -1;
+        };
+        auto load = [](const std::vector<uint8_t>& bytes, int filter = -1) {
+            MidiData d;
+            bool ok = loadMidiFromMemory(bytes.data(), bytes.size(), d, false, filter);
+            return std::make_pair(ok, d);
+        };
+        auto chord = [](bool sost, bool sustain, int rel1, int rel2) {
+            SmfTrack t;
+            t.at(0, ev({0xFF, 0x58, 0x04, 4, 2, 24, 8}));
+            for (int p : {60, 64, 67}) t.at(0, ev({0x90, p, 96}));
+            if (sost) t.at(240, ev({0xB0, 0x42, 127}));
+            for (int p : {60, 64, 67}) t.at(480, ev({0x80, p, 0x40}));
+            t.at(480, ev({0x90, 62, 96}));       // 踩下之后才弹的音
+            t.at(960, ev({0x80, 62, 0x40}));
+            if (sustain) {
+                t.at(600, ev({0xB0, 0x40, 127}));
+                t.at(rel2, ev({0xB0, 0x40, 0}));
+            }
+            if (sost) t.at(rel1, ev({0xB0, 0x42, 0}));
+            return t;
+        };
+
+        // 1) 基本语义：3 个和弦音被保持到 1920，之后新弹的 D4 仍是 480
+        {
+            auto b = buildSmf(1, 480, {chord(true, false, 1920, 1920)});
+            auto r = load(b);
+            const MidiData& d = r.second;
+            check(r.first && d.notes.size() == 4, "CC66 基本样本读出 4 个音");
+            check(d.sostenutoEvents == 2, "记下 2 个 CC66 事件");
+            check(d.sostenutoExtendedNotes == 3, "持音踏板保持 3 个音");
+            check(d.pedalEvents == 0 && d.pedalExtendedNotes == 0,
+                  "纯 CC66 文件不误算成 CC64 延音踏板");
+            check(durOf(d, 60) == 1920 && durOf(d, 64) == 1920 &&
+                  durOf(d, 67) == 1920, "踩下时正按着的和弦延到抬起 tick 1920");
+            check(durOf(d, 62) == 480, "踩下之后新弹的 D4 仍是 480（不被保持）");
+            for (const auto& n : d.notes)
+                if (n.pitch == 60)
+                    check(n.rawDurationTicks == 480, "rawDurationTicks 仍是按键时长 480");
+            check(controllerLabel(d).find("持音踏板") == 0,
+                  "页眉诊断写明「持音踏板：保持 3 个音」");
+        }
+
+        // 2) 没有 CC66 的同一份文件：四个音全是 480（零回归）
+        {
+            auto b = buildSmf(1, 480, {chord(false, false, 1920, 1920)});
+            auto r = load(b);
+            check(r.second.sostenutoEvents == 0 &&
+                  r.second.sostenutoExtendedNotes == 0 &&
+                  durOf(r.second, 60) == 480 && durOf(r.second, 62) == 480 &&
+                  durOf(r.second, 64) == 480 && durOf(r.second, 67) == 480,
+                  "无 CC66 的对照样本时值逐字节不变");
+        }
+
+        // 3) CC66 与 CC64 同曲叠加：一个只用持音、一个只用延音
+        {
+            auto b = buildSmf(1, 480, {chord(true, true, 1920, 1920)});
+            auto r = load(b);
+            const MidiData& d = r.second;
+            check(d.sostenutoExtendedNotes == 3 && d.pedalExtendedNotes == 1,
+                  "两种踏板各自统计：持音 3 个、延音 1 个");
+            check(durOf(d, 60) == 1920 && durOf(d, 62) == 1440,
+                  "和弦由 CC66 延到 1920，D4 由 CC64 从 480 延到 1920（1440）");
+            check(controllerLabel(d).find("持音踏板") != std::string::npos &&
+                  controllerLabel(d).find("延音踏板") != std::string::npos,
+                  "页眉同时报出两种踏板");
+        }
+
+        // 4) 迟滞：127→50→0 的 50 落在死区，音延到真正的 960 释放点
+        {
+            SmfTrack t;
+            t.at(0, ev({0xB0, 0x42, 127}));
+            t.at(480, ev({0xB0, 0x42, 50}));
+            t.at(960, ev({0xB0, 0x42, 0}));
+            t.at(0, ev({0x90, 60, 96}));
+            t.at(120, ev({0x80, 60, 0x40}));
+            auto b = buildSmf(1, 480, {t});
+            auto r = load(b);
+            check(r.second.notes.size() == 1 && r.second.notes[0].durationTicks == 960,
+                  "CC66 也走迟滞：死区 50 不提前抬起，延到 960");
+        }
+        {
+            SmfTrack t;
+            t.at(0, ev({0xB0, 0x42, 127}));
+            t.at(480, ev({0xB0, 0x42, 20}));
+            t.at(960, ev({0xB0, 0x42, 0}));
+            t.at(0, ev({0x90, 60, 96}));
+            t.at(120, ev({0x80, 60, 0x40}));
+            auto b = buildSmf(1, 480, {t});
+            auto r = load(b);
+            check(r.second.notes.size() == 1 && r.second.notes[0].durationTicks == 480,
+                  "CC66 死区下方的 20 仍是真正的抬起（延到 480）");
+        }
+
+        // 5) 通道隔离：ch0 踩 CC66，ch1 的音不能被保持
+        {
+            SmfTrack t;
+            t.at(0, ev({0x90, 60, 96}));   t.at(120, ev({0x80, 60, 0x40}));
+            t.at(0, ev({0x91, 64, 96}));   t.at(120, ev({0x81, 64, 0x40}));
+            t.at(60, ev({0xB0, 0x42, 127}));
+            t.at(960, ev({0xB0, 0x42, 0}));
+            auto b = buildSmf(1, 480, {t});
+            auto r = load(b);
+            check(durOf(r.second, 60) == 960 && durOf(r.second, 64) == 120,
+                  "CC66 按逻辑通道隔离：ch0 保持、ch1 不变");
+        }
+
+        // 6) 同键重新击打：被保持的音也要在重击处断开
+        {
+            SmfTrack t;
+            t.at(0, ev({0x90, 60, 96}));   t.at(120, ev({0x80, 60, 0x40}));
+            t.at(60, ev({0xB0, 0x42, 127}));
+            t.at(960, ev({0x90, 60, 96})); t.at(1080, ev({0x80, 60, 0x40}));
+            t.at(1920, ev({0xB0, 0x42, 0}));
+            auto b = buildSmf(1, 480, {t});
+            auto r = load(b);
+            check(r.second.notes.size() == 2 &&
+                  r.second.notes[0].durationTicks == 960 &&
+                  r.second.notes[1].durationTicks == 120,
+                  "同键重击把 CC66 保持音截到重击点");
+        }
+
+        // 7) 强制清音 CC123：优先于踏板，把保持音截到清音点
+        {
+            SmfTrack t;
+            t.at(0, ev({0x90, 60, 96}));   t.at(120, ev({0x80, 60, 0x40}));
+            t.at(60, ev({0xB0, 0x42, 127}));
+            t.at(960, ev({0xB0, 0x7B, 0}));
+            t.at(1920, ev({0xB0, 0x42, 0}));
+            auto b = buildSmf(1, 480, {t});
+            auto r = load(b);
+            check(r.second.notes.size() == 1 &&
+                  r.second.notes[0].durationTicks == 960 &&
+                  r.second.allNotesOffEvents == 1,
+                  "CC123 把 CC66 保持音截到清音点");
+        }
+
+        // 8) 到曲尾都没抬踏板：用最后一个音符的结尾收束，不无限拖长
+        {
+            SmfTrack t;
+            t.at(0, ev({0x90, 60, 96}));   t.at(120, ev({0x80, 60, 0x40}));
+            t.at(60, ev({0xB0, 0x42, 127}));
+            t.at(960, ev({0x90, 64, 96})); t.at(1440, ev({0x80, 64, 0x40}));
+            auto b = buildSmf(1, 480, {t});
+            auto r = load(b);
+            check(durOf(r.second, 60) == 1440 && durOf(r.second, 64) == 480,
+                  "未抬起的 CC66 用 maxTick 1440 收束");
+        }
+
+        // 9) 写在别轨的 CC66 仍然按全文件时间轴生效；--track 0 则隔离掉
+        {
+            std::vector<SmfTrack> v(2);
+            v[0].at(0, ev({0x90, 60, 96}));
+            v[0].at(120, ev({0x80, 60, 0x40}));
+            v[1].at(60, ev({0xB0, 0x42, 127}));
+            v[1].at(1920, ev({0xB0, 0x42, 0}));
+            auto b = buildSmf(2, 480, v);
+            auto full = load(b, -1);
+            auto only = load(b, 0);
+            check(full.second.sostenutoExtendedNotes == 1 &&
+                  full.second.notes[0].durationTicks == 1920,
+                  "别轨的 CC66 按全文件时间轴生效");
+            check(only.second.sostenutoEvents == 0 &&
+                  only.second.sostenutoExtendedNotes == 0 &&
+                  only.second.notes.size() == 1 &&
+                  only.second.notes[0].durationTicks == 120,
+                  "--track 0 隔离掉别轨的 CC66，不补长选中轨");
+        }
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

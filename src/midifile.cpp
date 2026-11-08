@@ -205,17 +205,59 @@ static void resolveBendRanges(MidiData& out) {
     }
 }
 
-// 控制器语义不能「跳过去就算了」。0xB0 里有三件事直接决定谱面：
-//   CC64 踏板：琴键抬手不等于消音，音要响到踏板抬起或同键重新击打；
+// 把 CC64 / CC66 这类「踩下 - 抬起」踏板事件按 (tick, 文件顺序) 配成每通道的
+// [踩下, 抬起) 区间。迟滞（hysteresis）：踩下判 value >= 64，抬起判 <= 32，
+// 中间 33..63 保持前态；真实的连续踏板包络不会在半踩处提前断开。
+// 两种踏板共用这一份实现，判定方式才不会哪天悄悄分叉——它们的差别只在
+// 「区间怎么作用到音符」，不在「区间怎么算出来」。
+using PedalRangeMap = std::map<int, std::vector<std::pair<long, long>>>;
+static PedalRangeMap buildPedalRanges(const std::vector<PedalPoint>& src,
+                                      const std::set<int>& liveChannels,
+                                      long maxTick) {
+    std::vector<PedalPoint> ps;
+    for (const auto& p : src) if (liveChannels.count(p.channel)) ps.push_back(p);
+    std::stable_sort(ps.begin(), ps.end(),
+                     [](const PedalPoint& a, const PedalPoint& b) {
+                         if (a.tick != b.tick) return a.tick < b.tick;
+                         return a.seq < b.seq;
+                     });
+    PedalRangeMap ranges;
+    std::map<int, bool> isDown;
+    std::map<int, long> onTick;
+    for (const auto& p : ps) {
+        if (p.value >= 64) {
+            if (!isDown[p.channel]) { isDown[p.channel] = true; onTick[p.channel] = p.tick; }
+        } else if (p.value <= 32) {
+            if (isDown[p.channel]) {
+                // 同 tick 的 127→0→127 是「重新踩踏板」，零长区间直接丢掉。
+                if (p.tick > onTick[p.channel])
+                    ranges[p.channel].push_back({onTick[p.channel], p.tick});
+                isDown[p.channel] = false;
+            }
+        }
+    }
+    for (const auto& kv : isDown) {
+        // 到曲尾都没抬踏板：用最后一个音符的结尾收束，不能让音无限拖下去。
+        if (kv.second && maxTick > onTick[kv.first])
+            ranges[kv.first].push_back({onTick[kv.first], maxTick});
+    }
+    return ranges;
+}
+
+// 控制器语义不能「跳过去就算了」。0xB0 里有四件事直接决定谱面：
+//   CC64 延音踏板：琴键抬手不等于消音，音要响到踏板抬起或同键重新击打；
+//   CC66 持音踏板：只保持踩下那一刻正按着的键，之后新弹的音不受影响；
 //   CC120/123：强制清音，某些导出器拿它代替 note-off；
 //   CC7：主音量，与 CC11 一样是渐强渐弱的来源。
 // 全部轨解析完之后才做：踏板事件可能写在另一条轨上，按轨顺序处理会读成
 // 「先处理轨 0 的所有未来事件，再处理轨 1 的过去事件」。
 static void applyControllerSemantics(MidiData& out,
                                      const std::vector<PedalPoint>& pedal,
+                                     const std::vector<PedalPoint>& sostenuto,
                                      const std::vector<AllNotesOffPoint>& allOff,
                                      const std::vector<DynPoint>& cc7) {
     out.pedalEvents = (int)pedal.size();
+    out.sostenutoEvents = (int)sostenuto.size();
     out.allNotesOffEvents = (int)allOff.size();
 
     // format 2 可能已经把别的段落整轨丢掉，只认还活着的通道。
@@ -240,13 +282,6 @@ static void applyControllerSemantics(MidiData& out,
     if (out.notes.empty()) return;
 
     // ---- 2) 踏板事件按 (tick, 文件顺序) 配成每通道的 [踩下, 抬起) 区间 ----
-    std::vector<PedalPoint> ps;
-    for (const auto& p : pedal) if (liveChannels.count(p.channel)) ps.push_back(p);
-    std::stable_sort(ps.begin(), ps.end(),
-                     [](const PedalPoint& a, const PedalPoint& b) {
-                         if (a.tick != b.tick) return a.tick < b.tick;
-                         return a.seq < b.seq;
-                     });
     std::vector<AllNotesOffPoint> as;
     for (const auto& a : allOff) if (liveChannels.count(a.channel)) as.push_back(a);
     std::stable_sort(as.begin(), as.end(),
@@ -259,29 +294,8 @@ static void applyControllerSemantics(MidiData& out,
     for (const auto& n : out.notes)
         maxTick = std::max(maxTick, n.startTicks + n.durationTicks);
 
-    std::map<int, std::vector<std::pair<long, long>>> ranges;  // 通道 -> 踏板区间
-    std::map<int, bool> isDown;
-    std::map<int, long> onTick;
-    // 迟滞（hysteresis）：踩下判 value >= 64，抬起判 value <= 32，中间
-    // 33..63 保持前态。真实的连续踏板包络 127→20→0 不会被 20 处的「半踩」
-    // 误判成抬起，音会延到真正的释放点 0；纯 0/127 文件行为不变（零回归）。
-    for (const auto& p : ps) {
-        if (p.value >= 64) {
-            if (!isDown[p.channel]) { isDown[p.channel] = true; onTick[p.channel] = p.tick; }
-        } else if (p.value <= 32) {
-            if (isDown[p.channel]) {
-                // 同 tick 的 127→0→127 是「重新踩踏板」，零长区间直接丢掉。
-                if (p.tick > onTick[p.channel])
-                    ranges[p.channel].push_back({onTick[p.channel], p.tick});
-                isDown[p.channel] = false;
-            }
-        }
-    }
-    for (const auto& kv : isDown) {
-        // 到曲尾都没抬踏板：用最后一个音符的结尾收束，不能让音无限拖下去。
-        if (kv.second && maxTick > onTick[kv.first])
-            ranges[kv.first].push_back({onTick[kv.first], maxTick});
-    }
+    const PedalRangeMap ranges = buildPedalRanges(pedal, liveChannels, maxTick);
+    const PedalRangeMap sostRanges = buildPedalRanges(sostenuto, liveChannels, maxTick);
 
     // ---- 3) 同键重新击打：前一个音的音响到此为止 ----
     auto keyOf = [](const NoteEvent& n) -> uint64_t {
@@ -301,15 +315,33 @@ static void applyControllerSemantics(MidiData& out,
         long newEnd = origEnd;
 
         // 只有在「抬手那一刻踏板正踩着」才延长；踏板抬起之后才松键不算。
+        bool sustainExtended = false;
         auto rit = ranges.find(n.channel);
         if (rit != ranges.end()) {
             for (const auto& rg : rit->second) {
                 if (origEnd >= rg.first && origEnd < rg.second) {
                     newEnd = rg.second;
+                    sustainExtended = true;
                     break;
                 }
             }
         }
+        // ---- CC66 持音踏板：只保持「踩下那一刻正按着的键」----
+        // 判定方向与 CC64 正好相反：CC64 看抬手时是否踩着，CC66 看踩下时
+        // 是否已按着。所以踩下之后新弹的音（start > onTick）绝不能被延长，
+        // 把两种踏板合并进一条时间轴是错的。两条区间在这里取更晚的终点，
+        // 后面同键重击 / 强制清音的截尾对两者一视同仁。
+        bool sostHeld = false;
+        auto srit = sostRanges.find(n.channel);
+        if (srit != sostRanges.end()) {
+            for (const auto& rg : srit->second) {
+                if (start <= rg.first && origEnd > rg.first && rg.second > origEnd) {
+                    sostHeld = true;
+                    if (rg.second > newEnd) newEnd = rg.second;
+                }
+            }
+        }
+        if (sostHeld) out.sostenutoExtendedNotes++;
         if (newEnd > origEnd) {
             auto sit = startsByKey.find(keyOf(n));
             if (sit != startsByKey.end()) {
@@ -325,7 +357,7 @@ static void applyControllerSemantics(MidiData& out,
 
         if (newEnd > origEnd) {
             n.durationTicks = newEnd - start;
-            out.pedalExtendedNotes++;
+            if (sustainExtended) out.pedalExtendedNotes++;
             // rawDurationTicks 故意不动：它是「量化前的按键时长」，断奏 / 倚音
             // 判据靠它。踏板带来的共鸣不是按键时长，写回去会把整首判成连奏。
         } else if (newEnd < origEnd) {
@@ -711,6 +743,7 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
     // 控制器事件先攒着，等所有轨都读完再统一处理：踏板 / 清音常常写在
     // conductor 轨上，而逐轨解析是按「文件顺序」不是「时间顺序」推进的。
     std::vector<PedalPoint> pedalEvents;
+    std::vector<PedalPoint> sostenutoEvents;   // CC66 与 CC64 共用 ctrlSeq 定序
     std::vector<AllNotesOffPoint> allOffEvents;
     std::vector<DynPoint> volumeCc7;
     int ctrlSeq = 0;
@@ -969,6 +1002,8 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                         volumeCc7.push_back({absTick, (int)val, (int)channel});
                     } else if (ctrl == 0x40u) {  // CC64 延音踏板，存原始值，迟滞判定后做
                         pedalEvents.push_back({absTick, (int)channel, (int)val, ctrlSeq++});
+                    } else if (ctrl == 0x42u) {  // CC66 持音踏板（Sostenuto）
+                        sostenutoEvents.push_back({absTick, (int)channel, (int)val, ctrlSeq++});
                     } else if (ctrl == 0x78u || ctrl == 0x7Bu) {  // All Sound/Notes Off
                         allOffEvents.push_back({absTick, (int)channel, ctrlSeq++});
                     }
@@ -1154,7 +1189,7 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
         normalizeFormat2(out, keepAllFormat2);
     }
     resolveBendRanges(out);
-    applyControllerSemantics(out, pedalEvents, allOffEvents, volumeCc7);
+    applyControllerSemantics(out, pedalEvents, sostenutoEvents, allOffEvents, volumeCc7);
     applySmpteTimeBase(out);
     out.midiPortCount = (int)portsUsed.size();
     out.midiPortMax = portsUsed.empty() ? 0 : *portsUsed.rbegin();
@@ -1196,6 +1231,9 @@ std::string controllerLabel(const MidiData& data) {
     if (data.pedalExtendedNotes > 0)
         parts.push_back("延音踏板：补长 " + std::to_string(data.pedalExtendedNotes) +
                         " 个音（" + std::to_string(data.pedalEvents) + " 个踏板事件）");
+    if (data.sostenutoExtendedNotes > 0)
+        parts.push_back("持音踏板：保持 " + std::to_string(data.sostenutoExtendedNotes) +
+                        " 个音（" + std::to_string(data.sostenutoEvents) + " 个事件）");
     if (data.allNotesOffTrimmed > 0)
         parts.push_back("强制清音：截尾 " + std::to_string(data.allNotesOffTrimmed) +
                         " 个音（" + std::to_string(data.allNotesOffEvents) + " 个事件）");
