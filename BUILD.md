@@ -179,7 +179,37 @@ node tests/wasm_smoke.mjs build-wasm/midi2jianpu.js        # 或测新编的
 
 **这个测试的存在理由**：仓库曾出现「源码加了 `_midi2jianpu_musicxml`，但
 `docs/wasm/` 里还是旧产物」的静默回归——CLI 测试全绿，网页按钮点了没反应。
-CLI 测试永远发现不了这类问题，只能由它兜住。改了 `src/` 一定要重编 wasm 并跑一遍。 升过 `version.hpp` 却忘了重编 wasm 时，第 34 组会直接报「页脚 v旧 / 源码 v新」——v1.35.0 ~ v1.37.0 的网页产物曾连续三版停在 1.34.0，这道守护就是为此加的。
+CLI 测试永远发现不了这类问题，只能由它兜住。改了 `src/` 一定要重编 wasm 并跑一遍。
+
+升过 `version.hpp` 却忘了重编 wasm 时，第 34 组会直接报「页脚 v旧 / 源码 v新」——v1.35.0 ~ v1.37.0 的网页产物曾连续三版停在 1.34.0，这道守护就是为此加的。
+
+### WASM 导出清单一致性守护
+
+```bash
+python3 tests/check_wasm_exports.py
+```
+
+纯标准库、不编译、不加载 wasm。它把「新增 / 改名一个导出要同步四处」这条人工约定
+自动化：比对 `build/build_wasm.cmd` 与 `CMakeLists.txt` 的 `EXPORTED_FUNCTIONS` /
+`EXPORTED_RUNTIME_METHODS`，与 `src/wasm_bindings.cpp` 的 `extern "C"` 定义，
+并检查 `docs/index.html` 与 `tests/wasm_smoke.mjs` 里静态（`wasmMod._x`）和动态
+（`callWasm('x')` / `call('x')`）调用到的符号都在清单内。任一处漂移都会列出
+「谁独有、谁缺了」并返回非 0。实测能拦住 cmd 单侧改名、源码新增导出漏登记、
+网页 / 冒烟调用了未导出符号这几类问题。
+
+### GitHub Actions CI
+
+`.github/workflows/ci.yml` 在 `push` / `pull_request` / 手动触发时跑两个 Ubuntu job：
+
+| job | 步骤 |
+| --- | --- |
+| `cpp` | CMake 编译 CLI 与单测 → `ctest`（594 项）→ 全量重生成 68 份 `.mid` 并要求零 diff、无未跟踪素材 → `smoke.py` 60 组 |
+| `wasm` | `check_wasm_exports.py` → `wasm_smoke.mjs` 35 组（含产物版本号与 `version.hpp` 比对） |
+
+客户端可以忘了跑测试，这里在服务端兜底；**升过版本号却忘了重编 `docs/wasm/`，
+`wasm` job 会直接红**。两个 job 只依赖 runner 预装的 cmake / g++ / python 和
+`setup-node` 提供的 Node 22，不需要 emsdk——CI 不重编 wasm，只校验提交的产物。
+本地自查直接跑上面几条命令；Windows 上编 CLI 用 `build\build_local.cmd`。
 
 ### 提交署名守护（换电脑后必跑一次）
 

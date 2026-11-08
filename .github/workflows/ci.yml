@@ -1,0 +1,64 @@
+name: 构建与回归测试
+
+# 客户端可以忘了跑测试，这里在服务端把三层都兜住：
+#   C++ 单测 / CLI 端到端冒烟 / WASM 产物一致性。
+# 尤其 wasm_smoke 第 34 组会比对 docs/wasm 页脚版本与 version.hpp：
+# 升过版本号却忘了重编 wasm，CI 会直接红（v1.35~v1.37 曾连续三版漏重编）。
+# 本机没有 Linux 编译器时，至少可以在本地跑对应命令自查，见 BUILD.md。
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cpp:
+    name: C++ 单测 + CLI 冒烟
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: CMake 配置与编译
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel 2
+
+      - name: 单元测试（594 项）
+        working-directory: build
+        run: ctest --output-on-failure
+
+      - name: 素材生成器可复现
+        # 全量重生成 68 份 .mid 后不得有字节差异，也不得多出未跟踪素材。
+        # 只比二进制素材：.lrc 是文本，交给 git 的行尾归一化处理。
+        run: |
+          python3 tests/fixtures/make_fixture.py > /dev/null
+          git diff --exit-code -- 'tests/fixtures/*.mid'
+          test -z "$(git status --porcelain --untracked-files=all -- tests/fixtures/)"
+
+      - name: CLI 端到端冒烟（60 组）
+        run: python3 tests/smoke.py build/midi2jianpu
+
+  wasm:
+    name: WASM 产物与导出清单
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: WASM 导出清单一致性
+        # 校验 build_wasm.cmd / CMakeLists.txt / wasm_bindings.cpp / 网页 / 冒烟
+        # 五处导出符号没有漂移，不编译、不加载 wasm。
+        run: python3 tests/check_wasm_exports.py
+
+      - name: WASM 产物冒烟（35 组，含版本号守护）
+        run: node tests/wasm_smoke.mjs

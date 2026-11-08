@@ -817,7 +817,10 @@ Issue / PR 都欢迎。尤其欢迎：
 cd build && ctest --output-on-failure                  # 594 项单元测试
 python tests/smoke.py build/Release/midi2jianpu.exe    # 端到端冒烟（含鼓轨场景）
 node tests/wasm_smoke.mjs                              # WASM 产物与源码是否同步（含版本号）
+python tests/check_wasm_exports.py                     # WASM 导出清单五处一致性
 ```
+
+推送后 `.github/workflows/ci.yml` 还会在 Ubuntu 上再跑一遍两个 job：CMake 编译 + 594 项单测 + 60 组 CLI 冒烟 + 68 份素材可复现校验，以及 35 组 WASM 冒烟 + 导出清单守护。`docs/wasm/` 漏重编会让 CI 直接变红。
 
 构建细节、记谱对照表、WASM 编译与常见编译问题见 [BUILD.md](./BUILD.md)。
 
