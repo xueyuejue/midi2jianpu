@@ -540,6 +540,9 @@ enum class BendMark { None = 0, SlideUp = 1, SlideDown = 2, Trill = 3 };
 // 挂在谱面「标记行」的事件：力度档位、渐强/渐弱起止、段落名。
 struct ExpressionMark {
     long tick = 0;
+    // CC11/CC7 的档位与渐变楔形是通道级演奏表情：伴奏轨的渐强不能
+    // 印到旋律谱上。channel = -1 表示全局（0x06 段落名，每行谱都印）。
+    int channel = -1;
     std::string dynamic;      // "pp"/"p"/"mp"/"mf"/"f"/"ff"，空 = 此处无变化
     int wedge = 0;            // +1 渐强起点 / -1 渐弱起点 / 0 无
     bool wedgeStop = false;   // 渐强渐弱的终点
@@ -587,8 +590,10 @@ public:
     bool isGraceNote(long tick, int channel) const;
 
     // 按 tick 升序的标记行事件；inRange 供 MusicXML 按小节取用。
+    // channel >= 0 时只返回该通道与全局(-1)的标记：渐强渐弱是通道级
+    // 演奏表情，伴奏轨的 cresc. 不能印到旋律谱上。传 -1 保留全量语义。
     const std::vector<ExpressionMark>& marks() const { return marks_; }
-    std::vector<ExpressionMark> inRange(long from, long to) const;
+    std::vector<ExpressionMark> inRange(long from, long to, int channel = -1) const;
 
     // "力度 3 · 渐强 1 · 断音 4 · 段落 2"；没有任何表情时返回空串。
     std::string summary() const;

@@ -1917,6 +1917,37 @@ def main():
     _, ph_out, _ = run(exe, os.path.join(FIXTURES, "pedal_hysteresis.mid"))
     check("持音踏板" not in ph_out, "CC64 素材不误报持音踏板（零回归）")
 
+
+    print("\n[63] CC11 渐强渐弱按通道归属")
+    # 旋律(ch0)渐弱、伴奏(ch1)渐强：旧实现把两条 wedge 合并成一条，
+    # 旋律谱会印 [cresc.]，同一行力度档位却写 [ff]→[pp]。
+    dc = os.path.join(FIXTURES, "dyn_channels.mid")
+    rc, out, err = run(exe, dc)
+    check(rc == 0, "双通道力度素材解析成功", err[:200])
+    check("[dim.]" in out and "[cresc.]" not in out,
+          "文本谱只印旋律通道的渐弱", out[:300])
+    check("[Verse]" in out, "全局段落名仍印在旋律谱上", out[:300])
+    check("渐强 1" in out and "渐弱 1" in out,
+          "页眉仍如实统计整份文件检测到的两类渐变", out[:300])
+
+    dch = os.path.join(tmp, "dyn_channels.html")
+    rc, _, err = run(exe, dc, "--html", dch)
+    check(rc == 0, "双通道力度素材导出 HTML", err[:200])
+    html_dc = open(dch, encoding="utf-8").read()
+    check(">dim.<" in html_dc and ">cresc.<" not in html_dc,
+          "HTML 只写旋律通道的渐弱", html_dc[:300])
+    check("Verse" in html_dc, "HTML 保留全局段落名")
+
+    dcx = os.path.join(tmp, "dyn_channels.xml")
+    rc, _, err = run(exe, dc, "--musicxml", dcx)
+    check(rc == 0, "双通道力度素材导出 MusicXML", err[:200])
+    xml_dc = open(dcx, encoding="utf-8").read()
+    check("diminuendo" in xml_dc and "crescendo" not in xml_dc,
+          "MusicXML 只写旋律通道的渐弱", xml_dc[:300])
+
+    _, ex_out, _ = run(exe, os.path.join(FIXTURES, "expression.mid"))
+    check("[cresc.]" in ex_out or "[dim.]" in ex_out,
+          "单通道表情素材的渐变记号不受影响（零回归）")
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

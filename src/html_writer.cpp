@@ -463,10 +463,10 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 body << "<span class='dyn'>" << dyn << "</span>";
                 lastDyn = dyn;
             }
-            // 段落名与渐强/渐弱是整份谱的事件，跟速度标记一样只印第一行谱，
-            // 否则每个伴奏轨都会重复一遍「副歌 / cresc.」。
+            // 段落名是整份谱的事件（只印第一行谱）；渐强/渐弱则按通道归属，
+            // 伴奏轨自己的 cresc. 不能串到这一行旋律上。
             if (showTempo) {
-                for (const auto& m : expr.inRange(grid.barStart(bar), grid.barEnd(bar))) {
+                for (const auto& m : expr.inRange(grid.barStart(bar), grid.barEnd(bar), channel)) {
                     if (!m.section.empty())
                         body << "<span class='section'>" << htmlEscape(m.section) << "</span>";
                     if (m.wedge > 0) body << "<span class='wedge'>cresc.</span>";
@@ -572,9 +572,9 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                     if (keys.keyChangedAtBar(b, grid))
                         body << "<span class='keychg'>转 "
                              << "1=" << keyName(keys.keyAtBar(b, grid)) << "</span>";
-                    // 段落标记也可能落在纯休止的前奏小节上
+                    // 段落标记也可能落在纯休止的前奏小节上；渐变按当前声部通道取
                     if (showTempo) {
-                        for (const auto& m : expr.inRange(grid.barStart(b), grid.barEnd(b))) {
+                        for (const auto& m : expr.inRange(grid.barStart(b), grid.barEnd(b), n.channel)) {
                             if (!m.section.empty())
                                 body << "<span class='section'>" << htmlEscape(m.section) << "</span>";
                             if (m.wedge > 0) body << "<span class='wedge'>cresc.</span>";

@@ -63,8 +63,9 @@
 - [x] `--version` 打印版本号
 - [x] **在线 Demo**：WASM 核心，浏览器内运行 C++ 代码
 - [x] **减时线按拍连通**：一拍内的八分/十六分音符共用一条横线（十六分再叠平行线），而不是每个音各画一小段；和弦的减时线只画在最下面那个音上
+- [x] **渐强渐弱按通道标注**：CC11/CC7 的 `cresc.` / `dim.` 只印在所属声部，伴奏通道的渐强不再串到旋律谱（旧版会同 tick 覆盖旋律的渐弱，谱面写 `[cresc.]` 而力度写 `[ff]→[pp]`）；`0x06` 段落名仍作全局标记，单通道文件三层输出逐字节零回归
 - [x] **损坏 / 截断 MIDI 的安全解析**：`MTrk` 长度字段写着原值、文件却只下载到一半时，不再越过 buffer 末尾把堆里相邻内存当成新事件继续解析（那会凭空冒出幻影音符与乱码歌词）。所有事件统一按 `min(trkEnd, size)` 取硬边界，残缺事件整条丢弃，CLI / HTML / 网页文件面板写明「文件数据不完整」并按可用字节正常出谱；合法文件逐字节零回归
-- [x] 625 项单元测试 + 62 组端到端冒烟测试 + 37 组 WASM 产物一致性检查（含产物版本号、源码一致性与「改了源码必须重编」的纯 git 守护）
+- [x] 634 项单元测试 + 63 组端到端冒烟测试 + 38 组 WASM 产物一致性检查（含产物版本号、源码一致性与「改了源码必须重编」的纯 git 守护）
 
 ## 在线 Demo 功能
 
@@ -338,7 +339,7 @@ Krumhansl-Schmuckler 用七声大/小调轮廓打分。纯五声旋律 `C D E G 
 
 **断奏为什么要加「等间隔」闸门。** MIDI 没有显式 staccato 事件，短 note-off 既可能是断奏，也可能只是「八分音符 + 休止」。绝对阈值会把真实人声 MIDI 里每小节末的短音全标成断奏（开发中实测误标 33 处）；改用「相对全轨门限中位数」能排掉大部分，但仍分不清 `0.25 拍音符 + 1.75 拍休止`。所以只在**音头间隔几乎一致**（≥90% 相同，即谱面上没有休止）时才判：此时短 gate 只剩断奏一种解释。节奏混合的旋律整轨拒绝判定——宁可漏判，也不给整份谱子撒上假的 `▼`。
 
-演奏法按 `(tick, channel)` 索引而不是只按 tick：旋律与伴奏常有同一 tick 的音头，按 tick 存会让伴奏「继承」旋律的滑音记号（压力素材里踩到过并修掉了）。段落名与渐强渐弱属于整份谱，只印在第一条声部／旋律轨；力度按通道各自写。播放用的音符 JSON 也补上了真实的 `velocity`，网页据此区分强弱。
+演奏法按 `(tick, channel)` 索引而不是只按 tick：旋律与伴奏常有同一 tick 的音头，按 tick 存会让伴奏「继承」旋律的滑音记号（压力素材里踩到过并修掉了）。段落名（`0x06` marker）属于整份谱，只印在第一条声部／旋律轨；**力度档位与渐强渐弱都按通道各自写**。`ExpressionMark` 带通道，同一 tick 不同通道的渐变分列，输出层把当前声部通道传进 `inRange()`——否则伴奏的 `[cresc.]` 会盖掉旋律的 `[dim.]`，谱面和同一行的 `[ff]→[pp]` 自相矛盾。播放用的音符 JSON 也补上了真实的 `velocity`，网页据此区分强弱。
 
 `--no-dynamics`（网页上是「力度与演奏法」复选框）让整张表情图为空，但事件表本身保留，调性与旋律轨判定不受影响。**没有任何表情数据的文件输出不变**：真实人声曲目《蝶衣碎雪》带 LRC 回归的 MusicXML 逐字节一致，HTML 谱面内容也逐字节一致（仅内联 CSS 多了几条定义）。
 
@@ -781,7 +782,7 @@ XG 鼓组通道与中途换音色的通道，新导出 `_midi2jianpu_bank_info`�
 - 调性识别：**Krumhansl-Schmuckler** 算法（音乐信息检索标准）；无调号时再由**宫商角徵羽五声调式**判定校正宫音
 - 和弦检测：按和声窗（半小节 / 附点四分 / 整小节）统计音级频率，匹配 11 种和弦类型，低音决定转位
 - 输出：文本 + 自包含 HTML（内联 CSS）+ MusicXML 3.1
-- 测试：内置断言 625 项单元测试，另有 `tests/smoke.py` 62 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`、声部乐器标注 + 倚音混合素材 `parts.mid`、和弦转位 + 七和弦素材 `chords.mid`、渐快渐慢素材 `tempo_ramp.mid`、长音跨小节素材 `long_tie.mid`、同轨复调素材 `polyphony.mid`、SMPTE 时间基准素材 `smpte.mid`、format 2 独立序列素材 `format2.mid`、复音触后素材 `aftertouch.mid`、同音重触发素材 `retrigger.mid`、轨尾悬挂音素材 `dangling.mid`、双歌词轨素材 `twolyrics.mid`、延音踏板素材 `pedal.mid`、强制清音素材 `allnotesoff.mid`、CC7 主音量素材 `cc7volume.mid`、踏板通道隔离素材 `pedal_channels.mid`、踏板迟滞素材 `pedal_hysteresis.mid`、持音踏板素材 `sostenuto.mid`、诊断一致性素材 `diag_consistency.mid`、弯音范围按通道 / 按时间 / 跨轨三份素材 `bendrange_channels.mid` / `bendrange_timeline.mid` / `bendrange_crosstrack.mid`、省略状态字节四份素材 `running_meta.mid` / `running_sysex.mid` / `running_realtime.mid` / `running_standard.mid`、MIDI Port 五份素材 `port_pedal.mid` / `port_bend.mid` / `port_prefix.mid` / `port_prefix_base.mid` / `port_standard.mid`、SysEx 鼓模式 11 份 `sysex_*.mid` 素材、Bank Select 与音色时间轴 9 份 `bank_*.mid` / `program_timeline.mid` 素材、按轨隔离 7 份素材 `track_pedal.mid` / `track_rpn_setup.mid` / `track_conductor.mid` / `track_leak.mid` / `track_leak_base.mid` / `track_empty.mid` / `track_fmt2.mid`、截断文件素材 `truncated.mid`）
+- 测试：内置断言 634 项单元测试，另有 `tests/smoke.py` 63 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`、声部乐器标注 + 倚音混合素材 `parts.mid`、和弦转位 + 七和弦素材 `chords.mid`、渐快渐慢素材 `tempo_ramp.mid`、长音跨小节素材 `long_tie.mid`、同轨复调素材 `polyphony.mid`、SMPTE 时间基准素材 `smpte.mid`、format 2 独立序列素材 `format2.mid`、复音触后素材 `aftertouch.mid`、同音重触发素材 `retrigger.mid`、轨尾悬挂音素材 `dangling.mid`、双歌词轨素材 `twolyrics.mid`、延音踏板素材 `pedal.mid`、强制清音素材 `allnotesoff.mid`、CC7 主音量素材 `cc7volume.mid`、踏板通道隔离素材 `pedal_channels.mid`、踏板迟滞素材 `pedal_hysteresis.mid`、持音踏板素材 `sostenuto.mid`、双通道力度素材 `dyn_channels.mid`、诊断一致性素材 `diag_consistency.mid`、弯音范围按通道 / 按时间 / 跨轨三份素材 `bendrange_channels.mid` / `bendrange_timeline.mid` / `bendrange_crosstrack.mid`、省略状态字节四份素材 `running_meta.mid` / `running_sysex.mid` / `running_realtime.mid` / `running_standard.mid`、MIDI Port 五份素材 `port_pedal.mid` / `port_bend.mid` / `port_prefix.mid` / `port_prefix_base.mid` / `port_standard.mid`、SysEx 鼓模式 11 份 `sysex_*.mid` 素材、Bank Select 与音色时间轴 9 份 `bank_*.mid` / `program_timeline.mid` 素材、按轨隔离 7 份素材 `track_pedal.mid` / `track_rpn_setup.mid` / `track_conductor.mid` / `track_leak.mid` / `track_leak_base.mid` / `track_empty.mid` / `track_fmt2.mid`、截断文件素材 `truncated.mid`）
 
 ## 路线图
 
@@ -820,6 +821,8 @@ XG 鼓组通道与中途换音色的通道，新导出 `_midi2jianpu_bank_info`�
 - [x] **损坏 / 截断 MIDI 的边界安全**：把 SysEx 分支独有的 `min(trkEnd, size)` 提到轨级，统一管住 VLQ、通道消息、meta 与 SysEx；残缺事件整条丢弃，而不是夹紧后把相邻内存当歌词读，三处页眉写明「文件数据不完整」。新增 `truncated.mid` 素材、11 项单元测试、CLI 冒烟第 [61] 组与 WASM 冒烟第 36 组；2 音截断素材从 10 个幻影音符回落到 2 个真音，68 份既有素材 + 4 组 `--track` + 真实曲目共 73 组输出逐字节零回归（v1.38.0）
 - [x] **CC66 持音踏板（Sostenuto）+ 发布链路的产物同步守护**：① 解析层新增 CC66 事件表，与 CC64 共用 `buildPedalRanges()` 迟滞配对，但按「踩下瞬间该键是否正按着」判定，只保持这三个和弦音、不碰之后新弹的音；两条时间轴取更晚终点，同键重击 / 强制清音 / 通道隔离 / `--track` 按轨门控 / 未抬踏板收束全部覆盖，页眉 `controllerLabel()` 一处改动即同步 CLI、HTML 与网页文件面板。② 新增 `tests/check_wasm_sync.py`：纯 git 比对本次变更文件，堵住「改了源码但既不升版本也不重编 wasm」的漏检，CI `wasm` job 加 `--self-test` 与实跑两步，`actions/checkout` 改为 `fetch-depth: 0`。新增 `sostenuto.mid` 素材、20 项单元测试、CLI 冒烟第 [62] 组与 WASM 冒烟第 37 组；69 份既有素材 + 4 组 `--track` + 真实曲目逐字节零回归（v1.39.0）
 
+- [x] **CC11/CC7 渐强渐弱的通道归属 + MusicXML 声部通道一致性**：① `ExpressionMark` 增加 `channel`，力度档位与渐变楔形按 `(tick, 通道)` 分别合并；旧版把同 tick 的「旋律渐弱」与「伴奏渐强」压进一条标记、后写覆盖先写，谱面于是印 `[cresc.]`、同一行力度却写 `[ff]→[pp]`。`inRange()` 新增通道参数，文本 / HTML / MusicXML 三处传当前声部通道，`0x06` 段落名仍作全局标记。② MusicXML 的 `partChannel` 从「该 part 第一个音符的通道」（按音高排序时常常是低音伴奏）改为「音符最多的主导通道」，力度与渐变终于和文本 / HTML 的旋律声部对齐。新增 `dyn_channels.mid` 素材、9 项单元测试、CLI 冒烟第 [63] 组与 WASM 冒烟第 38 组；70 份既有素材 + 4 组 `--track` + 真实曲目共 75 组输出逐字节零回归（v1.40.0）
+
 ## 为什么开源
 
 中文简谱是中国特有的记谱体系，国外打谱软件（MuseScore、Finale）对它支持很差，国内又一直缺少一个干净的、可二次开发的基础库。这个项目想把「MIDI → 简谱」这层地基打好，让后来的人不用重复造轮子。
@@ -856,14 +859,14 @@ Issue / PR 都欢迎。尤其欢迎：
 提交前请跑一遍：
 
 ```bash
-cd build && ctest --output-on-failure                  # 625 项单元测试
+cd build && ctest --output-on-failure                  # 634 项单元测试
 python tests/smoke.py build/Release/midi2jianpu.exe    # 端到端冒烟（含鼓轨场景）
 node tests/wasm_smoke.mjs                              # WASM 产物与源码是否同步（含版本号）
 python tests/check_wasm_exports.py                     # WASM 导出清单五处一致性
 python tests/check_wasm_sync.py --self-test             # WASM 产物同步守护自测
 ```
 
-推送后 `.github/workflows/ci.yml` 还会在 Ubuntu 上再跑一遍两个 job：CMake 编译 + 625 项单测 + 62 组 CLI 冒烟 + 70 份素材可复现校验，以及 37 组 WASM 冒烟 + 导出清单守护 + 产物同步守护。`docs/wasm/` 漏重编会让 CI 直接变红。
+推送后 `.github/workflows/ci.yml` 还会在 Ubuntu 上再跑一遍两个 job：CMake 编译 + 634 项单测 + 63 组 CLI 冒烟 + 71 份素材可复现校验，以及 38 组 WASM 冒烟 + 导出清单守护 + 产物同步守护。`docs/wasm/` 漏重编会让 CI 直接变红。
 
 产物同步守护是纯 git 检查（`tests/check_wasm_sync.py`）：`wasm_smoke.mjs` 第 34 组只比对 `version.hpp` 与 wasm 页脚版本，若有人**改了 `src/` 却不升版本、也不重编**，页脚仍然「一致」，那道守护会静默放过。同步守护直接看本次提交动了哪些文件：`src/**`、`include/**`、`cmake/**`、`CMakeLists.txt`、`build/build_wasm.cmd` 里只要有一个变更，`docs/wasm/midi2jianpu.wasm` 就必须一起变；胶水层 `.js` 单独变也不行。只改测试 / 文档 / CI 配置不要求重编。
 

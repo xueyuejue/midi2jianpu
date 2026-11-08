@@ -2,12 +2,12 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 70 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 71 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
 pedal / allnotesoff / cc7volume / pedal_channels / pedal_hysteresis /
-sostenuto /
+sostenuto / dyn_channels /
 bendrange_channels / bendrange_timeline / bendrange_crosstrack /
 running_meta / running_sysex / running_realtime / running_standard /
 port_pedal / port_bend / port_prefix / port_prefix_base / port_standard /
@@ -54,6 +54,8 @@ track_leak / track_leak_base / track_empty / track_fmt2 是 --track 按轨隔离
 RPN、速度、拍号、调号、Marker 这些全局设定仍要按整份文件生效。truncated 是
 「下载到一半」的损坏文件：MTrk 长度字段仍写着原值，轨尾只剩半个 note-on，
 正确行为是只输出前两个真音并提示数据不完整，不能越过 buffer 末尾读幻影音符。
+dyn_channels 让旋律(ch0)渐弱、伴奏(ch1)渐强，锁住渐强渐弱记号按通道归属：
+伴奏的 cresc. 不该印到旋律谱上，全局段落名 marker 则仍要照常显示。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -1890,6 +1892,42 @@ def build_sostenuto() -> bytes:
     return header + t0.render() + t1.render()
 
 
+def build_dyn_channels() -> bytes:
+    """CC11 渐强渐弱记号的通道归属（v1.40.0）。
+
+    旧实现把 CC11 渐变按通道分组识别，却把生成的 ExpressionMark 挤进
+    一条不区分通道的 marks_：同 tick 的「旋律渐弱」与「伴奏渐强」合并时
+    后写覆盖先写，谱面于是印 [cresc.]，同一行力度却写 [ff]→[pp]。
+    正确行为：旋律谱只印 [dim.]，全局段落名 [Verse] 照常显示；页眉的
+    「渐强 1 · 渐弱 1」是整份文件的检测统计，两条都应保留。
+
+    结构：2 小节，ch0 八个四分音符 + CC11 120→10，ch1 两个全音符 +
+    CC11 20→127，conductor 轨写一个 0x06 段落名。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+    t0.add(0, meta(0x06, b"Verse"))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Piano"))
+    for i in range(8):
+        t1.note(0, 60 + (i % 4), 96, i * DIV, DIV)
+    t1.note(1, 48, 64, 0, BAR)
+    t1.note(1, 48, 64, BAR, BAR)
+
+    down = (120, 100, 80, 60, 40, 20, 10)
+    up = (20, 40, 60, 80, 100, 120, 127)
+    for i in range(7):
+        t1.cc(0, 11, down[i], i * 240)
+        t1.cc(1, 11, up[i], i * 240)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + t1.render()
+
+
 def build_truncated() -> bytes:
     """MTrk 声明长度越过文件末尾，轨尾只剩半个 note-on（v1.38.0）。
 
@@ -2293,6 +2331,16 @@ def main() -> None:
     # CC66 持音踏板：踩下瞬间正按着的键被保持，之后新弹的音不受影响
     for name, builder in (
         ("sostenuto", build_sostenuto),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # CC11 渐强渐弱按通道归属：伴奏的 cresc. 不能印到旋律谱上
+    for name, builder in (
+        ("dyn_channels", build_dyn_channels),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

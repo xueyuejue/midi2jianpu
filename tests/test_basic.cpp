@@ -1387,7 +1387,15 @@ int main() {
         check(e.sectionCount() == 2, "两个 0x06 marker 都成为段落名");
         check(!e.marks().empty() && e.marks().front().section == "Verse",
               "marks 按 tick 升序且同 tick 事件已合并");
-        check(e.inRange(2880, 3360).size() == 1, "inRange 只取该小节的标记");
+        {
+            // v1.40.0 起同 tick 的全局段落名与通道级渐变分列，避免不同通道的
+            // wedge 在合并时互相覆盖；区间过滤本身的行为不变。
+            auto inBar = e.inRange(2880, 3360);
+            bool hasChorus = false;
+            for (const auto& m : inBar) if (m.section == "Chorus") hasChorus = true;
+            check(hasChorus && !inBar.empty(),
+                  "inRange 只取该小节的标记（段落名与通道渐变分列）");
+        }
         check(e.noteAt(480, 0).staccatissimo, "极短门限判为断奏 staccatissimo");
         check(e.noteAt(960, 0).staccato, "偏短门限判为断奏 staccato");
         check(!e.noteAt(480, 1).any(), "伴奏轨不继承旋律的断音（按通道索引）");
@@ -3867,6 +3875,80 @@ int main() {
         }
     }
 
+
+    std::cout << "\n测试渐强渐弱记号的通道归属 (v1.40.0)\n";
+    {
+        MidiData d;
+        d.division = 480;
+        d.timeSig = TimeSignature{4, 2, true};
+        for (int i = 0; i < 8; i++) {
+            NoteEvent n;
+            n.startTicks = i * 480;
+            n.durationTicks = 480;
+            n.rawDurationTicks = 480;
+            n.pitch = 60 + (i % 4);
+            n.track = 0;
+            n.channel = 0;
+            n.velocity = 96;
+            d.notes.push_back(n);
+        }
+        NoteEvent bass;
+        bass.startTicks = 0;
+        bass.durationTicks = 3840;
+        bass.rawDurationTicks = 3840;
+        bass.pitch = 48;
+        bass.track = 1;
+        bass.channel = 1;
+        bass.velocity = 64;
+        d.notes.push_back(bass);
+
+        // ch0 旋律渐弱、ch1 伴奏渐强，两条曲线的起点与终点都落在同一 tick。
+        // 旧实现把这两条 wedge 合并进一个 ExpressionMark，后写覆盖先写，
+        // 于是旋律谱会印 [cresc.]，力度档位却写 [ff]→[pp]，自相矛盾。
+        const int down[7] = {120, 100, 80, 60, 40, 20, 10};
+        const int up[7]   = {20, 40, 60, 80, 100, 120, 127};
+        for (int i = 0; i < 7; i++) {
+            d.dynamics.push_back({i * 240, down[i], 0});
+            d.dynamics.push_back({i * 240, up[i], 1});
+        }
+        d.markers.push_back({0, "Verse"});
+
+        ExpressionMap e(d);
+        check(e.crescendoCount() == 1 && e.diminuendoCount() == 1,
+              "两条通道的渐变各自识别出来");
+        auto hasWedge = [](const std::vector<ExpressionMark>& v, int w) {
+            for (const auto& m : v) if (m.wedge == w) return true;
+            return false;
+        };
+        auto hasSection = [](const std::vector<ExpressionMark>& v,
+                             const std::string& s) {
+            for (const auto& m : v) if (m.section == s) return true;
+            return false;
+        };
+        const auto mel = e.inRange(0, 1920, 0);
+        const auto acc = e.inRange(0, 1920, 1);
+        const auto all = e.inRange(0, 1920);
+        check(hasWedge(mel, -1) && !hasWedge(mel, +1),
+              "旋律通道只拿到渐弱，伴奏的渐强不再串进来");
+        check(hasWedge(acc, +1) && !hasWedge(acc, -1),
+              "伴奏通道只拿到自己的渐强");
+        check(hasWedge(all, +1) && hasWedge(all, -1),
+              "同 tick 的相反渐变分列，不再在合并时互相覆盖");
+        check(hasSection(mel, "Verse") && hasSection(acc, "Verse"),
+              "全局段落名对每个通道都可见");
+        check(all.size() >= mel.size() && all.size() >= acc.size(),
+              "不传通道时保留全量语义（向后兼容）");
+        check(e.dynamicAt(0, 0) == "ff" && e.dynamicAt(0, 1) == "p",
+              "力度档位仍按通道取，与渐变归属一致");
+        check(e.inRange(2880, 3360, 0).empty(),
+              "inRange 的区间边界不受通道参数影响");
+        bool sectionFirst = true, sawChannel = false;
+        for (const auto& m : all) {
+            if (m.channel >= 0) sawChannel = true;
+            else if (sawChannel) sectionFirst = false;
+        }
+        check(sectionFirst, "全局段落名排在通道级标记之前（旧输出顺序不变）");
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

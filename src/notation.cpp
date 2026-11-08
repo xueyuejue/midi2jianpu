@@ -1100,9 +1100,9 @@ static std::string formatTrack(
         if (chords && keys.keyChangedAtBar(bar, grid))
             os << "[转" << ("1=" + keyName(keys.keyAtBar(bar, grid))) << "] ";
         // 段落名与渐强渐弱：和力度一样属于「谱面标记」，只印旋律轨。
-        // inRange 按小节取，marker 落在小节中间时归到所在小节的开头。
+        // inRange 按小节与当前声部通道取：伴奏通道的 cresc. 不属于这一行。
         if (chords) {
-            for (const auto& m : expr.inRange(grid.barStart(bar), grid.barEnd(bar))) {
+            for (const auto& m : expr.inRange(grid.barStart(bar), grid.barEnd(bar), channel)) {
                 if (!m.section.empty()) os << "[" << m.section << "] ";
                 if (m.wedge > 0) os << "[cresc.] ";
                 else if (m.wedge < 0) os << "[dim.] ";
@@ -2494,7 +2494,6 @@ ExpressionMap::ExpressionMap(const MidiData& data) {
     std::map<int, std::vector<DynPoint>> byChannel;
     for (const auto& p : dyn_) byChannel[p.channel].push_back(p);
     for (auto& [ch, v] : byChannel) {
-        (void)ch;
         std::vector<DynPoint> u;
         for (const auto& p : v) {
             if (!u.empty() && u.back().tick == p.tick) u.back().value = p.value;
@@ -2507,6 +2506,7 @@ ExpressionMap::ExpressionMap(const MidiData& data) {
             if (lv != prevLevel) {
                 ExpressionMark m;
                 m.tick = p.tick;
+                m.channel = ch;
                 m.dynamic = lv;
                 marks_.push_back(m);
                 nDynamic_++;
@@ -2530,9 +2530,11 @@ ExpressionMap::ExpressionMap(const MidiData& data) {
                 u[last].tick > u[i].tick) {
                 ExpressionMark a;
                 a.tick = u[i].tick;
+                a.channel = ch;
                 a.wedge = dir;
                 ExpressionMark b;
                 b.tick = u[last].tick;
+                b.channel = ch;
                 b.wedgeStop = true;
                 marks_.push_back(a);
                 marks_.push_back(b);
@@ -2556,14 +2558,21 @@ ExpressionMap::ExpressionMap(const MidiData& data) {
         nSection_++;
     }
 
-    // 同一 tick 的多个事件并成一个标记行条目，避免输出层各写各的。
+    // 同一 tick 的多个事件并成一个标记行条目，但**只在同一通道内**合并：
+    // ch0 的渐弱与 ch1 的渐强合成一条时 wedge 会互相覆盖（探针
+    // dynch_both 里旋律力度写 [ff]→[pp]、谱面却印 [cresc.] 就是这么来的）。
+    // 全局(-1)的段落名排在同 tick 最前，保持「段落名 → 渐变」的旧输出顺序。
     std::stable_sort(marks_.begin(), marks_.end(),
                      [](const ExpressionMark& a, const ExpressionMark& b) {
-                         return a.tick < b.tick;
+                         if (a.tick != b.tick) return a.tick < b.tick;
+                         const bool ga = (a.channel < 0), gb = (b.channel < 0);
+                         if (ga != gb) return ga;
+                         return false;   // 同 tick 其余保持生成顺序
                      });
     std::vector<ExpressionMark> merged;
     for (const auto& m : marks_) {
-        if (!merged.empty() && merged.back().tick == m.tick) {
+        if (!merged.empty() && merged.back().tick == m.tick &&
+            merged.back().channel == m.channel) {
             ExpressionMark& b = merged.back();
             if (!m.dynamic.empty()) b.dynamic = m.dynamic;
             if (m.wedge != 0) b.wedge = m.wedge;
@@ -2741,10 +2750,15 @@ bool ExpressionMap::isGraceNote(long tick, int channel) const {
     return graceNotes_.find({tick, channel}) != graceNotes_.end();
 }
 
-std::vector<ExpressionMark> ExpressionMap::inRange(long from, long to) const {
+std::vector<ExpressionMark> ExpressionMap::inRange(long from, long to,
+                                                  int channel) const {
     std::vector<ExpressionMark> out;
-    for (const auto& m : marks_)
-        if (m.tick >= from && m.tick < to) out.push_back(m);
+    for (const auto& m : marks_) {
+        if (m.tick < from || m.tick >= to) continue;
+        // 全局标记（0x06 段落名）对每一行谱都生效；通道级标记只给所属行。
+        if (channel >= 0 && m.channel >= 0 && m.channel != channel) continue;
+        out.push_back(m);
+    }
     return out;
 }
 

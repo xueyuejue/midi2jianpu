@@ -245,9 +245,19 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                                      ? resolveLyrics(data, lyricLines, t)
                                      : LyricAssignment();
 
-        // CC11 是按通道的，一个 part 可能并非全是同一通道；取该声部第一个
-        // 音符的通道，与 HTML 的 openBar(firstTick, channel) 保持同一取值口径。
-        const int partChannel = ns.front().channel;
+        // CC11 与渐变楔形都按通道归属。一个 part 可能混入多个通道（同一
+        // 轨里的旋律 + 低音伴奏），旧实现取 ns.front().channel，而 ns 按
+        // (tick, 音高) 排序、tick 0 的低音排在最前，于是整个 part 的力度与
+        // 渐变会跟着伴奏通道走，和文本谱 / HTML 的旋律声部对不上。取该 part
+        // 音符最多的通道（并列时取最早出现的），才是这一声部的主导通道。
+        std::map<int, int> channelNotes;
+        for (const auto& nn : ns) channelNotes[nn.channel]++;
+        int partChannel = ns.front().channel;
+        int bestCount = 0;
+        for (const auto& nn : ns) {
+            const int c = channelNotes[nn.channel];
+            if (c > bestCount) { bestCount = c; partChannel = nn.channel; }
+        }
         std::string lastDyn;
 
         // 和弦符号只写一份：旋律声部优先，没有旋律声部时写进第一个 part。
@@ -422,8 +432,8 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                     << "      </direction>\n";
                 lastDyn = dyn;
             }
-            // 段落名 / 渐强渐弱 / 速度变化属于整份谱，只在第一个 part 写一次；
-            // 力度按通道各自写（伴奏轨有自己的 CC11 曲线）。
+            // 段落名 / 速度变化属于整份谱，只在第一个 part 写一次；
+            // 力度与渐强渐弱按通道各自写（伴奏轨有自己的 CC11 曲线）。
             if (partIdx == 1) {
                 // 速度记号：阶跃写 ♩=N；渐变写 rit. / accel.，并在它落定的
                 // 小节补一个终点速度（初始速度已在 emitAttributes 写）。
@@ -459,7 +469,7 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                         << "<sound tempo=\"" << tb << "\"/>\n"
                         << "      </direction>\n";
                 }
-                for (const auto& m : expr.inRange(bs, be)) {
+                for (const auto& m : expr.inRange(bs, be, partChannel)) {
                     if (!m.section.empty())
                         xml << "      <direction placement=\"above\">\n"
                             << "        <direction-type><words>"

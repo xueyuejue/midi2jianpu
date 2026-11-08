@@ -1303,6 +1303,24 @@ if (existsSync(sostPath)) {
   });
 }
 
+
+
+// ---- 38. v1.40.0 CC11 渐强渐弱按通道归属 ----
+// 旋律(ch0)渐弱、伴奏(ch1)渐强：旧 WASM 会把两条 wedge 合并，网页谱面印
+// cresc. 而力度写 ff→pp。修复后三端只应出现本通道的 dim./diminuendo。
+const dcPath = path.join(FIXTURES, 'dyn_channels.mid');
+if (existsSync(dcPath)) {
+  const dc = makeCaller(mod);
+  dc.setMidi(new Uint8Array(readFileSync(dcPath)));
+  dc.setLyrics('');
+  const dcXml = dc.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(/diminuendo/.test(dcXml) && !/crescendo/.test(dcXml),
+    '网页 WASM 的 MusicXML 只写旋律通道的渐弱', dcXml.slice(0, 200));
+  const dcHtml = dc.call('midi2jianpu_html', -1, 1) || '';
+  check(/>dim\.</.test(dcHtml) && !/>cresc\.</.test(dcHtml),
+    '网页 WASM 的 HTML 只写旋律通道的渐弱', dcHtml.slice(0, 200));
+  check(/Verse/.test(dcHtml), '网页 WASM 仍显示全局段落名');
+}
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);
