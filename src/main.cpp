@@ -20,6 +20,7 @@ static void printHelp() {
         "  midi2jianpu <input.mid> --key Am         手动指定调性(如 Am=小调, C=大调)\n"
         "  midi2jianpu <input.mid> --output out.txt  文本简谱输出到文件\n"
         "  midi2jianpu <input.mid> --track 0         只输出指定轨道\n"
+        "  midi2jianpu <input.mid> --list-tracks     列出所有轨道（选 --track 前先看清）\n"
         "  midi2jianpu <input.mid> --transpose +2     移调(半音, 正负都可)\n"
         "  midi2jianpu <input.mid> --lyrics lyrics.lrc  加载歌词(优先于 MIDI 内置歌词)\n"
         "  midi2jianpu <input.mid> --no-midi-lyrics  忽略 MIDI 文件自带的歌词\n"
@@ -83,11 +84,66 @@ static bool parseBeats(const char* s, double& out) {
     }
 }
 
+// --list-tracks：把文件里的每条轨列出来（序号 / 名称 / 旋律音数 / 乐器 /
+// 歌词字数 / 是否鼓轨），让用户在 `--track N` 之前先看清该选哪条。纯诊断，
+// 不参与转换，因此不改动任何既有转换输出，零回归。
+static void printTrackList(const m2j::MidiData& data) {
+    struct TrackStat {
+        int notes = 0;
+        std::map<int, int> chCount;   // 逻辑通道 -> 出现次数
+        int lyrics = 0;
+    };
+    std::map<int, TrackStat> st;
+    for (const auto& n : data.notes) { st[n.track].notes++; st[n.track].chCount[n.channel]++; }
+    for (const auto& ly : data.midiLyrics)
+        if (ly.track >= 0) st[ly.track].lyrics++;
+
+    // 每轨取使用最多的那个逻辑通道，去查它的 GM 乐器名。
+    auto instOf = [&](int track) -> std::string {
+        auto it = st.find(track);
+        if (it == st.end() || it->second.chCount.empty()) return "";
+        int bestCh = it->second.chCount.begin()->first, best = -1;
+        for (auto& c : it->second.chCount)
+            if (c.second > best) { best = c.second; bestCh = c.first; }
+        auto p = data.channelProgram.find(bestCh);
+        if (p == data.channelProgram.end()) return "";
+        return m2j::gmInstrumentName(p->second);
+    };
+
+    std::cout << "轨道列表 (format " << data.format << ", 共 " << data.trackCount << " 轨):\n";
+    for (int t = 0; t < data.trackCount; t++) {
+        const auto& s = st[t];
+        std::string name;
+        auto nit = data.trackNames.find(t);
+        if (nit != data.trackNames.end()) name = nit->second;
+        int drum = 0;
+        auto dit = data.drumNotesByTrack.find(t);
+        if (dit != data.drumNotesByTrack.end()) drum = dit->second;
+        std::string inst = instOf(t);
+
+        std::cout << "  #" << t;
+        if (!name.empty()) std::cout << "  \"" << name << "\"";
+        if (drum > 0 && s.notes == 0)
+            std::cout << "   鼓轨 (跳过 " << drum << " 鼓件音)";
+        else if (drum > 0)
+            std::cout << "   旋律 " << s.notes << " 音, 鼓件音 " << drum;
+        else
+            std::cout << "   旋律 " << s.notes << " 音";
+        if (!inst.empty()) std::cout << "   乐器: " << inst;
+        if (s.lyrics > 0) std::cout << "   歌词 " << s.lyrics << " 字";
+        std::cout << "\n";
+    }
+    std::cout << "默认: 转换全部轨道（多轨各自成行）；--track N 只取第 N 轨（从 0 起）\n";
+    if (data.format == 2)
+        std::cout << "注意: format 2 各轨是独立序列，默认只转第 0 轨；--track N 可指定别的段\n";
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) { printHelp(); return 1; }
 
     std::string input, htmlOut, keyArg, gongArg, txtOut, xmlOut, lyricsPath;
     int trackFilter = -1;
+    bool listTracks = false;
     int transpose = 0;
     bool quantize = true;
     bool noMidiLyrics = false;
@@ -125,6 +181,7 @@ int main(int argc, char** argv) {
                 std::cerr << "错误: --track 需要整数\n"; return 1;
             }
         }
+        else if (a == "--list-tracks") { listTracks = true; }
         else if (a == "--transpose" && i + 1 < argc) {
             if (!parseInt(argv[++i], transpose)) {
                 std::cerr << "错误: --transpose 需要整数（半音数，可为负）\n"; return 1;
@@ -149,6 +206,11 @@ int main(int argc, char** argv) {
     if (trackFilter >= 0 && data.notes.empty()) {
         std::cerr << "轨道 " << trackFilter << " 无音符。\n";
         return 4;
+    }
+    // --list-tracks 是纯诊断：列完轨道就退出，不跑后面的转换流程。
+    if (listTracks) {
+        printTrackList(data);
+        return 0;
     }
     // 中途转调（0x59 map）默认生效。关掉时保留事件表本身：曲首调号还要
     // 用来判调性，清空数据会把「忽略转调」和「没有调号」混为一谈。

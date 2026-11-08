@@ -57,10 +57,11 @@
 - [x] **LRC 按变速分段对齐**：`[mm:ss.xx]` 是真实秒，新的 `TempoTimeline` 按 `set_tempo` map 逐段反解成 tick，变速曲目的后半段歌词不再整体错位（120→60 BPM 时旧版能差出整整一小节）；同时支持 `[offset:±毫秒]` 整体平移与一行多个时间戳（副歌重复句），CLI / 网页版 / HTML / MusicXML 共用同一个解析器
 - [x] 文本输出到文件：`--output out.txt`（含和弦标记）
 - [x] 多轨选择：`--track 0`
+- [x] **轨道列表诊断**：`--list-tracks` 列出每条轨的序号 / 名称 / 旋律音数 / GM 乐器名 / 歌词字数 / 是否鼓轨，选 `--track N` 前先看清该选哪条（纯诊断、不参与转换、不改变任何既有输出）
 - [x] `--version` 打印版本号
 - [x] **在线 Demo**：WASM 核心，浏览器内运行 C++ 代码
 - [x] **减时线按拍连通**：一拍内的八分/十六分音符共用一条横线（十六分再叠平行线），而不是每个音各画一小段；和弦的减时线只画在最下面那个音上
-- [x] 574 项单元测试 + 57 组端到端冒烟测试 + 33 组 WASM 产物一致性检查
+- [x] 574 项单元测试 + 58 组端到端冒烟测试 + 33 组 WASM 产物一致性检查
 
 ## 在线 Demo 功能
 
@@ -137,6 +138,9 @@ Windows 产物在 `build\Release\midi2jianpu.exe`。详细说明、WASM 编译�
 #            不再串进选中轨；但速度 / 拍号 / 调号 / Marker / 鼓组设定等全局音源信息仍保留
 ./build/midi2jianpu 你的歌.mid --track 0
 ./build/midi2jianpu --version
+
+# 选 --track N 前先看清轨道布局：列出每条轨的序号 / 名称 / 音数 / 乐器 / 歌词 / 是否鼓轨
+./build/midi2jianpu 你的歌.mid --list-tracks
 
 # 弱起：自动判不出来（或判错了）时手动指定首小节的拍数
 ./build/midi2jianpu 你的歌.mid --pickup 1
@@ -770,6 +774,7 @@ XG 鼓组通道与中途换音色的通道，新导出 `_midi2jianpu_bank_info`�
 - [x] SysEx 鼓模式（GS/XG Part Mode / GM/GS/XG Reset）：按 `(逻辑通道, tick)` 解析任意 part 的鼓设定与中途撤销，通道 10 可被改回普通乐器；新增 11 份 `sysex_*.mid` 素材，无关 SysEx 与无设定文件三层输出逐字节零回归（v1.32.0）
 - [x] Bank Select 与音色时间轴：解析 CC0 / CC32 识别 XG 鼓组库（MSB 127），`0xC0` 按 `(逻辑通道, tick)` 记全音色设定，声部乐器名不再被曲末音色覆盖；Reset 撤销鼓组、设定写在末轨仍生效、端口隔离；新增 9 份 `bank_*.mid` / `program_timeline.mid` 素材，普通 GM 文件三层输出逐字节零回归（v1.33.0）
 - [x] `--track` 全事件表隔离：把按轨过滤下沉到解析层（在踏板 / 力度语义修正之前），`--track N` 只转换第 N 轨音符，且别轨的内置歌词 / CC11 / CC7 / CC64 踏板 / 弯音不再串进选中轨，页眉 `trackLabel` 如实说明；速度 / 拍号 / 调号 / Marker / 鼓组 / 弯音范围等全局音源设定仍保留；网页端新增段落下拉框与 `_midi2jianpu_set_track` / `_midi2jianpu_track_info` 导出；新增 7 份 `track_*.mid` 素材，普通文件三层输出逐字节零回归（v1.34.0）
+- [x] **轨道列表诊断**：新增 `--list-tracks` 纯命令行诊断模式，列清每条轨的序号 / 名称 / 旋律音数 / GM 乐器名 / 歌词字数 / 是否鼓轨，让用户选 `--track N` 前先看清该选哪条；该模式不参与转换、不产生任何谱面，因此完全不改变既有 txt / HTML / MusicXML 输出，三层零回归保持不变（v1.35.0）
 
 ## 为什么开源
 

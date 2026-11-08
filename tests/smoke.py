@@ -1777,6 +1777,28 @@ def main():
     _, sm, _ = run(exe, os.path.join(FIXTURES, "sample.mid"))
     check("按轨隔离" not in sm,
           "不带 --track 的普通文件不显示按轨隔离提示（页眉零回归）")
+
+    # ---- [58] --list-tracks：选 --track 前先看清轨道布局 ----
+    # 纯诊断命令，不参与转换。验证它列出每条轨的序号/名称/音数/乐器/歌词，
+    # 并能把鼓轨标出来；同时必须「只列不转」——不输出「共提取 N 个音符」。
+    print("\n[58] --list-tracks 轨道列表（诊断）")
+    # meter.mid 含 Conductor / Vocal / Piano / Drums 四条轨，正好覆盖各类。
+    rc, out, err = run(exe, os.path.join(FIXTURES, "meter.mid"), "--list-tracks")
+    check(rc == 0, "退出码为 0", err)
+    check("轨道列表" in out and "format 1" in out, "打印轨道列表头")
+    check("--track N 只取第 N 轨" in out, "提示默认转全部、可用 --track 选段")
+    check(out.count("#") >= 4, "列出至少 4 条轨", str(out.count("#")))
+    check('"Vocal"' in out and '"Piano"' in out, "写出轨名 Vocal / Piano")
+    check("鼓轨" in out and "鼓件音" in out, "把鼓轨标出来")
+    check("合成人声" in out or "钢琴" in out, "写出轨道的 GM 乐器名")
+    check("共提取" not in out, "只列轨道、不参与转换（无「共提取」行）")
+
+    # 空文件保护：--list-tracks 也走正常加载路径，非法文件仍报错
+    bad = os.path.join(tmp, "not_a_midi.txt")
+    open(bad, "w", encoding="utf-8").write("hello")
+    rc2, _, err2 = run(exe, bad, "--list-tracks")
+    check(rc2 != 0 and ("错误" in err2 or "无法" in err2),
+          "对非法文件给出错误而非崩溃", err2)
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

@@ -818,8 +818,14 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                 // 但 GS/XG 可以把它改回普通乐器，所以这里只记 note-on 个数，
                 // 真正丢不丢留到 applySysExDrumMode 按时间轴决定——那时所有轨
                 // 的 SysEx 都读齐了，设定写在文件末尾也能生效。
-                if (keepTrack && rawChannel == 9 && type == 0x90u && vel > 0)
-                    defaultDrumNoteOn++;
+                if (rawChannel == 9 && type == 0x90u && vel > 0) {
+                    // defaultDrumNoteOn 仍只统计当前选中轨（keepTrack），以保住
+                    // --track 模式下 drumNotesSkipped 的旧语义；鼓轨列表用的
+                    // drumNotesByTrack 则按所有轨统计，方便 --list-tracks 把每条
+                    // 鼓轨都标出来。
+                    if (keepTrack) defaultDrumNoteOn++;
+                    out.drumNotesByTrack[trackIdx]++;
+                }
                 {
                     uint64_t key = ((uint64_t)channel << 24) |
                                    ((uint64_t)note << 8) | (uint64_t)trackIdx;
