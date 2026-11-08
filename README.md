@@ -1,5 +1,7 @@
 # midi2jianpu
 
+[![构建与回归测试](https://github.com/xueyuejue/midi2jianpu/actions/workflows/ci.yml/badge.svg)](https://github.com/xueyuejue/midi2jianpu/actions/workflows/ci.yml)
+
 > 直接将 MIDI 文件转换为排版美观、可打印的中文简谱（数字谱）。
 
 **在线试玩：[https://xueyuejue.github.io/midi2jianpu/](https://xueyuejue.github.io/midi2jianpu/)**（拖入 .mid 即转，零安装）
