@@ -4056,8 +4056,9 @@ int main() {
     }
     std::cout << "\n测试控制器语义：CC67 软踏板 (v1.41.0)\n";
     {
-        auto load = [](const std::vector<uint8_t>& bytes, int filter = -1) {
+        auto load = [](const std::vector<uint8_t>& bytes, int filter = -1, double scale = -1.0) {
             MidiData d;
+            if (scale >= 0.0) d.softPedalScale = scale;
             bool ok = loadMidiFromMemory(bytes.data(), bytes.size(), d, false, filter);
             return std::make_pair(ok, d);
         };
@@ -4175,7 +4176,7 @@ int main() {
                   velOf(r.second, 1440) == 77,
                   "CC67 与 CC64 同曲时各管各的：力度 / 时值分开");
         }
-        // 8) 力度下限：vel=1 衰减后仍夹到 1，不会出现 0 力度
+        // 8) 力度下限：vel=1 已在地板，不再重复记软踏板、也不出现 0 力度
         {
             SmfTrack t;
             t.at(0, ev({0xB0, 0x43, 127}));
@@ -4184,9 +4185,43 @@ int main() {
             t.at(480, ev({0xB0, 0x43, 0}));
             auto b = buildSmf(1, 480, {t});
             auto r = load(b);
-            check(r.second.softPedalNotes == 1 &&
-                  r.second.notes[0].velocity == 1,
-                  "velocity 衰减后夹到 1，不出现 0 力度");
+            check(r.second.notes[0].velocity == 1 &&
+                  r.second.softPedalNotes == 0,
+                  "velocity 已是下限(1)不衰减、不记软踏板，绝不出现 0 力度");
+        }
+        // 9) 系数可配：scale=1.0 不衰减（还原被强制压暗的弱奏曲）
+        {
+            auto b = buildSmf(1, 480, {melody(true)});
+            auto r = load(b, -1, 1.0);
+            const MidiData& d = r.second;
+            check(d.softPedalEvents == 2 && d.softPedalNotes == 0,
+                  "scale=1.0 仍记 CC67 事件，但不衰减任何音符");
+            check(velOf(d, 1440) == 110 && velOf(d, 1920) == 60,
+                  "scale=1.0 力度逐字节还原（×1.0）");
+            check(controllerLabel(d).find("软踏板") == std::string::npos,
+                  "scale=1.0 没有实际衰减时诊断不报软踏板");
+        }
+        // 10) scale=0.5 半衰减：110→55、60→30（整数公式零漂移）
+        {
+            auto b = buildSmf(1, 480, {melody(true)});
+            auto r = load(b, -1, 0.5);
+            const MidiData& d = r.second;
+            check(d.softPedalNotes == 2,
+                  "scale=0.5 仍衰减区间内起音的 2 个音");
+            check(velOf(d, 1440) == 55 && velOf(d, 1920) == 30,
+                  "110→55、60→30（×0.5 四舍五入，纯整数公式）");
+        }
+        // 11) scale=0.0 完全关闭：连事件计数都归零，谱面彻底不体现软踏板
+        {
+            auto b = buildSmf(1, 480, {melody(true)});
+            auto r = load(b, -1, 0.0);
+            const MidiData& d = r.second;
+            check(d.softPedalEvents == 0 && d.softPedalNotes == 0,
+                  "scale=0.0 = --no-soft-pedal，软踏板完全关闭");
+            check(velOf(d, 1440) == 110 && velOf(d, 1920) == 60,
+                  "关闭后区间内的音力度原样保留");
+            check(controllerLabel(d).find("软踏板") == std::string::npos,
+                  "关闭后诊断不出现软踏板");
         }
     }
 

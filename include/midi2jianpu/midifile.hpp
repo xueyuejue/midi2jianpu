@@ -221,6 +221,9 @@ struct MidiData {
     int sostenutoExtendedNotes = 0;// 踩下瞬间正按着、被持音踏板保持的音符数
     int softPedalEvents = 0;       // CC67 事件数（踩下 + 抬起）
     int softPedalNotes = 0;        // 软踏板踩下期间起音、力度被衰减的音符数
+    double softPedalScale = 0.7;   // CC67 软踏板力度衰减系数（0~1）。0 = 完全关闭（连事件计数都不记），
+                                   // 1 = 不衰减；介于两者之间是用户指定的「踩下左踏板后击弦变轻」幅度。
+                                   // 命令行 --soft-pedal-scale / --no-soft-pedal、网页软踏板强度下拉共用。
     int allNotesOffEvents = 0;     // CC120 / CC123 事件数
     int allNotesOffTrimmed = 0;    // 被清音事件截尾的音符数
     int cc7Dynamics = 0;           // 由 CC7 主音量补入力度表的点数

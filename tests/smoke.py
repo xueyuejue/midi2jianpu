@@ -1998,6 +1998,32 @@ def main():
     _, ph_out, _ = run(exe, os.path.join(FIXTURES, "pedal_hysteresis.mid"))
     check("软踏板" not in ph_out, "CC64 素材不误报软踏板（零回归）")
 
+    print("\n[64b] 软踏板系数可配：--soft-pedal-scale / --no-soft-pedal")
+    # 默认 0.7 把两处 110 强音之一压到 77，谱面只剩 1 个 '>'；把系数调到 1 或
+    # 直接关闭，被压暗的弱奏曲应当还原成 2 个重音，且页眉不再提软踏板。
+    rc, out_s1, _ = run(exe, sp, "--soft-pedal-scale", "1")
+    check(rc == 0, "scale=1 解析成功", out_s1[:200])
+    check("软踏板" not in out_s1, "scale=1 不报软踏板衰减")
+    score_s1 = "\n".join(l for l in out_s1.splitlines() if "|" in l)
+    check(score_s1.count(">") == 2,
+          f"scale=1 还原 2 个重音，实际 {score_s1.count('>')}", score_s1[:300])
+
+    rc, out_no, _ = run(exe, sp, "--no-soft-pedal")
+    check(rc == 0, "--no-soft-pedal 解析成功", out_no[:200])
+    check("软踏板" not in out_no, "--no-soft-pedal 不报软踏板")
+    score_no = "\n".join(l for l in out_no.splitlines() if "|" in l)
+    check(score_no.count(">") == 2,
+          f"--no-soft-pedal 也还原 2 个重音，实际 {score_no.count('>')}", score_no[:300])
+
+    rc, out_half, _ = run(exe, sp, "--soft-pedal-scale", "0.5")
+    check(rc == 0, "scale=0.5 解析成功", out_half[:200])
+    check("软踏板：衰减 2 个音" in out_half, "scale=0.5 仍衰减 2 个音的力度")
+
+    rc, out_bad, err_bad = run(exe, sp, "--soft-pedal-scale", "2")
+    check(rc == 1, "scale 超范围(>1)报错退出", err_bad[:200])
+    rc, out_bad2, err_bad2 = run(exe, sp, "--soft-pedal-scale", "abc")
+    check(rc == 1, "scale 非法(非数字)报错退出", err_bad2[:200])
+
     print("\n[65] SMF chunk 边界重同步：私有块 + 长度字段失准不再整份报废")
     # 旧版遇到 MThd 后的 XFIH 直接停掉 chunk 循环，或首轨长度少写 4 字节
     # 后在 EOT 处读不到 MTrk —— 两种都会让整份文件判成「未提取到音符」。

@@ -30,7 +30,7 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 2
 
-      - name: 单元测试（693 项）
+      - name: 单元测试（701 项）
         working-directory: build
         run: ctest --output-on-failure
 
@@ -42,7 +42,7 @@ jobs:
           git diff --exit-code -- 'tests/fixtures/*.mid'
           test -z "$(git status --porcelain --untracked-files=all -- tests/fixtures/)"
 
-      - name: CLI 端到端冒烟（68 组）
+      - name: CLI 端到端冒烟（69 组）
         run: python3 tests/smoke.py build/midi2jianpu
 
   wasm:

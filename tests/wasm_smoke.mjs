@@ -131,6 +131,7 @@ const REQUIRED = [
   '_midi2jianpu_set_use_pentatonic', // 网页的五声校正开关
   '_midi2jianpu_pentatonic_info', // 网页的调式提示
   '_midi2jianpu_set_use_dynamics', // 网页的「力度与演奏法」开关
+  '_midi2jianpu_set_soft_pedal_scale', // 网页的软踏板强度下拉
   '_midi2jianpu_expression_count', // 网页的表情检出提示
   '_midi2jianpu_part_info', // 网页的声部乐器标注提示
   '_midi2jianpu_tempo_ramp_count', // 网页的「其中 N 处渐快渐慢」提示
@@ -1345,6 +1346,45 @@ if (existsSync(spPath)) {
     const ci = mod.UTF8ToString(mod._midi2jianpu_controller_info(p, n));
     check(/软踏板/.test(ci), 'controller_info 向网页报告软踏板', ci);
   });
+}
+// ---- 39b. v1.46.0 软踏板系数可配：网页端也能调强度 / 关闭 ----
+// 默认 0.7 把踏板内 110→77、60→42；把系数调到 1 或关闭，网页 JSON 应还原成
+// 原始 110 / 60，且 controller_info 不再提软踏板。改完必须把全局系数复位成 0.7，
+// 否则后面的测试（含其它曲子的 CC67）会沿用 1.0。
+if (existsSync(spPath)) {
+  mod._midi2jianpu_set_soft_pedal_scale(1.0);
+  const sp1 = makeCaller(mod);
+  sp1.setMidi(new Uint8Array(readFileSync(spPath)));
+  sp1.setLyrics('');
+  const sp1Notes = JSON.parse(sp1.call('midi2jianpu_get_notes_json', -1, 1) || '[]');
+  const sp1Vel = sp1Notes.map((n) => n.velocity);
+  check(!sp1Vel.includes(77) && !sp1Vel.includes(42) && sp1Vel.includes(110),
+    'scale=1.0 网页 JSON 还原原始力度(无衰减)', sp1Vel.join(','));
+  withBytes('soft_pedal.mid', (p, n) => {
+    const ci = mod.UTF8ToString(mod._midi2jianpu_controller_info(p, n));
+    check(!/软踏板/.test(ci), 'scale=1.0 时 controller_info 不报软踏板', ci);
+  });
+
+  mod._midi2jianpu_set_soft_pedal_scale(0.0);
+  const sp0 = makeCaller(mod);
+  sp0.setMidi(new Uint8Array(readFileSync(spPath)));
+  sp0.setLyrics('');
+  const sp0Notes = JSON.parse(sp0.call('midi2jianpu_get_notes_json', -1, 1) || '[]');
+  const sp0Vel = sp0Notes.map((n) => n.velocity);
+  check(sp0Vel.includes(110) && !sp0Vel.includes(77),
+    'scale=0.0 关闭软踏板，网页 JSON 也不衰减', sp0Vel.join(','));
+
+  mod._midi2jianpu_set_soft_pedal_scale(0.5);
+  const sp5 = makeCaller(mod);
+  sp5.setMidi(new Uint8Array(readFileSync(spPath)));
+  sp5.setLyrics('');
+  const sp5Notes = JSON.parse(sp5.call('midi2jianpu_get_notes_json', -1, 1) || '[]');
+  const sp5Vel = sp5Notes.map((n) => n.velocity);
+  check(sp5Vel.includes(55) && sp5Vel.includes(30) && sp5Vel.includes(110),
+    'scale=0.5 网页 JSON 半衰减(110→55、60→30)', sp5Vel.join(','));
+
+  // 复位成默认 0.7，避免污染后续测试
+  mod._midi2jianpu_set_soft_pedal_scale(0.7);
 }
 // ---- 40. v1.42.0 SMF chunk 级边界重同步 ----
 // 旧 WASM 遇到 MThd 后的私有 chunk / 写错的首轨长度会直接判「无音符」，

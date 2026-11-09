@@ -30,6 +30,8 @@ static void printHelp() {
         "  midi2jianpu <input.mid> --gong C        手动指定五声调式的宫音(简谱 1)\n"
         "  midi2jianpu <input.mid> --no-pentatonic  关闭五声调式宫音自动校正\n"
         "  midi2jianpu <input.mid> --no-dynamics   不写力度/断音/滑音/段落等演奏记号\n"
+        "  midi2jianpu <input.mid> --soft-pedal-scale 0.5  软踏板力度衰减系数(0~1, 默认 0.7)\n"
+        "  midi2jianpu <input.mid> --no-soft-pedal   关闭 CC67 软踏板(还原被强制压暗的弱奏曲)\n"
         "  midi2jianpu <input.mid> --no-quantize    关闭时值量化(保留 MIDI 原始时长)\n"
         "  midi2jianpu --version\n"
         "  midi2jianpu --help\n";
@@ -77,6 +79,20 @@ static bool parseBeats(const char* s, double& out) {
         std::string str(s);
         double v = std::stod(str, &used);
         if (used != str.size() || v < 0) return false;
+        out = v;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+// 浮点系数解析：软踏板衰减系数 0~1（含端点）。非法输入不再抛异常中断程序。
+static bool parseDouble(const char* s, double& out) {
+    try {
+        size_t used = 0;
+        std::string str(s);
+        double v = std::stod(str, &used);
+        if (used != str.size()) return false;
         out = v;
         return true;
     } catch (...) {
@@ -147,6 +163,8 @@ int main(int argc, char** argv) {
     bool noKeyChanges = false;
     bool noPentatonic = false;
     bool noDynamics = false;
+    double softPedalScale = -1.0;  // <0 表示未指定（用默认 0.7）
+    bool noSoftPedal = false;
     double pickupBeats = -1;   // <0 表示没指定（走自动判定）
     bool noPickup = false;
     for (int i = 1; i < argc; i++) {
@@ -161,6 +179,14 @@ int main(int argc, char** argv) {
         else if (a == "--gong" && i + 1 < argc) { gongArg = argv[++i]; }
         else if (a == "--no-pentatonic") { noPentatonic = true; }
         else if (a == "--no-dynamics") { noDynamics = true; }
+        else if (a == "--no-soft-pedal") { noSoftPedal = true; }
+        else if (a == "--soft-pedal-scale" && i + 1 < argc) {
+            double f;
+            if (!parseDouble(argv[++i], f) || f < 0.0 || f > 1.0) {
+                std::cerr << "错误: --soft-pedal-scale 需要 0~1 的系数（如 0.5）\n"; return 1;
+            }
+            softPedalScale = f;
+        }
         else if (a == "--output" && i + 1 < argc) { txtOut = argv[++i]; }
         else if (a == "--musicxml" && i + 1 < argc) { xmlOut = argv[++i]; }
         else if (a == "--lyrics" && i + 1 < argc) { lyricsPath = argv[++i]; }
@@ -193,6 +219,11 @@ int main(int argc, char** argv) {
     if (input.empty()) { printHelp(); return 1; }
 
     m2j::MidiData data;
+    // 软踏板系数必须在解析之前落到 MidiData 上：CC67 的力度衰减发生在解析阶段
+    // （applyControllerSemantics 直接改 notes.velocity），晚于 load 就来不及了。
+    // 与 --track 一样，解析层要拿着这个值去算，不能在末尾再补救。
+    if (noSoftPedal) data.softPedalScale = 0.0;
+    else if (softPedalScale >= 0.0) data.softPedalScale = softPedalScale;
     // --track 要在 format 2 里挑段落，此时不能提前丢掉别的轨。轨号一路
     // 传进解析层：歌词 / 力度 / 踏板 / 清音 / 弯音事件都要按轨隔离，
     // 只在末尾丢音符的话，谱面时值早被别轨的控制器改过了。

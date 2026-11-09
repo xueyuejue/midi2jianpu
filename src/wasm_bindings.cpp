@@ -16,6 +16,7 @@ static bool g_useMidiLyrics = true;  // 是否使用 MIDI 自带的 0x05 歌词
 static bool g_usePentatonic = true;  // 是否按五声调式校正宫音
 static bool g_useDynamics = true;    // 是否写出力度 / 演奏法 / 段落标记
 static int g_trackFilter = -1;       // 网页段落选择：-1 = 全部轨，与 CLI --track 共用
+static double g_softPedalScale = 0.7; // 网页软踏板强度下拉：与 CLI --soft-pedal-scale 共用
 
 // 网页上的两个渲染开关。清空内置歌词事件表而不是只跳过渲染：歌词事件同时
 // 参与旋律轨判定，关掉就得连证据一起去掉。五声开关则直接落在 MidiData 上，
@@ -24,6 +25,16 @@ static void applyRenderOptions(m2j::MidiData& data) {
     if (!g_useMidiLyrics) data.midiLyrics.clear();
     data.usePentatonic = g_usePentatonic;
     data.useDynamics = g_useDynamics;
+}
+
+// 解析前的统一入口：CC67 软踏板力度衰减发生在解析阶段（applyControllerSemantics
+// 直接改 notes.velocity），所以软踏板系数必须在 loadMidiFromMemory 之前落到
+// MidiData 上，否则网页端的下拉就改不到谱面。所有读取文件的入口都走这里，
+// 避免每个函数各自散落赋值。
+static bool loadJ(const uint8_t* midiData, int size, m2j::MidiData& data,
+                  bool filtered, int track) {
+    data.softPedalScale = g_softPedalScale;
+    return m2j::loadMidiFromMemory(midiData, size, data, filtered, track);
 }
 
 extern "C" {
@@ -39,8 +50,8 @@ void midi2jianpu_set_track(int track) {
 const char* midi2jianpu_track_info(const uint8_t* midiData, int size) {
     static std::string buf;
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data,
-                                 g_trackFilter >= 0, g_trackFilter)) {
+    if (!loadJ(midiData, size, data,
+               g_trackFilter >= 0, g_trackFilter)) {
         buf.clear(); return buf.c_str();
     }
     buf = m2j::trackLabel(data);
@@ -54,7 +65,7 @@ const char* midi2jianpu_track_info(const uint8_t* midiData, int size) {
 // isMajor: 是否大调
 const char* midi2jianpu_parse(const uint8_t* midiData, int size, int keyPitch, int isMajor) {
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) {
+    if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) {
         g_result = "错误: 无法解析MIDI文件";
         return g_result.c_str();
     }
@@ -83,7 +94,7 @@ const char* midi2jianpu_parse(const uint8_t* midiData, int size, int keyPitch, i
 // 生成HTML谱面
 const char* midi2jianpu_html(const uint8_t* midiData, int size, int keyPitch, int isMajor) {
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) {
+    if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) {
         g_result = "<p>错误: 无法解析MIDI文件</p>";
         return g_result.c_str();
     }
@@ -142,7 +153,7 @@ void midi2jianpu_set_title(const char* title) {
 // 只是读文件，不受「忽略内置歌词」开关影响；解析失败返回 0。
 int midi2jianpu_midi_lyric_count(const uint8_t* midiData, int size) {
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) return 0;
+    if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) return 0;
     return (int)m2j::normalizeMidiLyrics(data).size();
 }
 
@@ -162,7 +173,7 @@ void midi2jianpu_set_use_pentatonic(int on) {
 int midi2jianpu_pentatonic_info(const uint8_t* midiData, int size) {
     if (!g_usePentatonic) return 0;
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) return 0;
+    if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) return 0;
     if (data.keySig.valid) return 0;
     const m2j::PentatonicEstimate p = m2j::detectPentatonic(data);
     if (!p.detected) return 0;
@@ -173,7 +184,7 @@ int midi2jianpu_pentatonic_info(const uint8_t* midiData, int size) {
 // 与内置歌词计数一样只读文件，不受任何渲染开关影响；解析失败返回 0。
 int midi2jianpu_key_change_count(const uint8_t* midiData, int size) {
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) return 0;
+    if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) return 0;
     return (int)m2j::keyChangesOf(data).size();
 }
 
@@ -181,7 +192,7 @@ int midi2jianpu_key_change_count(const uint8_t* midiData, int size) {
 // 用户看不出「后半段歌词为什么没跑偏」是刻意做的还是碰巧。
 int midi2jianpu_tempo_change_count(const uint8_t* midiData, int size) {
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) return 0;
+    if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) return 0;
     return m2j::tempoChangeCount(data);
 }
 
@@ -191,7 +202,7 @@ int midi2jianpu_tempo_change_count(const uint8_t* midiData, int size) {
 // 谱面上却只标一个「rit. 120→60」。不说明的话用户会以为漏了速度数据。
 int midi2jianpu_tempo_ramp_count(const uint8_t* midiData, int size) {
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) return 0;
+    if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) return 0;
     int n = 0;
     for (const auto& m : m2j::tempoMarksOf(data))
         if (m.kind != m2j::TempoMarkKind::Step) n++;
@@ -203,12 +214,21 @@ void midi2jianpu_set_use_dynamics(int on) {
     g_useDynamics = (on != 0);
 }
 
+// 网页版「软踏板强度」下拉：0~1 的系数，0 = 关闭（不衰减、连事件都不记），
+// 1 = 不衰减，介于两者之间是踩下左踏板后击弦变轻的幅度。默认 0.7 与 CLI 一致。
+// 必须在解析之前设置（loadJ 每次读取这个全局再 load），网页每次转换都重设。
+void midi2jianpu_set_soft_pedal_scale(double scale) {
+    if (scale < 0.0) scale = 0.0;
+    else if (scale > 1.0) scale = 1.0;
+    g_softPedalScale = scale;
+}
+
 // 文件里实际检出的演奏表情记号总数，供网页提示「检测到 N 处表情」。
 // 只是读文件，不渲染；关掉开关时返回 0，网页就不必再自己判断复选框状态。
 int midi2jianpu_expression_count(const uint8_t* midiData, int size) {
     if (!g_useDynamics) return 0;
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) return 0;
+    if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) return 0;
     return m2j::ExpressionMap(data).totalCount();
 }
 
@@ -217,7 +237,7 @@ int midi2jianpu_expression_count(const uint8_t* midiData, int size) {
 const char* midi2jianpu_part_info(const uint8_t* midiData, int size) {
     static std::string buf;
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
+    if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
     buf = m2j::partSummary(data);
     return buf.c_str();
 }
@@ -228,7 +248,7 @@ const char* midi2jianpu_part_info(const uint8_t* midiData, int size) {
 const char* midi2jianpu_file_header_info(const uint8_t* midiData, int size) {
     static std::string buf;
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
+    if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
     // 浏览器里喂进来的可能就是下载到一半的 .mid，必须先说明数据不完整。
     buf = m2j::truncationLabel(data);
     const std::string tb = m2j::timeBaseLabel(data);
@@ -244,7 +264,7 @@ const char* midi2jianpu_file_header_info(const uint8_t* midiData, int size) {
 const char* midi2jianpu_controller_info(const uint8_t* midiData, int size) {
     static std::string buf;
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
+    if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
     buf = m2j::controllerLabel(data);
     return buf.c_str();
 }
@@ -254,7 +274,7 @@ const char* midi2jianpu_controller_info(const uint8_t* midiData, int size) {
 const char* midi2jianpu_bend_range_info(const uint8_t* midiData, int size) {
     static std::string buf;
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
+    if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
     buf = m2j::bendRangeLabel(data);
     return buf.c_str();
 }
@@ -264,7 +284,7 @@ const char* midi2jianpu_bend_range_info(const uint8_t* midiData, int size) {
 const char* midi2jianpu_running_status_info(const uint8_t* midiData, int size) {
     static std::string buf;
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
+    if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
     buf = m2j::runningStatusLabel(data);
     return buf.c_str();
 }
@@ -273,7 +293,7 @@ const char* midi2jianpu_running_status_info(const uint8_t* midiData, int size) {
 const char* midi2jianpu_port_info(const uint8_t* midiData, int size) {
     static std::string buf;
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
+    if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
     buf = m2j::portLabel(data);
     return buf.c_str();
 }
@@ -284,7 +304,7 @@ const char* midi2jianpu_port_info(const uint8_t* midiData, int size) {
 const char* midi2jianpu_sysex_info(const uint8_t* midiData, int size) {
     static std::string buf;
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
+    if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
     buf = m2j::sysExLabel(data);
     return buf.c_str();
 }
@@ -294,7 +314,7 @@ const char* midi2jianpu_sysex_info(const uint8_t* midiData, int size) {
 const char* midi2jianpu_bank_info(const uint8_t* midiData, int size) {
     static std::string buf;
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
+    if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) { buf.clear(); return buf.c_str(); }
     buf = m2j::bankLabel(data);
     return buf.c_str();
 }
@@ -302,7 +322,7 @@ const char* midi2jianpu_bank_info(const uint8_t* midiData, int size) {
 // 获取MIDI音符数据(JSON格式, 用于播放)
 const char* midi2jianpu_get_notes_json(const uint8_t* midiData, int size) {
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) {
+    if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) {
         g_result = "[]";
         return g_result.c_str();
     }
@@ -328,7 +348,7 @@ const char* midi2jianpu_get_notes_json(const uint8_t* midiData, int size) {
 // 生成MusicXML
 const char* midi2jianpu_musicxml(const uint8_t* midiData, int size, int keyPitch, int isMajor) {
     m2j::MidiData data;
-    if (!m2j::loadMidiFromMemory(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) {
+    if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) {
         g_result = "<error>无法解析MIDI</error>";
         return g_result.c_str();
     }

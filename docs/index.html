@@ -81,6 +81,14 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
   </select>
   <label class="hint"><input type="checkbox" id="usePentatonic" checked> 五声调式宫音校正</label>
   <label class="hint"><input type="checkbox" id="useDynamics" checked> 力度与演奏法</label>
+  <label for="softPedal">软踏板：</label>
+  <select id="softPedal" title="CC67 软踏板力度衰减系数；弱奏曲被强制压暗时可调小系数或关闭还原">
+    <option value="0.7">弱奏 0.7（默认）</option>
+    <option value="0.5">轻柔 0.5</option>
+    <option value="0.3">极轻 0.3</option>
+    <option value="1">不衰减</option>
+    <option value="0">关闭</option>
+  </select>
 </div>
 
 <details class="lyrics">
@@ -340,6 +348,9 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
       wasmMod._midi2jianpu_set_use_dynamics(useDynBox.checked ? 1 : 0);
     if (midiBytes && wasmReady) { updateFileHints(); convert(); }
   };
+  $('softPedal').onchange = function () {
+    if (midiBytes && wasmReady) convert();
+  };
   $('lyricsBtn').onclick = function () { $('lyricsFile').click(); };
   $('lyricsFile').onchange = function () {
     var f = $('lyricsFile').files[0];
@@ -397,6 +408,11 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     }
     if (wasmMod._midi2jianpu_set_use_dynamics) {
       wasmMod._midi2jianpu_set_use_dynamics(useDynBox.checked ? 1 : 0);
+    }
+    // 软踏板强度每次都重设：wasm 里是全局状态，换文件 / 换下拉不能沿用上一次
+    if (wasmMod._midi2jianpu_set_soft_pedal_scale) {
+      var sp = parseFloat($('softPedal').value);
+      wasmMod._midi2jianpu_set_soft_pedal_scale(isNaN(sp) ? 0.7 : sp);
     }
 
     // 标题同理，每次重置，避免换了文件还顶着上一首的歌名

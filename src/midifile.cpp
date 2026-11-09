@@ -260,7 +260,8 @@ static void applyControllerSemantics(MidiData& out,
                                      const std::vector<DynPoint>& cc7) {
     out.pedalEvents = (int)pedal.size();
     out.sostenutoEvents = (int)sostenuto.size();
-    out.softPedalEvents = (int)softPedal.size();
+    // 软踏板开关：scale <= 0 视为完全关闭，连事件计数都归零，谱面彻底不体现。
+    out.softPedalEvents = (out.softPedalScale > 0.0) ? (int)softPedal.size() : 0;
     out.allNotesOffEvents = (int)allOff.size();
 
     // format 2 可能已经把别的段落整轨丢掉，只认还活着的通道。
@@ -299,7 +300,10 @@ static void applyControllerSemantics(MidiData& out,
 
     const PedalRangeMap ranges = buildPedalRanges(pedal, liveChannels, maxTick);
     const PedalRangeMap sostRanges = buildPedalRanges(sostenuto, liveChannels, maxTick);
-    const PedalRangeMap softRanges = buildPedalRanges(softPedal, liveChannels, maxTick);
+    // 软踏板关闭（scale <= 0）时不建区间，step4 直接跳过，省一次遍历。
+    const PedalRangeMap softRanges = (out.softPedalScale > 0.0)
+        ? buildPedalRanges(softPedal, liveChannels, maxTick)
+        : PedalRangeMap{};
 
     // ---- 3) 同键重新击打：前一个音的音响到此为止 ----
     auto keyOf = [](const NoteEvent& n) -> uint64_t {
@@ -318,17 +322,21 @@ static void applyControllerSemantics(MidiData& out,
         // 所以这里只衰减起音落在踩下区间内的音符 velocity——重音记号、
         // 力度变化分析和网页端导出的音符力度都读这个值。CC11 / CC7 构成的
         // 力度表属于另一条控制链，不能在这里改写，否则会凭空多一档力度。
-        auto spit = softRanges.find(n.channel);
-        if (spit != softRanges.end()) {
-            for (const auto& rg : spit->second) {
-                if (n.startTicks >= rg.first && n.startTicks < rg.second) {
-                    const int softened = (n.velocity * 7 + 5) / 10;  // ×0.7，四舍五入
-                    n.velocity = std::max(1, std::min(127, softened));
-                    out.softPedalNotes++;
-                    break;
+            auto spit = softRanges.find(n.channel);
+            if (spit != softRanges.end()) {
+                for (const auto& rg : spit->second) {
+                    if (n.startTicks >= rg.first && n.startTicks < rg.second) {
+                        // 系数可配：ten = round(scale*100)，整数公式 (v*ten+50)/100
+                        // 等价于旧版 (v*7+5)/10（scale=0.7 时 ten=70，逐字节一致），
+                        // 且不引入任何浮点漂移——这是零回归的关键。
+                        const int ten = (int)std::lround(out.softPedalScale * 100.0);
+                        const int softened = (n.velocity * ten + 50) / 100;
+                        const int v = std::max(1, std::min(127, softened));
+                        if (v != n.velocity) { n.velocity = v; out.softPedalNotes++; }
+                        break;
+                    }
                 }
             }
-        }
         const long start = n.startTicks;
         const long origEnd = start + n.durationTicks;
         long newEnd = origEnd;
