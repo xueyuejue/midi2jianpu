@@ -4400,6 +4400,83 @@ int main() {
         }
     }
 
+    // -------------------------------------------------------------------
+    // v1.45.0：MusicXML 一个 part 里的多个 <voice> 各自写 direction。
+    // 旧实现整份 part 只取一个主导通道，副声部的 crescendo 与 p→ff 全丢；
+    // 修复后按 splitVoices 分组各算一次 dominantChannel，direction 带
+    // <voice> 归属、wedge number 按声部递增；单声部输出仍逐字节不变。
+    // -------------------------------------------------------------------
+    std::cout << "\n测试 MusicXML 逐声部 direction (v1.45.0)\n";
+    {
+        auto occurrences = [](const std::string& s, const std::string& sub) {
+            size_t n = 0, pos = 0;
+            while ((pos = s.find(sub, pos)) != std::string::npos) {
+                n++; pos += sub.size();
+            }
+            return n;
+        };
+        const int up[7]   = {20, 40, 60, 80, 100, 120, 127};
+        const int down[7] = {120, 100, 80, 60, 40, 20, 10};
+        const int mid[7]  = {30, 45, 60, 75, 90, 105, 120};
+        const KeyEstimate key{0, true};
+
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.tempoChanges.push_back({0, 120.0});
+        d.trackNames[0] = "Piano";
+        d.markers.push_back({0, "Verse"});
+        NoteEvent n;
+        n.track = 0; n.velocity = 96;
+        n.startSeconds = 0; n.durationSeconds = 0.5;
+        for (int i = 0; i < 8; i++) {
+            n.channel = 0; n.pitch = 76 + (i % 4);
+            n.startTicks = i * 480; n.durationTicks = 480;
+            d.notes.push_back(n);
+        }
+        n.channel = 1; n.pitch = 60; n.durationTicks = 1920;
+        n.startTicks = 0; d.notes.push_back(n);
+        n.pitch = 62; n.startTicks = 1920; d.notes.push_back(n);
+        n.channel = 2; n.pitch = 48; n.durationTicks = 3840;
+        n.startTicks = 0; d.notes.push_back(n);
+        for (int i = 0; i < 7; i++) {
+            d.dynamics.push_back({i * 240, up[i], 0});
+            d.dynamics.push_back({i * 240, down[i], 1});
+            d.dynamics.push_back({i * 240, mid[i], 2});
+        }
+        const std::string xml = renderMusicXml(d, key);
+        check(occurrences(xml, "crescendo") == 2 &&
+              occurrences(xml, "diminuendo") == 1,
+              "三个声部各自写出渐强 / 渐弱，副声部不再丢失");
+        check(xml.find("number=\"3\"") != std::string::npos,
+              "wedge number 按声部递增，两个渐强不抢同一个编号");
+        check(xml.find("        <voice>3</voice>") != std::string::npos,
+              "direction 带 <voice>3 归属");
+        check(occurrences(xml, "<words>Verse</words>") == 1,
+              "全局段落名仍只写一次");
+
+        // 单声部零回归：direction 里不该出现缩进的 <voice> 子元素
+        MidiData one;
+        one.division = 480;
+        one.timeSig.valid = true;
+        one.tempoChanges.push_back({0, 120.0});
+        one.trackNames[0] = "Piano";
+        one.markers.push_back({0, "Verse"});
+        NoteEvent m;
+        m.track = 0; m.channel = 0; m.velocity = 96;
+        m.startSeconds = 0; m.durationSeconds = 0.5;
+        m.durationTicks = 480;
+        for (int i = 0; i < 8; i++) {
+            m.pitch = 60 + (i % 4); m.startTicks = i * 480;
+            one.notes.push_back(m);
+        }
+        for (int i = 0; i < 7; i++)
+            one.dynamics.push_back({i * 240, up[i], 0});
+        const std::string oneXml = renderMusicXml(one, key);
+        check(occurrences(oneXml, "        <voice>") == 0,
+              "单声部 part 的 direction 保持旧版逐字节输出");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

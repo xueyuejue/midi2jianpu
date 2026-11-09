@@ -1307,16 +1307,18 @@ if (existsSync(sostPath)) {
 
 // ---- 38. v1.40.0 CC11 渐强渐弱按通道归属 ----
 // 旋律(ch0)渐弱、伴奏(ch1)渐强：旧 WASM 会把两条 wedge 合并，网页谱面印
-// cresc. 而力度写 ff→pp。v1.43.0 起两个声部各自印自己的渐变，但同轨
-// 单 part 的 MusicXML 仍按主导通道（ch0）只写 dim.。
+// cresc. 而力度写 ff→pp。v1.43.0 起两个声部各自印自己的渐变，v1.45.0
+// 起同轨单 part 的 MusicXML 也按 <voice> 各写一份 dim. / cresc.。
 const dcPath = path.join(FIXTURES, 'dyn_channels.mid');
 if (existsSync(dcPath)) {
   const dc = makeCaller(mod);
   dc.setMidi(new Uint8Array(readFileSync(dcPath)));
   dc.setLyrics('');
   const dcXml = dc.call('midi2jianpu_musicxml', -1, 1) || '';
-  check(/diminuendo/.test(dcXml) && !/crescendo/.test(dcXml),
-    '网页 WASM 的 MusicXML 只写旋律通道的渐弱', dcXml.slice(0, 200));
+  check(/diminuendo/.test(dcXml) && /crescendo/.test(dcXml),
+    '网页 WASM 的 MusicXML 两个声部各写自己的渐弱 / 渐强', dcXml.slice(0, 200));
+  check(/<voice>1<\/voice>/.test(dcXml) && /<voice>2<\/voice>/.test(dcXml),
+    '网页 WASM 的 direction 带 <voice> 归属', dcXml.slice(0, 200));
   const dcHtml = dc.call('midi2jianpu_html', -1, 1) || '';
   check(/>dim\.</.test(dcHtml) && />cresc\.</.test(dcHtml),
     '网页 WASM 的 HTML 两个声部各写自己的渐变（v1.43.0）', dcHtml.slice(0, 200));
@@ -1440,6 +1442,43 @@ if (existsSync(olPath)) {
     check(/文件数据不完整/.test(fh) && !/文件结构提示/.test(fh),
       '真·截断文件在网页端仍按 v1.38 报数据不完整', fh);
   });
+}
+
+// ---- 43. v1.45.0 同轨多声部：WASM MusicXML 按 <voice> 各写 direction ----
+// 旧 WASM 整个 part 只取一个主导通道，第二 / 第三声部的 crescendo 与
+// p→ff 力度档位整条丢失。修复后每个 <voice> 各写一份、wedge number
+// 递增到 3，direction 带 <voice> 归属，全局段落名仍只写一次。
+const vtPath = path.join(FIXTURES, 'voice_trio.mid');
+if (existsSync(vtPath)) {
+  mod._midi2jianpu_set_track(-1);
+  const vt = makeCaller(mod);
+  vt.setMidi(new Uint8Array(readFileSync(vtPath)));
+  vt.setLyrics('');
+  const vtXml = vt.call('midi2jianpu_musicxml', -1, 1) || '';
+  check((vtXml.match(/crescendo/g) || []).length === 2 &&
+        (vtXml.match(/diminuendo/g) || []).length === 1,
+    'WASM 三个声部写出 2 个渐强 + 1 个渐弱');
+  check(/number="1"/.test(vtXml) && /number="2"/.test(vtXml) &&
+        /number="3"/.test(vtXml),
+    'WASM wedge number 按声部递增到 3');
+  check(/<direction[^>]*>[\s\S]*?<voice>3<\/voice>[\s\S]*?<\/direction>/.test(vtXml),
+    'WASM direction 带 <voice>3 归属');
+  check((vtXml.match(/<words>Verse<\/words>/g) || []).length === 1,
+    'WASM 全局段落名仍只写一次');
+
+  const dcW = makeCaller(mod);
+  dcW.setMidi(new Uint8Array(readFileSync(path.join(FIXTURES, 'dyn_channels.mid'))));
+  dcW.setLyrics('');
+  const dcXml = dcW.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(/crescendo/.test(dcXml) && /<dynamics><p\/>/.test(dcXml),
+    'WASM dyn_channels 补回副声部 crescendo 与 p 力度');
+
+  const wsW = makeCaller(mod);
+  wsW.setMidi(new Uint8Array(readFileSync(path.join(FIXTURES, 'wedge_tracks.mid'))));
+  wsW.setLyrics('');
+  const wsXml = wsW.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(!wsXml.includes('        <voice>'),
+    'WASM 单声部 direction 不写多余的 <voice>');
 }
 
 console.log('');

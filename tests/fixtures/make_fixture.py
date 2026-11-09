@@ -2,12 +2,12 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 75 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 76 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
 pedal / allnotesoff / cc7volume / pedal_channels / pedal_hysteresis /
-sostenuto / dyn_channels / wedge_tracks / oversized_len /
+sostenuto / dyn_channels / wedge_tracks / oversized_len / voice_trio /
 bendrange_channels / bendrange_timeline / bendrange_crosstrack /
 running_meta / running_sysex / running_realtime / running_standard /
 port_pedal / port_bend / port_prefix / port_prefix_base / port_standard /
@@ -68,6 +68,10 @@ oversized_len 把首轨长度字段写成 0x00010000（越过整份文件），�
 完整存在：旧实现把整份文件当成一轨的截断残片，误报「文件数据不完整」、
 两轨并成一轨、--track 1 拿不到旋律；修复后按 EOT 锚点切开，两轨各归各位，
 页眉只报「重同步 1 条轨道边界」。
+voice_trio 把三个通道、三条反向 CC11 曲线塞进同一条轨（8 个四分音符 /
+2 个二分音符 / 1 个全小节长音），逼 splitVoices 拆出 3 个 <voice>：锁住
+MusicXML 每个声部各写自己的力度与楔形、direction 带 <voice> 归属、wedge
+number 递增到 3，而全局段落名 Verse 仍只写一次。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -2171,6 +2175,37 @@ def build_oversized_len() -> bytes:
     return bytes(header + bytes(cond) + t1.render())
 
 
+def build_voice_trio() -> bytes:
+    # 同轨三声部的 MusicXML direction 归属（v1.45.0）。
+    # 旧实现整份 part 只取一个主导通道，第二 / 第三声部的 crescendo 与
+    # p→ff 力度档位整条丢失；修复后每个 <voice> 各写一份，wedge number
+    # 按声部递增，direction 用 <voice> 标明归属。
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x06, b"Verse"))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Piano"))
+    for i in range(8):
+        t1.note(0, 76 + (i % 4), 96, i * DIV, DIV)
+    t1.note(1, 60, 80, 0, BAR)
+    t1.note(1, 62, 80, BAR, BAR)
+    t1.note(2, 48, 64, 0, BAR * 2)
+
+    up = (20, 40, 60, 80, 100, 120, 127)
+    down = (120, 100, 80, 60, 40, 20, 10)
+    mid_up = (30, 45, 60, 75, 90, 105, 120)
+    for i in range(7):
+        t1.cc(0, 11, up[i], i * 240)
+        t1.cc(1, 11, down[i], i * 240)
+        t1.cc(2, 11, mid_up[i], i * 240)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return bytes(header + t0.render() + t1.render())
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -2514,6 +2549,16 @@ def main() -> None:
     # 长度字段越过文件末尾、后续轨仍完整：按锚点重同步，不再误报截断
     for name, builder in (
         ("oversized_len", build_oversized_len),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # 同轨三声部：MusicXML 按 <voice> 各写自己的力度与渐变
+    for name, builder in (
+        ("voice_trio", build_voice_trio),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

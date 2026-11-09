@@ -245,12 +245,10 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                                      ? resolveLyrics(data, lyricLines, t)
                                      : LyricAssignment();
 
-        // CC11 与渐变楔形都按通道归属。一个 part 可能混入多个通道（同一
-        // 轨里的旋律 + 低音伴奏），取该 part 音符最多的通道（并列时取最早
-        // 出现的）作为主导通道，与文本谱 / HTML 的口径由 dominantChannel()
-        // 统一保证；不能退回 ns.front().channel（tick 0 的低音常排最前）。
-        const int partChannel = dominantChannel(ns);
-        std::string lastDyn;
+        // CC11 / 力度档位 / 渐变楔形都按通道归属，而且一个 part 里可能有
+        // 多个 <voice>（同轨复调、或旋律 + 低音伴奏）。旧实现整份 part 只取
+        // 一个主导通道，副声部的 crescendo 与 p→ff 会被整条吞掉；下面按
+        // voice 分组各算一次主导通道，口径仍由 dominantChannel() 统一。
 
         // 和弦符号只写一份：旋律声部优先，没有旋律声部时写进第一个 part。
         const bool writeChords = (chordTrack >= 0) ? (t == chordTrack) : (partIdx == 1);
@@ -275,6 +273,22 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
         // 小节总时值直接溢出（4/4 写成 8 拍），MuseScore 打不开。
         const std::vector<int> voiceOf = splitVoices(
             ns, 3, [&](const NoteEvent& n) { return expr.isGraceNote(n.startTicks, n.channel); });
+        // 每个 <voice> 一套自己的通道 / 力度记忆：ns 按 splitVoices 的分组
+        // 归位后，dominantChannel() 与文本谱 / HTML 的 PartView 口径一致。
+        int voiceCount = 1;
+        for (size_t i = 0; i < ns.size(); ++i) {
+            const int v = (i < voiceOf.size()) ? voiceOf[i] : 0;
+            if (v + 1 > voiceCount) voiceCount = v + 1;
+        }
+        std::vector<std::vector<NoteEvent>> voiceNotes(voiceCount);
+        for (size_t i = 0; i < ns.size(); ++i) {
+            const int v = (i < voiceOf.size()) ? voiceOf[i] : 0;
+            voiceNotes[v].push_back(ns[i]);
+        }
+        std::vector<int> voiceChannel(voiceCount, -1);
+        for (int v = 0; v < voiceCount; ++v)
+            voiceChannel[v] = dominantChannel(voiceNotes[v]);
+        std::vector<std::string> lastDyn(voiceCount);
         auto triplets = detectTriplets(ns, division);
         std::vector<Segment> segs;
         segs.reserve(ns.size() * 2);
@@ -410,80 +424,96 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
 
         // 演奏表情写进 <direction>：必须排在 <attributes> 之后、第一个
         // <note> 之前，MuseScore 才会把它显示在小节上方而不是吞掉。
-        // 一个 part 一份 lastDyn，力度档位没变就不重复写。
+        // 每个 <voice> 各按自己的主导通道写力度与楔形、各记一份 lastDyn：
+        // 同轨复调里第二声部的 crescendo / p→ff 不再被第一声部吞掉。
+        // MusicXML 4.0 的 <direction> 子元素顺序是 direction-type+ →
+        // offset? → voice? → staff? → sound?，<voice> 只能插在 sound 之前。
         auto emitDirections = [&](int bar) {
             if (!expr.enabled()) return;
             const long bs = grid.barStart(bar), be = grid.barEnd(bar);
-            const std::string dyn = expr.dynamicAt(bs, partChannel);
-            if (!dyn.empty() && dyn != lastDyn) {
-                xml << "      <direction placement=\"above\">\n"
-                    << "        <direction-type><dynamics><" << dyn
-                    << "/></dynamics></direction-type>\n"
-                    << "        <sound dynamics=\"" << dynamicToMidiVolume(dyn)
-                    << "\"/>\n"
-                    << "      </direction>\n";
-                lastDyn = dyn;
-            }
-            // 段落名 / 速度变化属于整份谱，只在第一个 part 写一次；
-            // 力度与渐强渐弱按通道各自写（伴奏轨有自己的 CC11 曲线）。
-            if (partIdx == 1) {
-                // 速度记号：阶跃写 ♩=N；渐变写 rit. / accel.，并在它落定的
-                // 小节补一个终点速度（初始速度已在 emitAttributes 写）。
-                if (auto it = rampStartAtBar.find(bar); it != rampStartAtBar.end()) {
-                    const TempoMark& m = *it->second;
-                    const char* word = (m.kind == TempoMarkKind::Ritardando)
-                                     ? "rit." : "accel.";
+            const int vmax = (int)voiceChannel.size();
+            for (int v = 0; v < vmax; ++v) {
+                const int ch = voiceChannel[v];
+                if (ch < 0) continue;
+                // 单声部保持旧版逐字节输出；多声部才补 <voice> 归属，并让
+                // 每个声部用独立的 wedge number，避免两条楔形抢 number="1"。
+                const std::string voiceTag = (vmax > 1)
+                    ? ("        <voice>" + std::to_string(v + 1) + "</voice>\n")
+                    : std::string();
+                const std::string wedgeNum = std::to_string(v + 1);
+                const std::string dyn = expr.dynamicAt(bs, ch);
+                if (!dyn.empty() && dyn != lastDyn[v]) {
                     xml << "      <direction placement=\"above\">\n"
-                        << "        <direction-type><words>" << word
-                        << "</words></direction-type>\n"
-                        << "        <sound tempo=\"" << m.bpm << "\"/>\n"
+                        << "        <direction-type><dynamics><" << dyn
+                        << "/></dynamics></direction-type>\n"
+                        << voiceTag
+                        << "        <sound dynamics=\"" << dynamicToMidiVolume(dyn)
+                        << "\"/>\n"
                         << "      </direction>\n";
+                    lastDyn[v] = dyn;
                 }
-                if (auto it = stepAtBar.find(bar); it != stepAtBar.end()) {
-                    const int tb = it->second->bpm;
-                    xml << "      <direction placement=\"above\">\n"
-                        << "        <direction-type><metronome>"
-                        << "<beat-unit>quarter</beat-unit>"
-                        << "<per-minute>" << tb << "</per-minute>"
-                        << "</metronome></direction-type>"
-                        << "<sound tempo=\"" << tb << "\"/>\n"
-                        << "      </direction>\n";
-                } else if (auto rit = rampEndAtBar.find(bar); rit != rampEndAtBar.end() &&
-                           rampStartAtBar.find(bar) == rampStartAtBar.end()) {
-                    // 渐变落定：写终点速度，MuseScore 播放在这里跳到目标 BPM。
-                    // 与它同小节已有的阶跃记号不重复写（阶跃更权威）。
-                    const int tb = rit->second->toBpm;
-                    xml << "      <direction placement=\"above\">\n"
-                        << "        <direction-type><metronome>"
-                        << "<beat-unit>quarter</beat-unit>"
-                        << "<per-minute>" << tb << "</per-minute>"
-                        << "</metronome></direction-type>"
-                        << "<sound tempo=\"" << tb << "\"/>\n"
-                        << "      </direction>\n";
-                }
-                for (const auto& m : expr.inRange(bs, be, partChannel)) {
-                    if (!m.section.empty())
+                // 段落名 / 速度变化属于整份谱，只在第一个 part 的第一个
+                // 声部写一次；力度与渐强渐弱按各自声部的通道写。
+                if (partIdx == 1 && v == 0) {
+                    // 速度记号：阶跃写 ♩=N；渐变写 rit. / accel.，并在它落定的
+                    // 小节补一个终点速度（初始速度已在 emitAttributes 写）。
+                    if (auto it = rampStartAtBar.find(bar); it != rampStartAtBar.end()) {
+                        const TempoMark& m = *it->second;
+                        const char* word = (m.kind == TempoMarkKind::Ritardando)
+                                         ? "rit." : "accel.";
                         xml << "      <direction placement=\"above\">\n"
-                            << "        <direction-type><words>"
-                            << xmlEscape(m.section) << "</words></direction-type>\n"
+                            << "        <direction-type><words>" << word
+                            << "</words></direction-type>\n"
+                            << "        <sound tempo=\"" << m.bpm << "\"/>\n"
+                            << "      </direction>\n";
+                    }
+                    if (auto it = stepAtBar.find(bar); it != stepAtBar.end()) {
+                        const int tb = it->second->bpm;
+                        xml << "      <direction placement=\"above\">\n"
+                            << "        <direction-type><metronome>"
+                            << "<beat-unit>quarter</beat-unit>"
+                            << "<per-minute>" << tb << "</per-minute>"
+                            << "</metronome></direction-type>"
+                            << "<sound tempo=\"" << tb << "\"/>\n"
+                            << "      </direction>\n";
+                    } else if (auto rit = rampEndAtBar.find(bar); rit != rampEndAtBar.end() &&
+                               rampStartAtBar.find(bar) == rampStartAtBar.end()) {
+                        // 渐变落定：写终点速度，MuseScore 播放在这里跳到目标 BPM。
+                        // 与它同小节已有的阶跃记号不重复写（阶跃更权威）。
+                        const int tb = rit->second->toBpm;
+                        xml << "      <direction placement=\"above\">\n"
+                            << "        <direction-type><metronome>"
+                            << "<beat-unit>quarter</beat-unit>"
+                            << "<per-minute>" << tb << "</per-minute>"
+                            << "</metronome></direction-type>"
+                            << "<sound tempo=\"" << tb << "\"/>\n"
+                            << "      </direction>\n";
+                    }
+                    for (const auto& m : expr.inRange(bs, be, ch)) {
+                        if (!m.section.empty())
+                            xml << "      <direction placement=\"above\">\n"
+                                << "        <direction-type><words>"
+                                << xmlEscape(m.section) << "</words></direction-type>\n"
+                                << "      </direction>\n";
+                    }
+                }
+                // 渐强渐弱是通道级演奏表情：每个 part / 每个 voice 按自己的
+                // 主导通道各写一份，方向记号用 <voice> 标明归属。
+                for (const auto& m : expr.inRange(bs, be, ch)) {
+                    if (m.wedge != 0)
+                        xml << "      <direction placement=\"above\">\n"
+                            << "        <direction-type><wedge type=\""
+                            << (m.wedge > 0 ? "crescendo" : "diminuendo")
+                            << "\" number=\"" << wedgeNum << "\"/></direction-type>\n"
+                            << voiceTag
+                            << "      </direction>\n";
+                    if (m.wedgeStop)
+                        xml << "      <direction placement=\"above\">\n"
+                            << "        <direction-type><wedge type=\"stop\" "
+                            << "number=\"" << wedgeNum << "\"/></direction-type>\n"
+                            << voiceTag
                             << "      </direction>\n";
                 }
-            }
-            // 渐强渐弱是通道级演奏表情：每个 part 按自己的主导通道各写一份。
-            // 旧版整个循环都塞在 partIdx == 1 里，第二个 part 的 crescendo
-            // 连同 wedge stop 一起消失，和注释写的「按通道各自写」正好相反。
-            for (const auto& m : expr.inRange(bs, be, partChannel)) {
-                if (m.wedge != 0)
-                    xml << "      <direction placement=\"above\">\n"
-                        << "        <direction-type><wedge type=\""
-                        << (m.wedge > 0 ? "crescendo" : "diminuendo")
-                        << "\" number=\"1\"/></direction-type>\n"
-                        << "      </direction>\n";
-                if (m.wedgeStop)
-                    xml << "      <direction placement=\"above\">\n"
-                        << "        <direction-type><wedge type=\"stop\" "
-                        << "number=\"1\"/></direction-type>\n"
-                        << "      </direction>\n";
             }
         };
 

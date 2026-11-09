@@ -1956,9 +1956,15 @@ def main():
     rc, _, err = run(exe, dc, "--musicxml", dcx)
     check(rc == 0, "双通道力度素材导出 MusicXML", err[:200])
     xml_dc = open(dcx, encoding="utf-8").read()
-    # 一个 part 按主导通道写一份 direction；同轨双通道的主导是旋律 ch0。
-    check("diminuendo" in xml_dc and "crescendo" not in xml_dc,
-          "MusicXML 单 part 只写主导通道的渐弱", xml_dc[:300])
+    # v1.45.0 起一个 part 里的两个 <voice> 各按自己的主导通道写一份
+    # direction：旋律 diminuendo、伴奏 crescendo，并各自带 <voice> 归属。
+    check("diminuendo" in xml_dc and "crescendo" in xml_dc,
+          "MusicXML 两个声部各写自己的渐弱 / 渐强", xml_dc[:300])
+    check("        <voice>1</voice>" in xml_dc and
+          "        <voice>2</voice>" in xml_dc,
+          "MusicXML direction 标明 <voice> 归属", xml_dc[:300])
+    check('number="1"' in xml_dc and 'number="2"' in xml_dc,
+          "两条楔形用不同 number，不互相抢占")
 
     _, ex_out, _ = run(exe, os.path.join(FIXTURES, "expression.mid"))
     check("[cresc.]" in ex_out or "[dim.]" in ex_out,
@@ -2094,6 +2100,50 @@ def main():
     rc, tr, err = run(exe, os.path.join(FIXTURES, "truncated.mid"))
     check(rc == 0 and "文件数据不完整" in tr and "文件结构提示" not in tr,
           "真·截断文件仍按 v1.38 只报数据不完整", tr[:200])
+
+    print("\n[68] 同轨多声部：MusicXML 每个 <voice> 各写自己的力度与渐变")
+    # 旧实现整个 part 只取一个主导通道，副声部的 crescendo / p→ff 全丢。
+    # 修复后 direction 带 <voice> 归属、wedge number 按声部递增；单声部
+    # part 仍逐字节保持旧版（direction 里不写多余的 <voice>）。
+    vt = os.path.join(FIXTURES, "voice_trio.mid")
+    vtx = os.path.join(tmp, "voice_trio.xml")
+    rc, _, err = run(exe, vt, "--musicxml", vtx)
+    check(rc == 0, "三声部素材导出 MusicXML", err[:200])
+    xml_vt = open(vtx, encoding="utf-8").read() if rc == 0 else ""
+    import xml.etree.ElementTree as ET68
+    xerr = ""
+    well_formed = True
+    try:
+        ET68.fromstring(open(vtx, "rb").read())
+    except Exception as exc:
+        well_formed = False
+        xerr = str(exc)
+    check(well_formed, "三声部 MusicXML 是合法 XML", xerr)
+    check(xml_vt.count("crescendo") == 2 and xml_vt.count("diminuendo") == 1,
+          "三个声部写出 2 个渐强 + 1 个渐弱", xml_vt[:200])
+    check(all(('number="%d"' % k) in xml_vt for k in (1, 2, 3)),
+          "wedge number 按声部递增到 3，不互相抢占")
+    check(all(("<voice>%d</voice>" % k) in xml_vt for k in (1, 2, 3)),
+          "direction 与音符都覆盖 <voice> 1/2/3")
+    check(xml_vt.count("<words>Verse</words>") == 1,
+          "全局段落名 Verse 仍只写一次")
+    check("        <voice>3</voice>" in xml_vt,
+          "direction 里带 <voice>3 归属（不只是音符）")
+
+    wt145 = os.path.join(tmp, "wt_v145.xml")
+    run(exe, os.path.join(FIXTURES, "wedge_tracks.mid"), "--musicxml", wt145)
+    xml_single = open(wt145, encoding="utf-8").read()
+    check("        <voice>" not in xml_single,
+          "单声部 part 的 direction 保持旧版逐字节输出")
+
+    dcx = os.path.join(tmp, "dc_v145.xml")
+    run(exe, os.path.join(FIXTURES, "dyn_channels.mid"), "--musicxml", dcx)
+    xml_dc = open(dcx, encoding="utf-8").read()
+    check(xml_dc.count("crescendo") == 1 and xml_dc.count("diminuendo") == 1,
+          "dyn_channels 的副声部 crescendo 补回")
+    check("<dynamics><p/></dynamics>" in xml_dc and
+          "<dynamics><ff/></dynamics>" in xml_dc,
+          "dyn_channels 的副声部 p→ff 力度档位补回")
 
     print("\n" + "-" * 48)
     if failures:
