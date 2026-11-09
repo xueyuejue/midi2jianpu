@@ -1200,14 +1200,31 @@ static std::string formatTrack(
         }
     };
 
-    for (size_t idx = 0; idx < merged.size(); idx++) {
-        const auto& n = merged[idx];
+    // 同拍的一组音是和弦（splitVoices 已把同拍同值的音放进同一声部）。
+    // 旧实现一个音印一个 token 顺着排下去：`sample.mid` 钢琴左手的 C-E-G
+    // 三个全音符被印成 `1, - - - 3, - - - 5, - - -`，4/4 的一小节读出 12
+    // 拍，后面每一小节的拍位跟着错位。简谱里和弦是竖排的，文本谱没有竖排，
+    // 这里用 `+` 把同一拍的音并成一个 token（`1,+3,+5,`），时值只写一次，
+    // 拍数才与拍号对得上。`+` 也不会和 [C] 和弦名、3(...) 三连音、
+    // (...)5 倚音这三种记号混淆。
+    size_t idx = 0;
+    while (idx < merged.size()) {
+        size_t grpEnd = idx + 1;
+        while (grpEnd < merged.size() &&
+               merged[grpEnd].startTicks == merged[idx].startTicks)
+            grpEnd++;
+        const NoteEvent& n = merged[idx];
+        // 组的时值取最短：splitVoices 已把同拍音对齐，这里只是防御。
+        long groupDur = std::max<long>(n.durationTicks, 1);
+        for (size_t k = idx + 1; k < grpEnd; k++)
+            groupDur = std::min(groupDur, std::max<long>(merged[k].durationTicks, 1));
 
         // 倚音（装饰音）：本身不单独占一格，改挂到紧随其后的主音上。这里整颗
         // 跳过，只把结束位置推进到倚音尾部，避免主音的休止计算把它算成空拍。
         if (expr.isGraceNote(n.startTicks, n.channel)) {
             started = true;
-            prevEnd = n.startTicks + n.durationTicks;
+            prevEnd = n.startTicks + groupDur;
+            idx = grpEnd;
             continue;
         }
 
@@ -1270,16 +1287,29 @@ static std::string formatTrack(
         // 表示先快速滑/弹一个 3 再落到主音 5；括号把它和正式音区分开，
         // 也避免与和弦 [..]、三连音 3(..) 等记号混淆。
         const NoteExpression ne = expr.noteAt(n.startTicks, n.channel);
-        std::string grace;
+        // 和弦音按音高从低到高用 `+` 串起来；每个音各带自己的八度记号，
+        // 所以 `1,+3,+5,` 里三个逗号分别管自己那个音。
+        std::string head;
         if (ne.hasGrace())
-            grace = "(" + pitchToJianpu(ne.gracePitch, keys.at(n.startTicks)) + ")";
-        std::string head = grace + pitchToJianpu(n.pitch, keys.at(n.startTicks));
+            head = "(" + pitchToJianpu(ne.gracePitch, keys.at(n.startTicks)) + ")";
+        bool toneWritten = false;
+        for (size_t k = idx; k < grpEnd; k++) {
+            const auto& cn = merged[k];
+            if (expr.isGraceNote(cn.startTicks, cn.channel)) continue;
+            if (toneWritten) head += "+";
+            head += pitchToJianpu(cn.pitch, keys.at(n.startTicks));
+            toneWritten = true;
+        }
+        if (!toneWritten) {          // 整组都是倚音：没有可印的音头
+            idx = grpEnd;
+            continue;
+        }
         // 断音 / 重音 / 滑音 / 颤音只挂在真实音头上，延续段的 "-" 不带记号。
         const std::string art = ne.symbol();
-        long noteEnd = n.startTicks + n.durationTicks;
+        long noteEnd = n.startTicks + groupDur;
         long barEnd = grid.barEnd(barOf(n.startTicks));
         if (triplets[idx] || noteEnd <= barEnd) {
-            emitNoteToken(os, head, triplets[idx] ? "" : durationSuffix(n.durationTicks, data.division), art);
+            emitNoteToken(os, head, triplets[idx] ? "" : durationSuffix(groupDur, data.division), art);
         } else {
             // 长音跨小节：先写满本小节，再逐小节用延长线续上
             emitNoteToken(os, head, durationSuffix(barEnd - n.startTicks, data.division), art);
@@ -1295,6 +1325,7 @@ static std::string formatTrack(
         }
         started = true;
         prevEnd = noteEnd;
+        idx = grpEnd;
     }
     if (inTriplet) os << ")";
     os << " |\n";

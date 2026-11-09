@@ -1652,6 +1652,26 @@ if (existsSync(tkPath)) {
     'WASM HTML 页眉仍写 1=Bb');
 }
 
+// ---- 49. v1.52.0 文本谱和弦并格（三端里只有文本谱是「横排」的）----
+// sample.mid 钢琴左手是 C-E-G 三个全音符：旧版一个音印一格，4/4 的小节被
+// 写成 12 拍。网页端读同一份 core，文本谱必须同步并成 `1,+3,+5,`，
+// 而 HTML（竖排和弦列）与 MusicXML（<chord/>）本来就没错，不能被带偏。
+const smPath = path.join(FIXTURES, 'sample.mid');
+if (existsSync(smPath)) {
+  const sm = makeCaller(mod);
+  sm.setMidi(new Uint8Array(readFileSync(smPath)));
+  sm.setLyrics('');
+  const smText = sm.call('midi2jianpu_parse', -1, 1) || '';
+  check(smText.includes('1,+3,+5, - - -'),
+    'WASM 文本谱把同拍三音并成一格 `1,+3,+5, - - -`', smText);
+  check(!smText.includes('3, - - -'),
+    'WASM 文本谱里和弦音不再各占一格');
+
+  const smHtml = sm.call('midi2jianpu_html', -1, 1) || '';
+  check(smHtml.includes("class='note chordcol whole'"),
+    'WASM HTML 仍用竖排和弦列（chordcol），没被文本谱改动波及');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

@@ -35,6 +35,51 @@ def run(exe, *args):
     return p.returncode, p.stdout or "", p.stderr or ""
 
 
+# 文本谱里一个时值后缀对应多少拍（与 src/notation.cpp 的 durationSuffix 同表）。
+SUFFIX_BEATS = {"": 1.0, "_": 0.5, ".": 1.5, "_.": 0.75,
+                "=": 0.25, "=.": 0.375, "%%": 0.125}
+NOTE_RE = re.compile(r"^([#b]?)([0-7]|-+)([',]*)(_\.|=\.|%%|_|=|\.)?(.*)$")
+ART_RE = re.compile(r"(\u25bc|\u00b7|>|\u2197|\u2198|tr)")
+
+
+def bar_beats(bar):
+    """折算一小节印出来的拍数，用来核对「拍数与拍号守恒」。
+
+    `[C]` / `[转1=D]` / `[cresc.]` 之类的标记不计拍；和弦 token（`1+3+5`）
+    只在最后一个音上带时值后缀，所以整格只算一次。认不出来时返回 None。
+    """
+    total = 0.0
+    trip = False
+    for t in re.sub(r"\[[^\]]*\]", " ", bar).split():
+        if t == ")":
+            trip = False
+            continue
+        while t.startswith("3("):
+            trip = True
+            t = t[2:]
+        t = re.sub(r"^\([0-7][',#b]*\)", "", t)      # 倚音前缀 (3)
+        if not t:
+            continue
+        if "+" in t:
+            t = t.split("+")[-1]
+        m = NOTE_RE.match(t)
+        if not m:
+            return None
+        core, suf, rest = m.group(2), m.group(4) or "", m.group(5)
+        if rest and ART_RE.sub("", rest).strip("'"):
+            return None
+        if core.startswith("-"):
+            # 纯延音线逐条 1 拍；带后缀的（`-_`）是跨小节切出来的余量
+            total += SUFFIX_BEATS[suf] if suf else len(core)
+        elif trip:
+            total += 1.0 / 3
+        elif suf in SUFFIX_BEATS:
+            total += SUFFIX_BEATS[suf]
+        else:
+            return None
+    return total
+
+
 def inner_span(html, marker):
     """取出 html 里第一个含 marker 的 <span> 的内部内容（按标签配平）。
 
@@ -85,7 +130,8 @@ def main():
     check("1' -" in out, "同音重复合并成延音（1' -）")
     check("[p]" in out and "[ff]" in out, "力度记号 p / ff")
     # C 和弦与紧接的 G 和弦共用一个 5：同音合并不该把分属两个和弦的 5 并掉
-    check("5, - 5, -" in out, "分属两个和弦的同音不被误合并（m3 两个 5 都在）")
+    check("1,+3,+5, - 5,+7,+2 -" in out,
+          "分属两个和弦的同音不被误合并（m3 的 5, 同时出现在两个和弦里）")
 
     print("\n[2] 手动调性 --key G（八度基准回归）")
     rc, out, _ = run(exe, mid, "--key", "G")
@@ -1049,15 +1095,16 @@ def main():
               "MusicXML 的 <tied> 与 <tie> 同步，记谱软件才画得出弧线")
 
         # 钢琴轨（复调）的 4 拍和弦不能被门限放大成 4.76 拍。
-        # 柱式和弦在文本谱里写成 `1, - - - 3, - - - 5, - - -`（三音 × 4 拍 = 12 个 token），
-        # 一旦被放大就会多出 `-.` 这类续接 token，行内 token 数随之变多。
+        # 柱式和弦在文本谱里并成一格 `1,+3,+5, - - -`（一格和弦 + 三条
+        # 延音线 = 4 个 token），一旦被放大就会多出 `-.` 这类续接 token。
         psec = out.split("[Piano]")[1] if "[Piano]" in out else ""
         plines = [ln for ln in psec.splitlines() if "|" in ln]
         check(len(plines) == 9, f"钢琴轨 9 个柱式和弦各占一行，实际 {len(plines)}")
         bad = [ln for ln in plines
-               if len(ln.replace("|", " ").split()) != 12 or "0" in ln]
+               if len(ln.replace("|", " ").split()) != 4
+               or "0" in ln or "+" not in ln]
         check(not bad,
-              f"复调轨的每个和弦正好 12 个 token（三音各 4 拍），实际异常行 {bad[:2]}")
+              f"复调轨的每个和弦正好 4 个 token（一格和弦 + 三条延音线），实际异常行 {bad[:2]}")
 
     # ---- [27] 同轨复调：一条轨里两个声部 ----
     # polyphony.mid 是钢琴左右手写进同一个轨：右手四分音符，左手长音铺底，
@@ -1319,7 +1366,7 @@ def main():
     body = out.split("---")[-1]
     check("1= 3= 5=" not in body and "0 - - -" not in body,
           "不再是一串十六分音符加长休止")
-    check("1 - - -" in body, "和弦音补成 4 拍全音符")
+    check("1+3+5 - - -" in body, "和弦音并成一格补成 4 拍全音符（1+3+5 - - -）")
 
     px = os.path.join(tmp, "pedal.xml")
     rc, _, err = run(exe, ped, "--musicxml", px)
@@ -2383,6 +2430,43 @@ def main():
     rc, out, _ = run(exe, tk, "--key", "Bb", "--transpose", "+12")
     check(rc == 0 and "1=Bb 大调" in out and "已随移调平移" not in out,
           "--key Bb +12：整八度移调不改调性")
+
+    print("\n[74] 文本谱把同拍和弦并成一格：一小节不再凭空多出两拍")
+    # sample.mid 的钢琴左手是 C-E-G 三个全音符（同一声部、同拍同值）。
+    # 旧版一个音印一格，`1, - - - 3, - - - 5, - - -` 把 4/4 的一小节读成 12 拍。
+    sp = os.path.join(FIXTURES, "sample.mid")
+    rc, out, _ = run(exe, sp)
+    check(rc == 0, "输出 sample.mid 文本谱", out[-200:] if rc else "")
+    check("1,+3,+5, - - -" in out,
+          "三个全音符并成一格 `1,+3,+5, - - -`（时值只写一次）")
+    check("3, - - -" not in out,
+          "和弦音不再各占一格、把小节撑成 12 拍")
+    check("1,+3,+5, - 5,+7,+2 -" in out,
+          "小节内两个和弦各占一半时值，位置跟着音头走")
+
+    # 逐小节核对拍数：4/4 的谱面里任何一小节都不能超过 4 拍。
+    over = []
+    for line in out.splitlines():
+        if "|" not in line:
+            continue
+        for bar in line.split("|")[:-1]:
+            b = bar_beats(bar)
+            if b is not None and b > 4 + 1e-6:
+                over.append((bar.strip(), round(b, 2)))
+    check(not over, "sample.mid 全部小节不超过 4 拍", str(over[:3]))
+
+    for name in ("drums.mid", "harmony.mid", "long_tie.mid", "modulation.mid"):
+        rc, out, _ = run(exe, os.path.join(FIXTURES, name))
+        bad = []
+        for line in out.splitlines():
+            if "|" not in line:
+                continue
+            for bar in line.split("|")[:-1]:
+                b = bar_beats(bar)
+                if b is not None and b > 4 + 1e-6:
+                    bad.append((bar.strip(), round(b, 2)))
+        check(rc == 0 and not bad and "+" in out,
+              f"{name} 的柱式和弦并成一格且拍数守恒", str(bad[:3]))
 
     print("\n" + "-" * 48)
     if failures:

@@ -4943,6 +4943,73 @@ int main() {
               "无调号文件的调性由音级分布决定，移调后自动猜调跟着走");
     }
 
+    // -----------------------------------------------------------------
+    // v1.52.0: 文本谱把同拍和弦并成一格
+    // -----------------------------------------------------------------
+    std::cout << "\n测试文本谱和弦（同拍多音）\n";
+    {
+        auto add = [](MidiData& d, long start, long dur, int pitch) {
+            NoteEvent n;
+            n.startTicks = start;
+            n.durationTicks = dur;
+            n.rawDurationTicks = dur;
+            n.pitch = pitch;
+            n.channel = 0;
+            n.track = 0;
+            d.notes.push_back(n);
+        };
+        const KeyEstimate c{0, true};
+
+        // 4/4 一小节：C3-E3-G3 三个全音符 + 下一小节四个四分音符。
+        // 旧实现一个音印一格，第一小节被写成 `1, - - - 3, - - - 5, - - -`，
+        // 4/4 的一小节读出 12 拍。
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.trackNames[0] = "Piano";
+        add(d, 0, 1920, 48);
+        add(d, 0, 1920, 52);
+        add(d, 0, 1920, 55);
+        add(d, 1920, 480, 60);
+        add(d, 2400, 480, 62);
+        add(d, 2880, 480, 64);
+        add(d, 3360, 480, 65);
+        const std::string jp = formatJianpu(d, c);
+        check(jp.find("1,+3,+5,") != std::string::npos,
+              "同拍三音并成一格 `1,+3,+5,`：" + jp);
+        check(jp.find("1,+3,+5, - - -") != std::string::npos,
+              "和弦的时值只写一次（4 拍 = 数字 + 三条延音线）：" + jp);
+        check(jp.find("3, - - -") == std::string::npos,
+              "和弦音不再各占一格、把小节撑成 12 拍：" + jp);
+
+        // 不同音头（先后发音）的音不能被当成和弦串起来。
+        MidiData seq;
+        seq.division = 480;
+        seq.timeSig.valid = true;
+        add(seq, 0, 480, 60);
+        add(seq, 480, 480, 64);
+        add(seq, 960, 480, 67);
+        add(seq, 1440, 480, 72);
+        const std::string js = formatJianpu(seq, c);
+        check(js.find("+") == std::string::npos,
+              "先后发音的音不写成和弦：" + js);
+
+        // 每个和弦音各带自己的八度记号。
+        MidiData oct;
+        oct.division = 480;
+        oct.timeSig.valid = true;
+        add(oct, 0, 1920, 48);   // C3：低八度
+        add(oct, 0, 1920, 60);   // C4
+        add(oct, 0, 1920, 72);   // C5：高八度
+        add(oct, 1920, 480, 60);
+        add(oct, 2400, 480, 62);
+        add(oct, 2880, 480, 64);
+        add(oct, 3360, 480, 65);
+        const std::string jo = formatJianpu(oct, c);
+        check(jo.find("1,+1+1'") != std::string::npos,
+              "和弦各音保留自己的八度记号：" + jo);
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";
