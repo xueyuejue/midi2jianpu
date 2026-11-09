@@ -460,6 +460,14 @@ static const DurEntry DUR_TABLE[] = {
     {4.0,   "---"},  // 全音符
 };
 
+// 谱面「写不出来」的空档门槛：不足半拍（八分休止）的空白一律不记休止符。
+// 文本谱与 HTML 都按这个门槛补休止符，时值量化也必须用同一个值把音符
+// 补到下一个音头（见 quantizeTiming），否则那段时间会被两边各吃一次：
+// 谱面少拍，MusicXML 却单独补出 16 分休止。
+long restGateTicks(int division) {
+    return division > 0 ? std::max<long>(1, division / 2) : 1;
+}
+
 std::string durationSuffix(long durationTicks, int division) {
     if (division <= 0) return "";
     double beats = (double)durationTicks / division;
@@ -658,6 +666,23 @@ QuantizeReport quantizeTiming(MidiData& data) {
                     dur = (long)std::llround(snapBeats(est / div) * div);
                 }
                 if (monophonic && ioi > 0 && dur > ioi) dur = ioi;
+
+                // 门限衰减留下的空档要并进前一个音。
+                // 真实演奏的 note-off 普遍早于下一个音头（DAW 门限 85% 是常见
+                // 默认值），谱面上不足半拍的空档写不出休止符、一律省略，于是
+                // 那段时间必须由音符本身占掉：400/480 的四分音符旋律，一小节
+                // 4 拍会被记成「附点八分 + 看不见的十六分休止」，文本谱只剩 3
+                // 拍，而 MusicXML 另走一条路补出真的 16 分休止——三端就此分叉。
+                // 只对「无重叠」轨生效：复调轨里 ioi 是别的声部的音头，拿它当
+                // 本声部的收尾会把左手的长音截断。
+                //
+                // 再加一道相对门槛（空档不到音长三分之一，即门限 >= 3/4）：
+                // 一半音长就收尾的那种是刻意的断奏 / 打击乐击打，120 tick 的
+                // 鼓点占 240 tick 的格，拉成八分会把十六分音符写丢。
+                const long gap = ioi - oldDur;
+                if (monophonic && gap > 0 && gap < restGateTicks(div) &&
+                    gap * 3 <= oldDur)
+                    dur = ioi;
 
                 long snapped = (long)std::llround(snapBeats((double)dur / div) * div);
                 if (snapped > 0) dur = snapped;
@@ -1290,7 +1315,7 @@ static std::string formatTrack(
         // parts.mid 的 2 拍弱起小节因此只读出 1 拍。
         auto emitRestUntil = [&](long endTick) {
             long gap = endTick - prevEnd;
-            if (gap < data.division / 2) return;
+            if (gap < restGateTicks(data.division)) return;
             if (!started && endTick <= 0) return;
             long t = prevEnd;
             while (t < endTick) {

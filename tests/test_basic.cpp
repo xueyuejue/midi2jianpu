@@ -5086,6 +5086,88 @@ int main() {
               "倚音仍挂在主音前面，主音时值不受影响：" + jg);
     }
 
+    // -----------------------------------------------------------------
+    // v1.54.0: 门限衰减留下的空档并进前一个音
+    // -----------------------------------------------------------------
+    std::cout << "\n测试门限空档并进前一个音\n";
+    {
+        auto add = [](MidiData& d, long start, long dur, int pitch) {
+            NoteEvent n;
+            n.startTicks = start;
+            n.durationTicks = dur;
+            n.rawDurationTicks = dur;
+            n.pitch = pitch;
+            n.channel = 0;
+            n.track = 0;
+            d.notes.push_back(n);
+        };
+        const KeyEstimate c{0, true};
+
+        check(restGateTicks(480) == 240 && restGateTicks(96) == 48 &&
+                  restGateTicks(0) == 1,
+              "休止门槛：不足半拍（八分休止）的空档不记休止符");
+
+        // DAW 门限 85% 的典型形状：四分音符只响 400 tick、间隔 480。
+        // 旧版记成「附点八分 + 看不见的十六分休止」，4/4 一小节只剩 3 拍，
+        // MusicXML 却补出一串 16 分休止——三端对不上。
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.trackNames[0] = "Vocal";
+        const int scale[4] = {60, 62, 64, 65};
+        for (int i = 0; i < 4; i++) add(d, i * 480L, 400, scale[i]);
+        add(d, 1920, 480, 67);       // 第 2 小节：真四分音符
+        add(d, 2880, 400, 69);       // 门限音
+        add(d, 3360, 480, 71);       // 末音收在小节线（免得被判成弱起）
+        const QuantizeReport rep = quantizeTiming(d);
+        check(rep.changed(), "门限空档触发了时值修正");
+        check(d.notes[0].durationTicks == 480 && d.notes[3].durationTicks == 480,
+              "400 tick 的门限音补成 480（四分音符），实际: " +
+                  std::to_string(d.notes[0].durationTicks));
+
+        const std::string jp = formatJianpu(d, c);
+        check(jp.find("1 2 3 4  |") != std::string::npos,
+              "第 1 小节读成四个四分音符（旧版只有 3 拍）：" + jp);
+        check(jp.find("5 0 6 7  |") != std::string::npos,
+              "真正的四分休止照常保留，没有被一起并掉：" + jp);
+
+        // 三端一致：MusicXML 走同一份时值，不许再补出假的 16 分休止。
+        const std::string xml = renderMusicXml(d, c);
+        check(xml.find("<type>16th</type>") == std::string::npos,
+              "MusicXML 里不再冒出一串 16 分休止：" + xml.substr(0, 60));
+        check(xml.find("<note><rest/><duration>480</duration>") != std::string::npos,
+              "MusicXML 保留真正的四分休止");
+
+        // 反向约束一：音长一半就收尾的是刻意的断奏 / 打击乐击打，
+        // 不能因为「空档不足半拍」就把 16 分击打拉成八分。
+        MidiData hit;
+        hit.division = 480;
+        hit.timeSig.valid = true;
+        hit.trackNames[0] = "Drums";
+        for (int i = 0; i < 4; i++) add(hit, i * 240L, 120, 60 + 2 * i);
+        add(hit, 1920, 1920, 60);
+        quantizeTiming(hit);
+        check(hit.notes[0].durationTicks == 120,
+              "120 tick 的十六分击打保持 120，不被并成八分，实际: " +
+                  std::to_string(hit.notes[0].durationTicks));
+
+        // 反向约束二：复调轨里 ioi 是别的声部的音头，不能拿它当本声部
+        // 的收尾——长音与短音叠在一起时，短音的时值必须按自己算。
+        MidiData poly;
+        poly.division = 480;
+        poly.timeSig.valid = true;
+        poly.trackNames[0] = "Piano";
+        add(poly, 0, 1920, 48);      // 左手全音符
+        add(poly, 480, 400, 60);     // 右手门限音（空档 80 tick）
+        add(poly, 960, 480, 62);
+        add(poly, 1440, 480, 64);
+        add(poly, 1920, 1920, 48);
+        quantizeTiming(poly);
+        check(poly.notes[1].durationTicks == 360,
+              "复调轨不套用空档合并（400 tick 仍记附点八分 360），实际: " +
+                  std::to_string(poly.notes[1].durationTicks));
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

@@ -1695,6 +1695,34 @@ if (existsSync(ofPath)) {
     'WASM HTML 的音符时值排版不受影响');
 }
 
+// ---- 51. v1.54.0 门限空档并进前一个音（网页端同一份 core）----
+// gate_gap.mid 的四分音符只响 400 tick（DAW 门限 85%），空档 80 tick 在
+// 谱面上写不出休止符。修复前文本谱一小节只剩 3 拍、MusicXML 却补出 16 分
+// 休止，三端对不上；网页端读同一份 core，必须一起变成四个四分音符。
+const ggPath = path.join(FIXTURES, 'gate_gap.mid');
+if (existsSync(ggPath)) {
+  const gg = makeCaller(mod);
+  gg.setMidi(new Uint8Array(readFileSync(ggPath)));
+  gg.setLyrics('');
+  const ggText = gg.call('midi2jianpu_parse', -1, 1) || '';
+  check(ggText.includes('1 2 3 4  |'),
+    'WASM 文本谱第 1 小节读作四个四分音符（旧版只有 3 拍）', ggText);
+  check(ggText.includes('5 0 6 7  |'),
+    'WASM 文本谱保留真四分休止');
+  check(!ggText.includes('1_. 2_. 3_. 4_.'),
+    'WASM 文本谱不再写成「附点八分」串');
+
+  const ggXml = gg.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(!ggXml.includes('<type>16th</type>'),
+    'WASM MusicXML 里不再补出假的 16 分休止');
+  check(ggXml.includes('<note><rest/><duration>480</duration>'),
+    'WASM MusicXML 保留真四分休止');
+
+  const ggHtml = gg.call('midi2jianpu_html', -1, 1) || '';
+  check((ggHtml.match(/class='note quarter'/g) || []).length === 8,
+    'WASM HTML 仍是 8 个四分音符列（7 音 + 1 休止）');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

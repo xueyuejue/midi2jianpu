@@ -659,7 +659,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             // 间隙补休止符。原来这里多了一个 `prevEnd > 0` 条件，
             // 导致乐曲开头的休止符（第一个音不在 tick 0）永远不显示。
             long gap = n.startTicks - prevEnd;
-            if (gap >= data.division / 2) {
+            if (gap >= restGateTicks(data.division)) {
                 flushBeam();          // 休止符打断减时线
                 double restBeats = (double)gap / data.division;
                 emit(withDyn(withChord(noteColumn("0", 0, 0, restBeats, ""),

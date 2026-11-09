@@ -94,6 +94,10 @@ std::string pitchToJianpu(int pitch, const KeyEstimate& key);
 //   附点八分="_." 八分="_" 附点十六="=." 十六="=" 三十二="%%"
 std::string durationSuffix(long durationTicks, int division);
 
+// 谱面「写不出来」的空档门槛：不足半拍（八分休止）的空白不记休止符。
+// 三个输出层与 quantizeTiming() 共用这一个门槛。
+long restGateTicks(int division);
+
 // 时值量化报告
 struct QuantizeReport {
     int adjusted = 0;    // 被修正时值/位置的音符数
@@ -107,8 +111,9 @@ struct QuantizeReport {
 // 真实录音转出的 MIDI 里，note-off 普遍早于下一个音头（门限时间 85% 左右是
 // DAW 的常见默认值），直接拿时长查时值表会把八分音符判成附点十六分。这里做两件事：
 //   1) 音头吸附到 1/24 拍网格（同时容纳 32 分音符与三连音）
-//   2) 时长取「到下一个音头的时间」——当原时长接近该间隔时（>=70%），
-//      说明只是门限衰减而非休止；否则按原时长吸附到最近的合法时值
+//   2) 时长取「到下一个音头的时间」——当原时长接近该间隔时（>=90%），
+//      说明只是门限衰减而非休止；若剩下的空档不足半拍（写不出休止符），
+//      同样把它并进本音，免得谱面少拍；否则按原时长吸附到最近的合法时值
 // 会就地修改 data.notes 的 startTicks / durationTicks，seconds 保持不变。
 QuantizeReport quantizeTiming(MidiData& data);
 

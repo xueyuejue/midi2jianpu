@@ -2505,6 +2505,49 @@ def main():
     check(rc == 0 and "0_. -%%" not in out and "0 (7,)1" in out,
           "parts.mid 弱起小节补回首拍休止，零头仍记最近档")
 
+    print("\n[76] 门限空档并进前一个音：4/4 一小节不再只剩 3 拍")
+    # gate_gap.mid：四分音符只响 400 tick（DAW 门限 85% 的典型形状），
+    # 空档 80 tick 在谱面上写不出休止符。旧版记成「附点八分 + 看不见的
+    # 十六分休止」，一小节只剩 3 拍；MusicXML 另走一条路补出 16 分休止，
+    # 三端就此分叉。第 2 小节留了一个真四分休止作反向对照。
+    gp = os.path.join(FIXTURES, "gate_gap.mid")
+    rc, out, _ = run(exe, gp)
+    check(rc == 0, "输出 gate_gap.mid 文本谱", out[-200:] if rc else "")
+    check("1 2 3 4  |" in out, "门限四分音符补成整拍，第 1 小节读作 4 拍")
+    check("5 0 6 7  |" in out, "真四分休止照常保留，没有被一起并掉")
+    check("1_. 2_. 3_. 4_." not in out, "不再写成「附点八分」串")
+
+    bad = []
+    for line in out.splitlines():
+        if "|" not in line:
+            continue
+        for bar in line.split("|")[:-1]:
+            b = bar_beats(bar)
+            if b is None or abs(b - 4) > 1e-6:
+                bad.append((bar.strip(), b))
+    check(not bad, "gate_gap.mid 每一小节都读作 4 拍", str(bad[:3]))
+
+    # 三端一致：MusicXML 走同一份时值，不许再补出假的 16 分休止。
+    with tempfile.TemporaryDirectory() as td:
+        gx = os.path.join(td, "gate_gap.xml")
+        gh = os.path.join(td, "gate_gap.html")
+        rc2, _, _ = run(exe, gp, "--musicxml", gx, "--html", gh)
+        xml = open(gx, encoding="utf-8").read() if os.path.exists(gx) else ""
+        html = open(gh, encoding="utf-8").read() if os.path.exists(gh) else ""
+    check(rc2 == 0 and "<type>16th</type>" not in xml,
+          "MusicXML 里不再冒出一串 16 分休止")
+    check("<note><rest/><duration>480</duration>" in xml,
+          "MusicXML 保留真四分休止")
+    check(html.count("class='note quarter'") == 8,
+          "HTML 仍是 8 个四分音符列（7 音 + 1 休止），实际: "
+          + str(html.count("class='note quarter'")))
+
+    # --no-quantize 保留 MIDI 原始时长，因此仍写成附点八分：这是刻意的
+    # 「不要替用户改时值」出口，不能被上面的合并带偏。
+    rc, out, _ = run(exe, gp, "--no-quantize")
+    check(rc == 0 and "1_. 2_. 3_. 4_." in out,
+          "--no-quantize 仍按原始 400 tick 记谱")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

@@ -2,7 +2,7 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 76 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 82 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
@@ -13,7 +13,7 @@ running_meta / running_sysex / running_realtime / running_standard /
 port_pedal / port_bend / port_prefix / port_prefix_base / port_standard /
 sysex_gs_drum / sysex_xg_drum / sysex_gs_normal / sysex_gs_reset /
 sysex_gm_reset / sysex_xg_reset / sysex_conductor / sysex_ch9_normal /
-sysex_ch9_drum / sysex_unknown / sysex_port_drum（另配 3 份 LRC 歌词）。
+sysex_ch9_drum / sysex_unknown / sysex_port_drum / gate_gap（另配 3 份 LRC 歌词）。
 meter 是把变拍号、变速、鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」，
 modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五声调式
 （C 宫、G 徵调式，故意不写 0x59 逼自动猜调暴露宫音判错），tempo_ramp 用
@@ -679,6 +679,36 @@ def build_transpose_key() -> bytes:
         for beat in range(4):
             t1.note(0, scale[(bar % 4) * 4 + beat], 88,
                     bar * 1920 + beat * 480, 480)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + t1.render()
+
+
+def build_gate_gap() -> bytes:
+    """门限衰减留下的空档必须并进前一个音（v1.54.0）。
+
+    真实演奏的 note-off 普遍早于下一个音头（DAW 的门限默认值多在 85%~90%），
+    所以四分音符常常只响 400 tick、间隔 480。谱面照原样记就是「附点八分 +
+    看不见的十六分休止」：文本谱一小节只剩 3 拍，MusicXML 却单独补出一串
+    16 分休止，三端对不上。正确行为是把「写不出休止符」的空档并进前一个音，
+    一小节就是四个四分音符。
+
+    第 2 小节留一个真正的四分休止（空档 480 tick）作反向对照：合并只针对
+    不足半拍、且不到音长三分之一的空档，真休止一个都不能丢。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    for i, p in enumerate([60, 62, 64, 65]):   # 第 1 小节：门限四分音符
+        t1.note(0, p, 90, i * DIV, DIV - 80)   # 只响 400 tick
+    t1.note(0, 67, 90, 4 * DIV, DIV)           # 第 2 小节：四分音符 + 四分休止
+    t1.note(0, 69, 90, 6 * DIV, DIV - 80)      # 再一个门限音
+    t1.note(0, 71, 90, 7 * DIV, DIV)           # 末音收在小节线（免被判成弱起）
 
     header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
     return header + t0.render() + t1.render()
@@ -2781,6 +2811,16 @@ def main() -> None:
     # 把 MIDI 调号一起平移（只移音不移调号会让唱名与调号分叉）
     for name, builder in (
         ("transpose_key", build_transpose_key),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # 门限衰减的空档并进前一个音：4/4 一小节不再只剩 3 拍
+    for name, builder in (
+        ("gate_gap", build_gate_gap),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:
