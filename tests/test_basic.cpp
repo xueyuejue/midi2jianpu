@@ -90,6 +90,14 @@ static std::vector<uint8_t> buildSmf(int ntrks, int division, std::vector<SmfTra
 static int failures = 0;
 static int total = 0;
 
+// 统计子串出现次数：多处断言用它确认「标志只写一次 / 每个档位都写出来」。
+// 局部同名 lambda 会遮蔽它，不影响既有用例。
+static size_t occurrences(const std::string& s, const std::string& sub) {
+    size_t c = 0, p = 0;
+    while ((p = s.find(sub, p)) != std::string::npos) { c++; p += sub.size(); }
+    return c;
+}
+
 static void check(bool cond, const std::string& msg) {
     total++;
     if (cond) {
@@ -4670,6 +4678,64 @@ int main() {
         check(rx.find("<words>rit.</words>") != std::string::npos &&
               rx.find("<offset>") != std::string::npos,
               "渐慢落定点不在小节线时也带 offset");
+    }
+
+    // MusicXML：小节中途换力度档（v1.49.0）
+    {
+        // 旧实现只在每小节开头取 dynamicAt(barStart)，中途的 p 被 f 顶掉，
+        // 整条档位直接消失，f 也被挤到下一小节。
+        const KeyEstimate key{0, true};
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.trackNames[0] = "Piano";
+        NoteEvent n;
+        n.track = 0; n.channel = 0; n.velocity = 96;
+        n.durationSeconds = 0.5; n.durationTicks = 480;
+        for (int i = 0; i < 12; i++) {
+            n.pitch = 60 + (i % 4); n.startTicks = i * 480;
+            n.startSeconds = i * 0.5;
+            d.notes.push_back(n);
+        }
+        d.dynamics.push_back({0, 100, 0});      // ff（第 1 小节头）
+        d.dynamics.push_back({480, 20, 0});     // p（第 1 小节第 2 拍）
+        d.dynamics.push_back({1440, 80, 0});    // f（第 1 小节第 4 拍）
+        const std::string dx = renderMusicXml(d, key);
+        check(occurrences(dx, "<dynamics><ff/></dynamics>") == 1 &&
+              occurrences(dx, "<dynamics><p/></dynamics>") == 1 &&
+              occurrences(dx, "<dynamics><f/></dynamics>") == 1,
+              "小节中途的每个力度档位都写出来，不被整条吞掉");
+        check(occurrences(dx, "<dynamics><f/></dynamics>") == 1,
+              "被推迟到下一小节的档位只写一次");
+        const size_t pp = dx.find("<dynamics><p/></dynamics>");
+        check(pp != std::string::npos &&
+              dx.find("<offset>480</offset>", pp) < pp + 300,
+              "中途换档的 p 带 offset 480");
+        const size_t pf = dx.find("<dynamics><f/></dynamics>");
+        check(pf != std::string::npos &&
+              dx.find("<offset>1440</offset>", pf) < pf + 300,
+              "中途换档的 f 带 offset 1440");
+        check(occurrences(dx, "<offset>") == 2,
+              "只有小节中途的换档写 offset，小节线的力度不多写");
+
+        // 连续渐强：中间档位由楔形表达，不能再逐个印成力度记号。
+        MidiData r;
+        r.division = 480;
+        r.timeSig.valid = true;
+        r.trackNames[0] = "Piano";
+        for (int i = 0; i < 12; i++) {
+            n.pitch = 60 + (i % 4); n.startTicks = i * 480;
+            r.notes.push_back(n);
+        }
+        for (int i = 0; i < 8; i++)             // 40 -> 110 的一段渐强
+            r.dynamics.push_back({i * 240L, 40 + i * 10, 0});
+        const std::string cx = renderMusicXml(r, key);
+        check(cx.find("<wedge type=\"crescendo\"") != std::string::npos,
+              "连续渐强仍写楔形");
+        check(occurrences(cx, "<offset>") == 0,
+              "渐变段内部的中间档位不再逐个印成力度记号");
+        check(occurrences(cx, "<dynamics>") == 2,
+              "渐强只在小节头写起止档位，不给每个采样点补 <direction>");
     }
 
     std::cout << "\n------------------------------------------------\n";

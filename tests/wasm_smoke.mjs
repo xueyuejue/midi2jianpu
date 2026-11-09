@@ -1574,6 +1574,35 @@ if (existsSync(mtPath)) {
     'WASM 渐快 / 渐慢落定点回到该小节第 3 拍');
 }
 
+// ---- 46. v1.49.0 小节中途换力度档：档位写到真实拍位 ----
+// 旧产物只在每小节开头取 dynamicAt(barStart)，中途的 p 被 f 顶掉、整条丢失，
+// f 也被挤到下一小节 —— 网页导出的谱面力度与 MIDI 播放对不上。
+const dsPath = path.join(FIXTURES, 'dyn_step.mid');
+if (existsSync(dsPath)) {
+  mod._midi2jianpu_set_track(-1);
+  const ds = makeCaller(mod);
+  ds.setMidi(new Uint8Array(readFileSync(dsPath)));
+  ds.setLyrics('');
+  const dsXml = ds.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(dsXml.includes('<dynamics><ff/></dynamics>') &&
+        dsXml.includes('<dynamics><p/></dynamics>') &&
+        dsXml.includes('<dynamics><f/></dynamics>') &&
+        dsXml.includes('<dynamics><mp/></dynamics>'),
+    'WASM 四个力度档位都写出来，中途换档不再整条丢失');
+  check(dsXml.includes('<offset>480</offset>') &&
+        dsXml.includes('<offset>1440</offset>'),
+    'WASM 中途换档用 <offset> 标回小节内拍位');
+  check((dsXml.match(/<offset>/g) || []).length === 2,
+    'WASM 只给小节中途的换档写 <offset>');
+
+  const vt = makeCaller(mod);
+  vt.setMidi(new Uint8Array(readFileSync(path.join(FIXTURES, 'voice_trio.mid'))));
+  vt.setLyrics('');
+  const vtXml = vt.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(!vtXml.includes('<offset>'),
+    'WASM 渐变段内部的中间档位不逐个补 <offset>');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

@@ -2268,6 +2268,32 @@ def build_midtempo() -> bytes:
     return bytes(header + t0.render() + t1.render())
 
 
+def build_dyn_step() -> bytes:
+    # 小节中途换力度档（v1.49.0）。
+    # 旧实现只在每小节开头取 dynamicAt(barStart)：第 1 小节第 2 拍 ff→p、
+    # 第 4 拍 p→f 都被推到下一小节才印出来，整条力度标记晚了三拍，MuseScore
+    # 播放与谱面对不上。修复后中途换档按真实 tick 写 <offset>。
+    # 四个档位刻意两两反向（100→20→80→60），不会被渐变检测误判成楔形，
+    # 因此每处都必须是独立的力度记号。
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 500000us -> 120BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Piano"))
+    t1.program(0, 0, 0)                                # Acoustic Grand
+    t1.cc(0, 11, 100, 0)                               # ff（第 1 小节头）
+    t1.cc(0, 11, 20, DIV)                              # p（第 1 小节第 2 拍）
+    t1.cc(0, 11, 80, 3 * DIV)                          # f（第 1 小节第 4 拍）
+    t1.cc(0, 11, 50, 2 * BAR)                          # mp（第 3 小节线）
+    for i in range(12):
+        t1.note(0, 60 + (i % 4), 96, i * DIV, DIV)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return bytes(header + t0.render() + t1.render())
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -2656,6 +2682,16 @@ def main() -> None:
     # 小节中途变速：多个阶跃各带 <offset>，不再被吸附到小节开头
     for name, builder in (
         ("midtempo", build_midtempo),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # 小节中途换力度档：每处换档各带 <offset>，不再被推迟到下一小节
+    for name, builder in (
+        ("dyn_step", build_dyn_step),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

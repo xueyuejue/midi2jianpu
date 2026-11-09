@@ -2251,6 +2251,37 @@ def main():
     check(xml_mt.count("<offset>") == 2,
           "只有中途变速的点写 <offset>，小节线上的速度不多写")
 
+    print("\n[71] 小节中途换力度档：档位写到真实拍位")
+    ds = os.path.join(FIXTURES, "dyn_step.mid")
+    dsx = os.path.join(tmp, "dyn_step.xml")
+    rc, _, err = run(exe, ds, "--musicxml", dsx)
+    check(rc == 0, "中途换档素材导出 MusicXML", err[:200])
+    xml_ds = open(dsx, encoding="utf-8").read() if rc == 0 else ""
+    import xml.etree.ElementTree as ET71
+    well71, xerr71 = True, ""
+    try:
+        ET71.fromstring(open(dsx, "rb").read())
+    except Exception as exc:
+        well71 = False
+        xerr71 = str(exc)
+    check(well71, "中途换档 MusicXML 是合法 XML", xerr71)
+    for lv in ("ff", "p", "f", "mp"):
+        check(f"<dynamics><{lv}/></dynamics>" in xml_ds,
+              f"四个档位都写出来（{lv}），中途换档不再整条丢失")
+    pp = xml_ds.find("<dynamics><p/></dynamics>")
+    pf = xml_ds.find("<dynamics><f/></dynamics>")
+    check(pp >= 0 and "<offset>480</offset>" in xml_ds[pp:pp + 300],
+          "p 落在第 1 小节第 2 拍（offset 480）")
+    check(pf >= 0 and "<offset>1440</offset>" in xml_ds[pf:pf + 300],
+          "f 落在第 1 小节第 4 拍（offset 1440）")
+    check(xml_ds.count("<offset>") == 2,
+          "只有小节中途的换档写 <offset>，小节线上的力度不多写")
+    # 旧实现把 f 挤到第 2 小节开头：第 2 小节里不该再有任何 <dynamics>。
+    m2 = xml_ds.find('<measure number="2">')
+    m3 = xml_ds.find('<measure number="3">')
+    check(m2 >= 0 and m3 > m2 and "<dynamics>" not in xml_ds[m2:m3],
+          "第 2 小节没有重复的力度记号，f 已回到第 1 小节")
+
     rmx = os.path.join(tmp, "tempo_ramp_offset.xml")
     run(exe, os.path.join(FIXTURES, "tempo_ramp.mid"), "--musicxml", rmx)
     xml_r = open(rmx, encoding="utf-8").read()

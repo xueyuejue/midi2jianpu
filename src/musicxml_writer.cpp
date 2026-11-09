@@ -533,6 +533,25 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                         << "      </direction>\n";
                     lastDyn[v] = dyn;
                 }
+                // 小节中途的孤立换档：写回真实拍位。旧实现只在 barStart 取样，
+                // 「第 2 拍从 ff 掉到 f」要等到下一小节才印出来，整条力度标记
+                // 被推迟三拍，MuseScore 播放与谱面对不上。渐变段内部的中间档位
+                // 由楔形表达，dynamicStepsInside() 已排除，不会多印。
+                // <offset> 单位 = divisions（tick），必须排在 direction-type
+                // 之后、voice/staff/sound 之前。
+                for (const auto& m : expr.dynamicStepsInside(bs, be, ch)) {
+                    if (m.dynamic == lastDyn[v]) continue;
+                    xml << "      <direction placement=\"above\">\n"
+                        << "        <direction-type><dynamics><" << m.dynamic
+                        << "/></dynamics></direction-type>\n"
+                        << "        <offset>" << (m.tick - bs) << "</offset>\n"
+                        << voiceTag
+                        << staffTag
+                        << "        <sound dynamics=\"" << dynamicToMidiVolume(m.dynamic)
+                        << "\"/>\n"
+                        << "      </direction>\n";
+                    lastDyn[v] = m.dynamic;
+                }
                 // 段落名 / 速度变化属于整份谱，只在第一个 part 的第一个
                 // 声部写一次；力度与渐强渐弱按各自声部的通道写。
                 if (partIdx == 1 && v == 0) {

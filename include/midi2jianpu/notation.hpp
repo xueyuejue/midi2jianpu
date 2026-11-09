@@ -602,6 +602,13 @@ public:
     const std::vector<ExpressionMark>& marks() const { return marks_; }
     std::vector<ExpressionMark> inRange(long from, long to, int channel = -1) const;
 
+    // 落在 (from, to) 开区间内、且**不属于任何渐变段**的力度档位跳变。
+    // MusicXML 用它把「小节中途换档」写到真实拍位：旧实现只在小节头取样，
+    // 第 2 拍从 ff 掉到 f 会被推迟到下一小节才印出来。渐变段内部的中间档位
+    // （渐弱到一半的 mf/mp/p）由楔形表达，这里刻意排除，避免每个采样点都
+    // 多印一个力度记号。
+    std::vector<ExpressionMark> dynamicStepsInside(long from, long to, int channel) const;
+
     // "力度 3 · 渐强 1 · 断音 4 · 段落 2"；没有任何表情时返回空串。
     std::string summary() const;
 

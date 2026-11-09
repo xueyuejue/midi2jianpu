@@ -2775,6 +2775,40 @@ std::vector<ExpressionMark> ExpressionMap::inRange(long from, long to,
     return out;
 }
 
+std::vector<ExpressionMark> ExpressionMap::dynamicStepsInside(long from, long to,
+                                                             int channel) const {
+    std::vector<ExpressionMark> out;
+    if (!enabled_) return out;
+
+    // 先按通道收出全部渐变段（wedge 起点 -> 对应 wedgeStop）。marks_ 已按
+    // tick 升序，顺序扫一遍即可配对；同一段内的中间档位由楔形表达，不再
+    // 逐个印力度记号，否则每个 CC11 采样点都会多一条 <direction>。
+    std::vector<std::pair<long, long>> spans;
+    long openTick = -1;
+    for (const auto& m : marks_) {
+        if (m.channel < 0) continue;                 // 全局标记（段落名）与力度无关
+        if (channel >= 0 && m.channel != channel) continue;
+        if (m.wedge != 0 && openTick < 0) {
+            openTick = m.tick;
+        } else if (m.wedgeStop && openTick >= 0) {
+            spans.push_back({openTick, m.tick});
+            openTick = -1;
+        }
+    }
+
+    for (const auto& m : marks_) {
+        if (m.dynamic.empty() || m.channel != channel) continue;
+        if (m.tick <= from || m.tick >= to) continue;   // 小节线上的换档另有口径
+        bool inRamp = false;
+        for (const auto& s : spans) {
+            // 区间取闭：渐变起点的换档由楔形本身表达，不重复印档位。
+            if (m.tick >= s.first && m.tick <= s.second) { inRamp = true; break; }
+        }
+        if (!inRamp) out.push_back(m);
+    }
+    return out;
+}
+
 std::string ExpressionMap::summary() const {
     if (!enabled_ || totalCount() == 0) return "";
     std::vector<std::string> parts;
