@@ -2,7 +2,7 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 82 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 83 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
@@ -13,7 +13,7 @@ running_meta / running_sysex / running_realtime / running_standard /
 port_pedal / port_bend / port_prefix / port_prefix_base / port_standard /
 sysex_gs_drum / sysex_xg_drum / sysex_gs_normal / sysex_gs_reset /
 sysex_gm_reset / sysex_xg_reset / sysex_conductor / sysex_ch9_normal /
-sysex_ch9_drum / sysex_unknown / sysex_port_drum / gate_gap（另配 3 份 LRC 歌词）。
+sysex_ch9_drum / sysex_unknown / sysex_port_drum / gate_gap / poly_gap（另配 3 份 LRC 歌词）。
 meter 是把变拍号、变速、鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」，
 modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五声调式
 （C 宫、G 徵调式，故意不写 0x59 逼自动猜调暴露宫音判错），tempo_ramp 用
@@ -679,6 +679,36 @@ def build_transpose_key() -> bytes:
         for beat in range(4):
             t1.note(0, scale[(bar % 4) * 4 + beat], 88,
                     bar * 1920 + beat * 480, 480)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + t1.render()
+
+
+def build_poly_gap() -> bytes:
+    """复调轨按声部补空档（v1.55.0）。
+
+    钢琴双手：左手每小节按住一个全音符，右手是 DAW 门限 85% 的四分音符
+    （只响 400 tick、间隔 480）。整轨因此被判成复调（monophonic=false），
+    v1.54.0 的「空档并进前一个音」被整轨开关一刀切掉：右手 4/4 一小节
+    只剩 3 拍（1_. 2_. 3_. 4_.），MusicXML 却按原始时值补出 7 个 16 分
+    休止，HTML 也印出 7 个附点八分——三端拍数各不相同。
+
+    正确行为是按声部各自算「下一个音头」：右手补成四个四分音符，左手
+    全音符仍单独成声部、时值一字不改。末音收在小节线上，免得被判弱起。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Piano"))
+    for bar in range(2):                       # 左手：两个全音符
+        t1.note(0, 48, 70, bar * 4 * DIV, 4 * DIV)
+    for i, p in enumerate([60, 62, 64, 65, 67, 69, 71]):
+        t1.note(0, p, 90, i * DIV, DIV - 80)   # 右手：只响 400 tick
+    t1.note(0, 72, 90, 7 * DIV, DIV)           # 末音收在小节线
 
     header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
     return header + t0.render() + t1.render()
@@ -2811,6 +2841,16 @@ def main() -> None:
     # 把 MIDI 调号一起平移（只移音不移调号会让唱名与调号分叉）
     for name, builder in (
         ("transpose_key", build_transpose_key),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # 复调轨按声部补空档：左手全音符不再挡住右手补整拍
+    for name, builder in (
+        ("poly_gap", build_poly_gap),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

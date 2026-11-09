@@ -30,19 +30,19 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 2
 
-      - name: 单元测试（773 项）
+      - name: 单元测试（789 项）
         working-directory: build
         run: ctest --output-on-failure
 
       - name: 素材生成器可复现
-        # 全量重生成 82 份 .mid 后不得有字节差异，也不得多出未跟踪素材。
+        # 全量重生成 83 份 .mid 后不得有字节差异，也不得多出未跟踪素材。
         # 只比二进制素材：.lrc 是文本，交给 git 的行尾归一化处理。
         run: |
           python3 tests/fixtures/make_fixture.py > /dev/null
           git diff --exit-code -- 'tests/fixtures/*.mid'
           test -z "$(git status --porcelain --untracked-files=all -- tests/fixtures/)"
 
-      - name: CLI 端到端冒烟（77 组）
+      - name: CLI 端到端冒烟（78 组）
         run: python3 tests/smoke.py build/midi2jianpu
 
   wasm:
@@ -73,5 +73,5 @@ jobs:
         # 五处导出符号没有漂移，不编译、不加载 wasm。
         run: python3 tests/check_wasm_exports.py
 
-      - name: WASM 产物冒烟（51 组，含版本号守护）
+      - name: WASM 产物冒烟（52 组，含版本号守护）
         run: node tests/wasm_smoke.mjs

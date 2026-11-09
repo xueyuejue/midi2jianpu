@@ -5151,8 +5151,8 @@ int main() {
               "120 tick 的十六分击打保持 120，不被并成八分，实际: " +
                   std::to_string(hit.notes[0].durationTicks));
 
-        // 反向约束二：复调轨里 ioi 是别的声部的音头，不能拿它当本声部
-        // 的收尾——长音与短音叠在一起时，短音的时值必须按自己算。
+        // 反向约束二：复调轨里不能拿别的声部的音头截断按住的长音。
+        // v1.55.0 起右手按本声部补空档（400 -> 480），左手全音符仍是 1920。
         MidiData poly;
         poly.division = 480;
         poly.timeSig.valid = true;
@@ -5163,9 +5163,127 @@ int main() {
         add(poly, 1440, 480, 64);
         add(poly, 1920, 1920, 48);
         quantizeTiming(poly);
-        check(poly.notes[1].durationTicks == 360,
-              "复调轨不套用空档合并（400 tick 仍记附点八分 360），实际: " +
+        check(poly.notes[0].durationTicks == 1920 && poly.notes[4].durationTicks == 1920,
+              "复调轨里左手全音符不被右手音头截断，实际: " +
+                  std::to_string(poly.notes[0].durationTicks));
+        check(poly.notes[1].durationTicks == 480,
+              "复调轨右手按本声部补空档（400 -> 480），实际: " +
                   std::to_string(poly.notes[1].durationTicks));
+    }
+
+    // -----------------------------------------------------------------
+    // v1.55.0: 复调轨按声部补空档，三端拍数不再分叉
+    // -----------------------------------------------------------------
+    std::cout << "\n测试复调轨按声部补空档\n";
+    {
+        auto add = [](MidiData& d, long start, long dur, int pitch) {
+            NoteEvent n;
+            n.startTicks = start;
+            n.durationTicks = dur;
+            n.rawDurationTicks = dur;
+            n.pitch = pitch;
+            n.channel = 0;
+            n.track = 0;
+            d.notes.push_back(n);
+        };
+        // quantizeTiming() 末尾会按 (start, pitch) 重排 notes，按位置取索引不可靠。
+        auto durOf = [](const MidiData& d, long start, int pitch) -> long {
+            for (const auto& n : d.notes)
+                if (n.startTicks == start && n.pitch == pitch) return n.durationTicks;
+            return -1;
+        };
+        const KeyEstimate c{0, true};
+
+        // 钢琴双手：左手每小节按住一个全音符（整轨 monophonic=false），
+        // 右手是 DAW 门限 85% 的四分音符（只响 400 tick / 间隔 480）。
+        // v1.54.0 的空档合并被整轨开关一刀切掉，右手一小节只剩 3 拍，
+        // MusicXML 却补出 7 个 16 分休止。正确做法是按声部各自算下一音头。
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.trackNames[0] = "Piano";
+        for (int bar = 0; bar < 2; bar++) add(d, bar * 1920L, 1920, 48);
+        const int scale[7] = {60, 62, 64, 65, 67, 69, 71};
+        for (int i = 0; i < 7; i++) add(d, i * 480L, 400, scale[i]);
+        add(d, 3360, 480, 72);       // 末音收在小节线（免得被判成弱起）
+        const QuantizeReport rep = quantizeTiming(d);
+        check(rep.changed(), "复调轨的门限空档触发了时值修正");
+        check(durOf(d, 480, 62) == 480 && durOf(d, 2880, 71) == 480,
+              "右手 400 tick 的门限音补成 480，实际: " +
+                  std::to_string(durOf(d, 480, 62)));
+        check(durOf(d, 0, 48) == 1920 && durOf(d, 1920, 48) == 1920,
+              "左手全音符保持 1920，不被右手音头截断");
+
+        const std::string jp = formatJianpu(d, c);
+        check(jp.find("1 2 3 4  |") != std::string::npos,
+              "右手第 1 小节读成四个四分音符（旧版只有 3 拍）：" + jp);
+        check(jp.find("5 6 7 1'  |") != std::string::npos,
+              "右手第 2 小节同样读成 4 拍：" + jp);
+        check(jp.find("1, - - -  |") != std::string::npos,
+              "左手全音符仍单独成声部，排版不变：" + jp);
+
+        const std::string xml = renderMusicXml(d, c);
+        check(xml.find("<type>16th</type>") == std::string::npos,
+              "MusicXML 里不再补出一串假的 16 分休止");
+        check(xml.find("<rest/>") == std::string::npos,
+              "MusicXML 里不再补出任何假休止");
+        const std::string html = renderHtml(d, c, "t");
+        size_t quarters = 0, pos = 0;
+        while ((pos = html.find("class='note quarter'", pos)) != std::string::npos)
+            { quarters++; pos++; }
+        check(quarters == 8, "HTML 是 8 个四分音符列，实际: " + std::to_string(quarters));
+        check(html.find("class='note whole'") != std::string::npos,
+              "HTML 保留左手的全音符列");
+
+        // 反向约束一：本声部的下一个音头不能错拿成别的声部的音头。
+        // 左手在 240 tick 处有个八分音头，右手下一音头在 480；若按整轨
+        // onsets 取 240，右手的 400 tick 音就补不成整拍。
+        MidiData lanes;
+        lanes.division = 480;
+        lanes.timeSig.valid = true;
+        lanes.trackNames[0] = "Piano";
+        add(lanes, 0, 200, 48);     // 左手八分
+        add(lanes, 240, 200, 50);
+        add(lanes, 480, 200, 52);
+        add(lanes, 0, 400, 60);     // 右手门限音
+        add(lanes, 480, 480, 62);
+        quantizeTiming(lanes);
+        check(durOf(lanes, 0, 60) == 480,
+              "右手补到本声部 480 的音头，不是左手的 240，实际: " +
+                  std::to_string(durOf(lanes, 0, 60)));
+        check(durOf(lanes, 240, 50) == 240,
+              "左手八分音只补到自己声部的 240 音头，实际: " +
+                  std::to_string(durOf(lanes, 240, 50)));
+
+        // 反向约束二：复调轨里真正的四分休止仍要保留。
+        MidiData rest;
+        rest.division = 480;
+        rest.timeSig.valid = true;
+        rest.trackNames[0] = "Piano";
+        add(rest, 0, 1920, 48);
+        add(rest, 0, 400, 60);      // 空档 480 tick（到 960），不是门限衰减
+        add(rest, 960, 400, 62);
+        add(rest, 1440, 480, 64);  // 末音收在小节线
+        quantizeTiming(rest);
+        check(durOf(rest, 0, 60) != 960 && durOf(rest, 0, 60) < 480,
+              "复调轨里真四分休止没被并进门限音，实际: " +
+                  std::to_string(durOf(rest, 0, 60)));
+        const std::string rjp = formatJianpu(rest, c);
+        check(rjp.find("1 2 3 4  |") == std::string::npos,
+              "真休止那一小节没有被读成四个四分音符：" + rjp);
+
+        // 反向约束三：复调轨里的 16 分击打仍不被拉成八分。
+        MidiData hit;
+        hit.division = 480;
+        hit.timeSig.valid = true;
+        hit.trackNames[0] = "Drums";
+        add(hit, 0, 1920, 48);
+        for (int i = 0; i < 4; i++) add(hit, i * 240L, 120, 60 + 2 * i);
+        add(hit, 1920, 1920, 48);
+        quantizeTiming(hit);
+        check(durOf(hit, 0, 60) == 120,
+              "复调轨里 120 tick 的十六分击打保持 120，实际: " +
+                  std::to_string(durOf(hit, 0, 60)));
     }
 
     std::cout << "\n------------------------------------------------\n";

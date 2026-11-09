@@ -623,6 +623,45 @@ QuantizeReport quantizeTiming(MidiData& data) {
             long s = data.notes[i].startTicks;
             if (onsets.empty() || onsets.back() != s) onsets.push_back(s);
         }
+        // 本声部（lane）内的下一个音头。整轨 onsets 混着所有声部的音头，
+        // 复调轨里拿它当本音的收尾会截断别的声部的长音，所以 v1.54.0 的
+        // 空档合并只在「整轨无重叠」时生效。但左手一个按住的全音符就足以
+        // 让整轨判成复调，右手门限四分音符的空档因此完全没人补。
+        // 这里按贪心 lane 把同轨音拆开（口径与 splitVoices 一致：同拍同值
+        // 算和弦，其余优先复用已经收尾的 lane），lane 内保证首尾不交叠，
+        // 于是每个音都有属于自己声部的下一个音头。
+        struct Lane { long start = -1; long end = -1; };
+        std::vector<Lane> lanes;
+        std::vector<int> laneOf(data.notes.size(), 0);
+        for (size_t i : idxs) {
+            const long s = data.notes[i].startTicks;
+            const long dd = std::max<long>(data.notes[i].durationTicks, 1);
+            int chosen = -1;
+            for (size_t v = 0; v < lanes.size(); v++)
+                if (lanes[v].start == s && lanes[v].end - lanes[v].start == dd) {
+                    chosen = (int)v; break;
+                }
+            if (chosen < 0)
+                for (size_t v = 0; v < lanes.size(); v++)
+                    if (lanes[v].end <= s) { chosen = (int)v; break; }
+            if (chosen < 0) { lanes.push_back(Lane()); chosen = (int)lanes.size() - 1; }
+            laneOf[i] = chosen;
+            lanes[chosen].start = s;
+            lanes[chosen].end = std::max(lanes[chosen].end, s + dd);
+        }
+        std::map<int, std::vector<long>> laneOnsets;
+        for (size_t i : idxs) {
+            auto& o = laneOnsets[laneOf[i]];
+            if (o.empty() || o.back() != data.notes[i].startTicks)
+                o.push_back(data.notes[i].startTicks);
+        }
+        std::vector<long> laneNext(data.notes.size(), 0);
+        for (size_t i : idxs) {
+            const auto& o = laneOnsets[laneOf[i]];
+            const long s = data.notes[i].startTicks;
+            for (size_t k = 0; k + 1 < o.size(); k++)
+                if (o[k] == s) { laneNext[i] = o[k + 1]; break; }
+        }
 
         // 该轨是否单声部：不同音头的音之间没有交叠，才敢用"到下一音头的间隔"当音值。
         // 钢琴这类复调轨一旦套用，左手长音会被右手音头截断。
@@ -673,16 +712,19 @@ QuantizeReport quantizeTiming(MidiData& data) {
                 // 那段时间必须由音符本身占掉：400/480 的四分音符旋律，一小节
                 // 4 拍会被记成「附点八分 + 看不见的十六分休止」，文本谱只剩 3
                 // 拍，而 MusicXML 另走一条路补出真的 16 分休止——三端就此分叉。
-                // 只对「无重叠」轨生效：复调轨里 ioi 是别的声部的音头，拿它当
-                // 本声部的收尾会把左手的长音截断。
+                // v1.55.0：空档按「本声部下一个音头」算（laneNext），不再被整轨
+                // `monophonic` 判定一刀切。补到的是同声部的下一个音头，绝不会截断别的
+                // 声部的长音；连奏判定与 dur > ioi 的截短仍走整轨口径，保持既有
+                // 复调素材的排版不变。
                 //
                 // 再加一道相对门槛（空档不到音长三分之一，即门限 >= 3/4）：
                 // 一半音长就收尾的那种是刻意的断奏 / 打击乐击打，120 tick 的
                 // 鼓点占 240 tick 的格，拉成八分会把十六分音符写丢。
-                const long gap = ioi - oldDur;
-                if (monophonic && gap > 0 && gap < restGateTicks(div) &&
-                    gap * 3 <= oldDur)
-                    dur = ioi;
+                const long nextInLane = laneNext[i];
+                const long gap = (nextInLane > s) ? nextInLane - s - oldDur : 0;
+                if (gap > 0 && gap < restGateTicks(div) && gap * 3 <= oldDur &&
+                    nextInLane - s > dur)
+                    dur = nextInLane - s;
 
                 long snapped = (long)std::llround(snapBeats((double)dur / div) * div);
                 if (snapped > 0) dur = snapped;

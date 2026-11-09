@@ -2548,6 +2548,51 @@ def main():
     check(rc == 0 and "1_. 2_. 3_. 4_." in out,
           "--no-quantize 仍按原始 400 tick 记谱")
 
+    print("\n[77] 复调轨按声部补空档：左手全音符不再挡住右手补整拍")
+    # poly_gap.mid：左手每小节按住一个全音符（整轨 monophonic=false），
+    # 右手是 DAW 门限 85% 的四分音符（400 tick / 480 间隔）。v1.54.0 的
+    # 空档合并被整轨开关一刀切掉，右手 4/4 一小节只剩 3 拍；MusicXML
+    # 补出 7 个 16 分休止、HTML 印出 7 个附点八分，三端拍数各不相同。
+    pg = os.path.join(FIXTURES, "poly_gap.mid")
+    rc, out, _ = run(exe, pg)
+    check(rc == 0, "输出 poly_gap.mid 文本谱", out[-200:] if rc else "")
+    check("1 2 3 4  |" in out, "右手第 1 小节读作四个四分音符")
+    check("5 6 7 1'  |" in out, "右手第 2 小节同样读作 4 拍")
+    check("1_. 2_. 3_. 4_." not in out, "不再写成「附点八分」串")
+    check("1, - - -  |" in out, "左手全音符仍单独成声部、时值一字不改")
+    check(out.count("声部1") == 1 and out.count("声部2") == 1,
+          "仍拆成两个声部，没有把左右手并成一轨")
+
+    bad = []
+    for line in out.splitlines():
+        if "|" not in line:
+            continue
+        for bar in line.split("|")[:-1]:
+            b = bar_beats(bar)
+            if b is None or abs(b - 4) > 1e-6:
+                bad.append((bar.strip(), b))
+    check(not bad, "poly_gap.mid 两个声部每一小节都读作 4 拍", str(bad[:3]))
+
+    # 三端一致：MusicXML 不许再补出假的 16 分休止，HTML 是 8 个四分列。
+    with tempfile.TemporaryDirectory() as td:
+        px = os.path.join(td, "poly_gap.xml")
+        ph = os.path.join(td, "poly_gap.html")
+        rc2, _, _ = run(exe, pg, "--musicxml", px, "--html", ph)
+        xml = open(px, encoding="utf-8").read() if os.path.exists(px) else ""
+        html = open(ph, encoding="utf-8").read() if os.path.exists(ph) else ""
+    check(rc2 == 0 and "<type>16th</type>" not in xml,
+          "MusicXML 里不再补出一串假的 16 分休止")
+    check("<rest/>" not in xml, "MusicXML 里不再补出任何假休止")
+    check(html.count("class='note quarter'") == 8,
+          "HTML 是 8 个四分音符列，实际: "
+          + str(html.count("class='note quarter'")))
+    check("class='note whole'" in html, "HTML 保留左手的全音符列")
+
+    # --no-quantize 保留 MIDI 原始时长，仍写成附点八分：这是刻意的出口。
+    rc, out, _ = run(exe, pg, "--no-quantize")
+    check(rc == 0 and "1_. 2_. 3_. 4_." in out,
+          "--no-quantize 仍按原始 400 tick 记谱")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

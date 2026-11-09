@@ -1723,6 +1723,38 @@ if (existsSync(ggPath)) {
     'WASM HTML 仍是 8 个四分音符列（7 音 + 1 休止）');
 }
 
+// ---- 52. v1.55.0 复调轨按声部补空档（网页端同一份 core）----
+// poly_gap.mid：左手按住全音符让整轨判成复调，右手是 DAW 门限 85% 的
+// 四分音符。修复前文本谱一小节只剩 3 拍、MusicXML 补出 7 个 16 分休止，
+// 网页端读同一份 core，必须一起变成四个四分音符，左手声部一字不改。
+const pgPath = path.join(FIXTURES, 'poly_gap.mid');
+if (existsSync(pgPath)) {
+  const pg = makeCaller(mod);
+  pg.setMidi(new Uint8Array(readFileSync(pgPath)));
+  pg.setLyrics('');
+  const pgText = pg.call('midi2jianpu_parse', -1, 1) || '';
+  check(pgText.includes('1 2 3 4  |'),
+    'WASM 文本谱右手第 1 小节读作四个四分音符（旧版只有 3 拍）', pgText);
+  check(pgText.includes("5 6 7 1'  |"),
+    'WASM 文本谱右手第 2 小节同样读作 4 拍');
+  check(!pgText.includes('1_. 2_. 3_. 4_.'),
+    'WASM 文本谱不再写成「附点八分」串');
+  check(pgText.includes('1, - - -  |'),
+    'WASM 文本谱左手全音符仍单独成声部、时值一字不改');
+
+  const pgXml = pg.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(!pgXml.includes('<type>16th</type>'),
+    'WASM MusicXML 里不再补出假的 16 分休止');
+  check(!pgXml.includes('<rest/>'),
+    'WASM MusicXML 里不再补出任何假休止');
+
+  const pgHtml = pg.call('midi2jianpu_html', -1, 1) || '';
+  check((pgHtml.match(/class='note quarter'/g) || []).length === 8,
+    'WASM HTML 是 8 个四分音符列');
+  check(pgHtml.includes("class='note whole'"),
+    'WASM HTML 保留左手的全音符列');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);
