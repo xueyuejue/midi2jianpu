@@ -67,7 +67,7 @@
 - [x] **损坏 / 截断 MIDI 的安全解析**：`MTrk` 长度字段写着原值、文件却只下载到一半时，不再越过 buffer 末尾把堆里相邻内存当成新事件继续解析（那会凭空冒出幻影音符与乱码歌词）。所有事件统一按 `min(trkEnd, size)` 取硬边界，残缺事件整条丢弃，CLI / HTML / 网页文件面板写明「文件数据不完整」并按可用字节正常出谱；合法文件逐字节零回归
 - [x] **CC67 软踏板**：踩下期间起音的音符力度按 ×0.7 衰减，重音记号 / 力度分析 / 网页播放 JSON 同步变化，时值与 CC11 力度表不动（没有 CC67 的文件逐字节零回归）；系数经 `--soft-pedal-scale` / `--no-soft-pedal` 与网页强度下拉可配（0.3~1.0 或关闭），纯整数公式零漂移
 - [x] **SMF chunk 级边界重同步**：轨间夹 DAW 私有扩展块（`XFIH` 等）或某条 `MTrk` 长度字段写错时，不再停掉整个 chunk 循环把后续旋律轨整条丢掉（旧版直接报「未提取到音符」）；改为按 chunk 通用规则跳过非 `MTrk` 块，并用「EOT 锚定 + 长度可信」的下一个轨头校正偏长 / 偏短的边界。歌词 / SysEx 里恰好出现的字面 `MTrk` 不会被误判，合法文件逐字节零回归；CLI / HTML / 网页文件面板写明「文件结构提示」
-- [x] 757 项单元测试 + 75 组端到端冒烟测试 + 49 组 WASM 产物一致性检查（含产物版本号、源码一致性、「改了源码必须重编」与「重编了必须升版本」的双向纯 git 守护）
+- [x] 764 项单元测试 + 76 组端到端冒烟测试 + 50 组 WASM 产物一致性检查（含产物版本号、源码一致性、「改了源码必须重编」与「重编了必须升版本」的双向纯 git 守护）
 
 ## 在线 Demo 功能
 
@@ -185,7 +185,7 @@ Windows 产物在 `build\Release\midi2jianpu.exe`。详细说明、WASM 编译�
 低八度的 1-3-5 按住四拍。HTML 那边是真正的竖排（`.chordcol`），MusicXML 写
 `<chord/>`，三端说的是同一件事。
 
-时值后缀跟在数字后：`%%` 三十二分、`=` 十六分、`_.` 附点八分、`_` 八分、`.` 附点四分、无后缀为四分、`-` 为二分。完整对照表见 [BUILD.md](./BUILD.md#时值后缀)。
+时值后缀跟在数字后：`%%` 三十二分、`=` 十六分、`_.` 附点八分、`_` 八分、`.` 附点四分、无后缀为四分、`-` 为二分；后缀前多一条 `-`（`-_.`）表示「接着上一个音 / 休止」，表里放不下的时值会拆成 `0 - -` + `-_.` 两段，总长只短不长，绝不让一小节超过拍号。完整对照表见 [BUILD.md](./BUILD.md#时值后缀)。
 
 > **八度基准随 `1` 移动**：`1` 代表 do 所在八度，不是固定以 C4 为基准。所以 `--key G` 时 C5 写作 `4` 而非 `4'`。这是简谱的标准做法，早期版本以 C4 为基准导致所有音整体偏高一个八度点，已修正。
 
@@ -798,7 +798,7 @@ XG 鼓组通道与中途换音色的通道，新导出 `_midi2jianpu_bank_info`�
 - 调性识别：**Krumhansl-Schmuckler** 算法（音乐信息检索标准）；无调号时再由**宫商角徵羽五声调式**判定校正宫音
 - 和弦检测：按和声窗（半小节 / 附点四分 / 整小节）统计音级频率，匹配 11 种和弦类型，低音决定转位
 - 输出：文本 + 自包含 HTML（内联 CSS）+ MusicXML 3.1
-- 测试：内置断言 757 项单元测试，另有 `tests/smoke.py` 75 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`、声部乐器标注 + 倚音混合素材 `parts.mid`、和弦转位 + 七和弦素材 `chords.mid`、渐快渐慢素材 `tempo_ramp.mid`、长音跨小节素材 `long_tie.mid`、同轨复调素材 `polyphony.mid`、SMPTE 时间基准素材 `smpte.mid`、format 2 独立序列素材 `format2.mid`、复音触后素材 `aftertouch.mid`、同音重触发素材 `retrigger.mid`、轨尾悬挂音素材 `dangling.mid`、双歌词轨素材 `twolyrics.mid`、延音踏板素材 `pedal.mid`、强制清音素材 `allnotesoff.mid`、CC7 主音量素材 `cc7volume.mid`、踏板通道隔离素材 `pedal_channels.mid`、踏板迟滞素材 `pedal_hysteresis.mid`、持音踏板素材 `sostenuto.mid`、双通道力度素材 `dyn_channels.mid`、软踏板素材 `soft_pedal.mid`、诊断一致性素材 `diag_consistency.mid`、弯音范围按通道 / 按时间 / 跨轨三份素材 `bendrange_channels.mid` / `bendrange_timeline.mid` / `bendrange_crosstrack.mid`、省略状态字节四份素材 `running_meta.mid` / `running_sysex.mid` / `running_realtime.mid` / `running_standard.mid`、MIDI Port 五份素材 `port_pedal.mid` / `port_bend.mid` / `port_prefix.mid` / `port_prefix_base.mid` / `port_standard.mid`、SysEx 鼓模式 11 份 `sysex_*.mid` 素材、Bank Select 与音色时间轴 9 份 `bank_*.mid` / `program_timeline.mid` 素材、按轨隔离 7 份素材 `track_pedal.mid` / `track_rpn_setup.mid` / `track_conductor.mid` / `track_leak.mid` / `track_leak_base.mid` / `track_empty.mid` / `track_fmt2.mid`、截断文件素材 `truncated.mid`、chunk 边界素材 `chunk_resync.mid`、通道级楔形素材 `wedge_tracks.mid`、越界长度字段素材 `oversized_len.mid`、同轨三声部素材 `voice_trio.mid`、键盘大谱表素材 `grand_staff.mid`、小节中途变速素材 `midtempo.mid`、小节中途换力度档素材 `dyn_step.mid`、移调调号素材 `transpose_key.mid`）
+- 测试：内置断言 764 项单元测试，另有 `tests/smoke.py` 76 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`、声部乐器标注 + 倚音混合素材 `parts.mid`、和弦转位 + 七和弦素材 `chords.mid`、渐快渐慢素材 `tempo_ramp.mid`、长音跨小节素材 `long_tie.mid`、同轨复调素材 `polyphony.mid`、SMPTE 时间基准素材 `smpte.mid`、format 2 独立序列素材 `format2.mid`、复音触后素材 `aftertouch.mid`、同音重触发素材 `retrigger.mid`、轨尾悬挂音素材 `dangling.mid`、双歌词轨素材 `twolyrics.mid`、延音踏板素材 `pedal.mid`、强制清音素材 `allnotesoff.mid`、CC7 主音量素材 `cc7volume.mid`、踏板通道隔离素材 `pedal_channels.mid`、踏板迟滞素材 `pedal_hysteresis.mid`、持音踏板素材 `sostenuto.mid`、双通道力度素材 `dyn_channels.mid`、软踏板素材 `soft_pedal.mid`、诊断一致性素材 `diag_consistency.mid`、弯音范围按通道 / 按时间 / 跨轨三份素材 `bendrange_channels.mid` / `bendrange_timeline.mid` / `bendrange_crosstrack.mid`、省略状态字节四份素材 `running_meta.mid` / `running_sysex.mid` / `running_realtime.mid` / `running_standard.mid`、MIDI Port 五份素材 `port_pedal.mid` / `port_bend.mid` / `port_prefix.mid` / `port_prefix_base.mid` / `port_standard.mid`、SysEx 鼓模式 11 份 `sysex_*.mid` 素材、Bank Select 与音色时间轴 9 份 `bank_*.mid` / `program_timeline.mid` 素材、按轨隔离 7 份素材 `track_pedal.mid` / `track_rpn_setup.mid` / `track_conductor.mid` / `track_leak.mid` / `track_leak_base.mid` / `track_empty.mid` / `track_fmt2.mid`、截断文件素材 `truncated.mid`、chunk 边界素材 `chunk_resync.mid`、通道级楔形素材 `wedge_tracks.mid`、越界长度字段素材 `oversized_len.mid`、同轨三声部素材 `voice_trio.mid`、键盘大谱表素材 `grand_staff.mid`、小节中途变速素材 `midtempo.mid`、小节中途换力度档素材 `dyn_step.mid`、移调调号素材 `transpose_key.mid`、撑爆小节素材 `overfull.mid`）
 
 ## 路线图
 
@@ -859,6 +859,7 @@ XG 鼓组通道与中途换音色的通道，新导出 `_midi2jianpu_bank_info`�
 - [x] **文本谱 / HTML 的中途换档跟随音头**：① 缺陷：v1.49.0 只修了 MusicXML，文本谱仍在 `switchToBar` 里取一次 `dynamicAt(atTick)`、HTML 仍在 `openBar` 里取一次 `dynamicAt(firstTick)`，小节中途的换档在这两端照样没有出口——`dyn_step.mid` 第 1 小节 `ff→p`(第 2 拍)`→f`(第 4 拍)，文本谱只印出一个 `[ff]`，`p` **整条消失**、`f` 被顶到第 2 小节；`expression.mid` 的 `ff→f`（tick 2400）同样被推到第 3 小节。② 修复：文本谱在音头处按 `dynamicStepsInside(lastDynTick, 音头+1, partChannel)` 逐个印 `[p]`，并用 `lastDynTick` 游标保证同一处变化不会被相邻两个音头各印一遍；HTML 新增 `dynMarkFor(tick)` 与 `withDyn()`，把力度浮标挂到出事那个音符列上（与和弦标注同一层、绝对定位不占宽度，撞到同一列时用 `.pair` 往左让开）。③ 关键取舍：`dynx` 的 CSS 只在正文真的出现过浮标时才随页输出——内嵌样式无条件加一段会让 79 份素材的 HTML 全部变红，零回归靠 `body.str().find("dynx")` 这条判断守住。④ 8 项单元测试（722→730，含「没有中途换档时不输出 dynx 样式」「渐变段内部不逐点印档位」两条反例）、CLI 冒烟第 [72] 组与 WASM 冒烟第 47 组；79 份素材里仅 `dyn_step.mid` / `expression.mid` 的 txt 与 html 按预期变化，其余 77 份三层输出与真实曲目逐字节零回归（v1.50.0）。⑤ 跟进：v1.50.0 的打包把 `html_writer.cpp` 漏在 CMake 的单测目标外（那边手抄了一份源文件列表），Linux 链接 `renderHtml` 直接失败；v1.50.1 把单测目标改成与 CLI / WASM 同源的 `${M2J_CORE}`，这类「本机能编、CI 报错」的分叉不会再出现（v1.50.1）
 - [x] **`--transpose` 把 MIDI 调号一起平移**：① 缺陷：`--transpose` 只对音符做 `n.pitch += transpose`，`data.keySig` 与 `keySigChanges` 原封不动，而 `estimateKey()` 优先采信 MIDI 内置调号——于是移调之后谱面两头分叉：`1=C` 的文件页眉仍写「1=C 大调」、旋律被重新数成 `2 3 #4 5`（本该还是 `1 2 3 4`），MusicXML 的 `<key><fifths>` 停在 0 而音符已经是 D 大调，MuseScore 打开满谱临时记号。中途转调的曲子更明显：`modulation.mid` 本是 1=C → 1=D → 1=F，移两个半音后调号一个都没动，只有音符在走。② 修复：新增 `m2j::transposeFifths(fifths, semitones)` 与 `m2j::transposeData(data, semitones)`，CLI `--transpose` 改走后者——音符、曲首调号、全部 `keySigChanges` 一起平移。五度圈换算：移 N 半音 = 走 `7N mod 12` 步（纯五度 7 半音，且 `7×7 ≡ 1 (mod 12)`），步数取 `[-5, 6]`，结果再归一化到 `[-6, 6]`，跨零点自动选升降号最少的等价写法（C+1 记 Db 的 5 个降号，不写 7 个升号的 C#；Bb+1 记 B 的 5 个升号，不写 Cb）。③ 页眉同步改口：只有调号真的动了才印「（调号同步平移）」并标「MIDI调号，已随移调平移」，`--transpose ±12` 只换音区时不谎报；没有 0x59 的文件本来就靠音级分布定调，只移音、不凭空造调号。`--key` / `--gong` 给的是原调，移调后一起平移（新增 `m2j::transposeKey()` 走调号取最简写法，C+3 记 1=Eb 而不是 9 个升号的 D#；`--gong` 按新宫音重推一次调式名，`--gong C +2` 得「宫音 D / A 徵调式」），整八度移调则两者都不动。④ 新增 `transpose_key.mid` 第 80 份素材（第 1~4 小节 1=Bb、第 5 小节转 1=D，两段都用足七声以免被五声判定改掉 do）、22 项单元测试（730→752，含五度圈换算 8 条、`transposeKey` 5 条与「移八度不动调号」「无调号文件只移音」反例）、CLI 冒烟第 [73] 组与 WASM 冒烟第 48 组；79 份既有素材三层输出与真实曲目 `die_yi_sui_xue_vocal.mid` 逐字节零回归（改动只落在 `transpose != 0` 的路径上）（v1.51.0）
 - [x] **文本谱把同拍和弦并成一格**：① 缺陷：`formatTrack()` 一个音印一个 token 顺着排下去，同一声部里同拍同值的音（`splitVoices()` 判定的和弦）被写成连续几个音——`sample.mid` 钢琴左手的 C-E-G 三个全音符印成 `1, - - - 3, - - - 5, - - -`，4/4 的一小节读出 12 拍，之后每一小节的拍位跟着错位；真实曲目 `die_yi_sui_xue_vocal.mid` 里的八度加倍（C4+C5 同拍同值）也被写成两个音，第 21 / 37 / 45 小节读成 4.5 拍。HTML 那边用 `.chordcol` 竖排、MusicXML 写 `<chord/>`，只有文本谱这一端是错的。② 修复：按 `startTicks` 把音分组，一组印一格、音之间用 `+` 连接（`1,+3,+5,`），时值只写一次、每个音各带自己的八度记号；组内时值取最短（`splitVoices()` 已对齐，纯防御）；整组都是倚音时整组跳过，不印空音头。`+` 与 `[C]` 和弦名、`3(...)` 三连音、`(...)5` 倚音三种记号都不冲突。③ 效果：80 份素材里 14 份的文本谱按预期收窄（`sample.mid` 钢琴轨一行从 12 拍回到 4 拍），html / xml 逐字节不变；自建的小节拍数守恒检查（逐小节按记号折算拍数、与拍号比对）从 79 个不守恒小节降到 3 个——剩下 3 个是既有问题（整小节 3.75 拍的休止被印成 4 拍、小节末的休止不补），真实曲目从 3 个错小节降到 0。④ 5 项单元测试（752→757，含「先后发音的音不写成和弦」「和弦各音保留自己的八度记号」两条反例）、CLI 冒烟第 [74] 组（含「任何小节都不超过拍号」的拍数守恒断言）与 WASM 冒烟第 49 组（顺带锁住网页端 HTML 仍是竖排 `.chordcol`）（v1.52.0）
+- [x] **时值折算不再把小节撑过拍号**：① 缺陷：`durationSuffix()` 把表外时值吸附到最近档，落在两档之间时**向上取整**——踏板补长出来的 3.75 拍休止被记成 4 拍（`0 - - -`），`pedal_channels.mid` 第 2 小节因此读成 4.25 拍；小节一旦被撑破，后面每一小节的拍位都跟着错位，读者也无从判断到底空了几拍。② 修复：新增 `emitDurationTokens()` 统一出口，先按最近档记（`1.4` 拍仍写 `1.`，读起来干净），只有「多出来的那点会越过小节线」时才拆成多段「宁短不长」的记法：先取 `largestNotatableTicks()` 能放下的最大档，余量接着拆，`3.75` 拍于是写成 `0 - -` 再补一条 `-_.`，总长正好 3.75 拍。③ 顺带修掉倚音吞休止：`formatTrack()` 原来先跳过倚音再算 `gap`，倚音前面那段空白既没有音头也没有休止、直接消失（`parts.mid` 的 2 拍弱起小节只读出 1 拍，`[C] 0 (7,)1` 被印成 `[C] (7,)1`）；现在把休止输出抽成 `emitRestUntil()`，倚音也先补它前面的休止。④ 效果：自建的小节拍数守恒检查从 3 个不守恒小节降到 1 个（只剩 `soft_pedal.mid` 那种 80 tick 的零头，低于最小可记谱档位 1/32 拍，本来就写不出来），81 份素材里只有 2 份的文本谱按预期变化，html / xml 与真实曲目逐字节不变。⑤ 新增 `overfull.mid` 第 81 份素材（16 分音符 + 3.75 拍休止 / 1 拍休止 + 倚音 + 二分音符）、7 项单元测试（757→764，含「没顶到小节线的零头不许碎片化」反例）、CLI 冒烟第 [75] 组与 WASM 冒烟第 50 组（v1.53.0）
 
 ## 为什么开源
 
@@ -896,14 +897,14 @@ Issue / PR 都欢迎。尤其欢迎：
 提交前请跑一遍：
 
 ```bash
-cd build && ctest --output-on-failure                  # 757 项单元测试
+cd build && ctest --output-on-failure                  # 764 项单元测试
 python tests/smoke.py build/Release/midi2jianpu.exe    # 端到端冒烟（含鼓轨场景）
 node tests/wasm_smoke.mjs                              # WASM 产物与源码是否同步（含版本号）
 python tests/check_wasm_exports.py                     # WASM 导出清单五处一致性
 python tests/check_wasm_sync.py --self-test             # WASM 产物同步守护自测
 ```
 
-推送后 `.github/workflows/ci.yml` 还会在 Ubuntu 上再跑一遍两个 job：CMake 编译 + 757 项单测 + 75 组 CLI 冒烟 + 80 份素材可复现校验，以及 49 组 WASM 冒烟 + 导出清单守护 + 产物同步守护。`docs/wasm/` 漏重编会让 CI 直接变红。
+推送后 `.github/workflows/ci.yml` 还会在 Ubuntu 上再跑一遍两个 job：CMake 编译 + 764 项单测 + 76 组 CLI 冒烟 + 81 份素材可复现校验，以及 50 组 WASM 冒烟 + 导出清单守护 + 产物同步守护。`docs/wasm/` 漏重编会让 CI 直接变红。
 
 产物同步守护是纯 git 检查（`tests/check_wasm_sync.py`）：`wasm_smoke.mjs` 第 34 组只比对 `version.hpp` 与 wasm 页脚版本，若有人**改了 `src/` 却不升版本、也不重编**，页脚仍然「一致」，那道守护会静默放过。同步守护直接看本次提交动了哪些文件：`src/**`、`include/**`、`cmake/**`、`CMakeLists.txt`、`build/build_wasm.cmd` 里只要有一个变更，`docs/wasm/midi2jianpu.wasm` 就必须一起变；胶水层 `.js` 单独变也不行。只改测试 / 文档 / CI 配置不要求重编。
 自 v1.41.0 起还加了一条**反向规则**：`.wasm` 变了（说明重编过）却没动

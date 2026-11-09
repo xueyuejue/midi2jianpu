@@ -684,6 +684,44 @@ def build_transpose_key() -> bytes:
     return header + t0.render() + t1.render()
 
 
+def build_overfull() -> bytes:
+    """时值折算不许把小节撑过拍号；倚音不许吞掉前面的休止（v1.53.0）。
+
+    3 小节 4/4，division=480（末音收在小节线上，不会被误判成弱起）：
+        第 1 小节  0    ~ 1920   四个四分音符，把小节填满
+        第 2 小节  1920 ~ 3840   16 分音符 + 3.75 拍休止
+        第 3 小节  3840 ~ 5760   四分音符 + 1 拍休止 + 倚音 D5 + 二分音符
+
+    两个缺陷：
+      * durationSuffix() 把表外时值吸附到最近档，3.75 拍落在 3 与 4 之间时
+        向上取整成 4 拍（`0 - - -`）——那一小节读成 4.25 拍，后面每小节的
+        拍位整体错位。修复后拆成 `0 - -` + `-_.`，正好 3.75 拍。
+      * 倚音整颗跳过时把前面的空白一起跳过（先跳倚音再算 gap），第 3 小节
+        那 1 拍休止会整块消失，`0 (2')5'` 被印成 `(2')5'`，小节少一拍。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 500000us -> 120 BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Melody"))
+    t1.program(0, 73, 0)                               # Flute
+    # 第 1 小节铺满，开头就不留白，弱起判定不会把网格整体平移
+    for i, pitch in enumerate([72, 76, 79, 84]):
+        t1.note(0, pitch, 88, i * 480, 480)
+    # 第 2 小节：16 分音符之后空 3.75 拍（休止撑爆的路径）
+    t1.note(0, 72, 88, 1920, 120)
+    # 第 3 小节：四分音符 + 1 拍休止，随后是紧贴主音的倚音
+    t1.note(0, 72, 88, 3840, 480)
+    t1.note(0, 74, 90, 4770, 14)                       # 倚音 D5（极短，紧跟 G5）
+    t1.note(0, 79, 88, 4800, 960)                      # 主音 G5，二分音符
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + t1.render()
+
+
 def build_pentatonic() -> bytes:
     """中国五声调式压力素材：C 宫五声、终止音 G 的「G 徵调式」。
 
@@ -2743,6 +2781,17 @@ def main() -> None:
     # 把 MIDI 调号一起平移（只移音不移调号会让唱名与调号分叉）
     for name, builder in (
         ("transpose_key", build_transpose_key),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # 时值折算不许把小节撑过拍号（3.75 拍记成 4 拍），倚音也不许吞掉
+    # 它前面的休止
+    for name, builder in (
+        ("overfull", build_overfull),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

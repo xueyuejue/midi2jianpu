@@ -5010,6 +5010,82 @@ int main() {
               "和弦各音保留自己的八度记号：" + jo);
     }
 
+    // -----------------------------------------------------------------
+    // v1.53.0: 时值折算不许把小节撑过拍号；倚音不许吞掉前面的休止
+    // -----------------------------------------------------------------
+    std::cout << "\n测试时值折算与小节拍数守恒\n";
+    {
+        auto add = [](MidiData& d, long start, long dur, int pitch) {
+            NoteEvent n;
+            n.startTicks = start;
+            n.durationTicks = dur;
+            n.rawDurationTicks = dur;
+            n.pitch = pitch;
+            n.channel = 0;
+            n.track = 0;
+            d.notes.push_back(n);
+        };
+        const KeyEstimate c{0, true};
+
+        // 3.75 拍的休止：durationSuffix() 取最近档，3.75 落在 3 与 4 之间时
+        // 向上取整成 4 拍，那一小节读成 4.25 拍，后面每小节的拍位整体错位。
+        MidiData rest;
+        rest.division = 480;
+        rest.timeSig.valid = true;
+        rest.trackNames[0] = "Vocal";
+        for (int i = 0; i < 4; i++) add(rest, i * 480, 480, 60 + 2 * i);
+        add(rest, 1920, 120, 60);          // 第 2 小节开头一个 16 分音符
+        add(rest, 3840, 1920, 60);         // 第 3 小节（收在小节线，免得被判成弱起）
+        const std::string jr = formatJianpu(rest, c);
+        check(jr.find("0 - - -_.") != std::string::npos,
+              "3.75 拍休止拆成 `0 - -` + `-_.`，不再向上取整成 4 拍：" + jr);
+        check(jr.find("0 - - -  |") == std::string::npos,
+              "休止不会把一小节撑过小节线：" + jr);
+
+        // 音符一侧同理：3.75 拍的音正好顶到小节线，也不能印成 4 拍。
+        MidiData note;
+        note.division = 480;
+        note.timeSig.valid = true;
+        note.trackNames[0] = "Vocal";
+        for (int i = 0; i < 4; i++) add(note, i * 480, 480, 60 + 2 * i);
+        add(note, 1920, 120, 60);
+        add(note, 2040, 1800, 67);         // 3.75 拍，尾部顶到第 2 小节线
+        add(note, 3840, 1920, 72);
+        const std::string jn = formatJianpu(note, c);
+        check(jn.find("5 - - -_.") != std::string::npos,
+              "3.75 拍的音同样拆段记谱，不越过小节线：" + jn);
+
+        // 反向约束：还没顶到小节线的「零头」，照旧记最近档，不许碎片化。
+        MidiData near;
+        near.division = 480;
+        near.timeSig.valid = true;
+        near.trackNames[0] = "Vocal";
+        add(near, 460, 480, 60);           // 开头 0.958 拍休止 -> 记 1 拍
+        add(near, 940, 480, 62);
+        add(near, 1420, 500, 64);
+        const std::string jnr = formatJianpu(near, c);
+        check(jnr.find("0_. -%%") == std::string::npos,
+              "0.958 拍休止仍记成一拍 `0`，不拆成 `0_. -%%`：" + jnr);
+        check(jnr.find("0 1") != std::string::npos,
+              "小节内的最近档记法保持不变：" + jnr);
+
+        // 倚音不占格，但它前面的休止必须照常印出来（旧实现先跳倚音再算
+        // gap，那一段空白既没有音头也没有休止，直接消失）。
+        MidiData gr;
+        gr.division = 480;
+        gr.timeSig.valid = true;
+        gr.trackNames[0] = "Vocal";
+        add(gr, 0, 480, 72);
+        add(gr, 3840, 480, 72);            // 第 3 小节头
+        add(gr, 4770, 14, 74);             // 倚音 D5（极短，紧跟 G5）
+        add(gr, 4800, 960, 79);            // 主音 G5
+        const std::string jg = formatJianpu(gr, c);
+        check(jg.find("0 (2')5'") != std::string::npos,
+              "倚音前面的 1 拍休止照常印出来：" + jg);
+        check(jg.find("(2')5' -") != std::string::npos,
+              "倚音仍挂在主音前面，主音时值不受影响：" + jg);
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

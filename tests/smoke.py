@@ -2468,6 +2468,43 @@ def main():
         check(rc == 0 and not bad and "+" in out,
               f"{name} 的柱式和弦并成一格且拍数守恒", str(bad[:3]))
 
+    print("\n[75] 时值折算不把小节撑过拍号；倚音不吞掉前面的休止")
+    # overfull.mid：第 2 小节是「16 分音符 + 3.75 拍休止」，第 3 小节是
+    # 「四分音符 + 1 拍休止 + 倚音 + 二分音符」。旧版 durationSuffix() 把
+    # 3.75 拍取整成 4 拍，小节读成 4.25 拍；倚音又把它前面的休止一起跳过。
+    of = os.path.join(FIXTURES, "overfull.mid")
+    rc, out, _ = run(exe, of)
+    check(rc == 0, "输出 overfull.mid 文本谱", out[-200:] if rc else "")
+    check("1'= 0 - - -_." in out,
+          "3.75 拍休止拆成 `0 - -` + `-_.`，不再向上取整成 4 拍")
+    check("0 - - -  |" not in out,
+          "休止不再把小节撑过小节线（旧版第 2 小节读成 4.25 拍）")
+    check("1' 0 (2')5' -" in out,
+          "倚音前面的 1 拍休止照常印出来（旧版整块消失）")
+    check("(2')5'" in out, "倚音仍挂在主音前面，主音时值不受影响")
+
+    # 逐小节核对：任何一小节都不能超过拍号
+    over = []
+    for line in out.splitlines():
+        if "|" not in line:
+            continue
+        for bar in line.split("|")[:-1]:
+            b = bar_beats(bar)
+            if b is not None and b > 4 + 1e-6:
+                over.append((bar.strip(), round(b, 2)))
+    check(not over, "overfull.mid 全部小节不超过 4 拍", str(over[:3]))
+
+    # 踏板补长出来的 3.75 拍休止（pedal_channels.mid 第 2 小节）同样拆段。
+    rc, out, _ = run(exe, os.path.join(FIXTURES, "pedal_channels.mid"))
+    check(rc == 0 and "1,= 0 - - -_." in out and "1,= 0 - - -  |" not in out,
+          "踏板补长出来的 3.75 拍休止同样拆段记谱")
+
+    # 反向约束：还没顶到小节线的零头照旧记最近档，不许碎片化；弱起小节
+    # 开头的空白也不会再被倚音吞掉（parts.mid 第 1 小节从 1 拍回到 2 拍）。
+    rc, out, _ = run(exe, os.path.join(FIXTURES, "parts.mid"))
+    check(rc == 0 and "0_. -%%" not in out and "0 (7,)1" in out,
+          "parts.mid 弱起小节补回首拍休止，零头仍记最近档")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

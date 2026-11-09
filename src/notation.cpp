@@ -442,27 +442,27 @@ std::string pitchToJianpu(int pitch, const KeyEstimate& key) {
     return s;
 }
 
+// 文本简谱记法（与 HTML 版的视觉记法一一对应）：
+//   延长线 "-"  每多一拍加一条
+//   下划线 "_" 表示八分，"=" 表示十六分，"%%" 表示三十二分
+//   附点在数字右侧用 "." 表示
+struct DurEntry { double beats; const char* suffix; };
+static const DurEntry DUR_TABLE[] = {
+    {0.125, "%%"},   // 三十二分
+    {0.25,  "="},    // 十六分
+    {0.375, "=."},   // 附点十六分
+    {0.5,   "_"},    // 八分
+    {0.75,  "_."},   // 附点八分
+    {1.0,   ""},     // 四分
+    {1.5,   "."},    // 附点四分
+    {2.0,   "-"},    // 二分
+    {3.0,   "--"},   // 附点二分
+    {4.0,   "---"},  // 全音符
+};
+
 std::string durationSuffix(long durationTicks, int division) {
     if (division <= 0) return "";
     double beats = (double)durationTicks / division;
-
-    // 文本简谱记法（与 HTML 版的视觉记法一一对应）：
-    //   延长线 "-"  每多一拍加一条
-    //   下划线 "_" 表示八分，"=" 表示十六分，"%%" 表示三十二分
-    //   附点在数字右侧用 "." 表示
-    struct Dur { double beats; const char* suffix; };
-    static const Dur table[] = {
-        {0.125, "%%"},   // 三十二分
-        {0.25,  "="},    // 十六分
-        {0.375, "=."},   // 附点十六分
-        {0.5,   "_"},    // 八分
-        {0.75,  "_."},   // 附点八分
-        {1.0,   ""},     // 四分
-        {1.5,   "."},    // 附点四分
-        {2.0,   "-"},    // 二分
-        {3.0,   "--"},   // 附点二分
-        {4.0,   "---"},  // 全音符
-    };
 
     if (beats > 4.5) {  // 超长音符退化为延长线计数
         int n = (int)std::lround(beats) - 1;
@@ -471,9 +471,40 @@ std::string durationSuffix(long durationTicks, int division) {
 
     const char* best = "";
     double bestDist = 1e9;
-    for (const auto& d : table) {
+    for (const auto& d : DUR_TABLE) {
         double dist = std::abs(beats - d.beats);
         if (dist < bestDist) { bestDist = dist; best = d.suffix; }
+    }
+    return best;
+}
+
+// durationSuffix() 会把表外时值吸附到最近档，落在两档之间时可能向上取整。
+// 这里给出「按最近档折算后的实际 tick 数」，口径必须与 durationSuffix 一致，
+// 供记谱出口判断有没有发生上取整（原来的 3.75 拍被记成 4 拍就是这么来的）。
+static long nearestNotatableTicks(long durationTicks, int division) {
+    if (division <= 0) return durationTicks;
+    double beats = (double)durationTicks / division;
+    if (beats > 4.5)                       // 与上面的「退化为延长线」同口径
+        return (long)std::lround(beats) * division;
+    double bestDist = 1e9;
+    long best = durationTicks;
+    for (const auto& d : DUR_TABLE) {
+        double dist = std::abs(beats - d.beats);
+        if (dist < bestDist) {
+            bestDist = dist;
+            best = (long)std::lround(d.beats * division);
+        }
+    }
+    return best;
+}
+
+// 不超过 ticks 的最大可记谱时值，用来把超长时值拆成多段「宁短不长」的记法。
+static long largestNotatableTicks(long ticks, int division) {
+    if (division <= 0) return ticks;
+    long best = 0;
+    for (const auto& d : DUR_TABLE) {
+        long len = (long)std::lround(d.beats * division);
+        if (len > 0 && len <= ticks && len > best) best = len;
     }
     return best;
 }
@@ -1017,6 +1048,36 @@ static void emitNoteToken(std::ostringstream& os, const std::string& head,
     os << art << " ";
 }
 
+// 时值记号的统一出口。durationSuffix() 取最近档，表外时值可能向上取整：
+// 3.75 拍记成 4 拍（`---`）。只要多出来的那点还没越过小节线，就照最近档记
+// （读起来干净，`1.4` 拍记 `1.` 也是这个道理）；一旦会把这一小节撑过拍号，
+// 就拆成多段「宁短不长」的记法——`0 - -` 再补一条 `-_.`，总长正好 3.75 拍。
+// 撑爆小节不是排版小事：它把后面每一小节的拍位整体推后，读者也没法判断
+// 到底空了几拍（pedal_channels.mid 第 2 小节因此读成 4.25 拍）。
+static void emitDurationTokens(std::ostringstream& os, const std::string& head,
+                               long ticks, long startTick, long barEnd,
+                               int division, const std::string& art = "") {
+    if (ticks <= 0) { emitNoteToken(os, head, "", art); return; }
+    const long snapped = nearestNotatableTicks(ticks, division);
+    if (snapped <= ticks || startTick + snapped <= barEnd) {
+        emitNoteToken(os, head, durationSuffix(ticks, division), art);
+        return;
+    }
+    long left = ticks;
+    bool first = true;
+    while (left > 0) {
+        long part = largestNotatableTicks(left, division);
+        if (part <= 0) break;
+        // 首段带音头与演奏记号，后续段用 "-" 续写（与跨小节续写同一套记号）
+        emitNoteToken(os, first ? head : "-", durationSuffix(part, division),
+                      first ? art : "");
+        first = false;
+        left -= part;
+    }
+    // 连最小档都放不下（不足 1/32 拍）：退回老写法，别把音头整个丢掉。
+    if (first) emitNoteToken(os, head, durationSuffix(ticks, division), art);
+}
+
 // ---- 调性 map（中途转调） ----
 
 std::vector<KeySigPoint> keyChangesOf(const MidiData& data) {
@@ -1191,12 +1252,12 @@ static std::string formatTrack(
         lastDynTick = atTick;
     };
     // 跨小节时，后段用延长线续写：整拍输出 "-"，不足一拍带时值后缀
-    auto emitHeld = [&](long segTicks) {
+    auto emitHeld = [&](long segTicks, long atTick, long barEndTick) {
         if (segTicks <= 0) return;
         if (segTicks % data.division == 0) {
             for (long k = 0; k < segTicks / data.division; ++k) os << "- ";
         } else {
-            emitNoteToken(os, "-", durationSuffix(segTicks, data.division));
+            emitDurationTokens(os, "-", segTicks, atTick, barEndTick, data.division);
         }
     };
 
@@ -1219,32 +1280,40 @@ static std::string formatTrack(
         for (size_t k = idx + 1; k < grpEnd; k++)
             groupDur = std::min(groupDur, std::max<long>(merged[k].durationTicks, 1));
 
+        // 右括号必须先于休止输出，否则 3(5 5 5 0 ) 会把休止吞进三连音组
+        if (!triplets[idx] && inTriplet) { os << ") "; inTriplet = false; }
+
+        // 休止：按小节切开输出，长前奏才能写成每小节一个 "0 - - -"。
+        // 抽成 lambda 是因为倚音也要用：倚音整颗不占格，但它前面的空白
+        // （弱起小节开头、小节中段的休止）不能跟着一起被吞掉——旧实现先
+        // 跳过倚音再算 gap，那一段空白既没有音头也没有休止，直接消失，
+        // parts.mid 的 2 拍弱起小节因此只读出 1 拍。
+        auto emitRestUntil = [&](long endTick) {
+            long gap = endTick - prevEnd;
+            if (gap < data.division / 2) return;
+            if (!started && endTick <= 0) return;
+            long t = prevEnd;
+            while (t < endTick) {
+                long bar = barOf(t);
+                switchToBar(bar, t, partChannel);
+                long seg = std::min(endTick, grid.barEnd(bar)) - t;
+                if (seg <= 0) break;                    // 防御：避免死循环
+                emitDurationTokens(os, "0", seg, t, grid.barEnd(bar), data.division);
+                t += seg;
+            }
+        };
+
         // 倚音（装饰音）：本身不单独占一格，改挂到紧随其后的主音上。这里整颗
         // 跳过，只把结束位置推进到倚音尾部，避免主音的休止计算把它算成空拍。
         if (expr.isGraceNote(n.startTicks, n.channel)) {
+            emitRestUntil(n.startTicks);
             started = true;
             prevEnd = n.startTicks + groupDur;
             idx = grpEnd;
             continue;
         }
 
-        // 右括号必须先于休止输出，否则 3(5 5 5 0 ) 会把休止吞进三连音组
-        if (!triplets[idx] && inTriplet) { os << ") "; inTriplet = false; }
-
-        // 休止：同样按小节切开，长前奏才能写成每小节一个 "0 - - -"
-        long gap = n.startTicks - prevEnd;
-        bool hasRest = (gap >= data.division / 2) && (started || n.startTicks > 0);
-        if (hasRest) {
-            long t = prevEnd;
-            while (t < n.startTicks) {
-                long bar = barOf(t);
-                switchToBar(bar, t, partChannel);
-                long seg = std::min(n.startTicks, grid.barEnd(bar)) - t;
-                if (seg <= 0) break;                    // 防御：避免死循环
-                emitNoteToken(os, "0", durationSuffix(seg, data.division));
-                t += seg;
-            }
-        }
+        emitRestUntil(n.startTicks);
 
         switchToBar(barOf(n.startTicks), n.startTicks, partChannel);
 
@@ -1309,17 +1378,22 @@ static std::string formatTrack(
         long noteEnd = n.startTicks + groupDur;
         long barEnd = grid.barEnd(barOf(n.startTicks));
         if (triplets[idx] || noteEnd <= barEnd) {
-            emitNoteToken(os, head, triplets[idx] ? "" : durationSuffix(groupDur, data.division), art);
+            if (triplets[idx])
+                emitNoteToken(os, head, "", art);        // 节奏由 3(...) 表达
+            else
+                emitDurationTokens(os, head, groupDur, n.startTicks, barEnd,
+                                   data.division, art);
         } else {
             // 长音跨小节：先写满本小节，再逐小节用延长线续上
-            emitNoteToken(os, head, durationSuffix(barEnd - n.startTicks, data.division), art);
+            emitDurationTokens(os, head, barEnd - n.startTicks, n.startTicks,
+                               barEnd, data.division, art);
             long t = barEnd;
             while (t < noteEnd) {
                 long bar = barOf(t);
                 switchToBar(bar, t, partChannel);
                 long seg = std::min(noteEnd, grid.barEnd(bar)) - t;
                 if (seg <= 0) break;                    // 防御：避免死循环
-                emitHeld(seg);
+                emitHeld(seg, t, grid.barEnd(bar));
                 t += seg;
             }
         }

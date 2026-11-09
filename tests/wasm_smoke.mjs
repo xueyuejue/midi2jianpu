@@ -1672,6 +1672,29 @@ if (existsSync(smPath)) {
     'WASM HTML 仍用竖排和弦列（chordcol），没被文本谱改动波及');
 }
 
+// ---- 50. v1.53.0 时值折算不许把小节撑过拍号（网页端同一份 core）----
+// overfull.mid 第 2 小节是「16 分音符 + 3.75 拍休止」，第 3 小节是
+// 「四分音符 + 1 拍休止 + 倚音 + 二分音符」。文本谱必须拆成 `0 - -` + `-_.`，
+// 倚音也不能再把前面的休止吞掉；HTML 走视觉排版，本来就不受时值字符串影响。
+const ofPath = path.join(FIXTURES, 'overfull.mid');
+if (existsSync(ofPath)) {
+  const of = makeCaller(mod);
+  of.setMidi(new Uint8Array(readFileSync(ofPath)));
+  of.setLyrics('');
+  const ofText = of.call('midi2jianpu_parse', -1, 1) || '';
+  check(ofText.includes('0 - - -_.'),
+    'WASM 文本谱把 3.75 拍休止拆成 `0 - -` + `-_.`', ofText);
+  check(!ofText.includes('0 - - -  |'),
+    'WASM 文本谱里休止不再把小节撑过小节线');
+  check(ofText.includes("0 (2')5'"),
+    'WASM 文本谱保留倚音前面的休止', ofText);
+
+  const ofHtml = of.call('midi2jianpu_html', -1, 1) || '';
+  check(ofHtml.includes("class='note sixteenth'") &&
+        ofHtml.includes("class='note half'"),
+    'WASM HTML 的音符时值排版不受影响');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);
