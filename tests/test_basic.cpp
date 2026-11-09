@@ -5,7 +5,7 @@
 //       拍号 map 与逐小节网格、调号 map（中途转调 / KeyMap）、
 //       五声调式（宫商角徵羽）宫音判定与校正、tempo map 时间轴与 LRC 对齐、
 //       SysEx 里的 GS/XG 鼓模式与 GM/GS/XG Reset、--track 按轨隔离、
-//       截断 / 损坏 MIDI 的边界安全。
+//       截断 / 损坏 MIDI 的边界安全、SMF chunk 级边界重同步。
 #include "midi2jianpu/notation.hpp"
 #include "midi2jianpu/musicxml_writer.hpp"
 
@@ -4086,6 +4086,169 @@ int main() {
             check(r.second.softPedalNotes == 1 &&
                   r.second.notes[0].velocity == 1,
                   "velocity 衰减后夹到 1，不出现 0 力度");
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // SMF chunk 级边界重同步：轨间私有块、MTrk 长度少写 / 多写。
+    // 旧实现的 while 要求每个 chunk 都是 MTrk，且轨尾强制 pos = trkEnd；
+    // 任一处失准就停掉整个循环，后面整条旋律轨丢失（CLI 退出码 3），
+    // 或多写时把下一轨的字节当成本轨事件读出幻影音符。
+    // -------------------------------------------------------------------
+    std::cout << "\n测试 SMF chunk 级边界重同步\n";
+    {
+        auto twoTracks = []() {
+            std::vector<SmfTrack> v(2);
+            v[0].at(0, ev({0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20}));
+            v[0].at(0, ev({0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08}));
+            v[1].at(0, ev({0xFF, 0x03, 0x06, 'M','e','l','o','d','y'}));
+            v[1].at(0, ev({0x90, 60, 100}));
+            v[1].at(480, ev({0x80, 60, 0}));
+            v[1].at(480, ev({0x90, 62, 100}));
+            v[1].at(960, ev({0x80, 62, 0}));
+            return buildSmf(2, 480, std::move(v));
+        };
+        auto lenAt = [](const std::vector<uint8_t>& b, size_t p) {
+            return (uint32_t(b[p]) << 24) | (uint32_t(b[p+1]) << 16) |
+                   (uint32_t(b[p+2]) << 8) | uint32_t(b[p+3]);
+        };
+        auto putLenAt = [](std::vector<uint8_t>& b, size_t p, uint32_t v) {
+            b[p] = uint8_t(v >> 24); b[p+1] = uint8_t(v >> 16);
+            b[p+2] = uint8_t(v >> 8); b[p+3] = uint8_t(v);
+        };
+        auto privChunk = [](const char* id, std::vector<uint8_t> payload) {
+            std::vector<uint8_t> c;
+            for (int i = 0; i < 4; ++i) c.push_back((uint8_t)id[i]);
+            put32(c, (uint32_t)payload.size());
+            c.insert(c.end(), payload.begin(), payload.end());
+            return c;
+        };
+        auto parse = [](const std::vector<uint8_t>& b) {
+            MidiData d;
+            const bool ok = loadMidiFromMemory(b.data(), b.size(), d);
+            return std::make_pair(ok, std::move(d));
+        };
+
+        {
+            auto r = parse(twoTracks());
+            check(r.first && r.second.notes.size() == 2 &&
+                  r.second.skippedChunks == 0 && r.second.resyncedTracks == 0 &&
+                  truncationLabel(r.second).empty(),
+                  "合法两轨：2 个音、无 chunk 修复计数、无告警");
+        }
+        {
+            auto b = twoTracks();
+            auto c = privChunk("XFIH", {1, 2, 3, 4});
+            b.insert(b.begin() + 14, c.begin(), c.end());
+            auto r = parse(b);
+            check(r.second.notes.size() == 2 && r.second.skippedChunks == 1 &&
+                  r.second.resyncedTracks == 0,
+                  "MThd 后的私有 chunk 被跳过，旋律轨照常读出");
+            check(truncationLabel(r.second).find("非 MTrk 扩展块") != std::string::npos,
+                  "页眉写明跳过了非 MTrk 扩展块");
+        }
+        {
+            auto b = twoTracks();
+            const size_t p = 14 + 8 + lenAt(b, 18);
+            auto c = privChunk("XFIH", {0xAA, 0xBB, 0xCC, 0xDD});
+            b.insert(b.begin() + p, c.begin(), c.end());
+            auto r = parse(b);
+            check(r.second.notes.size() == 2 && r.second.skippedChunks == 1 &&
+                  r.second.resyncedTracks == 0,
+                  "两轨之间的私有 chunk 被跳过，旋律轨照常读出");
+        }
+        {
+            auto b = twoTracks();
+            const size_t p = 14 + 8 + lenAt(b, 18);
+            auto c2 = privChunk("meta", {9});
+            b.insert(b.begin() + p, c2.begin(), c2.end());
+            auto c1 = privChunk("XFIH", {1, 2});
+            b.insert(b.begin() + 14, c1.begin(), c1.end());
+            auto r = parse(b);
+            check(r.second.notes.size() == 2 && r.second.skippedChunks == 2,
+                  "连续两个私有 chunk 都按声明长度跳过");
+        }
+        for (int delta : {-4, -12}) {
+            auto b = twoTracks();
+            putLenAt(b, 18, (uint32_t)((int64_t)lenAt(b, 18) + delta));
+            auto r = parse(b);
+            check(r.second.notes.size() == 2 && r.second.resyncedTracks == 1 &&
+                  r.second.truncatedTracks == 0,
+                  "首轨长度少写 " + std::to_string(-delta) +
+                  " 字节：按 EOT 锚点重同步，旋律轨不丢");
+        }
+        {
+            auto b = twoTracks();
+            putLenAt(b, 18, (uint32_t)(b.size() - 22));  // 声明到 EOF，吞掉下一轨
+            auto r = parse(b);
+            check(r.second.notes.size() == 2 && r.second.resyncedTracks == 1,
+                  "首轨长度多写吞掉下一轨：边界收紧，不读幻影音符");
+            check(truncationLabel(r.second).find("重同步") != std::string::npos,
+                  "页眉写明轨道边界已重同步");
+        }
+        {
+            auto b = twoTracks();
+            putLenAt(b, 18, lenAt(b, 18) - 4);
+            MidiData d;
+            const bool ok = loadMidiFromMemory(b.data(), b.size(), d, false, 1);
+            check(ok && d.notes.size() == 2 && d.resyncedTracks == 1,
+                  "--track 1 选中的轨在边界重同步后仍完整");
+        }
+        {
+            // 歌词里的字面 "MTrk" 不能被当成轨头（缺 EOT 前缀 + 长度不可信）
+            std::vector<SmfTrack> v(2);
+            v[0].at(0, ev({0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20}));
+            v[1].at(0, ev({0xFF, 0x05, 19,
+                           'M','T','r','k',' ','i','s',' ','n','o','t',' ',
+                           'a',' ','c','h','u','n','k'}));
+            v[1].at(0, ev({0x90, 60, 100}));
+            v[1].at(480, ev({0x80, 60, 0}));
+            auto b = buildSmf(2, 480, std::move(v));
+            auto r = parse(b);
+            check(r.second.notes.size() == 1 && r.second.resyncedTracks == 0 &&
+                  r.second.skippedChunks == 0,
+                  "歌词里出现字面 MTrk 不会被误判成新轨头");
+        }
+        {
+            // SysEx 数据同理：里面出现 MTrk 也不能切轨
+            std::vector<SmfTrack> v(2);
+            v[0].at(0, ev({0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20}));
+            v[1].at(0, ev({0xF0, 6, 'M','T','r','k', 0x7E, 0xF7}));
+            v[1].at(0, ev({0x90, 60, 100}));
+            v[1].at(480, ev({0x80, 60, 0}));
+            auto b = buildSmf(2, 480, std::move(v));
+            auto r = parse(b);
+            check(r.second.notes.size() == 1 && r.second.resyncedTracks == 0,
+                  "SysEx 里出现字面 MTrk 不会被误判成新轨头");
+        }
+        {
+            // v1.38 的真·截断不能被误报成「长度字段失准」
+            std::vector<SmfTrack> v(1);
+            v[0].at(0, ev({0x90, 60, 100}));
+            v[0].at(480, ev({0x80, 60, 0}));
+            auto b = buildSmf(1, 480, std::move(v));
+            putLenAt(b, 18, lenAt(b, 18) + 200);
+            auto r = parse(b);
+            check(r.second.truncatedTracks == 1 && r.second.resyncedTracks == 0,
+                  "真·截断文件仍按 v1.38 硬边界处理，不算 chunk 修复");
+            check(truncationLabel(r.second).find("文件数据不完整") == 0,
+                  "截断告警文案保持原样");
+        }
+        {
+            // 截断 + 私有块同时出现：两段提示都要给全
+            std::vector<SmfTrack> v(1);
+            v[0].at(0, ev({0x90, 60, 100}));
+            v[0].at(480, ev({0x80, 60, 0}));
+            auto b = buildSmf(1, 480, std::move(v));
+            putLenAt(b, 18, lenAt(b, 18) + 200);
+            auto c = privChunk("XFIH", {1, 2, 3, 4});
+            b.insert(b.begin() + 14, c.begin(), c.end());
+            auto r = parse(b);
+            const std::string lab = truncationLabel(r.second);
+            check(r.second.truncatedTracks == 1 && r.second.skippedChunks == 1 &&
+                  lab.find("文件数据不完整") == 0 &&
+                  lab.find("非 MTrk 扩展块") != std::string::npos,
+                  "截断与私有块同时存在时两段提示都保留");
         }
     }
 

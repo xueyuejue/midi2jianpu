@@ -1977,6 +1977,38 @@ def main():
     _, ph_out, _ = run(exe, os.path.join(FIXTURES, "pedal_hysteresis.mid"))
     check("软踏板" not in ph_out, "CC64 素材不误报软踏板（零回归）")
 
+    print("\n[65] SMF chunk 边界重同步：私有块 + 长度字段失准不再整份报废")
+    # 旧版遇到 MThd 后的 XFIH 直接停掉 chunk 循环，或首轨长度少写 4 字节
+    # 后在 EOT 处读不到 MTrk —— 两种都会让整份文件判成「未提取到音符」。
+    cr = os.path.join(FIXTURES, "chunk_resync.mid")
+    rc, out, err = run(exe, cr)
+    check(rc == 0, "chunk 边界损坏的素材解析成功", err[:200])
+    check("共提取 4 个音符" in out, "私有块 + 长度失准仍读出 4 个旋律音",
+          out[:300])
+    check("文件结构提示" in out and "跳过 1 个非 MTrk 扩展块" in out and
+          "重同步 1 条轨道边界" in out,
+          "页眉同时写明跳过的扩展块与重同步的轨道", out[:300])
+
+    crh = os.path.join(tmp, "chunk_resync.html")
+    rc, _, err = run(exe, cr, "--html", crh)
+    check(rc == 0, "chunk 边界素材导出 HTML", err[:200])
+    html_cr = open(crh, encoding="utf-8").read()
+    check("文件结构提示" in html_cr and "重同步 1 条轨道边界" in html_cr,
+          "HTML 页眉写明 chunk 边界修复", html_cr[:300])
+
+    crx = os.path.join(tmp, "chunk_resync.xml")
+    rc, _, err = run(exe, cr, "--musicxml", crx)
+    check(rc == 0, "chunk 边界素材导出 MusicXML", err[:200])
+    xml_cr = open(crx, encoding="utf-8").read()
+    # 每个 400 tick 的音后面都补了一个休止符，所以 <note> 共 8 个；
+    # 数 <pitch> 才是真音个数。
+    n_cr = xml_cr.count("<pitch>")
+    check(n_cr == 4, f"MusicXML 只有 4 个真音，没有幻影音符，实际 {n_cr}")
+
+    _, normal_out, _ = run(exe, os.path.join(FIXTURES, "expression.mid"))
+    check("文件结构提示" not in normal_out,
+          "合法 SMF 不误报结构异常（零回归）")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

@@ -1343,6 +1343,35 @@ if (existsSync(spPath)) {
     check(/软踏板/.test(ci), 'controller_info 向网页报告软踏板', ci);
   });
 }
+// ---- 40. v1.42.0 SMF chunk 级边界重同步 ----
+// 旧 WASM 遇到 MThd 后的私有 chunk / 写错的首轨长度会直接判「无音符」，
+// 网页端只剩一个空谱面。修复后应照常读出 4 个音，并把结构提示送进页眉。
+const crPath = path.join(FIXTURES, 'chunk_resync.mid');
+if (existsSync(crPath)) {
+  mod._midi2jianpu_set_track(-1);
+  const cr = makeCaller(mod);
+  cr.setMidi(new Uint8Array(readFileSync(crPath)));
+  cr.setLyrics('');
+  const crXml = cr.call('midi2jianpu_musicxml', -1, 1) || '';
+  const crNotes = [...crXml.matchAll(/<note\b[\s\S]*?<\/note>/g)]
+    .map((m) => m[0]).filter((b) => !/<rest\b/.test(b));
+  check(crNotes.length === 4,
+    'WASM 重同步后仍读出 4 个旋律音（旧产物是 0 个）', String(crNotes.length));
+  const crHtml = cr.call('midi2jianpu_html', -1, 1) || '';
+  check(/文件结构提示/.test(crHtml) && /非 MTrk 扩展块/.test(crHtml) &&
+    /重同步 1 条轨道边界/.test(crHtml),
+    'WASM HTML 页眉同时写明扩展块与边界重同步', crHtml.slice(0, 220));
+  withBytes('chunk_resync.mid', (p, n) => {
+    const fh = mod.UTF8ToString(mod._midi2jianpu_file_header_info(p, n));
+    check(/文件结构提示/.test(fh) && /重同步/.test(fh),
+      'file_header_info 向网页报告 chunk 边界修复', fh);
+  });
+  withBytes('expression.mid', (p, n) => {
+    const fh = mod.UTF8ToString(mod._midi2jianpu_file_header_info(p, n));
+    check(!/文件结构提示/.test(fh), '合法 SMF 在网页端不误报结构异常', fh);
+  });
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

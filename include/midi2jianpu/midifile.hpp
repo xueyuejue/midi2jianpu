@@ -237,6 +237,11 @@ struct MidiData {
     int truncatedTracks = 0;          // 声明结尾越过文件末尾的轨道数
     int truncatedEvents = 0;          // 因数据不完整被丢弃的事件数
 
+    // chunk 级边界修复：DAW 私有扩展块、以及写错的 MTrk 长度字段。
+    // 合法 SMF 里这两项恒为 0，页眉不会多出任何字。
+    int skippedChunks = 0;            // 按声明长度跳过的非 MTrk 扩展块数
+    int resyncedTracks = 0;           // 靠 EOT 锚点重定位边界的轨道数
+
     // SMF 的 FF 21 01 pp（MIDI Port / Cable Number）与 FF 20 01 cc（Channel
     // Prefix）。端口是「(port, channel) 二元组」的一部分：port 0 ch0 和
     // port 1 ch0 是两台设备上的两件乐器，踏板 / 弯音范围 / 力度 / 音色都

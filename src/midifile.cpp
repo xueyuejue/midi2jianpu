@@ -719,6 +719,44 @@ static void normalizeKeyMap(MidiData& out) {
     if (!v.empty()) out.keySig = v.front().sig;
 }
 
+// 在 [from, limit) 里找下一个「可信」的 MTrk 轨头。
+//
+// 真实的损坏 MIDI 有两种常见形态：某条 MTrk 的长度字段少算了几个字节
+// （下一轮循环在轨数据中间读不到 "MTrk"，旧实现直接停掉整个 while，
+// 后面的旋律轨一个音都提取不到）；或多算了下一轨的字节（把下一轨的
+// 轨头当成本轨的事件流，凭空读出幻影音符）。此外 DAW 会在轨间塞私有
+// 扩展 chunk。这里把标准 End of Track 当作锚点重新定位轨边界：
+//   * 前 3 字节必须是 FF 2F 00（EOT，delta 任意）；
+//   * 紧跟的 4 字节长度必须 >= 4 且整块落在 buffer 内。
+// 两个条件把歌词 / SysEx 里恰好出现的字面 "MTrk" 排除掉，避免误切轨。
+static size_t findTrackAnchor(const uint8_t* d, size_t size,
+                             size_t from, size_t limit) {
+    const size_t kNoAnchor = (size_t)-1;
+    if (limit > size) limit = size;
+    if (from >= limit || limit < 8) return kNoAnchor;
+    for (size_t p = from; p + 8 <= limit; ++p) {
+        if (std::memcmp(d + p, "MTrk", 4) != 0) continue;
+        if (p < 3 || d[p - 3] != 0xFFu || d[p - 2] != 0x2Fu ||
+            d[p - 1] != 0x00u) continue;
+        const uint32_t len = rd32(d + p + 4);
+        if (len < 4) continue;
+        if ((size_t)len > size - (p + 8)) continue;
+        return p;
+    }
+    return kNoAnchor;
+}
+
+// 判断 p 处是否像一个可信的 SMF chunk 头：4 字节 id 必须是可打印 ASCII
+// （MTrk / XFIH / MThd / 各类 DAW 私有块都是这样），且声明长度整块落在
+// buffer 内。少了 id 这一条，长度字段写短的轨尾 EOT（00 FF 2F 00）会被
+// 当成私有块头，按下一轨的长度整段跳过去，旋律轨照样读不到。
+static bool looksLikeChunkHeader(const uint8_t* d, size_t size, size_t p) {
+    if (p + 8 > size) return false;
+    for (int i = 0; i < 4; ++i)
+        if (d[p + i] < 0x20 || d[p + i] > 0x7E) return false;
+    return (size_t)rd32(d + p + 4) <= size - (p + 8);
+}
+
 // 核心解析：从内存buffer解析MIDI
 static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                         bool keepAllFormat2, int trackFilter) {
@@ -817,8 +855,25 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
         active.erase(it);
     };
 
-    // ---- 逐轨 ----
-    while (pos + 8 <= size && std::memcmp(d + pos, "MTrk", 4) == 0) {
+    // ---- 逐轨（按 chunk 遍历）----
+    // SMF 允许 MThd 之后出现非 MTrk 的扩展 chunk（DAW 私有信息、XFIH、
+    // 版权块等）。旧实现要求每个 chunk 都必须是 MTrk，只要夹一个私有块
+    // 就停掉整个循环，后面的旋律轨整条丢失。这里按 chunk 通用规则跳过；
+    // 长度字段本身也不可信时，退回 EOT 锚点重同步。
+    while (pos + 8 <= size) {
+        if (std::memcmp(d + pos, "MTrk", 4) != 0) {
+            if (looksLikeChunkHeader(d, size, pos)) {
+                const uint32_t otherLen = rd32(d + pos + 4);
+                out.skippedChunks++;
+                pos += 8 + otherLen;
+                continue;
+            }
+            const size_t anchor = findTrackAnchor(d, size, pos, size);
+            if (anchor == (size_t)-1) break;
+            out.resyncedTracks++;
+            pos = anchor;
+            continue;
+        }
         pos += 4;
         // --track / 网页段落选择：只收集指定轨的**演奏事件**。全局音源设定
         // （set_tempo、拍号、调号、SysEx 鼓模式、Bank / Program、RPN、
@@ -828,6 +883,27 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
         const bool keepTrack = (trackFilter < 0 || trackIdx == trackFilter);
         uint32_t trkLen = rd32(d + pos); pos += 4;
         size_t trkEnd = pos + trkLen;
+        // 长度字段写错同样是真实的损坏形态：少写会把轨尾几个字节甩到
+        // 下一轮循环（memcmp 失败 → 整份文件报废），多写会把下一轨的
+        // MTrk 头吞进本轨事件流。用下一个 EOT 锚定的轨头把边界校正回来。
+        // 只在「声明结尾没越过文件末尾」时做，避免干扰 v1.38 已经处理
+        // 好的真·截断文件（那种情况仍按 buffer 末尾硬边界解析）。
+        if (trkEnd <= size) {
+            const size_t anchor = findTrackAnchor(d, size, pos, size);
+            // 偏长：锚点落在声明范围内 → 本轨实际到此为止。
+            // 偏短：锚点只在声明结尾后一小段内才认，且当前位置看起来
+            //       不像一个带合法长度的正常 chunk，避免把整份文件
+            //       都当成这一轨的残片。
+            const bool boundaryLooksLikeChunk = looksLikeChunkHeader(d, size, trkEnd);
+            const bool tooLong = anchor != (size_t)-1 && anchor < trkEnd;
+            const bool tooShort = anchor != (size_t)-1 && anchor > trkEnd &&
+                                  anchor - trkEnd <= 256 &&
+                                  !boundaryLooksLikeChunk;
+            if (tooLong || tooShort) {
+                trkEnd = anchor;
+                out.resyncedTracks++;
+            }
+        }
         // 文件可能在下载 / 拷贝途中被截断，MTrk 的长度字段却仍写着原值。
         // 解析边界一律夹到 buffer 末尾：越过 d+size 读到的不是 MIDI 数据，
         // 而是相邻内存，会被当成 delta / 状态字节继续解析，凭空多出幻影
@@ -851,7 +927,7 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
         uint8_t lastChannelStatus = 0;
 
         while (pos < hardEnd) {
-            uint32_t delta = readVarLen(d, size, pos);
+            uint32_t delta = readVarLen(d, hardEnd, pos);
             absTick += (long)delta;
             // VLQ 本身可能一路吃到文件末尾；不挡住的话 b = d[pos] 就越界。
             if (pos >= hardEnd) { out.truncatedEvents++; break; }
@@ -941,7 +1017,7 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
             } else if (status == 0xFFu) {
                 if (pos >= hardEnd) break;
                 uint8_t metaType = d[pos++];
-                uint32_t metaLen = readVarLen(d, size, pos);
+                uint32_t metaLen = readVarLen(d, hardEnd, pos);
                 // 越界保护：损坏文件里 meta 长度可能超出轨道范围。
                 // 整份文件已被截断时（trkEnd > size）这条事件本身就是残骸：
                 // 夹紧后把残字节当歌词读会多出乱码音节，直接丢弃并停在本轨。
@@ -1075,7 +1151,7 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                 // SysEx：按长度整体跳过，否则会把后续事件错位解析。
                 // 但 GS/XG 的「Use for Rhythm Part / Part Mode」与 GM/GS/XG
                 // Reset 就藏在这些字节里，先看一眼再跳。
-                uint32_t sxLen = readVarLen(d, size, pos);
+                uint32_t sxLen = readVarLen(d, hardEnd, pos);
                 // hardEnd 已提到轨级（原先只有 SysEx 分支自己夹了一次），
                 // meta / 通道消息现在同样不会越过 buffer 末尾。
                 if (pos + sxLen > hardEnd) {
@@ -1376,17 +1452,33 @@ std::string trackLabel(const MidiData& data) {
     return os.str();
 }
 
+// 文件级结构提示：数据被截断（v1.38）与 chunk 边界被修复（v1.42）合在
+// 一处输出，CLI / HTML 页眉 / 网页文件面板三端自动同步。合法文件返回空串。
 std::string truncationLabel(const MidiData& data) {
-    if (data.truncatedTracks <= 0 && data.truncatedEvents <= 0) return "";
+    const bool damaged = data.truncatedTracks > 0 || data.truncatedEvents > 0;
+    const bool repaired = data.skippedChunks > 0 || data.resyncedTracks > 0;
+    if (!damaged && !repaired) return "";
     std::ostringstream os;
-    os << "文件数据不完整：";
-    if (data.truncatedTracks > 0)
-        os << data.truncatedTracks << " 条轨道在声明结尾前被截断";
-    else
-        os << "轨尾有未写完的事件";
-    os << "，已按实际字节生成谱面";
-    if (data.truncatedEvents > 0)
-        os << "（丢弃 " << data.truncatedEvents << " 个不完整事件）";
+    if (damaged) {
+        os << "文件数据不完整：";
+        if (data.truncatedTracks > 0)
+            os << data.truncatedTracks << " 条轨道在声明结尾前被截断";
+        else
+            os << "轨尾有未写完的事件";
+        os << "，已按实际字节生成谱面";
+        if (data.truncatedEvents > 0)
+            os << "（丢弃 " << data.truncatedEvents << " 个不完整事件）";
+    }
+    if (repaired) {
+        if (damaged) os << "；";
+        os << "文件结构提示：";
+        if (data.skippedChunks > 0)
+            os << "跳过 " << data.skippedChunks << " 个非 MTrk 扩展块";
+        if (data.skippedChunks > 0 && data.resyncedTracks > 0) os << "、";
+        if (data.resyncedTracks > 0)
+            os << "重同步 " << data.resyncedTracks << " 条轨道边界（长度字段与实际不符）";
+        os << "，谱面按真实轨数据生成";
+    }
     return os.str();
 }
 

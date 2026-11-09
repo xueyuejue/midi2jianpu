@@ -2,7 +2,7 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 72 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 73 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
@@ -58,6 +58,8 @@ dyn_channels 让旋律(ch0)渐弱、伴奏(ch1)渐强，锁住渐强渐弱记号
 伴奏的 cresc. 不该印到旋律谱上，全局段落名 marker 则仍要照常显示。
 soft_pedal 在 [1200, 2000) 踩 CC67 软踏板，两处强音里只有踏板内的那一处
 力度被衰减（110→77），谱面的 '>' 从 2 个变成 1 个，时值完全不变。
+chunk_resync 同时放一个 DAW 私有 chunk（XFIH）和少写 4 字节的 conductor
+长度字段：旧解析器直接判「未提取到音符」，修复后应照常读出 4 个旋律音。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -2070,6 +2072,37 @@ def build_track_fmt2() -> bytes:
             + a.render() + b.render())
 
 
+def build_chunk_resync() -> bytes:
+    """SMF chunk 级边界重同步（v1.42.0）。
+
+    两个真实损坏形态叠在一份文件里：
+      1) MThd 之后夹一个 DAW 私有扩展块 XFIH（规范允许，旧实现要求每个
+         chunk 都必须是 MTrk，遇到就停掉整个循环）；
+      2) conductor 轨的 MTrk 长度字段少写 4 字节（旧实现下一轮循环在
+         EOT 处读不到 "MTrk"，旋律轨整条丢失，CLI 退出码 3）。
+    修复后应跳过 XFIH、按 EOT 锚点把 conductor 边界补回，仍读出 4 个音，
+    并在页眉写明「跳过 1 个非 MTrk 扩展块、重同步 1 条轨道边界」。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Melody"))
+    for i in range(4):
+        t1.note(0, 60 + i, 96, i * DIV, 400)
+
+    cond = bytearray(t0.render())
+    declared = struct.unpack(">I", bytes(cond[4:8]))[0] - 4
+    cond[4:8] = struct.pack(">I", declared)
+
+    private = b"XFIH" + struct.pack(">I", 8) + b"DAWv1.0\x00"
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + private + bytes(cond) + t1.render()
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -2383,6 +2416,16 @@ def main() -> None:
     # CC67 软踏板：只改 velocity，不改时值，也不动 CC11 / CC7 力度表
     for name, builder in (
         ("soft_pedal", build_soft_pedal),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # SMF chunk 边界：私有扩展块 + 长度字段失准，不再整份报废
+    for name, builder in (
+        ("chunk_resync", build_chunk_resync),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:
