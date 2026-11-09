@@ -30,7 +30,7 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 2
 
-      - name: 单元测试（701 项）
+      - name: 单元测试（752 项）
         working-directory: build
         run: ctest --output-on-failure
 
@@ -42,7 +42,7 @@ jobs:
           git diff --exit-code -- 'tests/fixtures/*.mid'
           test -z "$(git status --porcelain --untracked-files=all -- tests/fixtures/)"
 
-      - name: CLI 端到端冒烟（69 组）
+      - name: CLI 端到端冒烟（74 组）
         run: python3 tests/smoke.py build/midi2jianpu
 
   wasm:
@@ -73,5 +73,5 @@ jobs:
         # 五处导出符号没有漂移，不编译、不加载 wasm。
         run: python3 tests/check_wasm_exports.py
 
-      - name: WASM 产物冒烟（43 组，含版本号守护）
+      - name: WASM 产物冒烟（48 组，含版本号守护）
         run: node tests/wasm_smoke.mjs
