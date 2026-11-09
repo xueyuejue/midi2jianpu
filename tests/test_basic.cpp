@@ -4512,6 +4512,94 @@ int main() {
               "单声部 part 的 direction 保持旧版逐字节输出");
     }
 
+    // -------------------------------------------------------------------
+    // 键盘大谱表（v1.47.0）
+    // 旧实现整份 part 只按平均音高挑一个谱号，钢琴左手被迫挤在高音谱号里；
+    // 修复后键盘族乐器且音域够宽并跨中音 C 时排成上下两行谱，音符带
+    // <staff> 归属，小节内用 <backup> 切谱表游标。
+    // -------------------------------------------------------------------
+    std::cout << "\n测试 MusicXML 键盘大谱表 (v1.47.0)\n";
+    {
+        auto occurrences = [](const std::string& s, const std::string& sub) {
+            size_t n = 0, pos = 0;
+            while ((pos = s.find(sub, pos)) != std::string::npos) {
+                n++; pos += sub.size();
+            }
+            return n;
+        };
+        const KeyEstimate key{0, true};
+
+        // 宽音域钢琴：C2(36)..C6(84)，跨度 48 半音且跨中音 C
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.tempoChanges.push_back({0, 120.0});
+        d.trackNames[0] = "Piano";
+        d.channelProgram[0] = 0;
+        NoteEvent n;
+        n.track = 0; n.channel = 0; n.velocity = 90;
+        n.startSeconds = 0; n.durationSeconds = 0.5;
+        const int rh[4] = {72, 74, 76, 77};
+        for (int i = 0; i < 4; i++) {
+            n.pitch = rh[i]; n.startTicks = i * 480; n.durationTicks = 480;
+            d.notes.push_back(n);
+        }
+        n.pitch = 36; n.startTicks = 0; n.durationTicks = 960;
+        d.notes.push_back(n);
+        n.pitch = 84; n.startTicks = 1920; n.durationTicks = 960;
+        d.notes.push_back(n);
+
+        const std::string gx = renderMusicXml(d, key);
+        check(gx.find("<staves>2</staves>") != std::string::npos,
+              "宽音域键盘声部声明两行谱");
+        check(gx.find("<clef number=\"1\"><sign>G</sign><line>2</line></clef>") != std::string::npos,
+              "上行谱用高音谱号");
+        check(gx.find("<clef number=\"2\"><sign>F</sign><line>4</line></clef>") != std::string::npos,
+              "下行谱用低音谱号");
+        check(occurrences(gx, "<staff>2</staff>") >= 1 &&
+              occurrences(gx, "<staff>1</staff>") >= 1,
+              "音符按音高分流到上下谱表");
+        check(gx.find("<backup>") != std::string::npos,
+              "小节内在两行谱之间用 <backup> 切游标");
+
+        // 反例 1：不是键盘音色（小提琴 40），即使音域宽也不排大谱表
+        MidiData v;
+        v.division = 480;
+        v.timeSig.valid = true;
+        v.tempoChanges.push_back({0, 120.0});
+        v.trackNames[0] = "Violin";
+        v.channelProgram[0] = 40;
+        NoteEvent vn;
+        vn.track = 0; vn.channel = 0; vn.velocity = 90;
+        vn.startSeconds = 0; vn.durationSeconds = 0.5;
+        vn.pitch = 36; vn.startTicks = 0; vn.durationTicks = 480;
+        v.notes.push_back(vn);
+        vn.pitch = 84; vn.startTicks = 480; vn.durationTicks = 480;
+        v.notes.push_back(vn);
+        check(renderMusicXml(v, key).find("<staves>") == std::string::npos,
+              "非键盘音色的宽音域声部不排大谱表");
+
+        // 反例 2：键盘音色但音域窄（C4..G4，跨度 7 半音），保持单谱表
+        MidiData c;
+        c.division = 480;
+        c.timeSig.valid = true;
+        c.tempoChanges.push_back({0, 120.0});
+        c.trackNames[0] = "Piano";
+        c.channelProgram[0] = 0;
+        NoteEvent cn;
+        cn.track = 0; cn.channel = 0; cn.velocity = 90;
+        cn.startSeconds = 0; cn.durationSeconds = 0.5;
+        cn.durationTicks = 480;
+        for (int i = 0; i < 4; i++) {
+            cn.pitch = 60 + i * 2; cn.startTicks = i * 480;
+            c.notes.push_back(cn);
+        }
+        const std::string cx = renderMusicXml(c, key);
+        check(cx.find("<staves>") == std::string::npos &&
+              cx.find("<staff>") == std::string::npos,
+              "键盘音色但音域窄的声部保持单谱表");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

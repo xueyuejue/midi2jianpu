@@ -1521,6 +1521,32 @@ if (existsSync(vtPath)) {
     'WASM 单声部 direction 不写多余的 <voice>');
 }
 
+// ---- 44. v1.47.0 键盘大谱表：WASM MusicXML 也排成上下两行谱 ----
+// 旧产物整份 part 只挑一个谱号，钢琴左手被塞进高音谱号、满屏加线。修复后
+// 声明 <staves>2</staves>、上下谱表各一个谱号，音符带 <staff> 归属。
+const gsPath = path.join(FIXTURES, 'grand_staff.mid');
+if (existsSync(gsPath)) {
+  mod._midi2jianpu_set_track(-1);
+  const gs = makeCaller(mod);
+  gs.setMidi(new Uint8Array(readFileSync(gsPath)));
+  gs.setLyrics('');
+  const gsXml = gs.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(gsXml.includes('<staves>2</staves>'), 'WASM 大谱表声明两行谱');
+  check(gsXml.includes('<clef number="1"><sign>G</sign><line>2</line></clef>') &&
+        gsXml.includes('<clef number="2"><sign>F</sign><line>4</line></clef>'),
+    'WASM 上下谱表分别是高音 / 低音谱号');
+  check((gsXml.match(/<staff>1<\/staff>/g) || []).length >= 8 &&
+        (gsXml.match(/<staff>2<\/staff>/g) || []).length >= 5,
+    'WASM 音符按音高分流到上下谱表');
+
+  const plainWs = makeCaller(mod);
+  plainWs.setMidi(new Uint8Array(readFileSync(path.join(FIXTURES, 'sample.mid'))));
+  plainWs.setLyrics('');
+  const plainXml = plainWs.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(!plainXml.includes('<staves>') && !plainXml.includes('<staff>'),
+    'WASM 普通旋律声部仍保持单谱表输出');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

@@ -2206,6 +2206,43 @@ def build_voice_trio() -> bytes:
     return bytes(header + t0.render() + t1.render())
 
 
+def build_grand_staff() -> bytes:
+    # 键盘大谱表（v1.47.0）。
+    # 单条钢琴轨（program 0）音域从 C2(36) 到 C6(84)，跨度 48 半音且跨中音 C，
+    # 旧实现整份 part 只挑一个谱号，右手旋律被塞进低音谱号（或左手被塞进高音
+    # 谱号）满屏加线。修复后自动排成上下两行谱：中音 C 及以上进上行谱（G 谱
+    # 号），以下进下行谱（F 谱号），小节内用 <backup> 在两行谱之间切游标。
+    # 第 1 小节两手同时进入，专门压「上行谱写满后补休止再退回小节开头写下行
+    # 谱」这条路径；第 2 小节留空，覆盖大谱表的整小节双休止。
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 500000us -> 120BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Piano"))
+    t1.program(0, 0, 0)                                # Acoustic Grand Piano
+
+    # 右手：高音谱号区域
+    for i, p in enumerate((72, 74, 76, 77)):           # C5 D5 E5 F5
+        t1.note(0, p, 88, i * DIV, DIV)
+    for i, p in enumerate((79, 81, 83, 84)):           # G5 A5 B5 C6
+        t1.note(0, p, 96, 2 * BAR + i * DIV, DIV)
+
+    # 左手：低音谱号区域，与右手同时发声（迫使 splitVoices 分出第二声部）
+    t1.note(0, 36, 64, 0, DIV * 2)                     # C2
+    t1.note(0, 43, 64, DIV * 2, DIV * 2)               # G2
+    t1.note(0, 48, 72, 2 * BAR, DIV * 2)               # C3
+    t1.note(0, 55, 72, 2 * BAR + DIV * 2, DIV * 2)     # G3
+
+    # 力度档位：p -> ff，验证大谱表下 direction 也带 <staff> 归属
+    t1.cc(0, 11, 30, 0)
+    t1.cc(0, 11, 100, 2 * BAR)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return bytes(header + t0.render() + t1.render())
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -2575,6 +2612,15 @@ def main() -> None:
         ("track_leak_base", build_track_leak_base),
         ("track_empty", build_track_empty),
         ("track_fmt2", build_track_fmt2),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+    # 键盘大谱表：宽音域钢琴轨排成上下两行谱（高音 + 低音谱号）
+    for name, builder in (
+        ("grand_staff", build_grand_staff),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

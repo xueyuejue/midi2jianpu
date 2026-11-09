@@ -10,6 +10,7 @@
 #include "midi2jianpu/notation.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <map>
 #include <sstream>
@@ -118,6 +119,7 @@ struct Segment {
     bool tieStart = false; // 后面还有延续段 -> <tie type="start"/>
     bool tieEnd = false;   // 前面有被切开的段 -> <tie type="stop"/>
     bool grace = false;    // 倚音：<grace/> 不占时长，排在主音之前
+    int staff = 1;         // 大谱表：1=高音谱表(上行谱), 2=低音谱表(下行谱)
 };
 
 std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
@@ -148,6 +150,45 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
         if (std::abs(off) >= 0.5) n.pitch += (int)std::round(off);
         byTrack[n.track].push_back(n);
     }
+
+    // 大谱表判定：键盘族乐器（钢琴/管风琴等）且音域跨度充分（≥40 半音，约
+    // 三个八度以上）并同时跨中音 C 两侧时，应当排成上下两行谱（高音谱号 +
+    // 低音谱号），而不是挤在一行高音谱号里满屏加线。MIDI 不携带「乐器是否用
+    // 大谱表」的语义，只能靠乐器族 + 音域启发式判断；阈值刻意定得比仓库里所有
+    // 测试素材都宽（最宽的键盘声部是 polyphony 的 38 半音），保证 76 份既有
+    // 素材的 grand 恒为 false、输出字节零回归，只有真正宽的钢琴曲才会触发。
+    auto isKeyboardProgram = [](int prg) {
+        return (prg >= 0 && prg <= 7) || (prg >= 16 && prg <= 23);
+    };
+    auto isGrandStaffPart = [&](const std::vector<NoteEvent>& notes,
+                               int track, long firstTick) -> bool {
+        if (notes.empty()) return false;
+        int mn = 200, mx = -200;
+        for (const auto& n : notes) {
+            if (n.pitch < mn) mn = n.pitch;
+            if (n.pitch > mx) mx = n.pitch;
+        }
+        bool spans = (mn < 60) && (mx >= 60);          // 跨中音 C（C4=60）
+        bool wide = (mx - mn) >= 40;                    // 跨度 ≥ 三个八度以上
+        int dom = dominantChannel(notes);
+        int prg = (dom >= 0) ? programAt(data, dom, firstTick) : -1;
+        bool kb = isKeyboardProgram(prg);
+        // 轨道名作为键盘乐器的补充线索（部分文件没写 0xC0 音色）
+        auto it = data.trackNames.find(track);
+        if (it != data.trackNames.end() && !it->second.empty()) {
+            std::string low = it->second;
+            for (char& c : low) c = (char)std::tolower((unsigned char)c);
+            if (low.find("piano") != std::string::npos ||
+                low.find("钢琴") != std::string::npos ||
+                low.find("organ") != std::string::npos ||
+                low.find("harpsi") != std::string::npos ||
+                low.find("clav") != std::string::npos ||
+                low.find("celesta") != std::string::npos ||
+                low.find("key") != std::string::npos)
+                kb = true;
+        }
+        return kb && spans && wide;
+    };
 
     // part-list
     xml << "  <part-list>\n";
@@ -241,6 +282,13 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
     for (auto& [t, ns] : byTrack) {
         if (ns.empty()) { partIdx++; continue; }
 
+        // 大谱表：键盘族乐器且音域够宽并跨中音 C 时，本声部排成上下两行谱。
+        // 音色按「本声部最早一个音」的 tick 取，避免中途换音色的文件被误判。
+        long firstTick = ns.front().startTicks;
+        for (const auto& n : ns)
+            if (n.startTicks < firstTick) firstTick = n.startTicks;
+        const bool grand = isGrandStaffPart(ns, t, firstTick);
+
         const LyricAssignment lyrics = (t == mainTrack)
                                      ? resolveLyrics(data, lyricLines, t)
                                      : LyricAssignment();
@@ -288,6 +336,15 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
         std::vector<int> voiceChannel(voiceCount, -1);
         for (int v = 0; v < voiceCount; ++v)
             voiceChannel[v] = dominantChannel(voiceNotes[v]);
+        // 每个 <voice> 归属哪个谱表：取该声部音符的多数音高侧（≥中音 C 在高音
+        // 谱表 = 1，否则低音谱表 = 2）。大谱表下演奏记号要按此标 <staff>。
+        std::vector<int> voiceStaff(voiceCount, 1);
+        for (int v = 0; v < voiceCount; ++v) {
+            int lo = 0, hi = 0;
+            for (const auto& n : voiceNotes[v])
+                (n.pitch < 60 ? lo : hi)++;
+            voiceStaff[v] = (lo >= hi) ? 2 : 1;
+        }
         std::vector<std::string> lastDyn(voiceCount);
         auto triplets = detectTriplets(ns, division);
         std::vector<Segment> segs;
@@ -317,6 +374,8 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                 s.pitch = n.pitch;
                 s.channel = n.channel;
                 s.voice = (i < voiceOf.size()) ? voiceOf[i] : 0;
+                // 大谱表：按音高分流到上下两行谱（中音 C 及以下进低音谱表）。
+                s.staff = grand ? ((n.pitch < 60) ? 2 : 1) : 1;
                 s.triplet = (i < triplets.size()) ? triplets[i] : false;
                 s.tieEnd = !firstPart;      // 前面被切过
                 s.tieStart = (segEnd < end); // 后面还有
@@ -327,11 +386,13 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             }
         }
 
-        // ---- 2. 按 (小节, 声部, 起始 tick) 稳定排序 ----
-        // 声部当成第二排序键：同一声部在一个小节里的音必须连续写出来，
-        // 才能在小节中途 <backup> 回开头换声部。
+        // ---- 2. 按 (小节, 谱表, 声部, 起始 tick) 稳定排序 ----
+        // 谱表当成第二排序键：大谱表下上行谱(1)的所有音必须先于下行谱(2)，
+        // 才能在小节内用一次 <backup> 退回小节开头再写另一个谱表；声部是第三
+        // 键，保证同一声部在一个谱表里连续输出。
         std::stable_sort(segs.begin(), segs.end(), [](const Segment& a, const Segment& b) {
             if (a.bar != b.bar) return a.bar < b.bar;
+            if (a.staff != b.staff) return a.staff < b.staff;
             if (a.voice != b.voice) return a.voice < b.voice;
             return a.start < b.start;
         });
@@ -351,6 +412,7 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
         long lastSegStart = -1; // 识别同拍和弦
         long lastSegDur = -1;   // 和弦成员必须同拍且同值才是真和弦
         int curVoice = -1;      // 当前正在写的声部
+        int curStaff = -1;      // 当前正在写的谱表（大谱表下 1=上行 2=下行）
 
         auto emitRest = [&](long from, long to, int voice) {
             if (to <= from) return;
@@ -359,6 +421,8 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             xml << "      <note><rest/><duration>" << len
                 << "</duration><voice>" << (voice + 1) << "</voice><type>" << rt << "</type>";
             if (rd) xml << "<dot/>";
+            // 大谱表：休止也要标到对应谱表，否则落到上行谱与音符错位。
+            if (grand && curStaff >= 1) xml << "<staff>" << curStaff << "</staff>";
             xml << "</note>\n";
         };
 
@@ -390,9 +454,16 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                     << "        <divisions>" << division << "</divisions>\n";
                 emitKeyXml(k);
                 emitTimeXml(sig);
-                xml << "        <clef><sign>" << (bassClef ? "F" : "G") << "</sign><line>"
-                    << (bassClef ? 4 : 2) << "</line></clef>\n"
-                    << "      </attributes>\n";
+                if (grand) {
+                    // 大谱表：上行谱用高音谱号、下行谱用低音谱号，并声明两行谱。
+                    xml << "        <staves>2</staves>\n"
+                        << "        <clef number=\"1\"><sign>G</sign><line>2</line></clef>\n"
+                        << "        <clef number=\"2\"><sign>F</sign><line>4</line></clef>\n";
+                } else {
+                    xml << "        <clef><sign>" << (bassClef ? "F" : "G") << "</sign><line>"
+                        << (bassClef ? 4 : 2) << "</line></clef>\n";
+                }
+                xml << "      </attributes>\n";
                 // 速度标记只写一遍，放在第一个声部
                 if (partIdx == 1) {
                     xml << "      <direction placement=\"above\">\n"
@@ -441,12 +512,18 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                     ? ("        <voice>" + std::to_string(v + 1) + "</voice>\n")
                     : std::string();
                 const std::string wedgeNum = std::to_string(v + 1);
+                // 大谱表：每个声部的演奏记号标到对应谱表（上行/下行），否则
+                // 会被默认堆到上行谱，左右手力度/渐变对不上。
+                const std::string staffTag = grand
+                    ? ("        <staff>" + std::to_string(voiceStaff[v]) + "</staff>\n")
+                    : std::string();
                 const std::string dyn = expr.dynamicAt(bs, ch);
                 if (!dyn.empty() && dyn != lastDyn[v]) {
                     xml << "      <direction placement=\"above\">\n"
                         << "        <direction-type><dynamics><" << dyn
                         << "/></dynamics></direction-type>\n"
                         << voiceTag
+                        << staffTag
                         << "        <sound dynamics=\"" << dynamicToMidiVolume(dyn)
                         << "\"/>\n"
                         << "      </direction>\n";
@@ -506,12 +583,14 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                             << (m.wedge > 0 ? "crescendo" : "diminuendo")
                             << "\" number=\"" << wedgeNum << "\"/></direction-type>\n"
                             << voiceTag
+                            << staffTag
                             << "      </direction>\n";
                     if (m.wedgeStop)
                         xml << "      <direction placement=\"above\">\n"
                             << "        <direction-type><wedge type=\"stop\" "
                             << "number=\"" << wedgeNum << "\"/></direction-type>\n"
                             << voiceTag
+                            << staffTag
                             << "      </direction>\n";
                 }
             }
@@ -533,6 +612,7 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             }
             writtenUpTo = grid.barStart(bar);
             curVoice = -1;
+            curStaff = -1;
             lastSegStart = -1;
             lastSegDur = -1;
         };
@@ -576,10 +656,22 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                     xml << ">\n";
                     emitAttributes(b);   // 开头就是空小节时，属性要写在这里
                     emitDirections(b);  // 段落标记可能落在纯休止的前奏
-                    xml << "      <note><rest measure=\"yes\"/><duration>"
-                        << grid.barSpan(b) << "</duration><voice>1</voice>"
-                        << "<type>whole</type></note>\n"
-                        << "    </measure>\n";
+                    if (grand) {
+                        // 大谱表：上下两行谱各写一条全小节休止，中间退回谱表开头。
+                        xml << "      <note><rest measure=\"yes\"/><duration>"
+                            << grid.barSpan(b) << "</duration><voice>1</voice>"
+                            << "<type>whole</type><staff>1</staff></note>\n"
+                            << "      <backup><duration>" << grid.barSpan(b)
+                            << "</duration></backup>\n"
+                            << "      <note><rest measure=\"yes\"/><duration>"
+                            << grid.barSpan(b) << "</duration><voice>1</voice>"
+                            << "<type>whole</type><staff>2</staff></note>\n";
+                    } else {
+                        xml << "      <note><rest measure=\"yes\"/><duration>"
+                            << grid.barSpan(b) << "</duration><voice>1</voice>"
+                            << "<type>whole</type></note>\n";
+                    }
+                    xml << "    </measure>\n";
                 }
 
                 curBar = seg.bar;
@@ -587,6 +679,21 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                 lastSegStart = -1;
                 lastSegDur = -1;
             }
+
+            // 大谱表：上行谱(1)写完换下行谱(2)时，先把本节已写满的谱表收尾
+            // （用休止补到小节末），再退回小节开头从头写另一个谱表。这一步必须
+            // 在声部切换之前：声部切换也用 <backup> 退回小节开头，二者共用同一
+            // 条游标，顺序错了会多退一次跑到小节线前面。
+            if (seg.staff != curStaff && curVoice >= 0) {
+                finishVoice();
+                xml << "      <backup><duration>" << grid.barSpan(curBar)
+                    << "</duration></backup>\n";
+                curVoice = -1;
+                writtenUpTo = grid.barStart(curBar);
+                lastSegStart = -1;
+                lastSegDur = -1;
+            }
+            curStaff = seg.staff;
 
             // 同轨复调：一个声部写完后回到小节开头写下一个声部。
             // MusicXML 用 <backup> 把「当前时间游标」退回去，退的正好是一个
@@ -676,7 +783,9 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                         << "<pitch><step>" << gstep << "</step>";
                     if (galter != 0) xml << "<alter>" << galter << "</alter>";
                     xml << "<octave>" << goct << "</octave></pitch>"
-                        << "<voice>1</voice><type>eighth</type></note>\n";
+                        << "<voice>1</voice><type>eighth</type>";
+                    if (grand) xml << "<staff>" << seg.staff << "</staff>";
+                    xml << "</note>\n";
                 }
             }
 
@@ -696,6 +805,8 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                     << "<normal-notes>2</normal-notes>"
                     << "</time-modification>";
             }
+            // 大谱表：每个音符标明所属谱表，否则 MuseScore 全堆到上行谱。
+            if (grand) xml << "<staff>" << seg.staff << "</staff>";
             // MusicXML 的 note 子元素有固定顺序：notations 在 lyric 之前。
             // tied 与 slur 必须合进同一个 <notations>，分两个写会让某些
             // 记谱软件只认第一个。

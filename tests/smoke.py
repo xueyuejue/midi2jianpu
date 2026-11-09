@@ -2171,6 +2171,60 @@ def main():
           "<dynamics><ff/></dynamics>" in xml_dc,
           "dyn_channels 的副声部 p→ff 力度档位补回")
 
+    print("\n[69] 键盘大谱表：宽音域钢琴声部排成上下两行谱")
+    gsm = os.path.join(FIXTURES, "grand_staff.mid")
+    gsx = os.path.join(tmp, "grand_staff.xml")
+    rc, _, err = run(exe, gsm, "--musicxml", gsx)
+    check(rc == 0, "大谱表素材导出 MusicXML", err[:200])
+    xml_gs = open(gsx, encoding="utf-8").read() if rc == 0 else ""
+    import xml.etree.ElementTree as ET69
+    well69, xerr69 = True, ""
+    try:
+        ET69.fromstring(open(gsx, "rb").read())
+    except Exception as exc:
+        well69 = False
+        xerr69 = str(exc)
+    check(well69, "大谱表 MusicXML 是合法 XML", xerr69)
+    check("<staves>2</staves>" in xml_gs, "声明两行谱 <staves>2</staves>")
+    check('<clef number="1"><sign>G</sign><line>2</line></clef>' in xml_gs,
+          "上行谱用高音谱号")
+    check('<clef number="2"><sign>F</sign><line>4</line></clef>' in xml_gs,
+          "下行谱用低音谱号")
+    check(xml_gs.count("<staff>1</staff>") >= 8, "高音区音符标到上行谱")
+    check(xml_gs.count("<staff>2</staff>") >= 5, "低音区音符标到下行谱")
+    check(xml_gs.count("<backup>") >= 3, "小节内用 <backup> 在谱表/声部间切游标")
+    check(xml_gs.count('<rest measure="yes"/>') == 2,
+          "空小节在上下两行谱各写一条全小节休止")
+
+    # 小节时值自洽：note duration 合计 - backup 合计 = 一个小节长度
+    # （上下两行谱各写满一小节，中间退一次，净剩一行小节的时值）
+    bar_ok, bar_msg = True, ""
+    try:
+        root69 = ET69.fromstring(open(gsx, "rb").read())
+        for meas in root69.iter("measure"):
+            total = 0
+            for el in meas:
+                if el.tag == "note" and el.find("chord") is None:
+                    total += int(el.findtext("duration") or 0)
+                elif el.tag == "backup":
+                    total -= int(el.findtext("duration") or 0)
+                elif el.tag == "forward":
+                    total += int(el.findtext("duration") or 0)
+            if total != 1920:
+                bar_ok = False
+                bar_msg = f"第 {meas.get('number')} 小节净时值 {total} != 1920"
+                break
+    except Exception as exc:
+        bar_ok, bar_msg = False, str(exc)
+    check(bar_ok, "每个小节的净时值等于一小节（双谱表退回正确）", bar_msg)
+
+    # 反例：非键盘 / 音域窄的声部不能误判成大谱表
+    smx = os.path.join(tmp, "sample_nogrand.xml")
+    run(exe, os.path.join(FIXTURES, "sample.mid"), "--musicxml", smx)
+    xml_s = open(smx, encoding="utf-8").read()
+    check("<staves>" not in xml_s and "<staff>" not in xml_s,
+          "普通旋律声部仍保持单谱表输出")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")
