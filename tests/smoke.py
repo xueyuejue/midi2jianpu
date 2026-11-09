@@ -2288,6 +2288,34 @@ def main():
     check(xml_r.count("<offset>960</offset>") == 2,
           "渐快 / 渐慢的落定点回到该小节第 3 拍，而不是小节开头")
 
+    print("\n[72] 文本谱 / HTML 的中途换档也落到真实拍位")
+    rc, out, err = run(exe, ds)
+    check(rc == 0, "文本谱输出中途换档素材", err[:200])
+    note_lines = [ln for ln in out.splitlines() if "|" in ln]
+    check(len(note_lines) >= 3, "文本谱至少三行小节")
+    l1 = note_lines[0] if note_lines else ""
+    check("[ff]" in l1 and "[p]" in l1 and "[f]" in l1,
+          "第 1 小节把 ff / p / f 三档都印出来")
+    check(l1.find("[ff]") < l1.find("[p]") < l1.find("[f]"),
+          "三个档位按小节内先后排列，p 不再消失")
+    check("[f]" not in note_lines[1] if len(note_lines) > 1 else False,
+          "档位没变的第 2 小节不重复印 f")
+
+    dh = os.path.join(tmp, "dyn_step.html")
+    rc, _, err = run(exe, ds, "--html", dh)
+    check(rc == 0, "HTML 输出中途换档素材", err[:200])
+    html_ds = open(dh, encoding="utf-8").read() if rc == 0 else ""
+    check(html_ds.count("class='dynx'>p<") == 1 and
+          html_ds.count("class='dynx'>f<") == 1,
+          "力度浮标挂在两个中途换档的音头上")
+    check(".dynx{" in html_ds, "用到浮标时随页带 dynx 样式")
+    # 没有中途换档的谱子不能凭空多出样式：内嵌 CSS 会让整份文件都变，
+    # 既有素材的逐字节零回归全靠这条守住。
+    ph = os.path.join(tmp, "no_dynx.html")
+    rc, _, _ = run(exe, os.path.join(FIXTURES, "chords.mid"), "--html", ph)
+    check(rc == 0 and "dynx" not in open(ph, encoding="utf-8").read(),
+          "没有中途换档的谱子不输出 dynx 样式")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

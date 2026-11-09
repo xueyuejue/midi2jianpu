@@ -143,6 +143,21 @@ static std::string withArticulation(const std::string& col, const std::string& a
            col.substr(p + 1);
 }
 
+// 小节中途换力度档：同样浮在音符列顶部、不占宽度。
+//
+// 不能塞进标记行——标记行是一小节一条，写进去等于把「第 2 拍变弱」说成
+// 「整小节都弱」，比不标更误导。挂到出事那个音头上才和听到的一致。
+// 与和弦撞到同一列时加 .pair 往左让半个身位，两个标记各占半边。
+static std::string withDyn(const std::string& col, const std::string& dyn) {
+    if (dyn.empty()) return col;
+    size_t p = col.find('>');
+    if (p == std::string::npos) return col;
+    const bool paired = col.find("chordx") != std::string::npos;
+    return col.substr(0, p + 1) +
+           "<span class='dynx" + std::string(paired ? " pair" : "") + "'>" +
+           htmlEscape(dyn) + "</span>" + col.substr(p + 1);
+}
+
 // 生成和弦列：同一时刻发声的多个音竖向叠写，共用一个时值线。
 //
 // 简谱里和弦就是上下对齐的几行数字。若不叠排而顺序输出，一个三音和弦会被
@@ -410,6 +425,33 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             return label;
         };
 
+        // 小节中途换力度档：与文本谱 / MusicXML 共用 dynamicStepsInside 的判定
+        // （落在小节内、且不属于任何渐变段），先整份收出来，再按 tick 游标挂到
+        // 出事那个音头上。旧实现只在 openBar 里取一次 dynamicAt，中途换档在
+        // HTML 里同样整条丢失：第 2 拍的 ff→p 既不显示，后面还会把 p 顶到下一
+        // 小节，谱面与听到的力度差三拍。渐变段内部的档位不在这里印。
+        std::vector<ExpressionMark> midDyn;
+        {
+            long maxTick = 0;
+            for (const auto& n : merged)
+                maxTick = std::max(maxTick, n.startTicks + std::max<long>(n.durationTicks, 1));
+            const int lastBar = (int)grid.barIndex(maxTick);
+            for (int b = 0; b <= lastBar; b++)
+                for (const auto& m : expr.dynamicStepsInside(grid.barStart(b),
+                                                             grid.barEnd(b), partChannel))
+                    midDyn.push_back(m);
+        }
+        size_t midDynIdx = 0;
+        auto dynMarkFor = [&](long tick) -> std::string {
+            std::string label;
+            while (midDynIdx < midDyn.size() && midDyn[midDynIdx].tick <= tick) {
+                if (midDyn[midDynIdx].dynamic != lastDyn) label = midDyn[midDynIdx].dynamic;
+                ++midDynIdx;
+            }
+            if (!label.empty()) lastDyn = label;
+            return label;
+        };
+
         // 开一个小节：上面一行放标记（小节号 / 和弦 / 力度），下面才是音符。
         //
         // 早先把这三样直接塞进音符的 flex 流里，结果它们全挤在音符基线上：
@@ -589,8 +631,9 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                     // 休止时值按本小节的实际长度算——弱起小节比正常小节短
                     double restBeats = (double)grid.barSpan(b) / data.division;
                     body << "</span><span class='notes'>"
-                         << withChord(noteColumn("0", 0, 0, restBeats, ""),
-                                      chordMarkFor(grid.barStart(b)))
+                         << withDyn(withChord(noteColumn("0", 0, 0, restBeats, ""),
+                                              chordMarkFor(grid.barStart(b))),
+                                    dynMarkFor(grid.barEnd(b) - 1))
                          << "</span></span>";
                     prevEnd = std::max(prevEnd, grid.barEnd(b));
                 }
@@ -619,8 +662,9 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             if (gap >= data.division / 2) {
                 flushBeam();          // 休止符打断减时线
                 double restBeats = (double)gap / data.division;
-                emit(withChord(noteColumn("0", 0, 0, restBeats, ""),
-                               chordMarkFor(prevEnd)), prevEnd, true);
+                emit(withDyn(withChord(noteColumn("0", 0, 0, restBeats, ""),
+                                       chordMarkFor(prevEnd)),
+                             dynMarkFor(prevEnd)), prevEnd, true);
             }
 
             // 整组的时值取最长那个音
@@ -635,7 +679,8 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 if (cnt < 1) cnt = 1;
                 for (int k = 0; k < cnt; k++) {
                     long tk = n.startTicks + (long)k * data.division;
-                    emit(withChord(noteColumn("-", 0, 0, 1.0, ""), chordMarkFor(tk)), tk);
+                    emit(withDyn(withChord(noteColumn("-", 0, 0, 1.0, ""), chordMarkFor(tk)),
+                                 dynMarkFor(tk)), tk);
                 }
             } else if (grp.size() == 1) {
                 std::string jp = pitchToJianpu(n.pitch, keys.at(n.startTicks));
@@ -662,8 +707,9 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 // 三连音走单独的时值档位，避免 1/3 拍被当成附点十六分
                 DurStyle ds = grp[0]->trip ? tripletStyleOf(beats) : durStyleOf(beats);
                 std::string col = graceHtml + withArticulation(
-                    withChord(noteColumn(num, highDots, lowDots, beats, syl, "", &ds),
-                              chordMarkFor(n.startTicks)),
+                    withDyn(withChord(noteColumn(num, highDots, lowDots, beats, syl, "", &ds),
+                                      chordMarkFor(n.startTicks)),
+                            dynMarkFor(n.startTicks)),
                     ne.symbol());
                 const int g = hasSlur ? lyrics.groupAt(n.startTicks) : 0;
 
@@ -728,7 +774,9 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                     tones.push_back({num, {hi, lo}});
                 }
                 emit(graceHtml + withArticulation(
-                         withChord(chordColumn(tones, beats, ""), chordMarkFor(n.startTicks)),
+                         withDyn(withChord(chordColumn(tones, beats, ""),
+                                           chordMarkFor(n.startTicks)),
+                                 dynMarkFor(n.startTicks)),
                          ne.symbol()),
                      n.startTicks);
             }
@@ -888,7 +936,19 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
   .num,.ext{font-size:20px}
   .lyric{font-size:12px}
 }
-</style></head><body>
+</style>)";
+    // 小节中途的力度浮标只在真的出现过时才带样式：没有这种记号的谱子
+    // 输出必须逐字节不变（既有素材的零回归靠这条守住，不能无条件塞 CSS）。
+    if (body.str().find("dynx") != std::string::npos)
+        html << "<style>"
+             << ".dynx{position:absolute;bottom:calc(100% + 4px);left:50%;"
+                "transform:translateX(-50%);font-size:12px;font-weight:600;"
+                "font-style:italic;color:#2f6f4f;line-height:1;"
+                "white-space:nowrap;pointer-events:none}"
+             << ".dynx.pair{left:0;transform:translateX(-115%)}"
+             << ".hasslur .dynx{bottom:calc(100% + 22px)}"
+             << "</style>";
+    html << R"(</head><body>
 <h1>)" << htmlEscape(displayTitle) << R"(</h1>
 <div class="meta">)"
          << htmlEscape(keys.summary(grid))

@@ -1055,6 +1055,9 @@ static std::string formatTrack(
     bool started = false;
     long prevEnd = 0;
     std::string lastDyn;
+    // 力度口径已经印到哪个 tick：小节内换档要接着这个位置往后找，
+    // 否则同一处变化会被相邻两个音头各印一遍（或者整条漏掉）。
+    long lastDynTick = 0;
     // 这一行谱的通道口径：力度档位与渐强渐弱都按它取，不能随小节首音符变。
     const int partChannel = dominantChannel(notes);
 
@@ -1136,6 +1139,9 @@ static std::string formatTrack(
             os << "[" << d << "] ";
             lastDyn = d;
         }
+        // 小节线这一栏已经按 atTick 的口径标过，游标推到这里；
+        // 小节内更晚会由下面的 dynamicStepsInside 接着往后补。
+        lastDynTick = atTick;
     };
     // 跨小节时，后段用延长线续写：整拍输出 "-"，不足一拍带时值后缀
     auto emitHeld = [&](long segTicks) {
@@ -1193,6 +1199,20 @@ static std::string formatTrack(
                 os << "[" << pending << "] ";
                 lastChord = pending;
             }
+        }
+
+        // 小节内换力度档：与上面的和弦同理，标记必须跟着音头走。
+        // 旧实现只在 switchToBar 里取一次 dynamicAt，小节中途的换档既没有
+        // 位置也没有出口——第 2 拍 ff→p、第 4 拍 p→f 时，p 整条消失、f 被
+        // 推迟到下一小节开头才印出来，谱面与听到的力度差三拍。
+        // 渐变段内部的中间档位不在这里印（由 [cresc.]/[dim.] 表达），
+        // dynamicStepsInside 已按楔形区间排除，三端（文本谱 / HTML /
+        // MusicXML）共用同一份判定。
+        for (const auto& m : expr.dynamicStepsInside(lastDynTick, n.startTicks + 1, partChannel)) {
+            lastDynTick = std::max(lastDynTick, m.tick);
+            if (m.dynamic.empty() || m.dynamic == lastDyn) continue;
+            os << "[" << m.dynamic << "] ";
+            lastDyn = m.dynamic;
         }
 
         // 左括号放在小节线之后，否则 "3(" 会留在上一行末

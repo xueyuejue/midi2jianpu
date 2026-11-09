@@ -1603,6 +1603,30 @@ if (existsSync(dsPath)) {
     'WASM 渐变段内部的中间档位不逐个补 <offset>');
 }
 
+// ---- 47. v1.50.0 文本谱 / HTML 的中途换档落到真实拍位 ----
+// 旧产物只在 openBar 里取一次 dynamicAt，网页谱面同样把第 2 拍的 p 整条丢掉、
+// 把 f 顶到下一小节。现在浮标挂在出事那个音头上，样式只在用到时才随页输出
+// （没有这种记号的谱子必须保持原样字节）。
+if (existsSync(dsPath)) {
+  const dsh = makeCaller(mod);
+  dsh.setMidi(new Uint8Array(readFileSync(dsPath)));
+  dsh.setLyrics('');
+  const dsHtml = dsh.call('midi2jianpu_html', -1, 1) || '';
+  check((dsHtml.match(/class='dynx'>p</g) || []).length === 1,
+    'WASM HTML 把中途换档的 p 浮在第 2 拍那个音头上');
+  check((dsHtml.match(/class='dynx'>f</g) || []).length === 1,
+    'WASM HTML 的 f 落在第 4 拍，不再顶到下一小节');
+  check(dsHtml.includes('.dynx{'),
+    'WASM HTML 在用到浮标时随页带 dynx 样式');
+
+  const plainCaller = makeCaller(mod);
+  plainCaller.setMidi(new Uint8Array(readFileSync(path.join(FIXTURES, 'chords.mid'))));
+  plainCaller.setLyrics('');
+  const plainHtml = plainCaller.call('midi2jianpu_html', -1, 1) || '';
+  check(!plainHtml.includes('dynx'),
+    'WASM 没有中途换档的谱子不输出 dynx 样式（既有输出逐字节不变）');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

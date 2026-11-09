@@ -8,6 +8,7 @@
 //       截断 / 损坏 MIDI 的边界安全、SMF chunk 级边界重同步。
 #include "midi2jianpu/notation.hpp"
 #include "midi2jianpu/musicxml_writer.hpp"
+#include "midi2jianpu/html_writer.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -4736,6 +4737,79 @@ int main() {
               "渐变段内部的中间档位不再逐个印成力度记号");
         check(occurrences(cx, "<dynamics>") == 2,
               "渐强只在小节头写起止档位，不给每个采样点补 <direction>");
+    }
+
+    // 文本谱 / HTML：小节中途换力度档要落到真实拍位（v1.50.0）
+    {
+        // 旧实现只在 switchToBar / openBar 里取一次 dynamicAt，小节中途的
+        // 换档在这两层同样没有出口：p 整条消失、f 被推迟到下一小节。
+        const KeyEstimate key{0, true};
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.trackNames[0] = "Piano";
+        NoteEvent n;
+        n.track = 0; n.channel = 0; n.velocity = 96;
+        n.durationSeconds = 0.5; n.durationTicks = 480;
+        for (int i = 0; i < 12; i++) {
+            n.pitch = 60 + (i % 4); n.startTicks = i * 480;
+            n.startSeconds = i * 0.5;
+            d.notes.push_back(n);
+        }
+        d.dynamics.push_back({0, 100, 0});      // ff（第 1 小节头）
+        d.dynamics.push_back({480, 20, 0});     // p（第 1 小节第 2 拍）
+        d.dynamics.push_back({1440, 80, 0});    // f（第 1 小节第 4 拍）
+
+        const std::string txt = formatJianpu(d, key);
+        check(occurrences(txt, "[ff]") == 1 && occurrences(txt, "[p]") == 1 &&
+              occurrences(txt, "[f]") == 1,
+              "文本谱写全小节中途的每个档位，不被整条吞掉");
+        const size_t barLine = txt.find('|');
+        const size_t pAt = txt.find("[p]");
+        const size_t ffAt = txt.find("[ff]");
+        check(ffAt != std::string::npos && pAt != std::string::npos &&
+              barLine != std::string::npos && ffAt < pAt && pAt < barLine,
+              "文本谱的 [p] 落在第 1 小节内、[ff] 之后");
+        // 第 2 小节开头档位仍是 f，没有变化就不该再标一次。
+        check(txt.find("[f]", barLine) == std::string::npos,
+              "档位没变的小节开头不重复标力度");
+
+        const std::string htm = renderHtml(d, key, "t");
+        check(htm.find("class='dynx'>p<") != std::string::npos &&
+              htm.find("class='dynx'>f<") != std::string::npos,
+              "HTML 把中途换档浮在出事那个音头上");
+        check(htm.find(".dynx{") != std::string::npos,
+              "用到力度浮标时随页带 dynx 样式");
+
+        // 没有中途换档的谱子不能凭空多出样式：既有素材的 HTML 逐字节不变
+        // 全靠这条（CSS 是内嵌的，多一段就整份文件都变）。
+        MidiData plain = d;
+        plain.dynamics.clear();
+        plain.dynamics.push_back({0, 100, 0});
+        check(renderHtml(plain, key, "t").find("dynx") == std::string::npos,
+              "没有中途换档时不输出 dynx 样式");
+
+        // 渐变段内部的中间档位由楔形表达，文本谱不能逐点印成 [mp]。
+        MidiData r;
+        r.division = 480;
+        r.timeSig.valid = true;
+        r.trackNames[0] = "Piano";
+        for (int i = 0; i < 12; i++) {
+            n.pitch = 60 + (i % 4); n.startTicks = i * 480;
+            r.notes.push_back(n);
+        }
+        for (int i = 0; i < 8; i++)
+            r.dynamics.push_back({i * 240L, 40 + i * 10, 0});
+        const std::string rt = formatJianpu(r, key);
+        check(rt.find("[cresc.]") != std::string::npos,
+              "连续渐强在文本谱里仍写成 [cresc.]");
+        // 渐变段内部的档位（40→110 的 8 个采样点）只该在栏头留一个起点、
+        // 下一栏头留一个落定值；若逐点印出来，这里会冒出 [mf] / [f] 等一长串。
+        size_t dynMarks = 0;
+        for (const char* lv : {"[pp]", "[p]", "[mp]", "[mf]", "[f]", "[ff]", "[fff]"})
+            dynMarks += occurrences(rt, lv);
+        check(dynMarks == 2,
+              "渐变段内部的中间档位不逐点印成力度记号，只在栏头标起止");
     }
 
     std::cout << "\n------------------------------------------------\n";
