@@ -30,8 +30,10 @@ set(M2J_CORE
 add_executable(midi2jianpu src/main.cpp ${M2J_CORE})
 
 # ---- 单元测试 ----
+# 源文件列表直接用 M2J_CORE：这里曾经手抄一份（漏了 html_writer.cpp），
+# 单测一旦调用 renderHtml 就只在 Linux 上链接失败、本机却看不出来。
 enable_testing()
-add_executable(test_basic tests/test_basic.cpp src/midifile.cpp src/notation.cpp src/musicxml_writer.cpp)
+add_executable(test_basic tests/test_basic.cpp ${M2J_CORE})
 add_test(NAME basic COMMAND test_basic)
 
 # ---- WebAssembly（可选；需要 emsdk 提供 emcmake / em++）----
