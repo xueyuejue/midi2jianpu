@@ -886,8 +886,8 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
         // 长度字段写错同样是真实的损坏形态：少写会把轨尾几个字节甩到
         // 下一轮循环（memcmp 失败 → 整份文件报废），多写会把下一轨的
         // MTrk 头吞进本轨事件流。用下一个 EOT 锚定的轨头把边界校正回来。
-        // 只在「声明结尾没越过文件末尾」时做，避免干扰 v1.38 已经处理
-        // 好的真·截断文件（那种情况仍按 buffer 末尾硬边界解析）。
+        // 声明结尾越过文件末尾时，只有找到锚点才算「长度字段写坏」；
+        // 找不到就仍是 v1.38 处理的真·截断文件，按 buffer 末尾硬边界解析。
         if (trkEnd <= size) {
             const size_t anchor = findTrackAnchor(d, size, pos, size);
             // 偏长：锚点落在声明范围内 → 本轨实际到此为止。
@@ -900,6 +900,18 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                                   anchor - trkEnd <= 256 &&
                                   !boundaryLooksLikeChunk;
             if (tooLong || tooShort) {
+                trkEnd = anchor;
+                out.resyncedTracks++;
+            }
+        } else {
+            // 声明结尾越过文件末尾，但后面仍可能有一整条完好的 MTrk：
+            // 长度字段写坏（如 0x00010000）不等于文件被截断。旧实现在
+            // 这里直接跳过重同步，把整份文件当成这一轨的残片一路解析，
+            // 两轨被并成一轨、--track 1 拿不到旋律、还误报数据不完整。
+            // 只要找得到 EOT 锚定的合法轨头，就按真实边界切开；找不到
+            // 锚点才是 v1.38 处理的「下载到一半」真截断文件。
+            const size_t anchor = findTrackAnchor(d, size, pos, size);
+            if (anchor != (size_t)-1) {
                 trkEnd = anchor;
                 out.resyncedTracks++;
             }

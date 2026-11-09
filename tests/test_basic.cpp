@@ -4351,6 +4351,53 @@ int main() {
                   lab.find("非 MTrk 扩展块") != std::string::npos,
                   "截断与私有块同时存在时两段提示都保留");
         }
+        {
+            // v1.44.0：长度字段荒谬地大（越过文件末尾）不等于文件被截断。
+            // 只要后面还有 EOT 锚定的完整 MTrk，就该按真实边界切开。
+            auto b = twoTracks();              // 2 轨，第二轨 2 个音
+            putLenAt(b, 18, 0x00010000u);      // 首轨声明 65536 字节
+            auto r = parse(b);
+            check(r.first && r.second.notes.size() == 2,
+                  "越界长度字段：后续旋律轨的 2 个音照常读出");
+            check(r.second.truncatedTracks == 0 && r.second.truncatedEvents == 0,
+                  "越界长度字段：不再误判成文件数据被截断");
+            check(r.second.resyncedTracks == 1,
+                  "越界长度字段：记一次轨道边界重同步");
+            const std::string lab = truncationLabel(r.second);
+            check(lab.find("文件结构提示") == 0 &&
+                  lab.find("重同步 1 条轨道边界") != std::string::npos &&
+                  lab.find("文件数据不完整") == std::string::npos,
+                  "越界长度字段：页眉只报结构修复，不报数据不完整");
+        }
+        {
+            // 三轨 + 首轨越界：重同步后第二、第三轨仍要独立成轨
+            std::vector<SmfTrack> v(3);
+            v[0].at(0, ev({0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20}));
+            v[1].at(0, ev({0x90, 60, 100}));
+            v[1].at(480, ev({0x80, 60, 0}));
+            v[2].at(0, ev({0x90, 64, 100}));
+            v[2].at(480, ev({0x80, 64, 0}));
+            auto b = buildSmf(3, 480, std::move(v));
+            putLenAt(b, 18, 0x00010000u);
+            auto r = parse(b);
+            check(r.first && r.second.notes.size() == 2,
+                  "三轨首轨越界：后续两轨的音都读到");
+            check(r.second.resyncedTracks == 1 && r.second.truncatedTracks == 0,
+                  "三轨首轨越界：只重同步一次，不算截断");
+            check(r.second.notes[0].track == 1 && r.second.notes[1].track == 2,
+                  "三轨首轨越界：音符仍各自归属第 1 / 第 2 轨");
+        }
+        {
+            // 后续轨头长度也不可信时锚点校验失败，仍按真·截断硬边界处理
+            auto b = twoTracks();
+            const uint32_t realLen = lenAt(b, 18);
+            const size_t p2 = 14 + 8 + realLen;   // 第二轨 "MTrk" 的起点
+            putLenAt(b, p2 + 4, 0x00010000u);
+            putLenAt(b, 18, 0x00010000u);
+            auto r = parse(b);
+            check(r.second.truncatedTracks == 1 && r.second.resyncedTracks == 0,
+                  "后续轨头长度也不可信：仍按 v1.38 真·截断处理");
+        }
     }
 
     std::cout << "\n------------------------------------------------\n";

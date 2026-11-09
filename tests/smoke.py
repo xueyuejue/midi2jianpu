@@ -2065,6 +2065,36 @@ def main():
     check(xml_wt.count("<words>Verse</words>") == 1,
           "MusicXML 全局段落名只写一次")
 
+    print("\n[67] 长度字段越界但后续轨完整：按锚点重同步，不再误报数据截断")
+    # 旧版把「声明长度越过文件末尾」一律当成 v1.38 的真·截断：两轨并成
+    # 一轨、--track 1 选不到旋律、页眉误报「文件数据不完整」。新素材锁住
+    # 三端口径一致，同时确认真·截断文件的告警没有被改坏。
+    ol = os.path.join(FIXTURES, "oversized_len.mid")
+    rc, out, err = run(exe, ol)
+    check(rc == 0, "越界长度素材解析成功", err[:200])
+    check("文件结构提示" in out and "重同步 1 条轨道边界" in out,
+          "页眉报告轨道边界重同步", out[:300])
+    check("文件数据不完整" not in out, "文件完整时不误报数据截断", out[:300])
+    check("共提取 4 个音符" in out, "后续旋律轨 4 个音照常读出", out[:300])
+
+    rc, lt, err = run(exe, ol, "--list-tracks")
+    check(rc == 0 and '"Conductor"' in lt and '"Melody"' in lt,
+          "轨道列表仍分两轨，没有合成一轨", lt[:300])
+    rc, t1, err = run(exe, ol, "--track", "1")
+    check(rc == 0 and "共提取 4 个音符" in t1 and "只转换轨 1" in t1,
+          "--track 1 能选中真正的旋律轨", t1[:300])
+
+    olh = os.path.join(tmp, "oversized_len.html")
+    rc, _, err = run(exe, ol, "--html", olh)
+    html_ol = open(olh, encoding="utf-8").read() if rc == 0 else ""
+    check(rc == 0 and "文件结构提示" in html_ol and
+          "文件数据不完整" not in html_ol,
+          "HTML 页眉同步报告结构修复", html_ol[:200])
+
+    rc, tr, err = run(exe, os.path.join(FIXTURES, "truncated.mid"))
+    check(rc == 0 and "文件数据不完整" in tr and "文件结构提示" not in tr,
+          "真·截断文件仍按 v1.38 只报数据不完整", tr[:200])
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

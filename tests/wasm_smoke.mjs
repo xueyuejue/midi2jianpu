@@ -1402,6 +1402,46 @@ if (existsSync(wtPath)) {
     'WASM HTML 全局段落名只印一次');
 }
 
+// ---- 42. v1.44.0 越界长度字段：网页端按锚点重同步，不误报数据截断 ----
+// 旧 WASM 把「声明长度越过文件末尾」一律当成真·截断，两轨并成一轨、
+// 段落 #1 选不到旋律，文件面板还误报数据不完整。修复后应读出 4 个音，
+// file_header_info / HTML 页眉只报「重同步 1 条轨道边界」。
+const olPath = path.join(FIXTURES, 'oversized_len.mid');
+if (existsSync(olPath)) {
+  withBytes('oversized_len.mid', (p, n) => {
+    const fh = mod.UTF8ToString(mod._midi2jianpu_file_header_info(p, n));
+    check(/文件结构提示/.test(fh) && /重同步 1 条轨道边界/.test(fh),
+      'file_header_info 报告越界长度字段的边界修复', fh);
+    check(!/文件数据不完整/.test(fh), '网页端不误报文件数据不完整', fh);
+  });
+  mod._midi2jianpu_set_track(-1);
+  const ol = makeCaller(mod);
+  ol.setMidi(new Uint8Array(readFileSync(olPath)));
+  ol.setLyrics('');
+  const olNotes = JSON.parse(ol.call('midi2jianpu_get_notes_json', -1, 1) || 'null');
+  check(Array.isArray(olNotes) && olNotes.length === 4,
+    'WASM 越界长度字段后仍读出 4 个旋律音', String(olNotes && olNotes.length));
+  const olHtml = ol.call('midi2jianpu_html', -1, 1) || '';
+  check(/文件结构提示/.test(olHtml) && !/文件数据不完整/.test(olHtml),
+    'WASM HTML 页眉只报结构修复', olHtml.slice(0, 220));
+
+  // 网页段落选择：#1 才是真正的旋律轨，旧产物并轨后这里会是空谱面
+  mod._midi2jianpu_set_track(1);
+  const ol2 = makeCaller(mod);
+  ol2.setMidi(new Uint8Array(readFileSync(olPath)));
+  ol2.setLyrics('');
+  const ol2Notes = JSON.parse(ol2.call('midi2jianpu_get_notes_json', -1, 1) || 'null');
+  check(Array.isArray(ol2Notes) && ol2Notes.length === 4,
+    'WASM 段落选择 #1 能选中真正的旋律轨', String(ol2Notes && ol2Notes.length));
+  mod._midi2jianpu_set_track(-1);
+
+  withBytes('truncated.mid', (p, n) => {
+    const fh = mod.UTF8ToString(mod._midi2jianpu_file_header_info(p, n));
+    check(/文件数据不完整/.test(fh) && !/文件结构提示/.test(fh),
+      '真·截断文件在网页端仍按 v1.38 报数据不完整', fh);
+  });
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

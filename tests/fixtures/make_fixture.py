@@ -2,12 +2,12 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 74 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 75 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
 pedal / allnotesoff / cc7volume / pedal_channels / pedal_hysteresis /
-sostenuto / dyn_channels / wedge_tracks /
+sostenuto / dyn_channels / wedge_tracks / oversized_len /
 bendrange_channels / bendrange_timeline / bendrange_crosstrack /
 running_meta / running_sysex / running_realtime / running_standard /
 port_pedal / port_bend / port_prefix / port_prefix_base / port_standard /
@@ -64,6 +64,10 @@ soft_pedal 在 [1200, 2000) 踩 CC67 软踏板，两处强音里只有踏板内�
 力度被衰减（110→77），谱面的 '>' 从 2 个变成 1 个，时值完全不变。
 chunk_resync 同时放一个 DAW 私有 chunk（XFIH）和少写 4 字节的 conductor
 长度字段：旧解析器直接判「未提取到音符」，修复后应照常读出 4 个旋律音。
+oversized_len 把首轨长度字段写成 0x00010000（越过整份文件），但第二轨
+完整存在：旧实现把整份文件当成一轨的截断残片，误报「文件数据不完整」、
+两轨并成一轨、--track 1 拿不到旋律；修复后按 EOT 锚点切开，两轨各归各位，
+页眉只报「重同步 1 条轨道边界」。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -2147,6 +2151,26 @@ def build_chunk_resync() -> bytes:
     return header + private + bytes(cond) + t1.render()
 
 
+def build_oversized_len() -> bytes:
+    # MTrk 声明长度越过文件末尾，但后续轨完整（v1.44.0）。
+    # v1.42 的重同步只在 trkEnd <= size 时生效，遇到这种「长度字段写坏」
+    # 会整份跳过，硬当成 v1.38 的真·截断文件：两轨并成一轨、--track 1
+    # 选不到旋律、页眉误报数据不完整。修复后应按 EOT 锚点切开，读出 4 个音。
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Melody"))
+    for i in range(4):
+        t1.note(0, 60 + i, 96, i * DIV, 400)
+
+    cond = bytearray(t0.render())
+    cond[4:8] = struct.pack(">I", 0x00010000)
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return bytes(header + bytes(cond) + t1.render())
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -2480,6 +2504,16 @@ def main() -> None:
     # 通道级 wedge：两条独立轨各写自己的渐强渐弱，全局段落名只写一次
     for name, builder in (
         ("wedge_tracks", build_wedge_tracks),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # 长度字段越过文件末尾、后续轨仍完整：按锚点重同步，不再误报截断
+    for name, builder in (
+        ("oversized_len", build_oversized_len),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:
