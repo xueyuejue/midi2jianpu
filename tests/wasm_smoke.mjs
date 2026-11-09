@@ -1627,6 +1627,31 @@ if (existsSync(dsPath)) {
     'WASM 没有中途换档的谱子不输出 dynx 样式（既有输出逐字节不变）');
 }
 
+// ---- 48. v1.51.0 调号链路（网页端没有移调参数，锁住共享 core 不被带偏）----
+// --transpose 改成「音符 + MIDI 调号一起平移」后，调号解析/中途转调这条
+// 共用链路必须一字不动：网页端读同一份 core，1=Bb → 1=D 的唱名与
+// MusicXML 的 <fifths> -2 / 2 都要保持原样。
+const tkPath = path.join(FIXTURES, 'transpose_key.mid');
+if (existsSync(tkPath)) {
+  const tk = makeCaller(mod);
+  tk.setMidi(new Uint8Array(readFileSync(tkPath)));
+  tk.setLyrics('');
+  const tkText = tk.call('midi2jianpu_parse', -1, 1) || '';
+  check(tkText.includes('1=Bb') && tkText.includes('1=D'),
+    'WASM 文本谱仍读作 1=Bb → 1=D（移调改动没有波及不传移调的路径）', tkText);
+  check(!tkText.includes('2 3 4 5'),
+    'WASM 不带移调时唱名仍是 1 2 3 4');
+
+  const tkXml = tk.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(tkXml.includes('<fifths>-2</fifths>') &&
+        tkXml.includes('<fifths>2</fifths>'),
+    'WASM MusicXML 的调号仍是 -2（Bb）与 2（D）');
+
+  const tkHtml = tk.call('midi2jianpu_html', -1, 1) || '';
+  check(tkHtml.includes('1=Bb'),
+    'WASM HTML 页眉仍写 1=Bb');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

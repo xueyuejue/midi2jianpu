@@ -56,6 +56,19 @@ KeyEstimate keyFromGong(const MidiData& data, int gongPitchClass);
 // 再由高置信的五声调式判定校正宫音）
 KeyEstimate estimateKey(const MidiData& data);
 
+// 调号升降数在五度圈上随移调平移，返回 -6..6 的最简等价写法。
+// 例：C(0) +2 -> 2(D)，C(0) +1 -> -5(Db)，C(0) +7 -> 1(G)。
+int transposeFifths(int fifths, int semitones);
+
+// CLI --transpose 的唯一实现：音符与调号（含中途转调）一起平移。
+// 只移音不移调号，谱面会出现「音符在 D 大调、调号还写着 1=C」的分叉：
+// 简谱唱名变成 2 3 #4，MusicXML 的 <fifths> 留在 0，整首挂满临时记号。
+void transposeData(MidiData& data, int semitones);
+
+// 手动调性（--key / --gong）随移调平移：走调号而不是直接挪主音，才能把
+// C+3 写成 1=Eb（3 个降号）而不是 1=D#（9 个升号）。大小调性质保持不变。
+KeyEstimate transposeKey(const KeyEstimate& key, int semitones);
+
 // 简谱调号的 do 音所在音级。
 // 简谱用首调唱名：小调不写 1=主音，而是把关系大调的 do 记作 1，主音落在 6 上
 // （la 为主音）。所以 a 小调的调号是 1=C，e 小调是 1=G。

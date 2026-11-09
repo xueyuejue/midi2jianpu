@@ -321,9 +321,22 @@ int main(int argc, char** argv) {
     }
 
     // --transpose 移调
+    // 音符与调号一起平移：estimateKey() 优先采信 MIDI 内置调号，只移音不移
+    // 调号会让谱面出现「音符在 D 大调、调号还是 1=C」的分叉（唱名变 2 3 #4、
+    // MusicXML 的 <fifths> 留在 0 而满谱临时记号）。中途转调点同样跟着平移。
+    bool transposeMovedKey = false;   // 文件自带调号是否真的跟着动了（八度移调不动）
+    bool transposeShiftsKey = false;  // 这次移调是否改变调性（非整八度）
     if (transpose != 0) {
-        for (auto& n : data.notes) n.pitch += transpose;
-        std::cout << "移调: " << (transpose > 0 ? "+" : "") << transpose << " 半音\n";
+        const int sfBefore = data.keySig.valid ? data.keySig.sharpsFlats : 0;
+        m2j::transposeData(data, transpose);
+        // 移整个八度时调号不动，别谎报「同步平移」。
+        transposeMovedKey = data.keySig.valid &&
+                            data.keySig.sharpsFlats != sfBefore;
+        // 没有 0x59 的文件（调性靠音级分布猜）拿不到「上面这条」的证据，
+        // 但它的调性一样要跟着走：只要不是整八度，调性就变了。
+        transposeShiftsKey = (transpose % 12) != 0;
+        std::cout << "移调: " << (transpose > 0 ? "+" : "") << transpose << " 半音"
+                  << (transposeMovedKey ? "（调号同步平移）" : "") << "\n";
     }
 
     // 时值量化：真实录音 MIDI 的 note-off 普遍提前，不量化会把八分判成附点十六
@@ -358,8 +371,14 @@ int main(int argc, char** argv) {
         // --gong 优先于 --key：它同时决定「1 落在哪个音」和调式名。
         m2j::KeyEstimate g;
         if (parseKey(gongArg, g)) {
-            key = m2j::keyFromGong(data, g.tonicPitchClass);
-            keySource = "(手动指定宫音 " + gongArg + ")";
+            // --gong 给的是「原调宫音」：宫音必须跟着移调走，否则 1=C 的
+            // C 宫五声移两个半音后仍然标成 C 宫，与谱面音高脱节。直接挪
+            // 宫音再重推一次，调式名（徵 / 羽…）才跟着新终止音算对。
+            int gpc = g.tonicPitchClass;
+            if (transposeShiftsKey) gpc = ((gpc + transpose) % 12 + 12) % 12;
+            key = m2j::keyFromGong(data, gpc);
+            keySource = "(手动指定宫音 " + gongArg
+                      + (transposeShiftsKey ? "，已随移调平移" : "") + ")";
             std::cout << "五声调式: " << key.scaleLabel
                       << "，首调 1=" << m2j::keyName(key) << "\n";
         } else {
@@ -369,7 +388,11 @@ int main(int argc, char** argv) {
             keySource = data.keySig.valid ? "(MIDI调号)" : "(自动猜测)";
         }
     } else if (!keyArg.empty() && parseKey(keyArg, key)) {
-        keySource = "(手动指定 " + keyArg + ")";
+        // --key 同理：它描述的是原调，移调后要一起走，否则用户在 README 里
+        // 抄的 `--key C --transpose +2` 会得到「1=C 的 D 大调旋律」。
+        if (transposeShiftsKey) key = m2j::transposeKey(key, transpose);
+        keySource = "(手动指定 " + keyArg
+                  + (transposeShiftsKey ? "，已随移调平移" : "") + ")";
     } else {
         if (!keyArg.empty()) {
             std::cerr << "警告: 无法识别的调性 \"" << keyArg
@@ -378,6 +401,10 @@ int main(int argc, char** argv) {
         key = m2j::estimateKey(data);
         keySource = data.keySig.valid ? "(MIDI调号)" : "(自动猜测)";
     }
+    // 调号已经跟着 --transpose 平移过，页眉不能再写「MIDI调号」——那会让用户
+    // 以为文件里本来就写着这个调。移到这里的标签统一在下面点明。
+    if (transposeMovedKey && keySource == "(MIDI调号)")
+        keySource = "(MIDI调号，已随移调平移)";
     if (!key.scaleLabel.empty() && gongArg.empty())
         std::cout << "五声调式: " << key.scaleLabel
                   << "，首调 1=" << m2j::keyName(key)

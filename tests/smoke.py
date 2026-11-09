@@ -2316,6 +2316,74 @@ def main():
     check(rc == 0 and "dynx" not in open(ph, encoding="utf-8").read(),
           "没有中途换档的谱子不输出 dynx 样式")
 
+    print("\n[73] --transpose 把 MIDI 调号一起平移")
+    tk = os.path.join(FIXTURES, "transpose_key.mid")
+    # 素材本身：1=Bb 起步、第 5 小节转 1=D，两段唱名都该是 1 2 3 4。
+    rc, out, err = run(exe, tk)
+    check(rc == 0, "文本谱输出移调素材", err[:200])
+    check("1=Bb 大调 → 1=D(第5小节)" in out,
+          "不带 --transpose 时页眉读作 1=Bb → 1=D")
+    check("1=Bb" in out and "(MIDI调号)" in out,
+          "没移调时调号来源仍标 MIDI调号")
+
+    rc, out, err = run(exe, tk, "--transpose", "+2")
+    check(rc == 0, "移调 +2 输出", err[:200])
+    # 只移音不移调号：页眉会停在 1=Bb，唱名变成 2 3 4 5。修复后应是 1=C。
+    check("1=C 大调 → 1=E(第5小节)" in out,
+          "移调 +2 后页眉变成 1=C → 1=E（调号跟着音高走）")
+    check("1=Bb" not in out, "移调 +2 后不再出现旧的 1=Bb")
+    check("2 3 4 5" not in out, "移调后唱名没有被重新数成 2 3 4 5")
+    check("1 2 3 4" in out, "移调后第一小节仍读作 1 2 3 4")
+    check("已随移调平移" in out, "页眉点明调号已随移调平移")
+
+    # 跨零点取升降号最少的等价写法：Bb+1 是 5 个升号的 B，不是 7 个降号的 Cb。
+    rc, out, _ = run(exe, tk, "--transpose", "+1")
+    check("1=B 大调 → 1=Eb(第5小节)" in out,
+          "移调 +1：Bb→B、D→Eb，都取升降号最少的写法")
+
+    rc, out, _ = run(exe, tk, "--transpose", "-2")
+    check("1=Ab 大调 → 1=C(第5小节)" in out,
+          "移调 -2：Bb→Ab、D→C")
+
+    # 整个八度只换音区，调号一个字都不能动，也不该谎报「已平移」。
+    rc, out, _ = run(exe, tk, "--transpose", "+12")
+    check("1=Bb 大调 → 1=D(第5小节)" in out,
+          "移八度不改调号")
+    check("已随移调平移" not in out, "移八度不谎报调号平移")
+
+    # MusicXML 的 <fifths> 必须同步：否则 MuseScore 里整首挂临时记号。
+    xp = os.path.join(tmp, "transpose_key.xml")
+    rc, _, err = run(exe, tk, "--transpose", "+2", "--musicxml", xp)
+    check(rc == 0, "输出移调 MusicXML", err[:200])
+    xt = open(xp, encoding="utf-8").read() if rc == 0 else ""
+    check("<fifths>0</fifths>" in xt and "<fifths>4</fifths>" in xt,
+          "MusicXML 调号同步平移：1=C(0 个升号) → 1=E(4 个升号)")
+    check("<fifths>-2</fifths>" not in xt,
+          "移调后的 MusicXML 不再写着原来的 1=Bb(-2)")
+
+    # 没有 0x59 的文件本来就靠音级分布定调，只移音、不凭空造调号。
+    rc, out, _ = run(exe, os.path.join(FIXTURES, "pentatonic.mid"),
+                     "--transpose", "+2")
+    check(rc == 0 and "(自动猜测)" in out,
+          "无调号文件移调后仍标自动猜测，不写「调号同步平移」")
+
+    # 手动的 --key / --gong 给的是「原调」，移调后同样要一起走；否则
+    # README 里那条 `--key C --transpose +2` 会产出「1=C 的 D 大调旋律」。
+    rc, out, _ = run(exe, tk, "--key", "Bb", "--transpose", "+2")
+    check(rc == 0 and "1=C 大调 → 1=E(第5小节)" in out and
+          "已随移调平移" in out,
+          "--key Bb +2：手动调性跟着平移到 1=C")
+    pc = os.path.join(FIXTURES, "pentatonic.mid")
+    rc, out, _ = run(exe, pc, "--key", "Am", "--transpose", "+3")
+    check(rc == 0 and "1=Eb" in out,
+          "--key Am +3：小调性质保持，记作 1=Eb（c 小调）")
+    rc, out, _ = run(exe, pc, "--gong", "C", "--transpose", "+2")
+    check(rc == 0 and "宫音 D" in out,
+          "--gong C +2：宫音跟着移到 D，五声标签按新宫音重算")
+    rc, out, _ = run(exe, tk, "--key", "Bb", "--transpose", "+12")
+    check(rc == 0 and "1=Bb 大调" in out and "已随移调平移" not in out,
+          "--key Bb +12：整八度移调不改调性")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

@@ -4812,6 +4812,137 @@ int main() {
               "渐变段内部的中间档位不逐点印成力度记号，只在栏头标起止");
     }
 
+    // ---- 移调：调号必须跟着音高一起走（v1.51.0）----
+    // 只移音不移调号，谱面就会「音符在 D 大调、页眉还写 1=C」：简谱唱名
+    // 从 1 2 3 4 变成 2 3 #4，MusicXML 的 <fifths> 留在 0，整首挂临时记号。
+    {
+        // 五度圈：纯五度 = 7 半音，7x7 ≡ 1 (mod 12)，所以移 N 半音走 7N 步。
+        check(transposeFifths(0, 2) == 2, "移调 +2：C(0) -> D(2 个升号)");
+        check(transposeFifths(0, -2) == -2, "移调 -2：C(0) -> Bb(2 个降号)");
+        check(transposeFifths(0, 7) == 1, "移调 +7：纯五度只差一个升号 C(0) -> G(1)");
+        // 跨出零点时取升降号最少的等价写法：C# 要 7 个升号，Db 只要 5 个降号。
+        check(transposeFifths(0, 1) == -5, "移调 +1：C(0) -> Db(-5)，不写 7 升的 C#");
+        check(transposeFifths(0, -1) == 5, "移调 -1：C(0) -> B(5)，不写 7 降的 Cb");
+        check(transposeFifths(-2, 2) == 0, "降号调跨零点：Bb(-2) +2 -> C(0)");
+        check(transposeFifths(0, 12) == 0 && transposeFifths(-2, -12) == -2,
+              "移整个八度不改调号");
+        check(transposeFifths(3, 6) == -3, "升号调绕回：A(3) +6 -> Eb(-3)");
+
+        // 手动的 --key / --gong 也要跟着走：走调号取最简写法，而不是把
+        // 主音直接 +N（那样 C+3 会写成 9 个升号的 D#，谱面没法看）。
+        KeyEstimate cMaj;
+        cMaj.tonicPitchClass = 0;
+        KeyEstimate aMin;
+        aMin.tonicPitchClass = 9;
+        aMin.isMajor = false;
+        check(keyName(transposeKey(cMaj, 2)) == "D",
+              "transposeKey：1=C +2 -> 1=D");
+        check(keyName(transposeKey(cMaj, 1)) == "Db",
+              "transposeKey：1=C +1 -> 1=Db，不写满升号的 C#");
+        check(keyName(transposeKey(cMaj, 3)) == "Eb",
+              "transposeKey：1=C +3 -> 1=Eb，不写 D#");
+        check(keyName(transposeKey(aMin, 2)) == "D" &&
+              !transposeKey(aMin, 2).isMajor,
+              "transposeKey 保持大小调性质：a 小调 +2 -> b 小调（记作 1=D）");
+        check(keyName(transposeKey(cMaj, 12)) == "C",
+              "transposeKey 移八度不改调");
+
+        // transposeData：音符与 keySig / keySigChanges 一起平移。
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.trackNames[0] = "Melody";
+        d.keySig = KeySignature{-2, false, true};             // 1=Bb
+        d.keySigChanges.push_back({0, d.keySig});
+        d.keySigChanges.push_back({7680, KeySignature{2, false, true}});  // 中途转 1=D
+        // 两段都写足七声，免得被五声调式判定改掉 do 的位置。
+        const int bbScale[8] = {70, 72, 74, 75, 77, 79, 81, 82};   // Bb C D Eb F G A Bb
+        const int ddScale[8] = {62, 64, 66, 67, 69, 71, 73, 74};   // D E F# G A B C# D
+        for (int i = 0; i < 8; i++) {
+            NoteEvent m;
+            m.startSeconds = i * 0.5;
+            m.durationSeconds = 0.5;
+            m.pitch = bbScale[i];
+            m.startTicks = i * 480;
+            m.durationTicks = 480;
+            m.rawDurationTicks = 480;
+            m.channel = 0;
+            m.track = 0;
+            d.notes.push_back(m);
+            m.pitch = ddScale[i];
+            m.startTicks = 7680 + i * 480;
+            d.notes.push_back(m);
+        }
+
+        MidiData up = d;
+        transposeData(up, 2);
+        bool allShifted = true;
+        for (size_t i = 0; i < d.notes.size(); i++)
+            allShifted = allShifted && up.notes[i].pitch == d.notes[i].pitch + 2;
+        check(allShifted, "transposeData 把每个音符的音高都平移");
+        check(up.keySig.sharpsFlats == 0,
+              "transposeData 把曲首调号 Bb(-2) 平移到 C(0)");
+        check(up.keySigChanges.size() == 2 &&
+              up.keySigChanges[0].sig.sharpsFlats == 0 &&
+              up.keySigChanges[1].sig.sharpsFlats == 4,
+              "中途转调点一起平移：1=Bb -> 1=C、1=D -> 1=E");
+        check(keyName(estimateKey(up)) == "C",
+              "移调后 estimateKey 读出新的 1=C，不再沿用文件里的 1=Bb");
+        // 唱名不变才是「移对了」：原来的 1 2 3 移完仍读作 1 2 3。
+        // 八度点是跟着绝对音高走的，跨过 C5 之后会多一个高音点，所以
+        // 只比较音级数字（去掉 ' 与 ,）。
+        auto stripOct = [](std::string s) {
+            std::string r;
+            for (char c : s) if (c != '\'' && c != ',') r += c;
+            return r;
+        };
+        const KeyEstimate k0 = estimateKey(d);
+        const KeyEstimate k1 = estimateKey(up);
+        check(stripOct(pitchToJianpu(d.notes[0].pitch, k0)) ==
+                  stripOct(pitchToJianpu(up.notes[0].pitch, k1)) &&
+              stripOct(pitchToJianpu(d.notes[2].pitch, k0)) ==
+                  stripOct(pitchToJianpu(up.notes[2].pitch, k1)),
+              "移调后同一段旋律的简谱唱名保持不变");
+
+        MidiData oct = d;
+        transposeData(oct, 12);
+        check(oct.keySig.sharpsFlats == -2 &&
+              oct.keySigChanges[1].sig.sharpsFlats == 2 &&
+              oct.notes[0].pitch == 82,
+              "移八度：音高走、调号不动");
+
+        MidiData same = d;
+        transposeData(same, 0);
+        check(same.keySig.sharpsFlats == -2 && same.notes[0].pitch == 70 &&
+              same.keySigChanges[1].sig.sharpsFlats == 2,
+              "移 0 半音是纯空操作");
+
+        // 没有 0x59 的文件（靠自动猜调）本来就跟音符走，这里锁住别退回旧路。
+        MidiData nokey;
+        nokey.division = 480;
+        nokey.timeSig.valid = true;
+        nokey.trackNames[0] = "Vocal";
+        const int cScale[8] = {0, 2, 4, 5, 7, 9, 11, 12};
+        for (int i = 0; i < 8; i++) {
+            NoteEvent m;
+            m.startSeconds = i * 0.5;
+            m.durationSeconds = 0.5;
+            m.pitch = 60 + cScale[i];
+            m.startTicks = i * 480;
+            m.durationTicks = 480;
+            m.rawDurationTicks = 480;
+            m.channel = 0;
+            m.track = 0;
+            nokey.notes.push_back(m);
+        }
+        MidiData nk2 = nokey;
+        transposeData(nk2, 2);
+        check(!nk2.keySig.valid && nk2.notes[0].pitch == 62,
+              "无调号文件只移音，不凭空造出调号");
+        check(keyName(estimateKey(nokey)) == "C" && keyName(estimateKey(nk2)) == "D",
+              "无调号文件的调性由音级分布决定，移调后自动猜调跟着走");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

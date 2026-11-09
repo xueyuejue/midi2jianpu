@@ -644,6 +644,46 @@ def build_modulation() -> bytes:
     return header + t0.render() + t1.render() + t2.render() + t3.render()
 
 
+def build_transpose_key() -> bytes:
+    """--transpose 的调号素材：1=Bb（降号调）起步，第 5 小节转到 1=D（升号调）。
+
+    8 小节 4/4，division=480：
+        第 1~4 小节  0    ~ 7680   Bb 大调 (0x59 sf=-2)
+        第 5~8 小节  7680 ~ 15360  D  大调 (0x59 sf=+2)
+
+    验证要点：
+      * 不带 --transpose 时页眉是「1=Bb 大调 → 1=D(第5小节)」，两段唱名
+        都是 1 2 3 4 —— 调号已经换过，唱名不该跟着绝对音高走；
+      * --transpose +2 后调号必须整体上移一个全音（「1=C → 1=E」），而不是
+        只把音符移走、页眉还写着 1=Bb（那样唱名会变成 2 3 4 5）；
+      * --transpose +1 要落到「1=B → 1=Eb」：跨出零点时取升降号最少的等价
+        写法（Bb+1 是 5 个升号的 B，不是 7 个降号的 Cb）；
+      * --transpose +12 只换八度，调号一个字都不许变。
+      * 每段用足 7 个音级，避免被五声调式判定（那会改掉 do 的位置）。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))        # 500000us -> 120 BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))             # 4/4
+    t0.add(0, meta(0x59, bytes([(-2) & 0xFF, 0])))          # Bb 大调
+    t0.add(7680, meta(0x59, bytes([2, 0])))                 # D 大调
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Melody"))
+    t1.program(0, 73, 0)                                    # Flute
+    # Bb 段（Bb C D Eb / F G A Bb 上下行），D 段（D E F# G / A B C# D）。
+    bb = [70, 72, 74, 75, 77, 79, 81, 82, 82, 81, 79, 77, 75, 74, 72, 70]
+    dd = [62, 64, 66, 67, 69, 71, 73, 74, 74, 73, 71, 69, 67, 66, 64, 62]
+    for bar in range(8):
+        scale = bb if bar < 4 else dd
+        for beat in range(4):
+            t1.note(0, scale[(bar % 4) * 4 + beat], 88,
+                    bar * 1920 + beat * 480, 480)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + t1.render()
+
+
 def build_pentatonic() -> bytes:
     """中国五声调式压力素材：C 宫五声、终止音 G 的「G 徵调式」。
 
@@ -2692,6 +2732,17 @@ def main() -> None:
     # 小节中途换力度档：每处换档各带 <offset>，不再被推迟到下一小节
     for name, builder in (
         ("dyn_step", build_dyn_step),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # 移调素材：降号调 (1=Bb) 起步、中途转到升号调 (1=D)，锁住 --transpose
+    # 把 MIDI 调号一起平移（只移音不移调号会让唱名与调号分叉）
+    for name, builder in (
+        ("transpose_key", build_transpose_key),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

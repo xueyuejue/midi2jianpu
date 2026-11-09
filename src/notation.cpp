@@ -151,6 +151,53 @@ KeyEstimate estimateKey(const MidiData& data) {
     return r;
 }
 
+// ---- 移调 ----
+
+// 调号升降数随移调平移。
+//
+// 音高移 N 个半音，等价于在五度圈上走 7N 步（纯五度 = 7 半音，且
+// 7 x 7 ≡ 1 (mod 12)，所以「7N mod 12」就是所需步数）。步数取 [-5, 6]
+// 中最短的等价写法，跨过零点的移调才不会写出 12 个升号的怪调：
+//   C(0) +2 -> +2  D       C(0) +1 -> -5  Db（而不是 7 个升号的 C#）
+//   C(0) -2 -> -2  Bb      C(0) +7 -> +1  G（纯五度只差一个升号）
+// 结果再归一化到 [-6, 6]：C# 大调(7) +6 会算出 13，等价写法 Db 只差 5 个降号。
+static int normalizeFifths12(int f) {
+    int m = ((f % 12) + 12) % 12;
+    if (m > 6) m -= 12;
+    return m;
+}
+
+int transposeFifths(int fifths, int semitones) {
+    const int n = ((semitones % 12) + 12) % 12;
+    int d = (7 * n) % 12;          // 0..11
+    if (d > 6) d -= 12;            // -5..6：少写临时记号的等价写法
+    return normalizeFifths12(fifths + d);
+}
+
+void transposeData(MidiData& data, int semitones) {
+    if (semitones == 0) return;
+    for (auto& n : data.notes) n.pitch += semitones;
+    // 调号必须跟着走：estimateKey() 优先采信 MIDI 内置调号，只移音不移调号
+    // 会让 --transpose +2 输出的谱面「音符在 D 大调、调号还是 1=C」，
+    // 简谱唱名全变成 2 3 #4，MusicXML 的 <fifths> 也留在 0，MuseScore 里
+    // 整首曲子挂满临时记号。
+    if (data.keySig.valid)
+        data.keySig.sharpsFlats = transposeFifths(data.keySig.sharpsFlats, semitones);
+    for (auto& p : data.keySigChanges)
+        p.sig.sharpsFlats = transposeFifths(p.sig.sharpsFlats, semitones);
+}
+
+KeyEstimate transposeKey(const KeyEstimate& key, int semitones) {
+    if (semitones == 0) return key;
+    // 走调号而不是直接 tonic+半音：后者会把 C+3 写成「D# 大调」（9 个升号），
+    // 走五度圈才能落到「Eb 大调」（3 个降号）这种真正好读的写法。
+    const int sf = transposeFifths(keyFifths(key), semitones);
+    const int majorTonic = ((7 * sf) % 12 + 12) % 12;
+    KeyEstimate r = key;
+    r.tonicPitchClass = key.isMajor ? majorTonic : (majorTonic - 3 + 12) % 12;
+    return r;
+}
+
 // ---- 五声调式（宫商角徵羽）----
 static const char* SHARP_PC[12] = {
     "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
