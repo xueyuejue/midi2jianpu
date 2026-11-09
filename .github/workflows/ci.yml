@@ -35,7 +35,7 @@ jobs:
         run: ctest --output-on-failure
 
       - name: 素材生成器可复现
-        # 全量重生成 77 份 .mid 后不得有字节差异，也不得多出未跟踪素材。
+        # 全量重生成 78 份 .mid 后不得有字节差异，也不得多出未跟踪素材。
         # 只比二进制素材：.lrc 是文本，交给 git 的行尾归一化处理。
         run: |
           python3 tests/fixtures/make_fixture.py > /dev/null

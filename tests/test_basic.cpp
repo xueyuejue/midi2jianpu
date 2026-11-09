@@ -4600,6 +4600,78 @@ int main() {
               "键盘音色但音域窄的声部保持单谱表");
     }
 
+    // -------------------------------------------------------------------
+    // 小节中途变速的位置（v1.48.0）
+    // 旧实现按小节把速度记号收进 map<bar, mark>：同一小节的多个阶跃只留
+    // 最后一个（120→90→60 被吞成 60），且一律写在小节开头，MuseScore 从
+    // 第一拍就按新速度播放。修复后每个阶跃各写一条 direction，落点用
+    // <offset>（单位 = divisions）标回小节内位置；正好在小节线上的速度
+    // 不写 offset，旧排版逐字节保留。
+    // -------------------------------------------------------------------
+    std::cout << "\n测试 MusicXML 小节中途变速 (v1.48.0)\n";
+    {
+        auto occurrences = [](const std::string& s, const std::string& sub) {
+            size_t n = 0, pos = 0;
+            while ((pos = s.find(sub, pos)) != std::string::npos) {
+                n++; pos += sub.size();
+            }
+            return n;
+        };
+        const KeyEstimate key{0, true};
+
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.tempoChanges.push_back({0, 120.0});
+        d.tempoChanges.push_back({480, 90.0});    // 第 1 小节第 2 拍
+        d.tempoChanges.push_back({1440, 60.0});   // 第 1 小节第 4 拍
+        d.tempoChanges.push_back({3840, 120.0});  // 第 3 小节线
+        d.trackNames[0] = "Melody";
+        d.channelProgram[0] = 73;
+        NoteEvent n;
+        n.track = 0; n.channel = 0; n.velocity = 96;
+        n.startSeconds = 0; n.durationSeconds = 0.5;
+        n.durationTicks = 480;
+        for (int i = 0; i < 12; i++) {
+            n.pitch = 72 + (i % 4); n.startTicks = i * 480;
+            d.notes.push_back(n);
+        }
+
+        const std::string mx = renderMusicXml(d, key);
+        check(mx.find("<offset>480</offset>") != std::string::npos,
+              "第 2 拍的速度记号写 offset 480，不再吸附到小节开头");
+        check(mx.find("<offset>1440</offset>") != std::string::npos,
+              "第 4 拍的速度记号写 offset 1440");
+        check(occurrences(mx, "<per-minute>90</per-minute>") == 1 &&
+              occurrences(mx, "<per-minute>60</per-minute>") == 1,
+              "同一小节的多个阶跃全部保留，不再只留最后一个");
+        check(occurrences(mx, "<offset>") == 2,
+              "只有中途变速的点写 offset，小节线上的速度不多写");
+        check(mx.find("</direction-type><sound tempo=\"120\"/>") != std::string::npos,
+              "正好落在小节线的速度保持旧排版（sound 紧贴 direction-type）");
+
+        // 渐变落定点在小节中途：rit. 的终点速度要标到真实拍位
+        MidiData r;
+        r.division = 480;
+        r.timeSig.valid = true;
+        r.tempoChanges.push_back({0, 120.0});
+        for (int i = 1; i <= 8; i++)          // 一段连续渐慢：8 个节点
+            r.tempoChanges.push_back({i * 240L, 120.0 - i * 5.0});
+        r.trackNames[0] = "Melody";
+        NoteEvent rn;
+        rn.track = 0; rn.channel = 0; rn.velocity = 96;
+        rn.startSeconds = 0; rn.durationSeconds = 0.5;
+        rn.durationTicks = 480;
+        for (int i = 0; i < 8; i++) {
+            rn.pitch = 72 + (i % 4); rn.startTicks = i * 480;
+            r.notes.push_back(rn);
+        }
+        const std::string rx = renderMusicXml(r, key);
+        check(rx.find("<words>rit.</words>") != std::string::npos &&
+              rx.find("<offset>") != std::string::npos,
+              "渐慢落定点不在小节线时也带 offset");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

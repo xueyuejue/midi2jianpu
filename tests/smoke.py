@@ -2225,6 +2225,38 @@ def main():
     check("<staves>" not in xml_s and "<staff>" not in xml_s,
           "普通旋律声部仍保持单谱表输出")
 
+    print("\n[70] 小节中途变速：速度记号保留小节内位置")
+    mtm = os.path.join(FIXTURES, "midtempo.mid")
+    mtx = os.path.join(tmp, "midtempo.xml")
+    rc, _, err = run(exe, mtm, "--musicxml", mtx)
+    check(rc == 0, "中途变速素材导出 MusicXML", err[:200])
+    xml_mt = open(mtx, encoding="utf-8").read() if rc == 0 else ""
+    import xml.etree.ElementTree as ET70
+    well70, xerr70 = True, ""
+    try:
+        ET70.fromstring(open(mtx, "rb").read())
+    except Exception as exc:
+        well70 = False
+        xerr70 = str(exc)
+    check(well70, "中途变速 MusicXML 是合法 XML", xerr70)
+    check("<per-minute>90</per-minute>" in xml_mt and
+          "<per-minute>60</per-minute>" in xml_mt,
+          "同一小节的两个阶跃（90 / 60）都写出来，不再只留最后一个")
+    p90 = xml_mt.find("<per-minute>90</per-minute>")
+    p60 = xml_mt.find("<per-minute>60</per-minute>")
+    check(p90 >= 0 and "<offset>480</offset>" in xml_mt[p90:p90 + 300],
+          "90BPM 落在小节内第 2 拍（offset 480）")
+    check(p60 >= 0 and "<offset>1440</offset>" in xml_mt[p60:p60 + 300],
+          "60BPM 落在小节内第 4 拍（offset 1440）")
+    check(xml_mt.count("<offset>") == 2,
+          "只有中途变速的点写 <offset>，小节线上的速度不多写")
+
+    rmx = os.path.join(tmp, "tempo_ramp_offset.xml")
+    run(exe, os.path.join(FIXTURES, "tempo_ramp.mid"), "--musicxml", rmx)
+    xml_r = open(rmx, encoding="utf-8").read()
+    check(xml_r.count("<offset>960</offset>") == 2,
+          "渐快 / 渐慢的落定点回到该小节第 3 拍，而不是小节开头")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

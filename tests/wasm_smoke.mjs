@@ -1547,6 +1547,33 @@ if (existsSync(gsPath)) {
     'WASM 普通旋律声部仍保持单谱表输出');
 }
 
+// ---- 45. v1.48.0 小节中途变速：速度记号保留小节内位置 ----
+// 旧产物按小节把速度记号收进 map<bar, mark>，同一小节多个阶跃只留最后一个，
+// 且一律写在小节开头 —— 网页导出的 MusicXML 会被 MuseScore 整小节按新速度播。
+const mtPath = path.join(FIXTURES, 'midtempo.mid');
+if (existsSync(mtPath)) {
+  mod._midi2jianpu_set_track(-1);
+  const mt = makeCaller(mod);
+  mt.setMidi(new Uint8Array(readFileSync(mtPath)));
+  mt.setLyrics('');
+  const mtXml = mt.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(mtXml.includes('<per-minute>90</per-minute>') &&
+        mtXml.includes('<per-minute>60</per-minute>'),
+    'WASM 同一小节的 90 / 60 两个阶跃都写出来');
+  check(mtXml.includes('<offset>480</offset>') &&
+        mtXml.includes('<offset>1440</offset>'),
+    'WASM 中途变速用 <offset> 标回小节内拍位');
+  check((mtXml.match(/<offset>/g) || []).length === 2,
+    'WASM 只给中途变速的点写 <offset>');
+
+  const rp = makeCaller(mod);
+  rp.setMidi(new Uint8Array(readFileSync(path.join(FIXTURES, 'tempo_ramp.mid'))));
+  rp.setLyrics('');
+  const rpXml = rp.call('midi2jianpu_musicxml', -1, 1) || '';
+  check((rpXml.match(/<offset>960<\/offset>/g) || []).length === 2,
+    'WASM 渐快 / 渐慢落定点回到该小节第 3 拍');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

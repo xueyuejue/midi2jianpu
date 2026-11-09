@@ -2243,6 +2243,31 @@ def build_grand_staff() -> bytes:
     return bytes(header + t0.render() + t1.render())
 
 
+def build_midtempo() -> bytes:
+    # 小节中途变速（v1.48.0）。
+    # 旧实现把速度记号按小节归并成 map<bar, mark>：同一小节的多个阶跃只留
+    # 最后一个，且一律写在小节开头——第 1 小节 120→90(第2拍)→60(第4拍) 会被
+    # 吞成「整小节 60」，MuseScore 从第一拍就按 60 播放。修复后每个阶跃各写
+    # 一条 <direction>，落点用 <offset> 标回小节内位置；正好落在小节线上的
+    # 第 3 小节 120 不写 <offset>，保持旧排版。
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 500000us -> 120BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(DIV, meta(0x51, bytes([0x0A, 0x2C, 0x2B])))  # 666667us -> 90BPM（正第 2 拍）
+    t0.add(1440, meta(0x51, bytes([0x0F, 0x42, 0x40])))  # 1000000us -> 60BPM（第 4 拍）
+    t0.add(2 * BAR, meta(0x51, bytes([0x07, 0xA1, 0x20])))  # 回到 120BPM（第 3 小节线）
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Melody"))
+    t1.program(0, 73, 0)                               # Flute
+    for i in range(12):
+        t1.note(0, 72 + (i % 4), 96, i * DIV, DIV)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return bytes(header + t0.render() + t1.render())
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -2621,6 +2646,16 @@ def main() -> None:
     # 键盘大谱表：宽音域钢琴轨排成上下两行谱（高音 + 低音谱号）
     for name, builder in (
         ("grand_staff", build_grand_staff),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # 小节中途变速：多个阶跃各带 <offset>，不再被吸附到小节开头
+    for name, builder in (
+        ("midtempo", build_midtempo),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:
