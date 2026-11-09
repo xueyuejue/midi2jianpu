@@ -1307,7 +1307,8 @@ if (existsSync(sostPath)) {
 
 // ---- 38. v1.40.0 CC11 渐强渐弱按通道归属 ----
 // 旋律(ch0)渐弱、伴奏(ch1)渐强：旧 WASM 会把两条 wedge 合并，网页谱面印
-// cresc. 而力度写 ff→pp。修复后三端只应出现本通道的 dim./diminuendo。
+// cresc. 而力度写 ff→pp。v1.43.0 起两个声部各自印自己的渐变，但同轨
+// 单 part 的 MusicXML 仍按主导通道（ch0）只写 dim.。
 const dcPath = path.join(FIXTURES, 'dyn_channels.mid');
 if (existsSync(dcPath)) {
   const dc = makeCaller(mod);
@@ -1317,8 +1318,8 @@ if (existsSync(dcPath)) {
   check(/diminuendo/.test(dcXml) && !/crescendo/.test(dcXml),
     '网页 WASM 的 MusicXML 只写旋律通道的渐弱', dcXml.slice(0, 200));
   const dcHtml = dc.call('midi2jianpu_html', -1, 1) || '';
-  check(/>dim\.</.test(dcHtml) && !/>cresc\.</.test(dcHtml),
-    '网页 WASM 的 HTML 只写旋律通道的渐弱', dcHtml.slice(0, 200));
+  check(/>dim\.</.test(dcHtml) && />cresc\.</.test(dcHtml),
+    '网页 WASM 的 HTML 两个声部各写自己的渐变（v1.43.0）', dcHtml.slice(0, 200));
   check(/Verse/.test(dcHtml), '网页 WASM 仍显示全局段落名');
 }
 
@@ -1370,6 +1371,35 @@ if (existsSync(crPath)) {
     const fh = mod.UTF8ToString(mod._midi2jianpu_file_header_info(p, n));
     check(!/文件结构提示/.test(fh), '合法 SMF 在网页端不误报结构异常', fh);
   });
+}
+
+// ---- 41. v1.43.0 通道级楔形：网页端每个声部各写自己的渐强渐弱 ----
+// 旧 WASM 把 wedge 和全局段落名一起塞进「只写第一个声部 / 第一个 part」
+// 的门控，第二条轨的 crescendo 连同 wedge stop 一起消失。修复后 MusicXML
+// 两个 part 各写一份 wedge，HTML 两行谱各写一个，全局 Verse 仍只出现一次。
+const wtPath = path.join(FIXTURES, 'wedge_tracks.mid');
+if (existsSync(wtPath)) {
+  mod._midi2jianpu_set_track(-1);
+  const wt = makeCaller(mod);
+  wt.setMidi(new Uint8Array(readFileSync(wtPath)));
+  wt.setLyrics('');
+  const wtXml = wt.call('midi2jianpu_musicxml', -1, 1) || '';
+  const p1 = wtXml.indexOf('<part id="P1"');
+  const p2 = wtXml.indexOf('<part id="P2"');
+  check(p1 >= 0 && p2 > p1, 'WASM MusicXML 写出两个 part');
+  const part1 = wtXml.slice(p1, p2);
+  const part2 = wtXml.slice(p2);
+  check(/diminuendo/.test(part1) && !/crescendo/.test(part1),
+    'WASM P1 只写旋律通道的渐弱');
+  check(/crescendo/.test(part2) && !/diminuendo/.test(part2),
+    'WASM P2 补写伴奏通道的渐强');
+  check((wtXml.match(/<words>Verse<\/words>/g) || []).length === 1,
+    'WASM 全局段落名只写一次');
+  const wtHtml = wt.call('midi2jianpu_html', -1, 1) || '';
+  check(/>dim\.</.test(wtHtml) && />cresc\.</.test(wtHtml),
+    'WASM HTML 两行谱各写自己的渐变');
+  check((wtHtml.match(/class='section'/g) || []).length === 1,
+    'WASM HTML 全局段落名只印一次');
 }
 
 console.log('');

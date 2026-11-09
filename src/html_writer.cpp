@@ -260,6 +260,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         int track = 0;
         int voice = 0;
         int voiceCount = 1;
+        int channel = -1;
         std::vector<NoteEvent> notes;
     };
     std::vector<PartView> parts;
@@ -269,7 +270,8 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         int voiceCount = 0;
         for (int v : vo) voiceCount = std::max(voiceCount, v + 1);
         if (voiceCount <= 1) {
-            parts.push_back({t, 0, 1, std::move(ns)});
+            const int ch = dominantChannel(ns);
+            parts.push_back({t, 0, 1, ch, std::move(ns)});
             continue;
         }
         for (int v = 0; v < voiceCount; v++) {
@@ -279,6 +281,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             pv.voiceCount = voiceCount;
             for (size_t i = 0; i < ns.size(); i++)
                 if (vo[i] == v) pv.notes.push_back(ns[i]);
+            pv.channel = dominantChannel(pv.notes);
             if (!pv.notes.empty()) parts.push_back(std::move(pv));
         }
     }
@@ -286,6 +289,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
     for (size_t pi = 0; pi < parts.size(); pi++) {
         const int t = parts[pi].track;
         const auto& ns = parts[pi].notes;
+        const int partChannel = parts[pi].channel;
         const bool isMain = (t == mainTrack && parts[pi].voice == 0);
         // 速度标记属于整份谱，只在第一行谱上印一次。每轨都印一遍是噪音，
         // 而且同一页上会出现好几个一模一样的 ♩=90。
@@ -463,15 +467,14 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 body << "<span class='dyn'>" << dyn << "</span>";
                 lastDyn = dyn;
             }
-            // 段落名是整份谱的事件（只印第一行谱）；渐强/渐弱则按通道归属，
-            // 伴奏轨自己的 cresc. 不能串到这一行旋律上。
-            if (showTempo) {
-                for (const auto& m : expr.inRange(grid.barStart(bar), grid.barEnd(bar), channel)) {
-                    if (!m.section.empty())
-                        body << "<span class='section'>" << htmlEscape(m.section) << "</span>";
-                    if (m.wedge > 0) body << "<span class='wedge'>cresc.</span>";
-                    else if (m.wedge < 0) body << "<span class='wedge'>dim.</span>";
-                }
+            // 段落名是整份谱的全局标记，只印第一行谱；渐强渐弱是通道级
+            // 演奏表情，每一行谱都按自己的主导通道各印一次。旧版两者共用
+            // showTempo（= 第一行谱），第二行起的 cresc./dim. 全被吞掉。
+            for (const auto& m : expr.inRange(grid.barStart(bar), grid.barEnd(bar), channel)) {
+                if (showTempo && !m.section.empty())
+                    body << "<span class='section'>" << htmlEscape(m.section) << "</span>";
+                if (m.wedge > 0) body << "<span class='wedge'>cresc.</span>";
+                else if (m.wedge < 0) body << "<span class='wedge'>dim.</span>";
             }
             body << "</span><span class='notes'>";   // 标记行结束，音符行开始
         };
@@ -572,14 +575,14 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                     if (keys.keyChangedAtBar(b, grid))
                         body << "<span class='keychg'>转 "
                              << "1=" << keyName(keys.keyAtBar(b, grid)) << "</span>";
-                    // 段落标记也可能落在纯休止的前奏小节上；渐变按当前声部通道取
-                    if (showTempo) {
-                        for (const auto& m : expr.inRange(grid.barStart(b), grid.barEnd(b), n.channel)) {
-                            if (!m.section.empty())
-                                body << "<span class='section'>" << htmlEscape(m.section) << "</span>";
-                            if (m.wedge > 0) body << "<span class='wedge'>cresc.</span>";
-                            else if (m.wedge < 0) body << "<span class='wedge'>dim.</span>";
-                        }
+                    // 段落标记也可能落在纯休止的前奏小节上；渐变按本行主导通道
+                    // 取，与正常小节的 openBar 保持同一口径（不能用 n.channel，
+                    // 它可能是同轨混进来的伴奏通道）。
+                    for (const auto& m : expr.inRange(grid.barStart(b), grid.barEnd(b), partChannel)) {
+                        if (showTempo && !m.section.empty())
+                            body << "<span class='section'>" << htmlEscape(m.section) << "</span>";
+                        if (m.wedge > 0) body << "<span class='wedge'>cresc.</span>";
+                        else if (m.wedge < 0) body << "<span class='wedge'>dim.</span>";
                     }
                     // 旋律还没进来、伴奏已经在走的前奏小节：和弦照标，
                     // 否则开头的 4 小节就是四块空白，看不出和声进行。
@@ -596,7 +599,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 if (bar > 0 && bar % measuresPerRow == 0) body << "</div><div class='row'>";
 
                 curBar = bar;
-                openBar(bar, n.startTicks, n.channel);
+                openBar(bar, n.startTicks, partChannel);
             } else if (inTriplet && !grp[0]->trip) {
                 inTriplet = false;
             }

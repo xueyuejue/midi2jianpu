@@ -3953,6 +3953,107 @@ int main() {
     // CC67 软踏板（Soft Pedal）：只衰减踩下期间起音音符的 velocity，
     // 不动时值，也不改 CC11 / CC7 力度表。与 CC64/CC66 共用迟滞配对。
     // -------------------------------------------------------------------
+    // -------------------------------------------------------------------
+    // v1.43.0：通道级楔形记号不再只印第一声部。三个输出层原先分别用
+    // if (chords) / if (showTempo) / if (partIdx == 1) 把 wedge 和全局
+    // 段落名一起门控住，第二轨（或同轨第二声部）的 cresc. 整条丢失。
+    // 输出层取标记的口径统一为 dominantChannel(该声部音符)。
+    // -------------------------------------------------------------------
+    std::cout << "\n测试声部主导通道与逐声部楔形记号 (v1.43.0)\n";
+    {
+        auto occurrences = [](const std::string& s, const std::string& sub) {
+            size_t n = 0, pos = 0;
+            while ((pos = s.find(sub, pos)) != std::string::npos) {
+                n++; pos += sub.size();
+            }
+            return n;
+        };
+        {
+            // 主导通道：音符数最多者胜出，并列时取最早出现的通道
+            std::vector<NoteEvent> v;
+            NoteEvent n;
+            n.track = 0; n.pitch = 48; n.startTicks = 0; n.startSeconds = 0;
+            n.durationTicks = 1920; n.durationSeconds = 2.0; n.velocity = 64;
+            n.channel = 1;                       // 低音伴奏排在最前
+            v.push_back(n);
+            n.channel = 0; n.pitch = 60; n.durationTicks = 480;
+            n.durationSeconds = 0.5;
+            for (int i = 0; i < 3; i++) {
+                n.startTicks = i * 480; n.startSeconds = i * 0.5;
+                v.push_back(n);
+            }
+            check(dominantChannel(v) == 0,
+                  "主导通道取音符数最多的通道，不是 ns.front().channel");
+            std::vector<NoteEvent> tied;
+            n.channel = 5; tied.push_back(n);
+            n.channel = 2; tied.push_back(n);
+            check(dominantChannel(tied) == 5, "并列时取最早出现的通道");
+            std::vector<NoteEvent> none;
+            check(dominantChannel(none) == -1, "空声部返回 -1（不过滤）");
+        }
+        {
+            MidiData d;
+            d.division = 480;
+            d.timeSig.valid = true;
+            d.tempoChanges.push_back({0, 120.0});
+            d.trackNames[0] = "Vocal";
+            d.trackNames[1] = "Pad";
+            d.markers.push_back({0, "Verse"});
+            NoteEvent m;
+            m.track = 0; m.channel = 0; m.velocity = 96;
+            m.durationTicks = 480; m.durationSeconds = 0.5;
+            for (int i = 0; i < 8; i++) {
+                m.pitch = 60 + (i % 4);
+                m.startTicks = i * 480; m.startSeconds = i * 0.5;
+                d.notes.push_back(m);
+            }
+            NoteEvent p = m;
+            p.track = 1; p.channel = 1; p.pitch = 48; p.velocity = 64;
+            p.durationTicks = 1920; p.durationSeconds = 2.0;
+            p.startTicks = 0; p.startSeconds = 0.0;
+            d.notes.push_back(p);
+            p.startTicks = 1920; p.startSeconds = 2.0;
+            d.notes.push_back(p);
+            const int down[7] = {120, 100, 80, 60, 40, 20, 10};
+            const int up[7]   = {20, 40, 60, 80, 100, 120, 127};
+            for (int i = 0; i < 7; i++) {
+                d.dynamics.push_back({i * 240, down[i], 0});
+                d.dynamics.push_back({i * 240, up[i], 1});
+            }
+            KeyEstimate key{0, true};
+            const std::string jp = formatJianpu(d, key);
+            const size_t iV = jp.find("[Vocal]");
+            const size_t iP = jp.find("[Pad]");
+            check(iV != std::string::npos && iP != std::string::npos && iP > iV,
+                  "两条独立轨各占一行谱");
+            const std::string lineV = jp.substr(iV, iP - iV);
+            const std::string lineP = jp.substr(iP);
+            check(lineV.find("[dim.]") != std::string::npos &&
+                  lineV.find("[cresc.]") == std::string::npos,
+                  "文本谱 Vocal 行只印自己通道的渐弱");
+            check(lineP.find("[cresc.]") != std::string::npos &&
+                  lineP.find("[dim.]") == std::string::npos,
+                  "文本谱 Pad 行补印自己通道的渐强（旧版整条丢失）");
+            check(occurrences(jp, "[Verse]") == 1,
+                  "全局段落名只印一次，不跟着第二行谱重复");
+
+            const std::string xml = renderMusicXml(d, key);
+            const size_t p1 = xml.find("<part id=\"P1\"");
+            const size_t p2 = xml.find("<part id=\"P2\"");
+            check(p1 != std::string::npos && p2 != std::string::npos && p2 > p1,
+                  "MusicXML 写成两个 part");
+            const std::string part1 = xml.substr(p1, p2 - p1);
+            const std::string part2 = xml.substr(p2);
+            check(part1.find("diminuendo") != std::string::npos &&
+                  part1.find("crescendo") == std::string::npos,
+                  "MusicXML P1 只写旋律通道的渐弱");
+            check(part2.find("crescendo") != std::string::npos &&
+                  part2.find("diminuendo") == std::string::npos,
+                  "MusicXML P2 补写伴奏通道的渐强（旧版整条丢失）");
+            check(occurrences(xml, "<words>Verse</words>") == 1,
+                  "MusicXML 全局段落名只写一次");
+        }
+    }
     std::cout << "\n测试控制器语义：CC67 软踏板 (v1.41.0)\n";
     {
         auto load = [](const std::vector<uint8_t>& bytes, int filter = -1) {

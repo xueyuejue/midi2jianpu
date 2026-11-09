@@ -658,6 +658,18 @@ std::vector<bool> detectTriplets(const std::vector<NoteEvent>& notes, int divisi
     return isTriplet;
 }
 
+// 见头文件注释：声部主导通道是力度 / 楔形记号的唯一取用口径。
+int dominantChannel(const std::vector<NoteEvent>& notes) {
+    std::map<int, int> counts;
+    for (const auto& n : notes) counts[n.channel]++;
+    int best = -1, bestCount = 0;
+    for (const auto& n : notes) {
+        const int c = counts[n.channel];
+        if (c > bestCount) { bestCount = c; best = n.channel; }
+    }
+    return best;
+}
+
 // 同轨复调拆分。见头文件注释：同拍同值算和弦，其余重叠音分到不同声部。
 std::vector<int> splitVoices(std::vector<NoteEvent>& notes, int maxVoices,
                              const std::function<bool(const NoteEvent&)>& skip) {
@@ -1043,6 +1055,8 @@ static std::string formatTrack(
     bool started = false;
     long prevEnd = 0;
     std::string lastDyn;
+    // 这一行谱的通道口径：力度档位与渐强渐弱都按它取，不能随小节首音符变。
+    const int partChannel = dominantChannel(notes);
 
     // 先合并"同音高、首尾相接"的连续音符（1 1 1 → 1 - -）。
     // 三连音组内的音符不参与合并，否则会把三连音拆成普通长音。
@@ -1099,14 +1113,13 @@ static std::string formatTrack(
         // [C] 和弦区分开，纯文本里也不会看混。
         if (chords && keys.keyChangedAtBar(bar, grid))
             os << "[转" << ("1=" + keyName(keys.keyAtBar(bar, grid))) << "] ";
-        // 段落名与渐强渐弱：和力度一样属于「谱面标记」，只印旋律轨。
-        // inRange 按小节与当前声部通道取：伴奏通道的 cresc. 不属于这一行。
-        if (chords) {
-            for (const auto& m : expr.inRange(grid.barStart(bar), grid.barEnd(bar), channel)) {
-                if (!m.section.empty()) os << "[" << m.section << "] ";
-                if (m.wedge > 0) os << "[cresc.] ";
-                else if (m.wedge < 0) os << "[dim.] ";
-            }
+        // 段落名是整份谱的全局标记，只印主声部一次；渐强渐弱是通道级
+        // 演奏表情，每个声部都要按自己的主导通道各印一次。旧版把两者一起
+        // 塞进 if (chords)，伴奏声部（乃至第二条轨）的 cresc. 全被吞掉。
+        for (const auto& m : expr.inRange(grid.barStart(bar), grid.barEnd(bar), channel)) {
+            if (chords && !m.section.empty()) os << "[" << m.section << "] ";
+            if (m.wedge > 0) os << "[cresc.] ";
+            else if (m.wedge < 0) os << "[dim.] ";
         }
         // 和弦标记只标在旋律轨上，避免伴奏轨重复标注；
         // 连续小节是同一个和弦时不重复写——歌本里和弦只在变化处标注
@@ -1155,7 +1168,7 @@ static std::string formatTrack(
             long t = prevEnd;
             while (t < n.startTicks) {
                 long bar = barOf(t);
-                switchToBar(bar, t, n.channel);
+                switchToBar(bar, t, partChannel);
                 long seg = std::min(n.startTicks, grid.barEnd(bar)) - t;
                 if (seg <= 0) break;                    // 防御：避免死循环
                 emitNoteToken(os, "0", durationSuffix(seg, data.division));
@@ -1163,7 +1176,7 @@ static std::string formatTrack(
             }
         }
 
-        switchToBar(barOf(n.startTicks), n.startTicks, n.channel);
+        switchToBar(barOf(n.startTicks), n.startTicks, partChannel);
 
         // 小节内换和弦（第 3 拍、6/8 的第二个附点四分……）。
         // 只在小节起点找和弦会把这类变化整个漏掉——而流行歌里一小节两个
@@ -1206,7 +1219,7 @@ static std::string formatTrack(
             long t = barEnd;
             while (t < noteEnd) {
                 long bar = barOf(t);
-                switchToBar(bar, t, n.channel);
+                switchToBar(bar, t, partChannel);
                 long seg = std::min(noteEnd, grid.barEnd(bar)) - t;
                 if (seg <= 0) break;                    // 防御：避免死循环
                 emitHeld(seg);

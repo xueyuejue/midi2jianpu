@@ -1918,15 +1918,23 @@ def main():
     check("持音踏板" not in ph_out, "CC64 素材不误报持音踏板（零回归）")
 
 
-    print("\n[63] CC11 渐强渐弱按通道归属")
-    # 旋律(ch0)渐弱、伴奏(ch1)渐强：旧实现把两条 wedge 合并成一条，
-    # 旋律谱会印 [cresc.]，同一行力度档位却写 [ff]→[pp]。
+    print("\n[63] CC11 渐强渐弱按通道归属（v1.43.0 起逐声部输出）")
+    # 旋律(ch0)渐弱、伴奏(ch1)渐强：v1.40.0 修好「两条 wedge 合并成一条」
+    # 之后，三个输出层仍沿用「全局只印第一声部」的旧门控，伴奏声部的
+    # cresc. 被整条吞掉。现在每个声部按自己的主导通道各印一次，段落名这类
+    # 全局标记仍只印一次。
     dc = os.path.join(FIXTURES, "dyn_channels.mid")
     rc, out, err = run(exe, dc)
     check(rc == 0, "双通道力度素材解析成功", err[:200])
-    check("[dim.]" in out and "[cresc.]" not in out,
-          "文本谱只印旋律通道的渐弱", out[:300])
-    check("[Verse]" in out, "全局段落名仍印在旋律谱上", out[:300])
+    rows_txt = re.split(r"\[Piano · 声部\d\]", out)
+    check(len(rows_txt) == 3, "双通道素材拆成两个声部行", out[:300])
+    mel_txt, acc_txt = rows_txt[1], rows_txt[2]
+    check("[dim.]" in mel_txt and "[cresc.]" not in mel_txt,
+          "旋律声部只印自己通道的渐弱", mel_txt[:200])
+    check("[cresc.]" in acc_txt and "[dim.]" not in acc_txt,
+          "伴奏声部补印自己通道的渐强", acc_txt[:200])
+    check("[Verse]" in mel_txt and "[Verse]" not in acc_txt,
+          "全局段落名只印一次，不跟着伴奏声部重复", acc_txt[:200])
     check("渐强 1" in out and "渐弱 1" in out,
           "页眉仍如实统计整份文件检测到的两类渐变", out[:300])
 
@@ -1934,16 +1942,23 @@ def main():
     rc, _, err = run(exe, dc, "--html", dch)
     check(rc == 0, "双通道力度素材导出 HTML", err[:200])
     html_dc = open(dch, encoding="utf-8").read()
-    check(">dim.<" in html_dc and ">cresc.<" not in html_dc,
-          "HTML 只写旋律通道的渐弱", html_dc[:300])
-    check("Verse" in html_dc, "HTML 保留全局段落名")
+    rows_dc = re.split(r"<div class='track'>", html_dc)
+    check(len(rows_dc) == 3, "HTML 分两行谱", html_dc[:200])
+    check(">dim.<" in rows_dc[1] and ">cresc.<" not in rows_dc[1],
+          "HTML 第一行只写旋律通道的渐弱")
+    check(">cresc.<" in rows_dc[2] and ">dim.<" not in rows_dc[2],
+          "HTML 第二行补写伴奏通道的渐强")
+    check(rows_dc[1].count("class='section'") == 1 and
+          "class='section'" not in rows_dc[2],
+          "HTML 全局段落名只印一次")
 
     dcx = os.path.join(tmp, "dyn_channels.xml")
     rc, _, err = run(exe, dc, "--musicxml", dcx)
     check(rc == 0, "双通道力度素材导出 MusicXML", err[:200])
     xml_dc = open(dcx, encoding="utf-8").read()
+    # 一个 part 按主导通道写一份 direction；同轨双通道的主导是旋律 ch0。
     check("diminuendo" in xml_dc and "crescendo" not in xml_dc,
-          "MusicXML 只写旋律通道的渐弱", xml_dc[:300])
+          "MusicXML 单 part 只写主导通道的渐弱", xml_dc[:300])
 
     _, ex_out, _ = run(exe, os.path.join(FIXTURES, "expression.mid"))
     check("[cresc.]" in ex_out or "[dim.]" in ex_out,
@@ -2008,6 +2023,47 @@ def main():
     _, normal_out, _ = run(exe, os.path.join(FIXTURES, "expression.mid"))
     check("文件结构提示" not in normal_out,
           "合法 SMF 不误报结构异常（零回归）")
+
+    print("\n[66] 多轨通道级楔形：三端都写出每个声部自己的渐强渐弱")
+    # 旧版把 wedge 和全局段落名一起塞进「只写第一声部 / 第一个 part」的
+    # 门控，第二条轨的 cresc. 连 wedge stop 一起消失。这次新素材锁住：
+    # 文本 / HTML 两行谱各印自己的渐变，MusicXML 两个 part 各写一份，
+    # 全局 Verse 仍只出现一次。
+    wt = os.path.join(FIXTURES, "wedge_tracks.mid")
+    rc, out, err = run(exe, wt)
+    check(rc == 0, "双轨渐变素材解析成功", err[:200])
+    rows_wt = re.split(r"\[(?:Vocal|Pad)\] \(\d+ 音符\)", out)
+    check(len(rows_wt) == 3, "两条轨各占一行谱", out[:300])
+    check("[dim.]" in rows_wt[1] and "[cresc.]" not in rows_wt[1],
+          "文本谱 Vocal 行只印渐弱", rows_wt[1][:200])
+    check("[cresc.]" in rows_wt[2] and "[dim.]" not in rows_wt[2],
+          "文本谱 Pad 行补印渐强", rows_wt[2][:200])
+    check(out.count("[Verse]") == 1, "文本谱全局段落名只印一次", out[:300])
+
+    wth = os.path.join(tmp, "wedge_tracks.html")
+    rc, _, err = run(exe, wt, "--html", wth)
+    check(rc == 0, "双轨渐变素材导出 HTML", err[:200])
+    html_wt = open(wth, encoding="utf-8").read()
+    rows_wh = re.split(r"<div class='track'>", html_wt)
+    check(len(rows_wh) == 3 and ">dim.<" in rows_wh[1] and
+          ">cresc.<" in rows_wh[2] and ">cresc.<" not in rows_wh[1] and
+          ">dim.<" not in rows_wh[2],
+          "HTML 两行谱各写自己的渐变", html_wt[:200])
+    check(html_wt.count("class='section'") == 1,
+          "HTML 全局段落名只印一次")
+
+    wtx = os.path.join(tmp, "wedge_tracks.xml")
+    rc, _, err = run(exe, wt, "--musicxml", wtx)
+    check(rc == 0, "双轨渐变素材导出 MusicXML", err[:200])
+    xml_wt = open(wtx, encoding="utf-8").read()
+    parts_wt = re.split(r'<part id="P\d">', xml_wt)
+    check(len(parts_wt) == 3, "MusicXML 写成两个 part", xml_wt[:200])
+    check("diminuendo" in parts_wt[1] and "crescendo" not in parts_wt[1],
+          "MusicXML P1 只写旋律通道的渐弱")
+    check("crescendo" in parts_wt[2] and "diminuendo" not in parts_wt[2],
+          "MusicXML P2 补写伴奏通道的渐强")
+    check(xml_wt.count("<words>Verse</words>") == 1,
+          "MusicXML 全局段落名只写一次")
 
     print("\n" + "-" * 48)
     if failures:

@@ -246,18 +246,10 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                                      : LyricAssignment();
 
         // CC11 与渐变楔形都按通道归属。一个 part 可能混入多个通道（同一
-        // 轨里的旋律 + 低音伴奏），旧实现取 ns.front().channel，而 ns 按
-        // (tick, 音高) 排序、tick 0 的低音排在最前，于是整个 part 的力度与
-        // 渐变会跟着伴奏通道走，和文本谱 / HTML 的旋律声部对不上。取该 part
-        // 音符最多的通道（并列时取最早出现的），才是这一声部的主导通道。
-        std::map<int, int> channelNotes;
-        for (const auto& nn : ns) channelNotes[nn.channel]++;
-        int partChannel = ns.front().channel;
-        int bestCount = 0;
-        for (const auto& nn : ns) {
-            const int c = channelNotes[nn.channel];
-            if (c > bestCount) { bestCount = c; partChannel = nn.channel; }
-        }
+        // 轨里的旋律 + 低音伴奏），取该 part 音符最多的通道（并列时取最早
+        // 出现的）作为主导通道，与文本谱 / HTML 的口径由 dominantChannel()
+        // 统一保证；不能退回 ns.front().channel（tick 0 的低音常排最前）。
+        const int partChannel = dominantChannel(ns);
         std::string lastDyn;
 
         // 和弦符号只写一份：旋律声部优先，没有旋律声部时写进第一个 part。
@@ -475,18 +467,23 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                             << "        <direction-type><words>"
                             << xmlEscape(m.section) << "</words></direction-type>\n"
                             << "      </direction>\n";
-                    if (m.wedge != 0)
-                        xml << "      <direction placement=\"above\">\n"
-                            << "        <direction-type><wedge type=\""
-                            << (m.wedge > 0 ? "crescendo" : "diminuendo")
-                            << "\" number=\"1\"/></direction-type>\n"
-                            << "      </direction>\n";
-                    if (m.wedgeStop)
-                        xml << "      <direction placement=\"above\">\n"
-                            << "        <direction-type><wedge type=\"stop\" "
-                            << "number=\"1\"/></direction-type>\n"
-                            << "      </direction>\n";
                 }
+            }
+            // 渐强渐弱是通道级演奏表情：每个 part 按自己的主导通道各写一份。
+            // 旧版整个循环都塞在 partIdx == 1 里，第二个 part 的 crescendo
+            // 连同 wedge stop 一起消失，和注释写的「按通道各自写」正好相反。
+            for (const auto& m : expr.inRange(bs, be, partChannel)) {
+                if (m.wedge != 0)
+                    xml << "      <direction placement=\"above\">\n"
+                        << "        <direction-type><wedge type=\""
+                        << (m.wedge > 0 ? "crescendo" : "diminuendo")
+                        << "\" number=\"1\"/></direction-type>\n"
+                        << "      </direction>\n";
+                if (m.wedgeStop)
+                    xml << "      <direction placement=\"above\">\n"
+                        << "        <direction-type><wedge type=\"stop\" "
+                        << "number=\"1\"/></direction-type>\n"
+                        << "      </direction>\n";
             }
         };
 

@@ -2,12 +2,12 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 73 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 74 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
 pedal / allnotesoff / cc7volume / pedal_channels / pedal_hysteresis /
-sostenuto / dyn_channels /
+sostenuto / dyn_channels / wedge_tracks /
 bendrange_channels / bendrange_timeline / bendrange_crosstrack /
 running_meta / running_sysex / running_realtime / running_standard /
 port_pedal / port_bend / port_prefix / port_prefix_base / port_standard /
@@ -56,6 +56,10 @@ RPN、速度、拍号、调号、Marker 这些全局设定仍要按整份文件�
 正确行为是只输出前两个真音并提示数据不完整，不能越过 buffer 末尾读幻影音符。
 dyn_channels 让旋律(ch0)渐弱、伴奏(ch1)渐强，锁住渐强渐弱记号按通道归属：
 伴奏的 cresc. 不该印到旋律谱上，全局段落名 marker 则仍要照常显示。
+wedge_tracks 把渐弱旋律(ch0)与渐强伴奏(ch1)放进两条独立轨：旧版三端都
+只输出第一轨的 dim.，第二轨的 cresc. 被「只印第一声部」的门控吞掉；修复后
+文本 / HTML 两行谱各印自己的渐变，MusicXML 两个 part 各写一份 wedge，
+而全局段落名 Verse 仍只出现一次。
 soft_pedal 在 [1200, 2000) 踩 CC67 软踏板，两处强音里只有踏板内的那一处
 力度被衰减（110→77），谱面的 '>' 从 2 个变成 1 个，时值完全不变。
 chunk_resync 同时放一个 DAW 私有 chunk（XFIH）和少写 4 字节的 conductor
@@ -1932,6 +1936,46 @@ def build_dyn_channels() -> bytes:
     return header + t0.render() + t1.render()
 
 
+def build_wedge_tracks() -> bytes:
+    """通道级 wedge 不再只印第一声部（v1.43.0）。
+
+    v1.40.0 已让 ExpressionMark 带 channel，但三个输出层仍把 wedge 与全局
+    段落名一起塞进「只印第一声部」的门控：文本谱 if (chords)、HTML
+    if (showTempo)、MusicXML if (partIdx == 1)。于是第二条轨（乃至同轨的
+    第二声部）自己的 cresc. 连同 wedge stop 一起消失，和注释写的「按通道
+    各自写」正好相反。正确行为：两行谱 / 两个 part 各写自己的渐变，Verse
+    这种全局 marker 仍只写一次。
+
+    结构：2 小节；conductor 轨写 0x06 段落名 Verse；Vocal 轨 ch0 八个四分
+    音符 + CC11 120→10（渐弱）；Pad 轨 ch1 两个全音符 + CC11 20→127（渐强）。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+    t0.add(0, meta(0x06, b"Verse"))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    for i in range(8):
+        t1.note(0, 60 + (i % 4), 96, i * DIV, DIV)
+    down = (120, 100, 80, 60, 40, 20, 10)
+    for i, v in enumerate(down):
+        t1.cc(0, 11, v, i * 240)
+
+    t2 = Track()
+    t2.add(0, meta(0x03, b"Pad"))
+    t2.note(1, 48, 64, 0, BAR)
+    t2.note(1, 48, 64, BAR, BAR)
+    up = (20, 40, 60, 80, 100, 120, 127)
+    for i, v in enumerate(up):
+        t2.cc(1, 11, v, i * 240)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 3, DIV)
+    return header + t0.render() + t1.render() + t2.render()
+
+
 def build_soft_pedal() -> bytes:
     """CC67 软踏板只衰减踩下期间起音音符的力度（v1.41.0）。
 
@@ -2426,6 +2470,16 @@ def main() -> None:
     # SMF chunk 边界：私有扩展块 + 长度字段失准，不再整份报废
     for name, builder in (
         ("chunk_resync", build_chunk_resync),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # 通道级 wedge：两条独立轨各写自己的渐强渐弱，全局段落名只写一次
+    for name, builder in (
+        ("wedge_tracks", build_wedge_tracks),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

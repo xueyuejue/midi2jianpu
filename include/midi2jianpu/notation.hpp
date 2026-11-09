@@ -130,6 +130,13 @@ std::vector<bool> detectTriplets(const std::vector<NoteEvent>& notes, int divisi
 std::vector<int> splitVoices(std::vector<NoteEvent>& notes, int maxVoices = 3,
                              const std::function<bool(const NoteEvent&)>& skip = nullptr);
 
+// 一个声部（一行简谱 / 一个 MusicXML part）可能混入多个通道：同轨的旋律 +
+// 低音伴奏是常见写法。力度档位与渐强渐弱都是通道级演奏表情，输出层必须
+// 用「该声部的主导通道」去取，不能拿 ns.front().channel（按音高排序时
+// tick 0 的低音常常排在最前），也不能拿「本小节第一个音符」的通道（会随
+// 小节的音头跳变）。取音符数最多的通道，并列时取最早出现的；空表返回 -1。
+int dominantChannel(const std::vector<NoteEvent>& notes);
+
 // 歌词字（对齐到音符）
 struct LyricSyllable {
     long tick;      // 对齐的起始tick
