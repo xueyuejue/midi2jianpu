@@ -13,6 +13,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <vector>
 
 namespace m2j {
 
@@ -1176,11 +1177,39 @@ static void emitNoteToken(std::ostringstream& os, const std::string& head,
 // 就拆成多段「宁短不长」的记法——`0 - -` 再补一条 `-_.`，总长正好 3.75 拍。
 // 撑爆小节不是排版小事：它把后面每一小节的拍位整体推后，读者也没法判断
 // 到底空了几拍（pedal_channels.mid 第 2 小节因此读成 4.25 拍）。
+//
+// exactRest 是休止符专用口径：间隙后面紧跟着一个音头，时间位置是定死的，
+// 吸附（无论向上还是向下）都会让谱面拍数与真实时间错位——1.75 拍记成
+// 0.(1.5 拍)、1.25 拍记成 0(1 拍)，4/4 的一小节只读出 3.5 拍。休止符
+// 只有精确档才照记，表外档一律拆成多段「宁短不长」的记法。
 static void emitDurationTokens(std::ostringstream& os, const std::string& head,
                                long ticks, long startTick, long barEnd,
-                               int division, const std::string& art = "") {
+                               int division, const std::string& art = "",
+                               bool exactRest = false) {
     if (ticks <= 0) { emitNoteToken(os, head, "", art); return; }
     const long snapped = nearestNotatableTicks(ticks, division);
+
+    // 先试算能不能精确拆完。余量不足最小时值时保留旧写法，绝不擅自改动
+    // 时间推进（与 MusicXML 侧 splitRestDuration 的兜底同口径）。
+    if (exactRest && snapped != ticks) {
+        std::vector<long> parts;
+        long left = ticks;
+        while (left > 0) {
+            long part = largestNotatableTicks(left, division);
+            if (part <= 0) break;
+            parts.push_back(part);
+            left -= part;
+        }
+        if (left == 0 && parts.size() > 1) {
+            for (size_t i = 0; i < parts.size(); i++)
+                emitNoteToken(os, i == 0 ? head : "-",
+                              durationSuffix(parts[i], division),
+                              i == 0 ? art : "");
+            return;
+        }
+    }
+
+    // 音符（以及拆不干净的休止符）沿用旧口径。
     if (snapped <= ticks || startTick + snapped <= barEnd) {
         emitNoteToken(os, head, durationSuffix(ticks, division), art);
         return;
@@ -1420,7 +1449,8 @@ static std::string formatTrack(
                 switchToBar(bar, t, partChannel);
                 long seg = std::min(endTick, grid.barEnd(bar)) - t;
                 if (seg <= 0) break;                    // 防御：避免死循环
-                emitDurationTokens(os, "0", seg, t, grid.barEnd(bar), data.division);
+                emitDurationTokens(os, "0", seg, t, grid.barEnd(bar), data.division,
+                                   "", true);
                 t += seg;
             }
         };

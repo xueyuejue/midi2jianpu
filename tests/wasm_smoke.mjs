@@ -1802,8 +1802,8 @@ if (existsSync(rsPath)) {
   const rsText = rst.call('midi2jianpu_parse', -1, 1) || '';
   check(rsText.includes('1= 0 - - -_.  |') && rsText.includes('2 0 - -  |'),
     'WASM 文本谱不受拆分影响：前两小节仍各守恒 4 拍', rsText);
-  check(rsText.includes('3= 0. 4= 0 5_  |'),
-    'WASM 最后一小节按惯例允许尾上休止不满', rsText);
+  check(rsText.includes('3= 0. -= 4= 0 -= 5_  |'),
+    'WASM 最后一小节也拆段并守恒 4 拍（v1.59.0）', rsText);
 
   const rsXml = rst.call('midi2jianpu_musicxml', -1, 1) || '';
   check(rsXml.includes('<score-partwise'), 'WASM 导出 MusicXML');
@@ -1841,6 +1841,35 @@ if (existsSync(rsPath)) {
       .reduce((a, d) => a + Number(d[1]), 0));
   check(JSON.stringify(rsSums) === JSON.stringify([1920, 1920, 1920]),
     'WASM 三个小节总时长都守恒为 1920 tick', JSON.stringify(rsSums));
+}
+
+// ---- 55. v1.59.0 小节中间休止符精确拆段（网页端同一份 core）----
+// rest_midbar.mid：1.75 / 1.25 拍两段间隙夹在小节中间，后面紧跟音头。
+// 旧版按最近档记成 0. / 0，第 1 小节读 3.5 拍；新版拆成 0. -= / 0 -=，
+// 两小节都守恒 4 拍。网页端读同一份 core，必须一起修好。
+const rmPath = path.join(FIXTURES, 'rest_midbar.mid');
+if (existsSync(rmPath)) {
+  const rm = makeCaller(mod);
+  rm.setMidi(new Uint8Array(readFileSync(rmPath)));
+  rm.setLyrics('');
+  const rmText = rm.call('midi2jianpu_parse', -1, 1) || '';
+  check(rmText.includes('1= 0. -= 2= 0 -= 3_  |'),
+    'WASM 两段不规则休止精确拆成 0. -= / 0 -=', rmText);
+  check(!rmText.includes('1= 0. 2= 0 3_'),
+    'WASM 旧的按最近档近似写法不再出现', rmText);
+  check(rmText.includes('4 5 6 7  |'),
+    'WASM 第 2 小节四个四分音符逐字节不变', rmText);
+
+  const rmXml = rm.call('midi2jianpu_musicxml', -1, 1) || '';
+  const rmSums = [...rmXml.matchAll(/<measure[^>]*>([\s\S]*?)<\/measure>/g)]
+    .map(m => [...m[1].matchAll(/<duration>(\d+)<\/duration>/g)]
+      .reduce((a, d) => a + Number(d[1]), 0));
+  check(JSON.stringify(rmSums) === JSON.stringify([1920, 1920]),
+    'WASM 两小节总时长都守恒 1920 tick', JSON.stringify(rmSums));
+
+  const rmHtml = rm.call('midi2jianpu_html', -1, 1) || '';
+  check(rmHtml.includes("class='note sixteenth'"),
+    'WASM HTML 十六分音符排版不受休止拆段影响', rmHtml.slice(-200));
 }
 
 console.log('');

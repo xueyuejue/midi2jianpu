@@ -2773,8 +2773,8 @@ def main():
     check(rc == 0, "输出 rest_split.mid 文本谱", out[-200:] if rc else "")
     check("1= 0 - - -_.  |" in out and "2 0 - -  |" in out,
           "文本谱不受拆分影响：前两小节仍各守恒 4 拍")
-    check("3= 0. 4= 0 5_  |" in out,
-          "最后一小节按惯例允许尾上休止不满")
+    check("3= 0. -= 4= 0 -= 5_  |" in out,
+          "最后一小节也按标准时值拆段并守恒 4 拍（v1.59.0）")
 
     with tempfile.TemporaryDirectory() as td:
         rx = os.path.join(td, "rest_split.xml")
@@ -2831,6 +2831,47 @@ def main():
     rc3, out3, _ = run(sys.executable, audit)
     check(rc3 == 0 and "0 处不一致" in out3,
           "全部 85 份素材的 MusicXML 时值一致性校验通过", out3[-200:])
+
+    group("[80] v1.59.0 小节中间休止符精确拆段：文本谱拍数守恒")
+    # rest_midbar.mid 把 1.75 / 1.25 拍两段非标准间隙夹在小节中间，后面
+    # 紧跟音头。旧版按最近档记成 0.(1.5 拍) / 0(1 拍)，一小节读 3.5 拍。
+    rm = os.path.join(FIXTURES, "rest_midbar.mid")
+    rc, out, err = run(exe, rm)
+    check(rc == 0, "输出 rest_midbar.mid 文本谱", out[-200:] if rc else "")
+    check("1= 0. -= 2= 0 -= 3_  |" in out,
+          "两段不规则休止精确拆成 0. -= / 0 -=")
+    check("1= 0. 2= 0 3_" not in out,
+          "旧的按最近档近似写法不再出现")
+    check("4 5 6 7  |" in out, "第 2 小节四个四分音符逐字节不变")
+    bars = [b for l in out.splitlines() if "|" in l and re.search(r"[0-7]", l)
+            for b in l.split("|")[:-1]]
+    beats = [bar_beats(b) for b in bars]
+    check(len(beats) == 2 and all(x is not None and abs(x - 4.0) < 1e-6
+                                  for x in beats),
+          "两个小节都正好读出 4 拍", str(beats))
+
+    # --no-quantize 保留 MIDI 原始时值，休止符照样精确拆段。
+    rc, out, _ = run(exe, rm, "--no-quantize")
+    check(rc == 0 and "1= 0. -= 2= 0 -= 3_  |" in out,
+          "--no-quantize 下休止符同样精确拆段")
+
+    with tempfile.TemporaryDirectory() as td:
+        mx = os.path.join(td, "rest_midbar.xml")
+        rr, _, _ = run(exe, rm, "--musicxml", mx)
+        xml = open(mx, encoding="utf-8").read() if os.path.exists(mx) else ""
+    sums = [sum(int(x) for x in re.findall(r"<duration>(\d+)</duration>", m))
+            for m in re.findall(r"<measure[^>]*>(.*?)</measure>", xml, re.S)]
+    check(rr == 0 and sums == [1920, 1920],
+          "MusicXML 两小节时长仍各为 1920 tick，三端一致", str(sums))
+
+    # 全量拍数守恒 + 纯逻辑自测：把新增的守护也纳入 CLI 冒烟。
+    audit = os.path.join(ROOT, "tests", "check_bar_beats.py")
+    rc2, out2, _ = run(sys.executable, audit, "--self-test")
+    check(rc2 == 0 and "0 失败" in out2, "拍数守恒校验自测通过",
+          out2[-200:])
+    rc3, out3, _ = run(sys.executable, audit)
+    check(rc3 == 0 and "0 处不守恒" in out3,
+          "全部 86 份素材的文本谱拍数守恒", out3[-200:])
 
     print("\n" + "-" * 48)
     if failures:

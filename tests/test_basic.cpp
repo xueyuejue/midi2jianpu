@@ -5579,6 +5579,112 @@ int main() {
               "整小节空档仍写成全小节休止");
     }
 
+    // v1.59.0: 小节中间的休止符必须精确拆段，谱面拍数与拍号守恒
+    // -----------------------------------------------------------------
+    std::cout << "\n测试休止符精确拆段与拍数守恒\n";
+    {
+        auto add = [](MidiData& d, long start, long dur, int pitch) {
+            NoteEvent n;
+            n.startTicks = start;
+            n.durationTicks = dur;
+            n.rawDurationTicks = dur;
+            n.pitch = pitch;
+            n.channel = 0;
+            n.track = 0;
+            d.notes.push_back(n);
+        };
+        auto countOf = [](const std::string& s, const std::string& sub) {
+            size_t n = 0, pos = 0;
+            while ((pos = s.find(sub, pos)) != std::string::npos) {
+                n++; pos += sub.size();
+            }
+            return n;
+        };
+        const KeyEstimate c{0, true};
+
+        // 4/4 两小节：840(1.75 拍) 与 600(1.25 拍) 两段间隙夹在小节中间，
+        // 后面紧跟音头。旧版按最近档记成 0.(1.5 拍) / 0(1 拍)，只读出 3.5 拍。
+        MidiData mid;
+        mid.division = 480;
+        mid.timeSig.valid = true;
+        mid.trackNames[0] = "Vocal";
+        add(mid, 0, 120, 60);
+        add(mid, 960, 120, 62);
+        add(mid, 1680, 240, 64);
+        add(mid, 1920, 480, 65);
+        add(mid, 2400, 480, 67);
+        add(mid, 2880, 480, 69);
+        add(mid, 3360, 480, 71);
+        const std::string jp = formatJianpu(mid, c);
+        check(jp.find("1= 0. -= 2= 0 -= 3_") != std::string::npos,
+              "1.75 / 1.25 拍休止精确拆成 0. -= / 0 -=：" + jp);
+        check(jp.find("1= 0. 2= 0 3_") == std::string::npos,
+              "旧的按最近档近似写法不再出现：" + jp);
+        check(countOf(jp, "-=") == 2,
+              "两段各补一个十六分续写，实际: " +
+                  std::to_string(countOf(jp, "-=")));
+        check(jp.find("4 5 6 7") != std::string::npos,
+              "第 2 小节四个四分音符逐字节不变");
+        check(jp.find("1=") != std::string::npos &&
+                  jp.find("3_") != std::string::npos,
+              "音符本身的时值记号不受休止拆段影响");
+
+        // rest_split 的第 3 小节原先被误当作「末小节惯例」，其实同一缺陷：
+        // 现在也必须拆段并守恒 4 拍。
+        MidiData tail;
+        tail.division = 480;
+        tail.timeSig.valid = true;
+        tail.trackNames[0] = "Vocal";
+        add(tail, 3840, 120, 64);
+        add(tail, 4800, 120, 65);
+        add(tail, 5520, 240, 67);
+        const std::string jt = formatJianpu(tail, c);
+        check(jt.find("0. -= ") != std::string::npos &&
+                  jt.find("0 -= ") != std::string::npos,
+              "最后一小节的两段不规则休止也拆段：" + jt);
+        check(jt.find("0. 4=") == std::string::npos,
+              "末小节不再少 0.5 拍：" + jt);
+
+        // 反向闸门：小节末 3.75 拍的旧拆段写法必须逐字节保持。
+        MidiData end;
+        end.division = 480;
+        end.timeSig.valid = true;
+        end.trackNames[0] = "Vocal";
+        add(end, 0, 120, 60);
+        add(end, 1920, 480, 62);
+        const std::string je = formatJianpu(end, c);
+        check(je.find("0 - - -_.") != std::string::npos,
+              "小节末 3.75 拍仍写成 0 - - -_.，新路径不改变它：" + je);
+
+        // 反向闸门：精确档休止仍是单个符号，不许被拆散。
+        MidiData exact;
+        exact.division = 480;
+        exact.timeSig.valid = true;
+        exact.trackNames[0] = "Vocal";
+        add(exact, 0, 480, 60);
+        add(exact, 960, 480, 62);      // 间隙恰好 1 拍
+        const std::string jx = formatJianpu(exact, c);
+        check(jx.find("1 0 2") != std::string::npos,
+              "1 拍精确档休止仍是单个 0，不碎片化：" + jx);
+        check(jx.find("0_. -%%") == std::string::npos,
+              "精确档不许拆成 0_. -%%：" + jx);
+
+        // 反向闸门：不足最小时值的零头无法精确拆，保留旧的最近档写法。
+        // 460 tick = 0.958 拍，余量 100 tick 拆不到 60 的整数档。
+        MidiData odd;
+        odd.division = 480;
+        odd.timeSig.valid = true;
+        odd.trackNames[0] = "Vocal";
+        add(odd, 460, 480, 60);
+        add(odd, 940, 480, 62);
+        add(odd, 1420, 500, 64);
+        const std::string jo = formatJianpu(odd, c);
+        check(jo.find("0_. -%%") == std::string::npos,
+              "拆不干净的 0.958 拍仍按最近档记，不碎片化：" + jo);
+        check(jo.find("0 1") != std::string::npos,
+              "拆不干净的间隙仍记成一拍 0：" + jo);
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

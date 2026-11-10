@@ -2,7 +2,7 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 85 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 86 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
@@ -14,7 +14,7 @@ port_pedal / port_bend / port_prefix / port_prefix_base / port_standard /
 sysex_gs_drum / sysex_xg_drum / sysex_gs_normal / sysex_gs_reset /
 sysex_gm_reset / sysex_xg_reset / sysex_conductor / sysex_ch9_normal /
 sysex_ch9_drum / sysex_unknown / sysex_port_drum / gate_gap / poly_gap / poly_gate /
-rest_split（另配 3 份 LRC 歌词）。
+rest_split / rest_midbar（另配 3 份 LRC 歌词）。
 meter 是把变拍号、变速、鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」，
 modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五声调式
 （C 宫、G 徵调式，故意不写 0x59 逼自动猜调暴露宫音判错），tempo_ramp 用
@@ -76,7 +76,11 @@ number 递增到 3，而全局段落名 Verse 仍只写一次。
 rest_split 故意留下 3.75 拍 / 1.75 拍 / 1.25 拍三段 DAW 常见的不规则休止，
 外加一段 3 拍附点二分休止作精确对照：休止符必须拆成标准时值之和，
 每个 <note><rest/> 的 <duration> 与 <type>/<dot/> 严格一致，小节总时长不变。
-前两小节文本谱照样守恒 4 拍，最后一小节按惯例允许尾上休止不满。
+前两小节文本谱照样守恒 4 拍；第三小节的 1.75 / 1.25 拍间隙在 v1.59.0
+之前也按最近档记成 0. / 0，读出 3.5 拍（不是末小节惯例，是同一缺陷），
+现在拆成 0. -= / 0 -= 后同样守恒 4 拍。
+rest_midbar 把这两段不规则间隙挪到小节中间，专门守护「后面紧跟音头时
+休止符也不许按最近档吸附」：旧版第一小节读 3.5 拍，修复后两小节都 4 拍。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -779,6 +783,34 @@ def build_rest_split() -> bytes:
     t.note(0, 64, 100, BAR * 2, 120)
     t.note(0, 65, 100, BAR * 2 + 960, 120)
     t.note(0, 67, 100, BAR * 2 + 1680, 240)
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t.render()
+
+
+def build_rest_midbar() -> bytes:
+    """v1.59.0：小节中间的不规则休止必须精确拆段，拍数守恒。
+
+    4/4 两小节：
+      小节 1  0 起十六分(120) -> 960 起十六分 -> 1680 起八分(240)
+              间隙 840(1.75 拍) 与 600(1.25 拍) 都夹在小节中间
+      小节 2  四个四分音符（保证第 1 小节不是最后一行，拍数校验会查它）
+    旧版把两段按最近档记成 0.(1.5 拍) / 0(1 拍)，一小节只读出 3.5 拍；
+    修复后写成 0. -= / 0 -=，两小节都正好 4 拍。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"rest_midbar"))
+    t0.add(0, meta(0x51, struct.pack(">I", 500000)[1:]))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    t = Track()
+    t.add(0, meta(0x03, b"Vocal"))
+    t.note(0, 60, 100, 0, 120)
+    t.note(0, 62, 100, 960, 120)
+    t.note(0, 64, 100, 1680, 240)
+    t.note(0, 65, 100, BAR + 0, 480)
+    t.note(0, 67, 100, BAR + 480, 480)
+    t.note(0, 69, 100, BAR + 960, 480)
+    t.note(0, 71, 100, BAR + 1440, 480)
     return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t.render()
 
 
@@ -2957,9 +2989,10 @@ def main() -> None:
             f.write(blob)
         print(f"wrote {path} ({len(blob)} bytes)")
 
-    # 不规则休止间隙：MusicXML 拆成标准时值之和，duration/type 严格一致
+    # 不规则休止间隙：MusicXML 拆成标准时值之和、文本谱拍数守恒
     for name, builder in (
         ("rest_split", build_rest_split),
+        ("rest_midbar", build_rest_midbar),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:
