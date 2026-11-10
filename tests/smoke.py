@@ -12,11 +12,25 @@ import re
 import subprocess
 import sys
 import tempfile
+import traceback
+
+# ci_report 与 smoke.py 同目录；从仓库根执行 `python tests/smoke.py` 时
+# sys.path[0] 已是 tests/，这里补一条是为了 `python -m tests.smoke` 也能跑。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ci_report
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURES = os.path.join(ROOT, "tests", "fixtures")
 
 failures = []
+current_section = ""
+
+
+def group(title):
+    """打印分组标题并记住组号，供失败注解定位。输出与旧的 print 完全一致。"""
+    global current_section
+    current_section = title
+    print("\n" + title)
 
 
 def check(cond, msg, extra=""):
@@ -26,7 +40,7 @@ def check(cond, msg, extra=""):
         print(f"  [FAIL] {msg}")
         if extra:
             print(f"         {extra}")
-        failures.append(msg)
+        failures.append((current_section, msg, extra))
 
 
 def run(exe, *args):
@@ -104,7 +118,111 @@ def inner_span(html, marker):
     return html[j:pos - 7]
 
 
+def self_test():
+    """CI 失败报告的纯逻辑自测：不加载 exe、不依赖 MIDI 素材。
+
+    单独作为 CI 的一个 step 跑（python3 tests/smoke.py --self-test），
+    保证「冒烟失败时能把失败项送到 annotations」这条通道本身可靠。
+    """
+    results = []
+
+    def ok(cond, msg):
+        results.append(bool(cond))
+        print(("  [PASS] " if cond else "  [FAIL] ") + msg)
+
+    print("\n[CI 报告自测] 注解转义、条数上限、摘要与非 CI 静默")
+    ok(ci_report.escape_data("100%\r\n") == "100%25%0D%0A",
+       "data 部分转义百分号 / CR / LF")
+    ok(ci_report.escape_property("a:b,c%\r\n") == "a%3Ab%2Cc%25%0D%0A",
+       "property 部分额外转义冒号与逗号")
+    ok(ci_report.escape_data("1 2 3") == "1 2 3",
+       "普通文本原样通过")
+
+    demo = [("[78] 复调轨门限因子", "右手第 1 小节读作四个四分音符", "1_. 2_. 3_. 4_."),
+            ("[10] --help / --version", "版本号正常", "")]
+    lines = ci_report.annotation_lines(demo)
+    ok(len(lines) == 2, "每条失败项对应一条 ::error 注解")
+    ok(all(line.startswith("::error title=CLI 冒烟 ") for line in lines),
+       "注解带可读的分组标题")
+    ok("[78]" in lines[0] and "右手第 1 小节读作四个四分音符" in lines[0],
+       "注解带组号与断言原文")
+    ok("1_. 2_. 3_. 4_." in lines[0], "注解带断言的附加信息")
+    ok(" | " not in lines[1], "没有附加信息时不拼多余的分隔符")
+
+    tricky = [("[7] 导出", "百分比 100% 与换行", "a%b\r\nc")]
+    ok("a%25b%0D%0Ac" in ci_report.annotation_lines(tricky)[0],
+       "附加信息里的百分号 / CR / LF 已转义")
+
+    many = [("[%d]" % i, "msg%d" % i, "")
+            for i in range(ci_report.MAX_ANNOTATIONS + 3)]
+    truncated = ci_report.annotation_lines(many)
+    ok(len(truncated) == ci_report.MAX_ANNOTATIONS + 1,
+       "超过 step 注解上限时截断并补一条汇总")
+    ok("另有 3 项失败" in truncated[-1], "汇总写明被截掉的条数")
+    md = ci_report.summary_markdown(many, {"ref": "refs/tags/v1.57.0",
+                                           "exe": "build/midi2jianpu"})
+    ok("## CLI 冒烟失败 %d 项" % len(many) in md, "摘要写明失败总数")
+    ok("msg%d" % (ci_report.MAX_ANNOTATIONS + 2) in md,
+       "摘要保留注解里被截掉的失败项")
+    ok("refs/tags/v1.57.0" in md and "build/midi2jianpu" in md,
+       "摘要记录触发 ref 与可执行文件路径")
+    ok("a\\|b c" in ci_report.summary_markdown([("[1]", "a|b\nc", "")]),
+       "摘要表格转义竖线、压平换行")
+
+    saved = {key: os.environ.get(key)
+             for key in ("GITHUB_ACTIONS", "GITHUB_STEP_SUMMARY")}
+    td = tempfile.mkdtemp(prefix="m2j-ci-report-")
+    summary = os.path.join(td, "summary.md")
+    try:
+        os.environ.pop("GITHUB_ACTIONS", None)
+        os.environ.pop("GITHUB_STEP_SUMMARY", None)
+        ok(not ci_report.in_ci(), "没有 GITHUB_ACTIONS 时不认为在 CI")
+        ok(ci_report.report_failures(demo) is False,
+           "本地手工跑测试不输出注解、不写摘要（输出逐字节不变）")
+        ok(not os.path.exists(summary), "本地不产生 summary 文件")
+
+        os.environ["GITHUB_ACTIONS"] = "true"
+        os.environ["GITHUB_STEP_SUMMARY"] = summary
+        ok(ci_report.in_ci(), "GITHUB_ACTIONS=true 时识别为 CI")
+        captured = []
+        ok(ci_report.report_failures(demo, {"ref": "refs/tags/v1.57.0"},
+                                     emit=captured.extend) is True,
+           "CI 下确实输出注解并写摘要")
+        ok(len(captured) == 2, "自测用 emit 捕获注解，不产生真实 ::error 行")
+        body = open(summary, encoding="utf-8").read()
+        ok("## CLI 冒烟失败 2 项" in body, "摘要落到 GITHUB_STEP_SUMMARY")
+        ok("右手第 1 小节读作四个四分音符" in body, "摘要列出每条断言")
+        ok("refs/tags/v1.57.0" in body, "摘要记录触发 ref")
+        caught = []
+        ok(ci_report.report_exception("Traceback (most recent call last):\n"
+                                      "ValueError: boom\n",
+                                      emit=caught.extend) is True,
+           "未捕获异常也走同一条上报通道")
+        ok(len(caught) == 1 and "ValueError: boom" in caught[0],
+           "异常注解给出最后一行")
+        ok("## CLI 冒烟异常中止" in open(summary, encoding="utf-8").read(),
+           "异常把完整 traceback 写进摘要")
+        ok(ci_report.report_failures([]) is False, "没有失败项时不产生任何注解")
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    print("\n" + "-" * 48)
+    bad = results.count(False)
+    if bad:
+        print(f"CI 报告自测失败 {bad} 项")
+        return 1
+    print("CI 报告自测全部通过（%d 项）" % len(results))
+    return 0
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--self-test":
+        return self_test()
+
     exe = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
         ROOT, "build",
         "midi2jianpu.exe" if os.name == "nt" else "midi2jianpu")
@@ -120,7 +238,7 @@ def main():
                        check=True)
     tmp = tempfile.mkdtemp(prefix="m2j-smoke-")
 
-    print("\n[1] 默认输出（自动识别调性）")
+    group("[1] 默认输出（自动识别调性）")
     rc, out, err = run(exe, mid)
     check(rc == 0, "退出码为 0", err)
     check("1=C 大调" in out, "识别出 C 大调", out[:200])
@@ -133,32 +251,32 @@ def main():
     check("1,+3,+5, - 5,+7,+2 -" in out,
           "分属两个和弦的同音不被误合并（m3 的 5, 同时出现在两个和弦里）")
 
-    print("\n[2] 手动调性 --key G（八度基准回归）")
+    group("[2] 手动调性 --key G（八度基准回归）")
     rc, out, _ = run(exe, mid, "--key", "G")
     check(rc == 0 and "1=G 大调" in out, "输出 G 大调")
     vocal = [l for l in out.splitlines() if l.startswith("[C]") or l.startswith("[F]")]
     joined = " ".join(vocal)
     check("4'" not in joined, "G 大调里 C5 不再错误地带高八度点", joined)
 
-    print("\n[3] 降号调 --key Bb")
+    group("[3] 降号调 --key Bb")
     rc, out, _ = run(exe, mid, "--key", "Bb")
     check(rc == 0 and "1=Bb 大调" in out, "输出 Bb 大调")
     check("b" in out, "出现降号写法")
 
-    print("\n[4] 非法调性应给出警告而不是静默失败")
+    group("[4] 非法调性应给出警告而不是静默失败")
     rc, out, err = run(exe, mid, "--key", "H")
     check(rc == 0 and "无法识别" in err, "对非法调性给出警告", err)
 
-    print("\n[5] --track 轨道过滤")
+    group("[5] --track 轨道过滤")
     rc, out, _ = run(exe, mid, "--track", "1")
     check(rc == 0 and "[Vocal]" in out
           and "[Piano]" not in out and "[Pad]" not in out, "只输出轨道 1")
 
-    print("\n[6] --transpose 移调")
+    group("[6] --transpose 移调")
     rc, out, _ = run(exe, mid, "--key", "C", "--transpose", "2")
     check(rc == 0 and "移调: +2" in out, "提示移调幅度")
 
-    print("\n[7] --musicxml 导出")
+    group("[7] --musicxml 导出")
     xml = os.path.join(tmp, "out.xml")
     rc, out, _ = run(exe, mid, "--musicxml", xml)
     check(rc == 0 and os.path.exists(xml), "生成 XML 文件")
@@ -223,7 +341,7 @@ def main():
         check(len(list(root.iter("tied"))) == starts,
               "<tie> 与 <notations><tied> 数量一致")
 
-    print("\n[8] --html + --lyrics 导出")
+    group("[8] --html + --lyrics 导出")
     html = os.path.join(tmp, "out.html")
     rc, out, _ = run(exe, mid, "--html", html, "--lyrics", lrc)
     check(rc == 0 and os.path.exists(html), "生成 HTML 文件")
@@ -248,13 +366,13 @@ def main():
     check("风" not in piano_chunk and "江湖" not in piano_chunk,
           "伴奏轨不串入歌词")
 
-    print("\n[9] --output 文本落盘")
+    group("[9] --output 文本落盘")
     txt = os.path.join(tmp, "out.txt")
     rc, out, _ = run(exe, mid, "--output", txt)
     check(rc == 0 and os.path.exists(txt), "生成文本文件")
     check("1=C 大调" in open(txt, encoding="utf-8").read(), "文件内有调性行")
 
-    print("\n[10] --help / --version")
+    group("[10] --help / --version")
     rc, out, _ = run(exe, "--help")
     check(rc == 0 and "--musicxml" in out, "帮助里列出了 --musicxml")
     rc, out, _ = run(exe, "--version")
@@ -263,7 +381,7 @@ def main():
     # ---- [11] 真实录音 MIDI：时值量化 + 首调调性 ----
     # humanized.mid 是 A 羽调式、八分音符、85% 门限（note-off 提前），
     # 这两点正是真实录音 MIDI 最容易让记谱出错的地方。
-    print("\n[11] 真实录音 MIDI：时值量化与首调调性")
+    group("[11] 真实录音 MIDI：时值量化与首调调性")
     human = os.path.join(FIXTURES, "humanized.mid")
     if not os.path.exists(human):
         check(False, "素材 humanized.mid 存在（先跑 make_fixture.py）")
@@ -292,7 +410,7 @@ def main():
         check("<mode>minor</mode>" in body, "调式写成 minor")
         check("<time><beats>4</beats>" in body, "拍号已写出")
 
-    print("\n[12] 打击乐轨（MIDI 通道 10）")
+    group("[12] 打击乐轨（MIDI 通道 10）")
     drums = os.path.join(FIXTURES, "drums.mid")
     if not os.path.exists(drums):
         check(False, "素材 drums.mid 存在（先跑 make_fixture.py）")
@@ -319,7 +437,7 @@ def main():
         # 鼓的音高若漏进来，会以极低八度的 1,, 形式出现
         check("1,,</span>" not in html, "HTML 里没有鼓的音高")
 
-    print("\n[13] 减时线连通与歌词跨小节")
+    group("[13] 减时线连通与歌词跨小节")
     # 同一拍里的八分/十六分音符，减时线应连成一条，而不是每个音各画一小段。
     # 三连音尤其明显：1/3 拍的三连八分必须是「一条线 + 一个 3」，
     # 早先按时值表取最近档位会画成附点十六分——两条线外加一个附点。
@@ -357,7 +475,7 @@ def main():
               str(per_bar))
         check(sum(len(b) for b in per_bar) == 4, "四个字一个不丢", str(per_bar))
 
-    print("\n[14] 一小节两个和弦 + 中途变速")
+    group("[14] 一小节两个和弦 + 中途变速")
     hm = os.path.join(FIXTURES, "harmony.mid")
     rc, out, err = run(exe, hm)
     check(rc == 0, "带小节内换和弦的文件能正常转换", err)
@@ -386,7 +504,7 @@ def main():
           % html.count("class='tempo'"))
     check("♩=90" in html, "第 5 小节标出了 ♩=90")
 
-    print("\n[15] 弱起（anacrusis）小节")
+    group("[15] 弱起（anacrusis）小节")
     # 歌本里大量曲子从弱拍进唱：`| 5 | 1' 7 6 5 |`。MIDI 里这个 5 就在 tick 0，
     # 第一小节天然不满四拍。照 `tick / 小节长` 划小节线会让整条网格左移一拍，
     # 谱面上每个小节的重音都落到第 4 拍，和弦也跟着错（G 会被算成 Cmaj7）。
@@ -448,7 +566,7 @@ def main():
         check(all(all(x[1] == 1920 for x in d[1:]) for d in durs),
               "之后的完整小节仍是 4 拍", str(durs[:1]))
 
-    print("\n[16] 一字多音：HTML 连音线 + MusicXML 歌词")
+    group("[16] 一字多音：HTML 连音线 + MusicXML 歌词")
     # 8 个音、一行 4 个字 -> 每个字拖两个音。HTML 要给每个字画一条弧线，
     # MusicXML 要写 syllabic=begin/end 加成对的 <slur>；两边共用 assignLyrics。
     mel = os.path.join(FIXTURES, "melisma.mid")
@@ -507,7 +625,7 @@ def main():
     # ---- 17. MIDI 内置歌词（0x05 lyric meta） ----
     # 卡拉 OK .mid 自带精确 tick 的歌词流，不需要另外找 LRC。事件流里混着
     # @ 元数据、-/_ 延续符、/ 换行、+ 续行前缀、中文标点、英文单词。
-    print("\n[17] MIDI 内置歌词（0x05 lyric meta）")
+    group("[17] MIDI 内置歌词（0x05 lyric meta）")
     kar = os.path.join(FIXTURES, "karaoke.mid")
     if not os.path.exists(kar):
         check(False, "素材 karaoke.mid 存在（先跑 make_fixture.py）")
@@ -565,7 +683,7 @@ def main():
         check("<lyric" not in xs and "<slur" not in xs,
               "无内置歌词的素材仍导出无词 MusicXML")
 
-    print("\n[18] 中途变拍号 + 变速 + 鼓轨 + 内置歌词（混合压力素材）")
+    group("[18] 中途变拍号 + 变速 + 鼓轨 + 内置歌词（混合压力素材）")
     import xml.etree.ElementTree as ET
     meter = os.path.join(FIXTURES, "meter.mid")
     if not os.path.exists(meter):
@@ -636,7 +754,7 @@ def main():
         check(per_part and all(v == 1 for v in per_part),
               "单拍号 MusicXML 每个声部只写一次 <time>", str(per_part))
 
-    print("\n[19] 中途转调 1=C → 1=D → 1=F（调号 map 全链路）")
+    group("[19] 中途转调 1=C → 1=D → 1=F（调号 map 全链路）")
     mod = os.path.join(FIXTURES, "modulation.mid")
     if not os.path.exists(mod):
         check(False, "素材 modulation.mid 存在（先跑 make_fixture.py）")
@@ -729,7 +847,7 @@ def main():
     # ---- [20] 五声调式：宫音校正 ----
     # pentatonic.mid 故意不写 0x59，KS 七声轮廓会把它判成 G 大调（1=G），
     # 但它是 C 宫系统的 G 徵调式，正确记法应是 1=C。
-    print("\n[20] 五声调式宫音校正（C 宫 / G 徵）")
+    group("[20] 五声调式宫音校正（C 宫 / G 徵）")
     pent = os.path.join(FIXTURES, "pentatonic.mid")
     if not os.path.exists(pent):
         check(False, "素材 pentatonic.mid 存在（先跑 make_fixture.py）")
@@ -782,7 +900,7 @@ def main():
     # tempolrc.mid 前 4 小节 120BPM、后 4 小节 60BPM，LRC 时间戳写真实秒。
     # 旧解析器按曲首 120BPM 换算：12 秒 -> tick 11520（差一整小节），
     # 16 / 20 秒甚至超出曲终，后半段歌词直接消失。
-    print("\n[21] LRC 时间轴按 tempo map 分段对齐")
+    group("[21] LRC 时间轴按 tempo map 分段对齐")
     import xml.etree.ElementTree as ETlrc
     tlm = os.path.join(FIXTURES, "tempolrc.mid")
     tll = os.path.join(FIXTURES, "tempolrc.lrc")
@@ -840,7 +958,7 @@ def main():
     # ---- [22] 演奏表情：解析层早就有的数据要真正落到三个输出层 ----
     # expression.mid 把 CC11 渐强/渐弱、note-on 力度重音、等间隔断奏、
     # 弯音上滑/下滑/颤音、0x06 段落标记全混在一条等间隔旋律上。
-    print("\n[22] 力度与演奏法三层输出同步")
+    group("[22] 力度与演奏法三层输出同步")
     import xml.etree.ElementTree as ETex
     exm = os.path.join(FIXTURES, "expression.mid")
     if not os.path.exists(exm):
@@ -914,7 +1032,7 @@ def main():
     # parts.mid：Vocal=长笛(73) 带一个 B3->C4 倚音、Piano=钢琴(0) 柱式和弦、
     # Bass=原声贝斯(32) 低音线。验证「已解析未使用」的 0xC0 / 0x51 数据
     # 真正落到谱面，倚音识别按通道收紧、不误判快速经过音。
-    print("\n[23] 声部乐器标注 + 倚音（装饰音）")
+    group("[23] 声部乐器标注 + 倚音（装饰音）")
     import xml.etree.ElementTree as ETpart
     parts = os.path.join(FIXTURES, "parts.mid")
     if not os.path.exists(parts):
@@ -952,7 +1070,7 @@ def main():
     # ---- [24] 和弦转位 + 七和弦扩充 + MusicXML 和弦符号 ----
     # chords.mid 的四个和声窗：C/E（转位）、Bm7b5（半减七）、G7sus4（挂四七）、
     # 原位 C。转位只能由低音判定——音级集合完全相同，谱面却必须写 C/E。
-    print("\n[24] 和弦转位 + 七和弦扩充 + MusicXML 和弦符号")
+    group("[24] 和弦转位 + 七和弦扩充 + MusicXML 和弦符号")
     import xml.etree.ElementTree as ETch
     cmid = os.path.join(FIXTURES, "chords.mid")
     if not os.path.exists(cmid):
@@ -989,7 +1107,7 @@ def main():
     # tempo_ramp.mid 里 accel. 13 个节点、rit. 13 个节点，中间夹恒定速度，
     # 最后阶跃回 120。旧版会把 28 个点全当变速列进页眉（五条全指同一小节），
     # HTML 每小节采样一次速度，MusicXML 则因为节点不落在小节线上而整段丢失。
-    print("\n[25] 渐快 / 渐慢：连续 set_tempo 收敛成 rit. / accel.")
+    group("[25] 渐快 / 渐慢：连续 set_tempo 收敛成 rit. / accel.")
     rmid = os.path.join(FIXTURES, "tempo_ramp.mid")
     if not os.path.exists(rmid):
         check(False, "素材 tempo_ramp.mid 存在（先跑 make_fixture.py）")
@@ -1045,7 +1163,7 @@ def main():
     # 10 拍长音，钢琴轨每小节一个 4 拍柱式和弦（复调，用来验证长音不被门限放大）。
     # 旧版把超过全音符的时值钳到 4 拍，长音的余下时间变成休止符：
     #   | 3 - - - | 0 - 4 5 |     而不是     | 3 - - - | - - 4 5 |
-    print("\n[26] 长音跨小节：延音线（- / <tie>）而不是休止符")
+    group("[26] 长音跨小节：延音线（- / <tie>）而不是休止符")
     lmid = os.path.join(FIXTURES, "long_tie.mid")
     if not os.path.exists(lmid):
         check(False, "素材 long_tie.mid 存在（先跑 make_fixture.py）")
@@ -1111,7 +1229,7 @@ def main():
     # 时值各不相同、互相重叠。旧版把「同拍不同值」也当成和弦，长音叠短音
     # 写进同一格，4/4 的小节被撑成 8 拍（<chord/> 成员时值不等），
     # 导出的 MusicXML 是坏文件。现在按声部拆开、用 <backup> 回退游标。
-    print("\n[27] 同轨复调（一条轨两个声部）")
+    group("[27] 同轨复调（一条轨两个声部）")
     poly = os.path.join(FIXTURES, "polyphony.mid")
     rc, out, err = run(exe, poly)
     check(rc == 0, "解析 polyphony.mid", err[:200])
@@ -1181,7 +1299,7 @@ def main():
     check("声部1" not in sample_out and "声部2" not in sample_out,
           "单声部素材不拆声部（不出现声部N 标签）")
 
-    print("\n[28] SMPTE 时间基准：division 高字节为负")
+    group("[28] SMPTE 时间基准：division 高字节为负")
     smpte = os.path.join(FIXTURES, "smpte.mid")
     rc, out, err = run(exe, smpte)
     check(rc == 0, "SMPTE 文件解析成功", err[:200])
@@ -1218,7 +1336,7 @@ def main():
     shtml = open(sh, encoding="utf-8").read()
     check("SMPTE 25 fps × 40 tick" in shtml, "HTML 页眉写有时间基准")
 
-    print("\n[29] format 2：多条轨是互相独立的序列")
+    group("[29] format 2：多条轨是互相独立的序列")
     f2 = os.path.join(FIXTURES, "format2.mid")
     rc, out, err = run(exe, f2)
     check(rc == 0, "format 2 文件解析成功", err[:200])
@@ -1249,7 +1367,7 @@ def main():
             fbad.append(tot)
     check(not fbad, f"每小节正好 4 拍，实际 {fbad[:3]}")
 
-    print("\n[30] 复音触后 0xA0：3 字节事件不能读错")
+    group("[30] 复音触后 0xA0：3 字节事件不能读错")
     at = os.path.join(FIXTURES, "aftertouch.mid")
     if not os.path.exists(at):
         check(False, "素材 aftertouch.mid 存在（先跑 make_fixture.py）")
@@ -1278,7 +1396,7 @@ def main():
                 abad.append(tot)
         check(not abad, f"每小节正好 4 拍，实际 {abad[:3]}")
 
-    print("\n[31] 同音重触发：一个键没抬手又按下")
+    group("[31] 同音重触发：一个键没抬手又按下")
     rt = os.path.join(FIXTURES, "retrigger.mid")
     if not os.path.exists(rt):
         check(False, "素材 retrigger.mid 存在（先跑 make_fixture.py）")
@@ -1306,7 +1424,7 @@ def main():
         check(rxml.count("<measure ") == 2,
               f"MusicXML 两个小节，实际 {rxml.count(chr(60) + 'measure ')}")
 
-    print("\n[32] 轨尾悬挂音：只按不抬的音不能丢")
+    group("[32] 轨尾悬挂音：只按不抬的音不能丢")
     dg = os.path.join(FIXTURES, "dangling.mid")
     if not os.path.exists(dg):
         check(False, "素材 dangling.mid 存在（先跑 make_fixture.py）")
@@ -1324,7 +1442,7 @@ def main():
         check(dxml.count("<measure ") == 4,
               f"MusicXML 四个小节，实际 {dxml.count(chr(60) + 'measure ')}")
 
-    print("\n[33] 双歌词轨：只取音节最多的一条")
+    group("[33] 双歌词轨：只取音节最多的一条")
     tl = os.path.join(FIXTURES, "twolyrics.mid")
     if not os.path.exists(tl):
         check(False, "素材 twolyrics.mid 存在（先跑 make_fixture.py）")
@@ -1357,7 +1475,7 @@ def main():
 
     import xml.etree.ElementTree as ETC
 
-    print("\n[34] CC64 延音踏板：抬手不等于消音")
+    group("[34] CC64 延音踏板：抬手不等于消音")
     ped = os.path.join(FIXTURES, "pedal.mid")
     rc, out, err = run(exe, ped)
     check(rc == 0, "踏板文件解析成功", err[:200])
@@ -1390,7 +1508,7 @@ def main():
     check("延音踏板：补长 6 个音" in open(ph, encoding="utf-8").read(),
           "HTML 页眉写明踏板补长")
 
-    print("\n[35] CC123 All Notes Off：清音要截在正确 tick")
+    group("[35] CC123 All Notes Off：清音要截在正确 tick")
     ao = os.path.join(FIXTURES, "allnotesoff.mid")
     rc, out, err = run(exe, ao)
     check(rc == 0, "清音文件解析成功", err[:200])
@@ -1416,7 +1534,7 @@ def main():
             abad.append(m.get("number"))
     check(not abad, f"每小节音符 + 休止仍是 4 拍，异常小节 {abad}")
 
-    print("\n[36] CC7 主音量：和 CC11 一样是强弱来源")
+    group("[36] CC7 主音量：和 CC11 一样是强弱来源")
     cv = os.path.join(FIXTURES, "cc7volume.mid")
     rc, out, err = run(exe, cv)
     check(rc == 0, "CC7 文件解析成功", err[:200])
@@ -1438,7 +1556,7 @@ def main():
     check("<dynamics" in cxml or "<other-dynamics" in cxml or "cresc" in cxml,
           "MusicXML 里也有力度 / 渐强方向")
 
-    print("\n[37] 踏板按通道隔离：没踩的通道不补时值")
+    group("[37] 踏板按通道隔离：没踩的通道不补时值")
     pc = os.path.join(FIXTURES, "pedal_channels.mid")
     # 素材刻意稀疏，自动弱起判定会把小节网格左移；用 --no-pickup 固定网格，
     # 本组只关心四个音各自的时值。
@@ -1463,7 +1581,7 @@ def main():
                 if n.find("rest") is None and n.find("chord") is None
                 and n.find("pitch") is not None]
 
-    print("\n[38] RPN 弯音范围按通道隔离：不同通道不共用同一个 ±N")
+    group("[38] RPN 弯音范围按通道隔离：不同通道不共用同一个 ±N")
     bc = os.path.join(FIXTURES, "bendrange_channels.mid")
     rc, out, err = run(exe, bc, "--no-pickup")
     check(rc == 0, "双通道弯音文件解析成功", err[:200])
@@ -1481,7 +1599,7 @@ def main():
     check("弯音范围：±12 半音" in open(bch, encoding="utf-8").read(),
           "HTML 页眉写明弯音范围")
 
-    print("\n[39] RPN 中途改范围：不倒灌到之前的音")
+    group("[39] RPN 中途改范围：不倒灌到之前的音")
     bt = os.path.join(FIXTURES, "bendrange_timeline.mid")
     rc, out, err = run(exe, bt, "--no-pickup")
     check(rc == 0, "中途改范围文件解析成功", err[:200])
@@ -1493,7 +1611,7 @@ def main():
     check(pt == [("C", "5"), ("D", "4")],
           f"前一段 ±12（C5）、后一段 ±2（D4），实际 {pt}")
 
-    print("\n[40] RPN 写在另一条轨：解析顺序不能决定时间顺序")
+    group("[40] RPN 写在另一条轨：解析顺序不能决定时间顺序")
     bx = os.path.join(FIXTURES, "bendrange_crosstrack.mid")
     rc, out, err = run(exe, bx, "--no-pickup")
     check(rc == 0, "跨轨 RPN 文件解析成功", err[:200])
@@ -1504,7 +1622,7 @@ def main():
     px = xml_pitches(bxx)
     check(px == [("C", "5")], f"setup 轨的 ±12 仍然生效，实际 {px}")
 
-    print("\n[41] 歌词 meta 之后省略状态字节：半首曲子不能凭空消失")
+    group("[41] 歌词 meta 之后省略状态字节：半首曲子不能凭空消失")
     rm = os.path.join(FIXTURES, "running_meta.mid")
     rc, out, err = run(exe, rm, "--no-pickup")
     check(rc == 0, "省略状态字节的 MIDI 解析成功", err[:200])
@@ -1521,7 +1639,7 @@ def main():
     check("省略状态字节" in open(rmh, encoding="utf-8").read(),
           "HTML 页眉同步说明")
 
-    print("\n[42] SysEx 取消 / 0xF8 实时消息不取消：两种都要读出两个音")
+    group("[42] SysEx 取消 / 0xF8 实时消息不取消：两种都要读出两个音")
     for name, label, need_hint in (
         ("running_sysex.mid", "SysEx 后省略状态字节", True),
         ("running_realtime.mid", "0xF8 时钟后省略状态字节", False),
@@ -1540,7 +1658,7 @@ def main():
             check("省略状态字节" not in out,
                   f"{label}：实时消息不改变 running status，无需补回")
 
-    print("\n[43] 规范写法零回归：重写状态字节时不触发任何补回")
+    group("[43] 规范写法零回归：重写状态字节时不触发任何补回")
     rs = os.path.join(FIXTURES, "running_standard.mid")
     rc, out, err = run(exe, rs, "--no-pickup")
     check(rc == 0, "规范写法解析成功", err[:200])
@@ -1565,7 +1683,7 @@ def main():
             out[key] = out.get(key, 0) + int(n.findtext("duration") or 0)
         return out
 
-    print("\n[44] MIDI Port：踏板按 (port, channel) 隔离，端口不跨轨继承")
+    group("[44] MIDI Port：踏板按 (port, channel) 隔离，端口不跨轨继承")
     pp = os.path.join(FIXTURES, "port_pedal.mid")
     rc, out, err = run(exe, pp, "--no-pickup")
     check(rc == 0, "端口踏板素材解析成功", err[:200])
@@ -1586,7 +1704,7 @@ def main():
     check("同通道号跨端口已隔离" in open(pph, encoding="utf-8").read(),
           "HTML 页眉同样写明端口隔离")
 
-    print("\n[45] MIDI Port：弯音范围按端口独立；FF 20 不重定向通道消息")
+    group("[45] MIDI Port：弯音范围按端口独立；FF 20 不重定向通道消息")
     pb = os.path.join(FIXTURES, "port_bend.mid")
     rc, bout, err = run(exe, pb, "--no-pickup")
     check(rc == 0, "端口弯音素材解析成功", err[:200])
@@ -1607,7 +1725,7 @@ def main():
           "CLI 页眉如实说明 FF 20 的作用域")
     check("通道前缀" not in bo, "不写 FF 20 的基线没有多余提示")
 
-    print("\n[46] 无端口声明零回归：单通道踏板行为与旧版一致")
+    group("[46] 无端口声明零回归：单通道踏板行为与旧版一致")
     ps = os.path.join(FIXTURES, "port_standard.mid")
     rc, sout, err = run(exe, ps, "--no-pickup")
     check(rc == 0, "无端口基线解析成功", err[:200])
@@ -1621,7 +1739,7 @@ def main():
           "无端口声明的时值与旧版完全相同")
 
 
-    print("\n[47] SysEx 鼓模式：GS/XG 指定的鼓通道不能转成假旋律")
+    group("[47] SysEx 鼓模式：GS/XG 指定的鼓通道不能转成假旋律")
     for name in ("sysex_gs_drum", "sysex_xg_drum"):
         f = os.path.join(FIXTURES, name + ".mid")
         rc, out, err = run(exe, f, "--no-pickup")
@@ -1646,7 +1764,7 @@ def main():
           "mode=0 对照：普通乐器一个音都不丢")
     check("1 条恢复普通乐器" in no, "mode=0：CLI 说明通道恢复普通乐器")
 
-    print("\n[48] GM/GS/XG Reset 按时间撤销鼓设定；SysEx 写在末轨也生效")
+    group("[48] GM/GS/XG Reset 按时间撤销鼓设定；SysEx 写在末轨也生效")
     for name in ("sysex_gs_reset", "sysex_gm_reset", "sysex_xg_reset"):
         f = os.path.join(FIXTURES, name + ".mid")
         rc, out, err = run(exe, f, "--no-pickup")
@@ -1667,7 +1785,7 @@ def main():
     check(xml_pitches(cx) == xml_pitches(os.path.join(tmp, "sysex_gs_drum.xml")),
           "末轨 SysEx 与首轨 SysEx 的 MusicXML 音高序列一致")
 
-    print("\n[49] 通道 10 改回普通乐器；无关 SysEx 零回归")
+    group("[49] 通道 10 改回普通乐器；无关 SysEx 零回归")
     ch9 = os.path.join(FIXTURES, "sysex_ch9_normal.mid")
     rc, c9, err = run(exe, ch9, "--no-pickup")
     check(rc == 0 and "共提取 16 个音符" in c9 and "已跳过" not in c9,
@@ -1691,7 +1809,7 @@ def main():
     check(xml_pitches(ux) == xml_pitches(gnh) and len(xml_pitches(ux)) == 17,
           "无关 SysEx 的 MusicXML 音高序列与 mode=0 基线完全一致")
 
-    print("\n[50] SysEx 鼓模式按端口隔离；HTML 页眉同样写明")
+    group("[50] SysEx 鼓模式按端口隔离；HTML 页眉同样写明")
     sp = os.path.join(FIXTURES, "sysex_port_drum.mid")
     rc, so, err = run(exe, sp, "--no-pickup")
     check(rc == 0 and "共提取 4 个音符" in so and "已跳过 4 个打击乐音符" in so,
@@ -1704,7 +1822,7 @@ def main():
           "HTML 页眉同样写明 SysEx 鼓模式", err[:200])
 
 
-    print("\n[51] Bank Select：XG 鼓组通道 / 普通音色库对照")
+    group("[51] Bank Select：XG 鼓组通道 / 普通音色库对照")
     bx = os.path.join(FIXTURES, "bank_xg_drum.mid")
     rc, bo, err = run(exe, bx, "--no-pickup")
     check(rc == 0 and "共提取 8 个音符" in bo and "已跳过 8 个打击乐音符" in bo,
@@ -1724,7 +1842,7 @@ def main():
     check("音色库/音色设定" in open(bh, encoding="utf-8").read(),
           "HTML 页眉同样写明 Bank Select")
 
-    print("\n[52] Bank 时间轴：切回普通库 / 末尾 setup 轨 / GM Reset")
+    group("[52] Bank 时间轴：切回普通库 / 末尾 setup 轨 / GM Reset")
     bs = os.path.join(FIXTURES, "bank_switch_back.mid")
     rc, so, err = run(exe, bs, "--no-pickup")
     check(rc == 0 and "共提取 12 个音符" in so and "已跳过 4 个打击乐音符" in so,
@@ -1740,7 +1858,7 @@ def main():
     check("共提取 14 个音符" in ro and "已跳过 2 个打击乐音符" in ro,
           "GM Reset 只撤销它之前的 2 个鼓件音，之后 6 个旋律音全留")
 
-    print("\n[53] Bank 鼓组按端口隔离；两个防御性对照")
+    group("[53] Bank 鼓组按端口隔离；两个防御性对照")
     bp = os.path.join(FIXTURES, "bank_port.mid")
     rc, po, err = run(exe, bp, "--no-pickup")
     check(rc == 0 and "共提取 8 个音符" in po and "已跳过 8 个打击乐音符" in po,
@@ -1754,7 +1872,7 @@ def main():
     check("共提取 12 个音符" in o0 and "已跳过" not in o0,
           "只有 CC0=127、没有 Program Change 时不切鼓")
 
-    print("\n[54] Program Change 时间轴：声部乐器名按首音时刻取")
+    group("[54] Program Change 时间轴：声部乐器名按首音时刻取")
     pt = os.path.join(FIXTURES, "program_timeline.mid")
     rc, to, err = run(exe, pt, "--no-pickup")
     check(rc == 0 and "共提取 16 个音符" in to, "中途换音色不改变音符数", err[:200])
@@ -1769,7 +1887,7 @@ def main():
     check("音色库/音色设定" not in to,
           "只有 0xC0、没有 Bank Select 的普通 GM 文件不显示新提示")
 
-    print("\n[55] --track 按轨隔离：别轨歌词 / 力度不许串进选中轨")
+    group("[55] --track 按轨隔离：别轨歌词 / 力度不许串进选中轨")
     tl = os.path.join(FIXTURES, "track_leak.mid")
     tb = os.path.join(FIXTURES, "track_leak_base.mid")
     rc, lall, err = run(exe, tl, "--no-pickup")
@@ -1790,7 +1908,7 @@ def main():
           "只转换轨 1「Guitar」" in l1,
           "--track 1 反过来保留该轨自己的歌词 / 力度")
 
-    print("\n[56] 按轨隔离：踏板隔开，全局音源设定照常保留")
+    group("[56] 按轨隔离：踏板隔开，全局音源设定照常保留")
     tp = os.path.join(FIXTURES, "track_pedal.mid")
     _, pall, _ = run(exe, tp, "--no-pickup")
     _, p0, _ = run(exe, tp, "--no-pickup", "--track", "0")
@@ -1808,7 +1926,7 @@ def main():
           "[Verse]" in c1,
           "--track 1 仍读到别轨 conductor 的速度 / 拍号 / 调号 / Marker")
 
-    print("\n[57] format 2 选段、空轨报错与默认零回归")
+    group("[57] format 2 选段、空轨报错与默认零回归")
     tf = os.path.join(FIXTURES, "track_fmt2.mid")
     _, f1, _ = run(exe, tf, "--track", "1")
     check("共 2 段，只转换轨 1「SongB」" in f1 and "共提取 4 个音符" in f1 and
@@ -1828,7 +1946,7 @@ def main():
     # ---- [58] --list-tracks：选 --track 前先看清轨道布局 ----
     # 纯诊断命令，不参与转换。验证它列出每条轨的序号/名称/音数/乐器/歌词，
     # 并能把鼓轨标出来；同时必须「只列不转」——不输出「共提取 N 个音符」。
-    print("\n[58] --list-tracks 轨道列表（诊断）")
+    group("[58] --list-tracks 轨道列表（诊断）")
     # meter.mid 含 Conductor / Vocal / Piano / Drums 四条轨，正好覆盖各类。
     rc, out, err = run(exe, os.path.join(FIXTURES, "meter.mid"), "--list-tracks")
     check(rc == 0, "退出码为 0", err)
@@ -1847,7 +1965,7 @@ def main():
     check(rc2 != 0 and ("错误" in err2 or "无法" in err2),
           "对非法文件给出错误而非崩溃", err2)
 
-    print("\n[59] CC64 踏板迟滞：死区中间值不提前抬起")
+    group("[59] CC64 踏板迟滞：死区中间值不提前抬起")
     # 连续踏板 127→50→0，50 落在迟滞死区 33..63：踩着不放，音延到真正的
     # 释放点 0（第 2 拍）；旧二值判定会在 50 处当成抬起，只延到 1 拍。
     ph = os.path.join(FIXTURES, "pedal_hysteresis.mid")
@@ -1870,7 +1988,7 @@ def main():
     check(phdurs == [960], f"音符时值 960 tick（2 拍），实际 {phdurs}")
     check(phtypes == ["half"], f"MusicXML 记为 half，实际 {phtypes}")
 
-    print("\n[60] --list-tracks 诊断与谱面标注一致性")
+    group("[60] --list-tracks 诊断与谱面标注一致性")
     # 旧实现两处各算一套：乐器名读 channelProgram 末值（谱面读 programAt 首音），
     # 鼓件音只按默认通道 9 统计（GS/XG 切出来的鼓组漏标）。同一首曲子里，
     # 诊断说「小提琴 + 旋律 0 音」，谱面却是「钢琴 + 鼓轨」，选轨会被误导。
@@ -1905,7 +2023,7 @@ def main():
     check(rc3 == 0 and "鼓轨 (跳过 8 鼓件音)" in lst3,
           "Bank MSB 127 的 XG 鼓组轨也标成鼓轨", lst3)
 
-    print("\n[61] 截断 MIDI：不越过文件末尾读幻影音符与乱码歌词")
+    group("[61] 截断 MIDI：不越过文件末尾读幻影音符与乱码歌词")
     # MTrk 长度字段写着原值、文件却只下载到一半，轨尾只剩半个 note-on。
     # 旧实现从 buffer 末尾继续读堆内存：2 音素材冒出 10 个幻影音符，调性
     # 也被带偏；被截断的 lyric meta 还会冒出 9 个乱码歌词音节。
@@ -1933,7 +2051,7 @@ def main():
     _, normal_out, _ = run(exe, os.path.join(FIXTURES, "sample.mid"))
     check("文件数据不完整" not in normal_out, "正常文件不出现截断提示（零回归）")
 
-    print("\n[62] CC66 持音踏板：只保持踩下瞬间正按着的键")
+    group("[62] CC66 持音踏板：只保持踩下瞬间正按着的键")
     # 真钢琴中踏板：踩下时正按着的 C/E/G 延到抬起，之后新弹的 D4 不受影响。
     # 旧实现把 0xB0 里的 CC66 当普通两字节跳过，和弦只写 1 拍。
     so = os.path.join(FIXTURES, "sostenuto.mid")
@@ -1965,7 +2083,7 @@ def main():
     check("持音踏板" not in ph_out, "CC64 素材不误报持音踏板（零回归）")
 
 
-    print("\n[63] CC11 渐强渐弱按通道归属（v1.43.0 起逐声部输出）")
+    group("[63] CC11 渐强渐弱按通道归属（v1.43.0 起逐声部输出）")
     # 旋律(ch0)渐弱、伴奏(ch1)渐强：v1.40.0 修好「两条 wedge 合并成一条」
     # 之后，三个输出层仍沿用「全局只印第一声部」的旧门控，伴奏声部的
     # cresc. 被整条吞掉。现在每个声部按自己的主导通道各印一次，段落名这类
@@ -2016,7 +2134,7 @@ def main():
     _, ex_out, _ = run(exe, os.path.join(FIXTURES, "expression.mid"))
     check("[cresc.]" in ex_out or "[dim.]" in ex_out,
           "单通道表情素材的渐变记号不受影响（零回归）")
-    print("\n[64] CC67 软踏板只衰减力度、不改时值")
+    group("[64] CC67 软踏板只衰减力度、不改时值")
     # 8 个音里两处强音(110)本该各印一个 '>'；软踏板 [1200,2000) 把其中
     # 一处降到 77，重音记号从 2 个变成 1 个，时值与 CC11/CC7 力度表不动。
     sp = os.path.join(FIXTURES, "soft_pedal.mid")
@@ -2045,7 +2163,7 @@ def main():
     _, ph_out, _ = run(exe, os.path.join(FIXTURES, "pedal_hysteresis.mid"))
     check("软踏板" not in ph_out, "CC64 素材不误报软踏板（零回归）")
 
-    print("\n[64b] 软踏板系数可配：--soft-pedal-scale / --no-soft-pedal")
+    group("[64b] 软踏板系数可配：--soft-pedal-scale / --no-soft-pedal")
     # 默认 0.7 把两处 110 强音之一压到 77，谱面只剩 1 个 '>'；把系数调到 1 或
     # 直接关闭，被压暗的弱奏曲应当还原成 2 个重音，且页眉不再提软踏板。
     rc, out_s1, _ = run(exe, sp, "--soft-pedal-scale", "1")
@@ -2071,7 +2189,7 @@ def main():
     rc, out_bad2, err_bad2 = run(exe, sp, "--soft-pedal-scale", "abc")
     check(rc == 1, "scale 非法(非数字)报错退出", err_bad2[:200])
 
-    print("\n[65] SMF chunk 边界重同步：私有块 + 长度字段失准不再整份报废")
+    group("[65] SMF chunk 边界重同步：私有块 + 长度字段失准不再整份报废")
     # 旧版遇到 MThd 后的 XFIH 直接停掉 chunk 循环，或首轨长度少写 4 字节
     # 后在 EOT 处读不到 MTrk —— 两种都会让整份文件判成「未提取到音符」。
     cr = os.path.join(FIXTURES, "chunk_resync.mid")
@@ -2103,7 +2221,7 @@ def main():
     check("文件结构提示" not in normal_out,
           "合法 SMF 不误报结构异常（零回归）")
 
-    print("\n[66] 多轨通道级楔形：三端都写出每个声部自己的渐强渐弱")
+    group("[66] 多轨通道级楔形：三端都写出每个声部自己的渐强渐弱")
     # 旧版把 wedge 和全局段落名一起塞进「只写第一声部 / 第一个 part」的
     # 门控，第二条轨的 cresc. 连 wedge stop 一起消失。这次新素材锁住：
     # 文本 / HTML 两行谱各印自己的渐变，MusicXML 两个 part 各写一份，
@@ -2144,7 +2262,7 @@ def main():
     check(xml_wt.count("<words>Verse</words>") == 1,
           "MusicXML 全局段落名只写一次")
 
-    print("\n[67] 长度字段越界但后续轨完整：按锚点重同步，不再误报数据截断")
+    group("[67] 长度字段越界但后续轨完整：按锚点重同步，不再误报数据截断")
     # 旧版把「声明长度越过文件末尾」一律当成 v1.38 的真·截断：两轨并成
     # 一轨、--track 1 选不到旋律、页眉误报「文件数据不完整」。新素材锁住
     # 三端口径一致，同时确认真·截断文件的告警没有被改坏。
@@ -2174,7 +2292,7 @@ def main():
     check(rc == 0 and "文件数据不完整" in tr and "文件结构提示" not in tr,
           "真·截断文件仍按 v1.38 只报数据不完整", tr[:200])
 
-    print("\n[68] 同轨多声部：MusicXML 每个 <voice> 各写自己的力度与渐变")
+    group("[68] 同轨多声部：MusicXML 每个 <voice> 各写自己的力度与渐变")
     # 旧实现整个 part 只取一个主导通道，副声部的 crescendo / p→ff 全丢。
     # 修复后 direction 带 <voice> 归属、wedge number 按声部递增；单声部
     # part 仍逐字节保持旧版（direction 里不写多余的 <voice>）。
@@ -2218,7 +2336,7 @@ def main():
           "<dynamics><ff/></dynamics>" in xml_dc,
           "dyn_channels 的副声部 p→ff 力度档位补回")
 
-    print("\n[69] 键盘大谱表：宽音域钢琴声部排成上下两行谱")
+    group("[69] 键盘大谱表：宽音域钢琴声部排成上下两行谱")
     gsm = os.path.join(FIXTURES, "grand_staff.mid")
     gsx = os.path.join(tmp, "grand_staff.xml")
     rc, _, err = run(exe, gsm, "--musicxml", gsx)
@@ -2272,7 +2390,7 @@ def main():
     check("<staves>" not in xml_s and "<staff>" not in xml_s,
           "普通旋律声部仍保持单谱表输出")
 
-    print("\n[70] 小节中途变速：速度记号保留小节内位置")
+    group("[70] 小节中途变速：速度记号保留小节内位置")
     mtm = os.path.join(FIXTURES, "midtempo.mid")
     mtx = os.path.join(tmp, "midtempo.xml")
     rc, _, err = run(exe, mtm, "--musicxml", mtx)
@@ -2298,7 +2416,7 @@ def main():
     check(xml_mt.count("<offset>") == 2,
           "只有中途变速的点写 <offset>，小节线上的速度不多写")
 
-    print("\n[71] 小节中途换力度档：档位写到真实拍位")
+    group("[71] 小节中途换力度档：档位写到真实拍位")
     ds = os.path.join(FIXTURES, "dyn_step.mid")
     dsx = os.path.join(tmp, "dyn_step.xml")
     rc, _, err = run(exe, ds, "--musicxml", dsx)
@@ -2335,7 +2453,7 @@ def main():
     check(xml_r.count("<offset>960</offset>") == 2,
           "渐快 / 渐慢的落定点回到该小节第 3 拍，而不是小节开头")
 
-    print("\n[72] 文本谱 / HTML 的中途换档也落到真实拍位")
+    group("[72] 文本谱 / HTML 的中途换档也落到真实拍位")
     rc, out, err = run(exe, ds)
     check(rc == 0, "文本谱输出中途换档素材", err[:200])
     note_lines = [ln for ln in out.splitlines() if "|" in ln]
@@ -2363,7 +2481,7 @@ def main():
     check(rc == 0 and "dynx" not in open(ph, encoding="utf-8").read(),
           "没有中途换档的谱子不输出 dynx 样式")
 
-    print("\n[73] --transpose 把 MIDI 调号一起平移")
+    group("[73] --transpose 把 MIDI 调号一起平移")
     tk = os.path.join(FIXTURES, "transpose_key.mid")
     # 素材本身：1=Bb 起步、第 5 小节转 1=D，两段唱名都该是 1 2 3 4。
     rc, out, err = run(exe, tk)
@@ -2431,7 +2549,7 @@ def main():
     check(rc == 0 and "1=Bb 大调" in out and "已随移调平移" not in out,
           "--key Bb +12：整八度移调不改调性")
 
-    print("\n[74] 文本谱把同拍和弦并成一格：一小节不再凭空多出两拍")
+    group("[74] 文本谱把同拍和弦并成一格：一小节不再凭空多出两拍")
     # sample.mid 的钢琴左手是 C-E-G 三个全音符（同一声部、同拍同值）。
     # 旧版一个音印一格，`1, - - - 3, - - - 5, - - -` 把 4/4 的一小节读成 12 拍。
     sp = os.path.join(FIXTURES, "sample.mid")
@@ -2468,7 +2586,7 @@ def main():
         check(rc == 0 and not bad and "+" in out,
               f"{name} 的柱式和弦并成一格且拍数守恒", str(bad[:3]))
 
-    print("\n[75] 时值折算不把小节撑过拍号；倚音不吞掉前面的休止")
+    group("[75] 时值折算不把小节撑过拍号；倚音不吞掉前面的休止")
     # overfull.mid：第 2 小节是「16 分音符 + 3.75 拍休止」，第 3 小节是
     # 「四分音符 + 1 拍休止 + 倚音 + 二分音符」。旧版 durationSuffix() 把
     # 3.75 拍取整成 4 拍，小节读成 4.25 拍；倚音又把它前面的休止一起跳过。
@@ -2505,7 +2623,7 @@ def main():
     check(rc == 0 and "0_. -%%" not in out and "0 (7,)1" in out,
           "parts.mid 弱起小节补回首拍休止，零头仍记最近档")
 
-    print("\n[76] 门限空档并进前一个音：4/4 一小节不再只剩 3 拍")
+    group("[76] 门限空档并进前一个音：4/4 一小节不再只剩 3 拍")
     # gate_gap.mid：四分音符只响 400 tick（DAW 门限 85% 的典型形状），
     # 空档 80 tick 在谱面上写不出休止符。旧版记成「附点八分 + 看不见的
     # 十六分休止」，一小节只剩 3 拍；MusicXML 另走一条路补出 16 分休止，
@@ -2548,7 +2666,7 @@ def main():
     check(rc == 0 and "1_. 2_. 3_. 4_." in out,
           "--no-quantize 仍按原始 400 tick 记谱")
 
-    print("\n[77] 复调轨按声部补空档：左手全音符不再挡住右手补整拍")
+    group("[77] 复调轨按声部补空档：左手全音符不再挡住右手补整拍")
     # poly_gap.mid：左手每小节按住一个全音符（整轨 monophonic=false），
     # 右手是 DAW 门限 85% 的四分音符（400 tick / 480 间隔）。v1.54.0 的
     # 空档合并被整轨开关一刀切掉，右手 4/4 一小节只剩 3 拍；MusicXML
@@ -2593,7 +2711,7 @@ def main():
     check(rc == 0 and "1_. 2_. 3_. 4_." in out,
           "--no-quantize 仍按原始 400 tick 记谱")
 
-    print("\n[78] 复调轨门限因子按声部估：连奏声部不再锁死全局门限")
+    group("[78] 复调轨门限因子按声部估：连奏声部不再锁死全局门限")
     # poly_gate.mid：左手 24 个八分连奏音（dur == ioi == 240），右手是门限
     # 70% 的四分音符（336 tick / 480 间隔）。整轨音头每 240 tick，第一遍
     # 右手 336/240 = 1.4 被当无效样本丢、左手 240/240 = 1.0 灌满样本，
@@ -2649,10 +2767,23 @@ def main():
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")
+        ci_report.report_failures(failures, context={
+            "ref": os.environ.get("GITHUB_REF", ""),
+            "sha": os.environ.get("GITHUB_SHA", ""),
+            "exe": exe,
+            "fixtures": "%d 份 .mid" % len(
+                [f for f in os.listdir(FIXTURES) if f.endswith(".mid")]),
+        })
         return 1
     print("冒烟测试全部通过")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception:
+        text = traceback.format_exc()
+        print(text, file=sys.stderr)
+        ci_report.report_exception(text)
+        sys.exit(1)

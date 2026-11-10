@@ -42,7 +42,14 @@ jobs:
           git diff --exit-code -- 'tests/fixtures/*.mid'
           test -z "$(git status --porcelain --untracked-files=all -- tests/fixtures/)"
 
+      - name: CI 失败报告自测（28 项）
+        # 冒烟失败时把每条断言写成 ::error 注解 + step summary；
+        # 没有 job 日志下载权限也能从 check-run annotations 直接读到失败项。
+        # 这条通道自己先自测，避免「诊断工具坏了却没人知道」。
+        run: python3 tests/smoke.py --self-test
+
       - name: CLI 端到端冒烟（79 组）
+        # 失败项由 tests/ci_report.py 同步写进 annotations 与 step summary。
         run: python3 tests/smoke.py build/midi2jianpu
 
   wasm:

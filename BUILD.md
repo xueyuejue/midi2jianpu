@@ -69,9 +69,12 @@ cd build && ctest --output-on-failure
 ```bash
 python tests/fixtures/make_fixture.py     # 生成 84 份 .mid 素材（含 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony / smpte / format2 / aftertouch / retrigger / dangling / twolyrics / pedal / allnotesoff / cc7volume / pedal_channels / pedal_hysteresis / bendrange_channels / bendrange_timeline / bendrange_crosstrack / running_meta / running_sysex / running_realtime / running_standard / port_pedal / port_bend / port_prefix / port_prefix_base / port_standard / sysex_gs_drum / sysex_xg_drum / sysex_gs_normal / sysex_gs_reset / sysex_gm_reset / sysex_xg_reset / sysex_conductor / sysex_ch9_normal / sysex_ch9_drum / sysex_unknown / sysex_port_drum / bank_xg_drum / bank_normal / bank_switch_back / bank_conductor / bank_port / bank_reset / bank_ch9_plain / bank_no_program / program_timeline / diag_consistency / track_pedal / track_rpn_setup / track_conductor / track_leak / track_leak_base / track_empty / track_fmt2 / truncated / sostenuto / dyn_channels / soft_pedal / chunk_resync / wedge_tracks / oversized_len / voice_trio / grand_staff / midtempo / dyn_step / transpose_key / overfull / gate_gap / poly_gap / poly_gate）+ 3 份变速 LRC
 python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2jianpu.exe
+python tests/smoke.py --self-test        # 28 项 CI 失败报告自测（不编译也能跑）
 ```
 
 覆盖 `--key` / `--track` / `--transpose` / `--musicxml` / `--html` / `--lyrics` / `--no-midi-lyrics` / `--pickup` / `--no-pickup` / `--no-key-changes` / `--gong` / `--no-pentatonic` / `--no-dynamics` / `--output` / `--help` / `--version` 全部参数，并校验导出的 XML 里 `duration` 为整数、和弦音带 `<chord/>`，带歌词时 `<lyric>` / `<slur>` 成对且 `<notations>` 排在 `<lyric>` 之前，变拍号时只有变化小节重写 `<time>`、转调时只在变化小节重写 `<key>`（每个声部 `0 / 2 / -1` 三个 `<fifths>`）、五声调式时加一条 `<words>` 调式标记。
+
+`--self-test` 是 CI 失败报告的自测（28 项，纯逻辑、不加载 CLI、不读 MIDI 素材）：校验 `tests/ci_report.py` 的注解转义、注解条数上限、step summary 全量清单、异常上报，以及「本地手工跑不产生任何 `::error` 行」。CI 里单独一步先跑它，保证「冒烟失败时能把失败项送到 annotations」这条诊断通道本身可靠；否则 CI 红了却拿不到 job 日志时，仍然只能看到一句 `Process completed with exit code 1.`。
 
 其中 `drums.mid` 专测打击乐轨：鼓轨有 192 个音符（远超旋律的 8 个），谱面里不能出现 `[Drums]`、不能出现鼓的音高，旋律轨必须判给单声部的 Vocal。
 
@@ -175,7 +178,9 @@ node tests/wasm_smoke.mjs build-wasm/midi2jianpu.js        # 或测新编的
 
 需要 Node 18+。它走的是 `docs/index.html` 里 `callWasm()` 的同一条调用路径，
 逐项检查网页每个按钮背后的导出符号是否存在、返回内容是否合法、坏数据会不会崩。
-共 43 组，其中第 34 组直接比对 `version.hpp` 的 `M2J_VERSION` 与 WASM 生成的页脚版本号，第 35 组用 `pedal_hysteresis.mid` 校验网页端也带上了 CC64 迟滞修复，第 36 组用 `truncated.mid` 校验网页端遇到下载到一半的 MIDI 不会冒出幻影音符、且文件面板会报告数据被截断，第 37 组用 `sostenuto.mid` 校验网页端 CC66 只保持三个和弦音、`controller_info` 也会说明，第 38 组用 `dyn_channels.mid` 校验网页端 HTML 两个声部各印自己的渐变、MusicXML 按 `<voice>` 各写一份 dim. / cresc.（v1.45.0 起），第 39 组用 `soft_pedal.mid` 校验网页播放 JSON 的 velocity 已按软踏板衰减、MusicXML 只剩 1 个重音记号，`controller_info` 也会说明，第 40 组用 `chunk_resync.mid` 校验网页端遇到私有 chunk + 长度字段失准时仍读出 4 个音，`file_header_info` / HTML 页眉也会报告「文件结构提示」，合法 SMF 不误报；第 41 组用 `wedge_tracks.mid` 校验网页端两条轨各写自己的渐强渐弱（MusicXML 两个 part、HTML 两行谱），全局段落名 `Verse` 仍只出现一次；第 42 组用 `oversized_len.mid` 校验网页端遇到越过文件末尾的坏长度字段时仍按 EOT 锚点切开两轨、读出 4 个音、段落 #1 能选中旋律轨，`file_header_info` 与 HTML 页眉只报「重同步」而不误报「数据不完整」，真·截断文件的告警保持原样；第 43 组用 `voice_trio.mid` 校验网页端同轨三声部各写自己的力度与楔形、direction 带 `<voice>3</voice>`、wedge number 递增到 3，单声部不写多余的 `<voice>`。第 39 组另含 sub-block 39b：用 `_midi2jianpu_set_soft_pedal_scale` 把系数依次设成 1.0 / 0.0 / 0.5，校验网页播放 JSON 的 velocity 随系数还原（1.0 还原成 110/60、0.0 仍不衰减、0.5 半衰减成 55/30）且 `controller_info` 在 1.0 时不报软踏板，结束后复位成默认 0.7 以免污染后续测试。
+共 53 组，其中第 34 组直接比对 `version.hpp` 的 `M2J_VERSION` 与 WASM 生成的页脚版本号，第 35 组用 `pedal_hysteresis.mid` 校验网页端也带上了 CC64 迟滞修复，第 36 组用 `truncated.mid` 校验网页端遇到下载到一半的 MIDI 不会冒出幻影音符、且文件面板会报告数据被截断，第 37 组用 `sostenuto.mid` 校验网页端 CC66 只保持三个和弦音、`controller_info` 也会说明，第 38 组用 `dyn_channels.mid` 校验网页端 HTML 两个声部各印自己的渐变、MusicXML 按 `<voice>` 各写一份 dim. / cresc.（v1.45.0 起），第 39 组用 `soft_pedal.mid` 校验网页播放 JSON 的 velocity 已按软踏板衰减、MusicXML 只剩 1 个重音记号，`controller_info` 也会说明，第 40 组用 `chunk_resync.mid` 校验网页端遇到私有 chunk + 长度字段失准时仍读出 4 个音，`file_header_info` / HTML 页眉也会报告「文件结构提示」，合法 SMF 不误报；第 41 组用 `wedge_tracks.mid` 校验网页端两条轨各写自己的渐强渐弱（MusicXML 两个 part、HTML 两行谱），全局段落名 `Verse` 仍只出现一次；第 42 组用 `oversized_len.mid` 校验网页端遇到越过文件末尾的坏长度字段时仍按 EOT 锚点切开两轨、读出 4 个音、段落 #1 能选中旋律轨，`file_header_info` 与 HTML 页眉只报「重同步」而不误报「数据不完整」，真·截断文件的告警保持原样；第 43 组用 `voice_trio.mid` 校验网页端同轨三声部各写自己的力度与楔形、direction 带 `<voice>3</voice>`、wedge number 递增到 3，单声部不写多余的 `<voice>`。第 39 组另含 sub-block 39b：用 `_midi2jianpu_set_soft_pedal_scale` 把系数依次设成 1.0 / 0.0 / 0.5，校验网页播放 JSON 的 velocity 随系数还原（1.0 还原成 110/60、0.0 仍不衰减、0.5 半衰减成 55/30）且 `controller_info` 在 1.0 时不报软踏板，结束后复位成默认 0.7 以免污染后续测试。
+
+第 44~53 组依次覆盖 v1.47.0~v1.56.0 的键盘大谱表、小节中途变速 / 换力度档、文本谱换档落位、调号链路、文本谱和弦并格、时值折算不撑爆小节、门限空档并进前一个音、复调轨按声部补空档、复调轨门限因子按声部估——都是校验网页端与 CLI 共用同一份 core（详见 `tests/wasm_smoke.mjs`）。
 
 **这个测试的存在理由**：仓库曾出现「源码加了 `_midi2jianpu_musicxml`，但
 `docs/wasm/` 里还是旧产物」的静默回归——CLI 测试全绿，网页按钮点了没反应。
@@ -227,8 +232,8 @@ python3 tests/check_wasm_sync.py --changed docs/wasm/midi2jianpu.wasm \
 
 | job | 步骤 |
 | --- | --- |
-| `cpp` | CMake 编译 CLI 与单测 → `ctest`（807 项）→ 全量重生成 84 份 `.mid` 并要求零 diff、无未跟踪素材 → `smoke.py` 79 组 |
-| `wasm` | `check_wasm_sync.py --self-test`（16 组）+ 实跑（含反向版本守护）→ `check_wasm_exports.py` → `wasm_smoke.mjs` 43 组（含产物版本号与 `version.hpp` 比对） |
+| `cpp` | CMake 编译 CLI 与单测 → `ctest`（807 项）→ 全量重生成 84 份 `.mid` 并要求零 diff、无未跟踪素材 → `smoke.py --self-test` 28 项 → `smoke.py` 79 组 |
+| `wasm` | `check_wasm_sync.py --self-test`（16 组）+ 实跑（含反向版本守护）→ `check_wasm_exports.py` → `wasm_smoke.mjs` 53 组（含产物版本号与 `version.hpp` 比对） |
 
 客户端可以忘了跑测试，这里在服务端兜底；**升过版本号却忘了重编 `docs/wasm/`，
 第 34 组会红；连版本号都没升、只改了源码却没重编，产物同步守护会红**。两个 job 只依赖 runner 预装的 cmake / g++ / python 和
