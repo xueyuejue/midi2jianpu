@@ -79,6 +79,45 @@ static DurStyle tripletStyleOf(double beats) {
     return {"eighth", false, 0, 1};
 }
 
+// 休止符的「可精确显示」档位：与 durStyleOf() 表一一对应，拍数 * 16 = units。
+// 间隙不是这些档位时 durStyleOf() 只能取最近档 —— 1.75 拍画成 1.5 拍、
+// 1.25 拍画成 1 拍，读者数出来的拍数凭空少 0.25。文本谱 v1.59.0 的
+// exactRest 与 MusicXML v1.58.0 的 splitRestDuration() 都已精确拆段，
+// HTML 是三端里唯一还按最近档近似的一端。
+struct RestStep {
+    long units;      // 以 1/16 拍为单位
+    double beats;
+};
+static const RestStep kExactRestSteps[] = {
+    {96, 6.0}, {64, 4.0}, {48, 3.0}, {32, 2.0}, {24, 1.5},
+    {16, 1.0}, {12, 0.75}, {8, 0.5}, {6, 0.375}, {4, 0.25}, {2, 0.125},
+};
+
+// 把间隙按整数单位贪心拆成若干可精确显示的休止符。
+// 返回 false 表示拆不干净（余量不足 1/8 拍、或 gap 不是 1/16 拍的整数倍），
+// 调用方保留旧的最近档单列兜底 —— 与另外两端的兜底口径一致。
+// 单段也返回 false：精确档素材走旧路径，逐字节不变。
+static bool splitRestBeats(long gapTicks, int division, std::vector<double>& out) {
+    out.clear();
+    if (gapTicks <= 0 || division <= 0) return false;
+    const long long scaled = 1LL * gapTicks * 16;
+    if (scaled % division != 0) return false;
+    long long rem = scaled / division;
+    while (rem > 0) {
+        bool picked = false;
+        for (const auto& st : kExactRestSteps) {
+            if (st.units <= rem) {
+                out.push_back(st.beats);
+                rem -= st.units;
+                picked = true;
+                break;
+            }
+        }
+        if (!picked) { out.clear(); return false; }
+    }
+    return out.size() > 1;
+}
+
 // 生成一个音符的 HTML 列。
 //
 // 关键点：延音线不参与宽度计算（绝对定位挂在 .core 右侧），所以 .note 的
@@ -163,6 +202,23 @@ static std::string withDyn(const std::string& col, const std::string& dyn) {
     return col.substr(0, p + 1) +
            "<span class='dynx" + std::string(paired ? " pair" : "") + "'>" +
            htmlEscape(dyn) + "</span>" + col.substr(p + 1);
+}
+
+// 生成一段间隙的休止符列：优先按精确档位之和拆列，拆不干净才退回旧单列。
+// 拆列时和弦 / 力度标记只挂第一列 —— 标记标的是音头位置，挂到每一列
+// 会把「第 2 拍变弱」重复标成好几次。
+static std::string restColumns(long gapTicks, int division, double restBeats,
+                               const std::string& chord, const std::string& dyn) {
+    std::vector<double> parts;
+    if (!splitRestBeats(gapTicks, division, parts))
+        return withDyn(withChord(noteColumn("0", 0, 0, restBeats, ""), chord), dyn);
+    std::string out;
+    for (size_t i = 0; i < parts.size(); i++) {
+        std::string col = noteColumn("0", 0, 0, parts[i], "");
+        if (i == 0) col = withDyn(withChord(col, chord), dyn);
+        out += col;
+    }
+    return out;
 }
 
 // 生成和弦列：同一时刻发声的多个音竖向叠写，共用一个时值线。
@@ -674,9 +730,9 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             if (gap >= restGateTicks(data.division)) {
                 flushBeam();          // 休止符打断减时线
                 double restBeats = (double)gap / data.division;
-                emit(withDyn(withChord(noteColumn("0", 0, 0, restBeats, ""),
-                                       chordMarkFor(prevEnd)),
-                             dynMarkFor(prevEnd)), prevEnd, true);
+                emit(restColumns(gap, data.division, restBeats,
+                                 chordMarkFor(prevEnd), dynMarkFor(prevEnd)),
+                     prevEnd, true);
             }
 
             // 整组的时值取最长那个音

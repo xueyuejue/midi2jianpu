@@ -2830,7 +2830,7 @@ def main():
           out2[-200:])
     rc3, out3, _ = run(sys.executable, audit)
     check(rc3 == 0 and "0 处不一致" in out3,
-          "全部 87 份素材的 MusicXML 时值一致性校验通过", out3[-200:])
+          "全部 88 份素材的 MusicXML 时值一致性校验通过", out3[-200:])
 
     group("[80] v1.59.0 小节中间休止符精确拆段：文本谱拍数守恒")
     # rest_midbar.mid 把 1.75 / 1.25 拍两段非标准间隙夹在小节中间，后面
@@ -2871,7 +2871,7 @@ def main():
           out2[-200:])
     rc3, out3, _ = run(sys.executable, audit)
     check(rc3 == 0 and "0 处不守恒" in out3,
-          "全部 87 份素材的文本谱拍数守恒", out3[-200:])
+          "全部 88 份素材的文本谱拍数守恒", out3[-200:])
 
     group("[81] v1.60.0 HTML 谱面附点标记：文本谱 / MusicXML / HTML 三端一致")
     # DurStyle::dotted 与 CSS 的 .dotted .num::after 一直都在，noteColumn()
@@ -2913,7 +2913,52 @@ def main():
           out2[-200:])
     rc3, out3, _ = run(sys.executable, audit2)
     check(rc3 == 0 and "0 项问题" in out3,
-          "全部 87 份素材的 HTML 附点一致性通过", out3[-200:])
+          "全部 88 份素材的 HTML 附点一致性通过", out3[-200:])
+
+    group("[82] v1.61.0 HTML 休止符精确拆列：三端拍数一致")
+    # 文本谱 v1.59.0 与 MusicXML v1.58.0 都已把不规则间隙精确拆段，
+    # HTML 却仍用 durStyleOf() 的最近档画一个 0 列（1.75 -> 1.5 拍）。
+    hr = os.path.join(FIXTURES, "html_rests.mid")
+    with tempfile.TemporaryDirectory() as td:
+        rh = os.path.join(td, "html_rests.html")
+        rc, _, err = run(exe, hr, "--html", rh)
+        html = open(rh, encoding="utf-8").read() if os.path.exists(rh) else ""
+        rx = os.path.join(td, "html_rests.xml")
+        run(exe, hr, "--musicxml", rx)
+        xml = open(rx, encoding="utf-8").read() if os.path.exists(rx) else ""
+    check(rc == 0 and html, "导出 html_rests.mid 的 HTML 谱面", err[-200:])
+    check(html.count("<span class='num'>0</span>") == 10,
+          "四段不规则间隙各拆两列 + 两个精确档，共 10 个 0 列",
+          "实际 %d 个" % html.count("<span class='num'>0</span>"))
+    rest16 = ("<span class='note sixteenth'><span class='oct'></span>"
+              "<span class='core'><span class='num'>0</span>")
+    rest8 = ("<span class='note eighth'><span class='oct'></span>"
+             "<span class='core'><span class='num'>0</span>")
+    check(html.count(rest16) == 3,
+          "1.75 / 1.25 / 2.25 拍各补一个十六分休止续列",
+          "实际 %d 个" % html.count(rest16))
+    check(html.count(rest8) == 1,
+          "2.5 拍的第二段是八分休止列", "实际 %d 个" % html.count(rest8))
+    check(html.count("class='note quarter dotted'") == 1 and
+          html.count("--n:1") == 2,
+          "1.75 拍首段附点四分、2.5 / 2.25 拍首段二分休止都在")
+    check(html.count("class='note eighth dotted'") == 1,
+          "0.75 拍精确档仍是单列附点八分，不碎片化")
+    check(xml.count("<rest") == 10,
+          "MusicXML 也是 10 个 rest note，与 HTML 逐列对应",
+          "实际 %d 个" % xml.count("<rest"))
+    rc, out, _ = run(exe, hr)
+    check("0. -= 2= 0 -= 3_  |" in out and "0 - -_ 6=" in out and
+          "0 - -= 1'= 0 2'=" in out,
+          "文本谱四段拆写法与 HTML 逐段对齐", out[-200:])
+
+    audit3 = os.path.join(ROOT, "tests", "check_html_rests.py")
+    rc4, out4, _ = run(sys.executable, audit3, "--self-test")
+    check(rc4 == 0 and "自测通过" in out4,
+          "HTML 休止符校验自测通过", out4[-200:])
+    rc5, out5, _ = run(sys.executable, audit3)
+    check(rc5 == 0 and "0 项问题" in out5,
+          "全部 88 份素材的 HTML 休止符精确性通过", out5[-200:])
 
     print("\n" + "-" * 48)
     if failures:

@@ -30,12 +30,12 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 2
 
-      - name: 单元测试（846 项）
+      - name: 单元测试（857 项）
         working-directory: build
         run: ctest --output-on-failure
 
       - name: 素材生成器可复现
-        # 全量重生成 87 份 .mid 后不得有字节差异，也不得多出未跟踪素材。
+        # 全量重生成 88 份 .mid 后不得有字节差异，也不得多出未跟踪素材。
         # 只比二进制素材：.lrc 是文本，交给 git 的行尾归一化处理。
         run: |
           python3 tests/fixtures/make_fixture.py > /dev/null
@@ -48,28 +48,35 @@ jobs:
         # 这条通道自己先自测，避免「诊断工具坏了却没人知道」。
         run: python3 tests/smoke.py --self-test
 
-      - name: MusicXML 时值一致性（17 项自测 + 87 份素材）
+      - name: MusicXML 时值一致性（17 项自测 + 88 份素材）
         # 逐个 <note> 核对 <duration> 与 <type>/<dot/>；休止符间隙必须拆成
         # 标准时值之和，<rest measure="yes"/> 全小节休止按惯例豁免。
         run: |
           python3 tests/check_xml_durations.py --self-test
           python3 tests/check_xml_durations.py
 
-      - name: 文本谱拍数守恒（26 项自测 + 87 份素材）
+      - name: 文本谱拍数守恒（26 项自测 + 88 份素材）
         # 一小节印出来的拍数必须等于拍号；休止符按最近档吸附会让谱面少拍。
         # --regress <旧版exe> 在本地做结构性零回归，CI 只需跑全量校验。
         run: |
           python3 tests/check_bar_beats.py --self-test
           python3 tests/check_bar_beats.py
 
-      - name: HTML 附点一致性（35 项自测 + 87 份素材）
+      - name: HTML 附点一致性（35 项自测 + 88 份素材）
         # 文本谱 / MusicXML 的附点必须在 HTML 里也画出来；3 拍 / 6 拍靠
         # 延音线表达不画点。--regress 在本地做结构性零回归，CI 跑全量。
         run: |
           python3 tests/check_html_dots.py --self-test
           python3 tests/check_html_dots.py
 
-      - name: CLI 端到端冒烟（82 组）
+      - name: HTML 休止符精确性（72 项自测 + 88 份素材）
+        # 文本谱 / MusicXML 已精确拆段，HTML 也必须拆成标准时值之和；
+        # 精确档不碎片化、拆不干净保留旧兜底。--regress 在本地做结构回归。
+        run: |
+          python3 tests/check_html_rests.py --self-test
+          python3 tests/check_html_rests.py
+
+      - name: CLI 端到端冒烟（83 组）
         # 失败项由 tests/ci_report.py 同步写进 annotations 与 step summary。
         run: python3 tests/smoke.py build/midi2jianpu
 
@@ -101,5 +108,5 @@ jobs:
         # 五处导出符号没有漂移，不编译、不加载 wasm。
         run: python3 tests/check_wasm_exports.py
 
-      - name: WASM 产物冒烟（56 组，含版本号守护）
+      - name: WASM 产物冒烟（57 组，含版本号守护）
         run: node tests/wasm_smoke.mjs

@@ -2,7 +2,7 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 87 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 88 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
@@ -798,6 +798,11 @@ def build_rest_midbar() -> bytes:
       小节 2  四个四分音符（保证第 1 小节不是最后一行，拍数校验会查它）
     旧版把两段按最近档记成 0.(1.5 拍) / 0(1 拍)，一小节只读出 3.5 拍；
     修复后写成 0. -= / 0 -=，两小节都正好 4 拍。
+html_rests 是 v1.61.0 的 HTML 休止符拆列样本：1.75 / 1.25 / 2.5 / 2.25 拍
+四段不规则间隙分别拆成 1.5+0.25 / 1.0+0.25 / 2.0+0.5 / 2.0+0.25 两列，
+另留 0.75 / 1.0 拍两个精确档作对照（单列，不许碎片化）；所有间隙与后音头
+都落在小节内，避开 HTML 不补跨小节间隙的既有门控。HTML 里每个 0 列
+画出来的拍数之和必须与文本谱、MusicXML 一致。
     """
     t0 = Track()
     t0.add(0, meta(0x03, b"rest_midbar"))
@@ -816,6 +821,48 @@ def build_rest_midbar() -> bytes:
     t.note(0, 71, 100, BAR + 1440, 480)
     return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t.render()
 
+
+
+
+def build_html_rests() -> bytes:
+    """v1.61.0：HTML 休止符按精确档位之和拆列，与文本谱 / MusicXML 对齐。
+
+    4/4 四小节，DIV=480、BAR=1920。每段间隙后面都紧跟一个音头（触发
+    exactRest），且间隙与后音头都落在同一小节内 —— HTML 的 openBar 会
+    重置 prevEnd，音头若正好在小节起点，跨小节的间隙就不补休止符了。
+      小节 1  0.25 音 + 840(1.75) + 0.25 音 + 600(1.25) + 0.5 音
+      小节 2  0.25 音 + 360(0.75 精确档) + 0.25 音 + 1200(2.5) + 0.25 音
+      小节 3  0.25 音 + 1080(2.25) + 0.25 音 + 480(1.0 精确档) + 0.25 音
+      小节 4  四个四分音符（保证前三小节都不是末小节）
+    旧版 HTML 把 1.75 / 1.25 / 2.5 / 2.25 拍按最近档画成 1.5 / 1 / 2 /
+    2 拍；修复后拆成 quarter dotted+sixteenth / quarter+sixteenth /
+    half+eighth / half+sixteenth，拍数守恒。0.75 与 1.0 拍是精确档，
+    必须保持单列，不许碎片化。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"html_rests"))
+    t0.add(0, meta(0x51, struct.pack(">I", 500000)[1:]))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    t = Track()
+    t.add(0, meta(0x03, b"Vocal"))
+    # 小节 1：1.75 拍 + 1.25 拍
+    t.note(0, 60, 100, 0, 120)
+    t.note(0, 62, 100, 960, 120)
+    t.note(0, 64, 100, 1680, 240)
+    # 小节 2：0.75 拍精确档 + 2.5 拍
+    t.note(0, 65, 100, BAR + 0, 120)
+    t.note(0, 67, 100, BAR + 480, 120)
+    t.note(0, 69, 100, BAR + 1800, 120)
+    # 小节 3：2.25 拍 + 1.0 拍精确档
+    t.note(0, 71, 100, BAR * 2 + 0, 120)
+    t.note(0, 72, 100, BAR * 2 + 1200, 120)
+    t.note(0, 74, 100, BAR * 2 + 1800, 120)
+    # 小节 4：四个四分音符收尾
+    for k in range(4):
+        t.note(0, 69 + k, 100, BAR * 3 + k * 480, 480)
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t.render()
 
 
 def build_html_dots() -> bytes:
@@ -3043,6 +3090,7 @@ def main() -> None:
         ("rest_split", build_rest_split),
         ("rest_midbar", build_rest_midbar),
         ("html_dots", build_html_dots),
+        ("html_rests", build_html_rests),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

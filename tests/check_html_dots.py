@@ -48,7 +48,7 @@ DOT_CLASSES = ("sixteenth", "eighth", "quarter")
 NOTE_CLASS_RE = re.compile(r"<span class='note ([^']*)'")
 TONE_CLASS_RE = re.compile(r"<span class='tone([^']*)'")
 NOTE_RE = re.compile(r"<note>(.*?)</note>", re.S)
-# HTML 页脚内嵌 M2J_VERSION，跨版本比对必须先归一化，否则 87 份素材
+# HTML 页脚内嵌 M2J_VERSION，跨版本比对必须先归一化，否则 88 份素材
 # 都会因为版本号字符串变化而误报（与 regress.py 同一口径）。
 VER_RE = re.compile(r"midi2jianpu v\d+\.\d+\.\d+")
 
@@ -211,8 +211,15 @@ def audit(exe, verbose=True):
 
 
 def structural_regress(old_exe, new_exe):
-    """变动只能是在 class 里插入 ' dotted'，txt/xml 必须逐字节不变。"""
+    """附点维度必须零变化；HTML 其他维度的变化降级为 [NOTE]。
+
+    这个守护只负责「附点有没有画丢 / 画多」。v1.61.0 修 HTML 休止符拆列
+    时会插入整个 0 列，HTML 逐字节必然变化，那是 check_html_rests.py 与
+    regress.py 的职责；若这里继续要求「删掉 ' dotted' 后与旧版逐字节一致」，
+    任何输出层改动都会被误判成附点回归。
+    """
     errors = []
+    notes = []
     changed = []
     added = 0
     mids = sorted(glob.glob(os.path.join(FIX, "*.mid")))
@@ -229,13 +236,21 @@ def structural_regress(old_exe, new_exe):
             if old_html == new_html:
                 continue
             changed.append(stem)
-            if strip_dotted(new_html) != old_html:
-                errors.append("%s: HTML 差异超出 ' dotted' 插入" % stem)
-            added += len(dotted_columns(new_html)) + dotted_tones(new_html)
+            old_cols, new_cols = dotted_columns(old_html), dotted_columns(new_html)
+            old_tones, new_tones = dotted_tones(old_html), dotted_tones(new_html)
+            if old_cols != new_cols or old_tones != new_tones:
+                errors.append("%s: 附点列/和弦附点发生变化 (%d/%d -> %d/%d)"
+                              % (stem, len(old_cols), old_tones,
+                                 len(new_cols), new_tones))
+            if strip_dotted(new_html) != strip_dotted(old_html):
+                notes.append("%s: HTML 还有附点之外的变化（由其他守护负责）" % stem)
+            added += len(new_cols) + new_tones
             for c in illegal_dotted(new_html):
                 errors.append("%s: 新增了不该画附点的列 %s" % (stem, c))
     print("变化素材 %d 份 / 新增附点 %d 个: %s"
           % (len(changed), added, ", ".join(changed)))
+    for nt in notes:
+        print("  [NOTE] " + nt)
     return errors
 
 

@@ -5784,6 +5784,99 @@ int main() {
               "3 拍长音仍是二分列加两条延音线");
     }
 
+
+    // ---- v1.61.0：HTML 休止符按精确档位之和拆列 ----
+    {
+        auto add = [](MidiData& d, long start, long dur, int pitch) {
+            NoteEvent n;
+            n.startTicks = start;
+            n.durationTicks = dur;
+            n.rawDurationTicks = dur;
+            n.pitch = pitch;
+            n.channel = 0;
+            n.track = 0;
+            d.notes.push_back(n);
+        };
+        auto countOf = [](const std::string& s, const std::string& sub) {
+            size_t n = 0, pos = 0;
+            while ((pos = s.find(sub, pos)) != std::string::npos) {
+                n++; pos += sub.size();
+            }
+            return n;
+        };
+        const KeyEstimate c{0, true};
+
+        // 4/4 两小节：1.75 拍与 1.25 拍间隙夹在小节中间，第二小节
+        // 四个四分音符保证第一小节不是末小节。旧版画成 1.5 + 1 拍，
+        // 两段共少 0.5 拍；修复后拆成 1.5+0.25 / 1+0.25 四个 0 列。
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.trackNames[0] = "Vocal";
+        add(d, 0, 120, 60);
+        add(d, 960, 120, 62);
+        add(d, 1680, 240, 64);
+        add(d, 1920, 480, 65);
+        add(d, 2400, 480, 67);
+        add(d, 2880, 480, 69);
+        add(d, 3360, 480, 71);
+        const std::string h = renderHtml(d, c, "t");
+        check(countOf(h, "class='note quarter dotted'") == 1,
+              "1.75 拍的第一段仍是附点四分列");
+        check(countOf(h, "<span class='note sixteenth'><span class='oct'></span>"
+                         "<span class='core'><span class='num'>0</span>") == 2,
+              "1.75 / 1.25 拍各补一个十六分休止续列：" + h.substr(0, 200));
+        check(countOf(h, "class='note quarter'") >= 5,
+              "1.25 拍的第一段仍是四分列，第二小节四个四分音符不变");
+        check(countOf(h, "<span class='num'>0</span>") == 4,
+              "两段间隙共拆出 4 个 0 列（1.5+0.25 / 1+0.25）");
+        const std::string jp = formatJianpu(d, c);
+        check(jp.find("0. -=") != std::string::npos &&
+                  jp.find("0 -=") != std::string::npos,
+              "文本谱仍是精确拆段，HTML 与它逐段对齐：" + jp.substr(0, 200));
+
+        // 精确档不许碎片化：0.75 拍休止仍是单列附点八分。
+        MidiData e;
+        e.division = 480;
+        e.timeSig.valid = true;
+        e.trackNames[0] = "Vocal";
+        add(e, 0, 240, 60);
+        add(e, 600, 1320, 62);       // gap 360 = 0.75 拍
+        const std::string he = renderHtml(e, c, "t");
+        check(countOf(he, "class='note eighth dotted'") == 1,
+              "0.75 拍精确档仍是单个附点八分休止列");
+        check(countOf(he, "<span class='num'>0</span>") == 1,
+              "精确档不碎片化，只画一个 0 列");
+
+        // 2.5 拍 -> 二分(2.0) + 八分(0.5) 两列。
+        MidiData f;
+        f.division = 480;
+        f.timeSig.valid = true;
+        f.trackNames[0] = "Vocal";
+        add(f, 0, 120, 60);
+        add(f, 1320, 600, 62);       // gap 1200 = 2.5 拍
+        const std::string hf = renderHtml(f, c, "t");
+        check(hf.find("--n:1") != std::string::npos &&
+                  hf.find("class='note eighth'") != std::string::npos,
+              "2.5 拍拆成二分休止 + 八分休止");
+        check(countOf(hf, "<span class='num'>0</span>") == 2,
+              "2.5 拍只拆两列，不碎片化");
+
+        // 拆不干净的间隙（460 tick = 0.958 拍，不是 1/16 拍整数倍）
+        // 必须保留旧的最近档单列兜底，与另外两端口径一致。
+        MidiData g;
+        g.division = 480;
+        g.timeSig.valid = true;
+        g.trackNames[0] = "Vocal";
+        add(g, 0, 240, 60);
+        add(g, 700, 1220, 62);       // gap 460
+        const std::string hg = renderHtml(g, c, "t");
+        check(countOf(hg, "<span class='num'>0</span>") == 1,
+              "拆不干净的 0.958 拍仍按最近档画一个 0 列");
+        check(hg.find("--n:1") == std::string::npos,
+              "兜底路径不擅自改成 2 拍");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

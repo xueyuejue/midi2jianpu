@@ -1908,6 +1908,44 @@ if (existsSync(hdpPath)) {
     'WASM MusicXML 仍有 <dot/> 作真值');
 }
 
+
+// ---- 57. v1.61.0 HTML 休止符精确拆列（网页端同一份 core）----
+// html_rests.mid 把 1.75 / 1.25 / 2.5 / 2.25 拍四段不规则间隙与
+// 0.75 / 1.0 拍两个精确档放在同一份素材里。旧版 HTML 用 durStyleOf()
+// 的最近档把 1.75 拍画成 1.5 拍、1.25 拍画成 1 拍，网页端读同一份
+// core，必须一起按精确档位之和拆成多列。
+const hrpPath = path.join(FIXTURES, 'html_rests.mid');
+if (existsSync(hrpPath)) {
+  const hrp = makeCaller(mod);
+  hrp.setMidi(new Uint8Array(readFileSync(hrpPath)));
+  hrp.setLyrics('');
+  const hrpText = hrp.call('midi2jianpu_parse', -1, 1) || '';
+  check(hrpText.includes('0. -= 2= 0 -= 3_  |'),
+    'WASM 文本谱 1.75 / 1.25 拍精确拆段不变', hrpText);
+  check(hrpText.includes('0 - -_ 6=') && hrpText.includes("0 - -= 1'= 0"),
+    'WASM 文本谱 2.5 / 2.25 拍精确拆段不变', hrpText);
+
+  const hrpHtml = hrp.call('midi2jianpu_html', -1, 1) || '';
+  check((hrpHtml.match(/<span class='num'>0<\/span>/g) || []).length === 10,
+    'WASM HTML 四段拆列 + 两个精确档共 10 个 0 列');
+  const hrp16 = "<span class='note sixteenth'><span class='oct'></span>" +
+                "<span class='core'><span class='num'>0</span>";
+  check(hrpHtml.split(hrp16).length - 1 === 3,
+    'WASM HTML 1.75 / 1.25 / 2.25 拍各补一个十六分休止续列');
+  const hrp8 = "<span class='note eighth'><span class='oct'></span>" +
+               "<span class='core'><span class='num'>0</span>";
+  check(hrpHtml.split(hrp8).length - 1 === 1,
+    'WASM HTML 2.5 拍第二段是八分休止列');
+  check((hrpHtml.match(/--n:1/g) || []).length === 2,
+    'WASM HTML 2.5 / 2.25 拍首段是二分休止');
+  check((hrpHtml.match(/class='note eighth dotted'/g) || []).length === 1,
+    'WASM HTML 0.75 拍精确档仍是单列附点八分');
+
+  const hrpXml = hrp.call('midi2jianpu_musicxml', -1, 1) || '';
+  check((hrpXml.match(/<rest/g) || []).length === 10,
+    'WASM MusicXML 也是 10 个 rest note，与 HTML 逐列对应');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);
