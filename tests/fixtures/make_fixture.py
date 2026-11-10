@@ -2,7 +2,7 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 83 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 84 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
@@ -13,7 +13,7 @@ running_meta / running_sysex / running_realtime / running_standard /
 port_pedal / port_bend / port_prefix / port_prefix_base / port_standard /
 sysex_gs_drum / sysex_xg_drum / sysex_gs_normal / sysex_gs_reset /
 sysex_gm_reset / sysex_xg_reset / sysex_conductor / sysex_ch9_normal /
-sysex_ch9_drum / sysex_unknown / sysex_port_drum / gate_gap / poly_gap（另配 3 份 LRC 歌词）。
+sysex_ch9_drum / sysex_unknown / sysex_port_drum / gate_gap / poly_gap / poly_gate（另配 3 份 LRC 歌词）。
 meter 是把变拍号、变速、鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」，
 modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五声调式
 （C 宫、G 徵调式，故意不写 0x59 逼自动猜调暴露宫音判错），tempo_ramp 用
@@ -679,6 +679,40 @@ def build_transpose_key() -> bytes:
         for beat in range(4):
             t1.note(0, scale[(bar % 4) * 4 + beat], 88,
                     bar * 1920 + beat * 480, 480)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + t1.render()
+
+
+def build_poly_gate() -> bytes:
+    """复调轨的门限因子按声部估（v1.56.0）。
+
+    钢琴双手：左手是每 240 tick 一个的八分连奏音（dur == ioi == 240，不
+    携带门限信息），右手是 DAW 门限 70% 的四分音符（只响 336 tick、
+    间隔 480）。整轨音头因此每 240 tick 一个，第一遍估门限时右手的
+    dur/ioi = 336/240 = 1.4 被当成无效样本丢掉，左手 240/240 = 1.0 灌满
+    样本，全局 gate 落到 1.0 —— 右手 12 个四分音符全被写成附点八分
+    （1_. 2_. 3_. 4_.），MusicXML 补出 12 个 16 分休止，HTML 印出 12 个
+    附点八分，三端拍数各不相同。
+
+    正确行为：只对「整轨音头挡在本声部下一音头前面」的音另按本声部口径
+    估一个 laneGate（这里 0.7）并还原；左手连奏音与末音都不套用还原。
+    右手回到 1 2 3 4，左手 24 个八分音一字不改。末音收在小节线上，免得
+    被判弱起。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Piano"))
+    for i in range(24):                         # 左手：24 个八分连奏音
+        t1.note(0, 48 + (i % 3), 70, i * 240, 240)
+    scale = [60, 62, 64, 65, 67, 69, 71, 72, 71, 69, 67, 65]
+    for i, p in enumerate(scale):               # 右手：门限 70% 的四分音符
+        t1.note(0, p, 90, i * DIV, 336 if i < 11 else DIV)
 
     header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
     return header + t0.render() + t1.render()
@@ -2841,6 +2875,16 @@ def main() -> None:
     # 把 MIDI 调号一起平移（只移音不移调号会让唱名与调号分叉）
     for name, builder in (
         ("transpose_key", build_transpose_key),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # 门限因子按声部估：左手连奏链不再把右手的门限锁死在 1.0
+    for name, builder in (
+        ("poly_gate", build_poly_gate),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

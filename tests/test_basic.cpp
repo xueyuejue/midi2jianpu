@@ -5286,6 +5286,121 @@ int main() {
                   std::to_string(durOf(hit, 0, 60)));
     }
 
+    // -----------------------------------------------------------------
+    // v1.56.0: 复调轨的门限因子按声部估，连奏声部不再锁死全局 gate
+    // -----------------------------------------------------------------
+    std::cout << "\n测试复调轨门限因子按声部估\n";
+    {
+        auto add = [](MidiData& d, long start, long dur, int pitch) {
+            NoteEvent n;
+            n.startTicks = start;
+            n.durationTicks = dur;
+            n.rawDurationTicks = dur;
+            n.pitch = pitch;
+            n.channel = 0;
+            n.track = 0;
+            d.notes.push_back(n);
+        };
+        // quantizeTiming() 末尾按 (start, pitch) 重排 notes，别按索引取。
+        auto durOf = [](const MidiData& d, long start, int pitch) -> long {
+            for (const auto& n : d.notes)
+                if (n.startTicks == start && n.pitch == pitch) return n.durationTicks;
+            return -1;
+        };
+        const KeyEstimate c{0, true};
+
+        // 钢琴双手：左手 24 个八分连奏音（dur == ioi == 240），右手是门限
+        // 70% 的四分音符（336 tick / 480 间隔）。整轨音头每 240 tick 一个，
+        // 第一遍里右手 336/240 = 1.4 被当无效样本丢掉、左手 240/240 = 1.0
+        // 灌满样本，全局 gate 落到 1.0，右手 12 个四分音符全被写成附点八分。
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.trackNames[0] = "Piano";
+        for (int i = 0; i < 24; i++) add(d, i * 240L, 240, 48 + i % 3);
+        const int scale[12] = {60, 62, 64, 65, 67, 69, 71, 72, 71, 69, 67, 65};
+        for (int i = 0; i < 12; i++)
+            add(d, i * 480L, (i < 11) ? 336 : 480, scale[i]);
+
+        const QuantizeReport rep = quantizeTiming(d);
+        check(rep.gate == 1.0,
+              "全局 gate 仍是旧口径的 1.0（其余音符逐字节不变），实际: " +
+                  std::to_string(rep.gate));
+        check(rep.laneGate > 0.68 && rep.laneGate < 0.72,
+              "本声部口径另估出门限 0.7，实际: " + std::to_string(rep.laneGate));
+        check(durOf(d, 480, 62) == 480 && durOf(d, 2880, 71) == 480,
+              "右手 336 tick 的门限音还原成 480，实际: " +
+                  std::to_string(durOf(d, 480, 62)));
+        check(durOf(d, 5280, 65) == 480,
+              "末音没有 ioi 参照，不被虚增成 720，实际: " +
+                  std::to_string(durOf(d, 5280, 65)));
+        check(durOf(d, 0, 48) == 240 && durOf(d, 240, 49) == 240,
+              "左手连奏八分音不被门限还原带偏，实际: " +
+                  std::to_string(durOf(d, 0, 48)));
+
+        const std::string jp = formatJianpu(d, c);
+        check(jp.find("1 2 3 4  |") != std::string::npos,
+              "右手第 1 小节读成四个四分音符（旧版是附点八分）：" + jp);
+        check(jp.find("5 6 7 1'  |") != std::string::npos,
+              "右手第 2 小节同样读成 4 拍");
+        check(jp.find("7 6 5 4  |") != std::string::npos,
+              "右手第 3 小节同样读成 4 拍");
+        check(jp.find("1_. 2_. 3_. 4_.") == std::string::npos,
+              "不再写成「附点八分」串");
+        check(jp.find("1,_ #1,_ 2,_") != std::string::npos,
+              "左手 24 个八分连奏音仍单独成声部、时值一字不改");
+        check(jp.find("-_  |") == std::string::npos &&
+                  jp.find("-=  |") == std::string::npos,
+              "末音虚增会让谱面凭空多一小节，不许出现");
+
+        const std::string xml = renderMusicXml(d, c);
+        check(xml.find("<type>16th</type>") == std::string::npos &&
+                  xml.find("<rest/>") == std::string::npos,
+              "MusicXML 里不再补出 12 个假的 16 分休止");
+        const std::string html = renderHtml(d, c, "t");
+        auto countOf = [](const std::string& s, const std::string& sub) {
+            size_t n = 0, pos = 0;
+            while ((pos = s.find(sub, pos)) != std::string::npos) { n++; pos++; }
+            return n;
+        };
+        check(countOf(html, "class='note quarter'") == 12,
+              "HTML 是 12 个四分列，实际: " +
+                  std::to_string(countOf(html, "class='note quarter'")));
+        check(countOf(html, "class='note eighth'") == 24,
+              "HTML 是 24 个八分列，实际: " +
+                  std::to_string(countOf(html, "class='note eighth'")));
+
+        // 反向约束一：单声部轨的 gate 完全走旧口径，本声部支路不启用。
+        MidiData mono;
+        mono.division = 480;
+        mono.timeSig.valid = true;
+        mono.trackNames[0] = "Vocal";
+        for (int i = 0; i < 12; i++) add(mono, i * 480L, 403, 60 + i % 7);
+        add(mono, 5760, 480, 67);
+        const QuantizeReport mr = quantizeTiming(mono);
+        check(mr.gate > 0.82 && mr.gate < 0.86,
+              "单声部轨仍估出 0.84 的全局门限，实际: " +
+                  std::to_string(mr.gate));
+        check(mr.laneGate == 1.0,
+              "没有声部音头交错时不启用本声部支路");
+        check(durOf(mono, 480, 61) == 480,
+              "单声部轨的门限还原结果不变，实际: " +
+                  std::to_string(durOf(mono, 480, 61)));
+
+        // 反向约束二：只有被整轨音头挡住的音才走支路；若本声部口径估不出
+        // 显著更短的门限（样本不足 8 个），laneGate 必须退回 1.0。
+        MidiData few;
+        few.division = 480;
+        few.timeSig.valid = true;
+        few.trackNames[0] = "Piano";
+        for (int i = 0; i < 6; i++) add(few, i * 480L, 336, 60 + i);
+        for (int i = 0; i < 12; i++) add(few, i * 240L + 120, 240, 48);
+        const QuantizeReport fr = quantizeTiming(few);
+        check(fr.laneGate == 1.0,
+              "本声部样本不足时不臆造门限，实际: " +
+                  std::to_string(fr.laneGate));
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

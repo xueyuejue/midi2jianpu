@@ -344,7 +344,10 @@ int main(int argc, char** argv) {
         m2j::QuantizeReport qr = m2j::quantizeTiming(data);
         if (qr.adjusted > 0) {
             std::cout << "时值量化: 修正 " << qr.adjusted << " 个音符 (网格 "
-                      << qr.gridTicks << " tick, 门限 " << qr.gate << ")\n";
+                      << qr.gridTicks << " tick, 门限 " << qr.gate;
+            if (qr.laneGate < qr.gate - 0.02)
+                std::cout << ", 本声部 " << qr.laneGate;
+            std::cout << ")\n";
         }
     }
 

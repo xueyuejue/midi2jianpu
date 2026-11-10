@@ -2593,6 +2593,59 @@ def main():
     check(rc == 0 and "1_. 2_. 3_. 4_." in out,
           "--no-quantize 仍按原始 400 tick 记谱")
 
+    print("\n[78] 复调轨门限因子按声部估：连奏声部不再锁死全局门限")
+    # poly_gate.mid：左手 24 个八分连奏音（dur == ioi == 240），右手是门限
+    # 70% 的四分音符（336 tick / 480 间隔）。整轨音头每 240 tick，第一遍
+    # 右手 336/240 = 1.4 被当无效样本丢、左手 240/240 = 1.0 灌满样本，
+    # 全局 gate 落到 1.0，右手 12 个四分音符全被写成附点八分，MusicXML
+    # 补出 12 个 16 分休止。修法只对这批被误丢的音另按本声部估 laneGate。
+    pg = os.path.join(FIXTURES, "poly_gate.mid")
+    rc, out, err = run(exe, pg)
+    check(rc == 0, "输出 poly_gate.mid 文本谱", out[-200:] if rc else "")
+    check("1 2 3 4  |" in out, "右手第 1 小节读作四个四分音符")
+    check("5 6 7 1'  |" in out, "右手第 2 小节同样读作 4 拍")
+    check("7 6 5 4  |" in out, "右手第 3 小节同样读作 4 拍")
+    check("1_. 2_. 3_. 4_." not in out, "不再写成「附点八分」串")
+    check("1,_ #1,_ 2,_" in out, "左手 24 个八分连奏音一字不改")
+    check("-_  |" not in out and "-=  |" not in out,
+          "末音不被虚增，谱面没有凭空多出第 4 小节")
+    check(out.count("声部1") == 1 and out.count("声部2") == 1,
+          "仍拆成两个声部，没有把左右手并成一轨")
+    check("门限 1" in out and "本声部 0.7" in out,
+          "量化报告同时给出全局门限与本声部门限", out[-160:])
+
+    bad = []
+    for line in out.splitlines():
+        if "|" not in line:
+            continue
+        for bar in line.split("|")[:-1]:
+            b = bar_beats(bar)
+            if b is None or abs(b - 4) > 1e-6:
+                bad.append((bar.strip(), b))
+    check(not bad, "poly_gate.mid 两个声部每一小节都读作 4 拍", str(bad[:3]))
+
+    # 三端一致：MusicXML 不许再补出假的 16 分休止，HTML 是 12 四分 + 24 八分。
+    with tempfile.TemporaryDirectory() as td:
+        px = os.path.join(td, "poly_gate.xml")
+        ph = os.path.join(td, "poly_gate.html")
+        rc2, _, _ = run(exe, pg, "--musicxml", px, "--html", ph)
+        xml = open(px, encoding="utf-8").read() if os.path.exists(px) else ""
+        html = open(ph, encoding="utf-8").read() if os.path.exists(ph) else ""
+    check(rc2 == 0 and "<type>16th</type>" not in xml,
+          "MusicXML 里不再补出一串假的 16 分休止")
+    check("<rest/>" not in xml, "MusicXML 里不再补出任何假休止")
+    check(html.count("class='note quarter'") == 12,
+          "HTML 是 12 个四分音符列，实际: "
+          + str(html.count("class='note quarter'")))
+    check(html.count("class='note eighth'") == 24,
+          "HTML 是 24 个八分音符列，实际: "
+          + str(html.count("class='note eighth'")))
+
+    # --no-quantize 保留 MIDI 原始时长，仍写成附点八分：这是刻意的出口。
+    rc, out, _ = run(exe, pg, "--no-quantize")
+    check(rc == 0 and "1_. 2_. 3_. 4_." in out,
+          "--no-quantize 仍按原始 336 tick 记谱")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

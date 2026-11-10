@@ -1755,6 +1755,42 @@ if (existsSync(pgPath)) {
     'WASM HTML 保留左手的全音符列');
 }
 
+// ---- 53. v1.56.0 复调轨门限因子按声部估（网页端同一份 core）----
+// poly_gate.mid：左手 24 个八分连奏音把整轨 dur/ioi 众数锁死在 1.0，
+// 右手门限 70% 的 12 个四分音符全被写成附点八分、MusicXML 补出 12 个
+// 16 分休止。网页端读同一份 core，必须一起变成四分音符，左手一字不改。
+const pgatePath = path.join(FIXTURES, 'poly_gate.mid');
+if (existsSync(pgatePath)) {
+  const pgt = makeCaller(mod);
+  pgt.setMidi(new Uint8Array(readFileSync(pgatePath)));
+  pgt.setLyrics('');
+  const pgtText = pgt.call('midi2jianpu_parse', -1, 1) || '';
+  check(pgtText.includes('1 2 3 4  |'),
+    'WASM 文本谱右手第 1 小节读作四个四分音符（旧版是附点八分）', pgtText);
+  check(pgtText.includes("5 6 7 1'  |"),
+    'WASM 文本谱右手第 2 小节同样读作 4 拍');
+  check(pgtText.includes('7 6 5 4  |'),
+    'WASM 文本谱右手第 3 小节同样读作 4 拍');
+  check(!pgtText.includes('1_. 2_. 3_. 4_.'),
+    'WASM 文本谱不再写成「附点八分」串');
+  check(pgtText.includes('1,_ #1,_ 2,_'),
+    'WASM 文本谱左手 24 个八分连奏音一字不改');
+  check(!pgtText.includes('-_  |') && !pgtText.includes('-=  |'),
+    'WASM 文本谱末音不被虚增、没有凭空多出第 4 小节');
+
+  const pgtXml = pgt.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(!pgtXml.includes('<type>16th</type>'),
+    'WASM MusicXML 里不再补出假的 16 分休止');
+  check(!pgtXml.includes('<rest/>'),
+    'WASM MusicXML 里不再补出任何假休止');
+
+  const pgtHtml = pgt.call('midi2jianpu_html', -1, 1) || '';
+  check((pgtHtml.match(/class='note quarter'/g) || []).length === 12,
+    'WASM HTML 是 12 个四分音符列');
+  check((pgtHtml.match(/class='note eighth'/g) || []).length === 24,
+    'WASM HTML 是 24 个八分音符列');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

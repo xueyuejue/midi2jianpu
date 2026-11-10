@@ -547,6 +547,66 @@ static double snapBeats(double beats) {
     return best;
 }
 
+// 把同轨音符拆成互不重叠的「声部」（lane）。口径与 splitVoices() 一致：
+// 同拍同值算和弦共用一个 lane，其余优先复用已经收尾的 lane。
+// 第一遍估门限因子与第二遍补空档都用它，保证两边看到的是同一套声部。
+struct LaneLayout {
+    std::vector<int> laneOf;                    // 按 data.notes 的全局索引
+    std::vector<long> laneNext;                // 本声部的下一个音头（无则 0）
+    std::vector<std::vector<long>> laneOnsets; // 按 lane 编号
+};
+
+static LaneLayout buildLaneLayout(const MidiData& data,
+                                  const std::vector<size_t>& idxs) {
+    struct Lane { long start = -1; long end = -1; };
+    LaneLayout out;
+    out.laneOf.assign(data.notes.size(), 0);
+    out.laneNext.assign(data.notes.size(), 0);
+    std::vector<Lane> lanes;
+    for (size_t i : idxs) {
+        const long s = data.notes[i].startTicks;
+        const long dd = std::max<long>(data.notes[i].durationTicks, 1);
+        int chosen = -1;
+        for (size_t v = 0; v < lanes.size(); v++)
+            if (lanes[v].start == s && lanes[v].end - lanes[v].start == dd) {
+                chosen = (int)v; break;
+            }
+        if (chosen < 0)
+            for (size_t v = 0; v < lanes.size(); v++)
+                if (lanes[v].end <= s) { chosen = (int)v; break; }
+        if (chosen < 0) { lanes.push_back(Lane()); chosen = (int)lanes.size() - 1; }
+        out.laneOf[i] = chosen;
+        lanes[chosen].start = s;
+        lanes[chosen].end = std::max(lanes[chosen].end, s + dd);
+    }
+    out.laneOnsets.resize(lanes.size());
+    for (size_t i : idxs) {
+        auto& o = out.laneOnsets[out.laneOf[i]];
+        if (o.empty() || o.back() != data.notes[i].startTicks)
+            o.push_back(data.notes[i].startTicks);
+    }
+    for (size_t i : idxs) {
+        const auto& o = out.laneOnsets[out.laneOf[i]];
+        const long s = data.notes[i].startTicks;
+        for (size_t k = 0; k + 1 < o.size(); k++)
+            if (o[k] == s) { out.laneNext[i] = o[k + 1]; break; }
+    }
+    return out;
+}
+
+// 按 0.02 分桶取众数估门限因子；样本不足或众数不显著时返回 1.0（不还原）。
+static double estimateGate(const std::vector<double>& ratios) {
+    if (ratios.size() < 8) return 1.0;
+    std::map<int, int> hist;
+    for (double r : ratios) hist[(int)std::lround(r * 50)]++;
+    int bestBin = -1, bestCnt = 0;
+    for (auto& kv : hist) if (kv.second > bestCnt) { bestCnt = kv.second; bestBin = kv.first; }
+    if (bestCnt * 4 < (int)ratios.size()) return 1.0;   // 没有统一门限
+    double gate = bestBin / 50.0;
+    if (gate < 0.45 || gate > 1.0) return 1.0;
+    return gate;
+}
+
 QuantizeReport quantizeTiming(MidiData& data) {
     QuantizeReport rep;
     if (data.division <= 0 || data.notes.empty()) return rep;
@@ -565,7 +625,17 @@ QuantizeReport quantizeTiming(MidiData& data) {
     // ---- 第一遍：全曲估计门限因子 ----
     // 录音 MIDI 的 note-off 会提前，且门限时间通常是 DAW 里的一个全局常数，
     // 所以取 dur/ioi 的众数最稳；中位数会被"音符后面跟着长休止"的样本拉低。
-    std::vector<double> ratios;
+    // 整轨口径（旧行为，逐字节保留）之外，额外记下「被别的声部音头挡住」的音。
+    // 复调轨里别的声部的音头会插进本声部两个音头之间，整轨 ioi 被切短，
+    // 本声部的门限音于是算出 dur/ioi > 1 而被当作无效样本丢掉；更糟的是
+    // 连奏声部（dur == ioi，r = 1.0）会把众数锁死在 1.0，门限彻底估不出来。
+    // 例如钢琴左手八分连奏 + 右手 0.7 门限四分音符：整轨音头每 240 tick，
+    // 右手 336/240 = 1.4 被丢、左手 240/240 = 1.0 灌满样本，gate 落到 1.0，
+    // 右手 12 个四分音符全被写成附点八分，MusicXML 补出 12 个 16 分休止。
+    // 修法不改全局 gate：只对这批被误丢的音，另按本声部口径估一个 laneGate
+    // 并单独还原。其余音符仍走原来的 gate，既有素材因此逐字节不变。
+    std::vector<double> ratios, laneRatios;
+    std::vector<char> laneOnlyNotes(data.notes.size(), 0);
     for (auto& kv : byTrack) {
         auto& idxs = kv.second;
         std::sort(idxs.begin(), idxs.end(), [&](size_t a, size_t b) {
@@ -585,21 +655,29 @@ QuantizeReport quantizeTiming(MidiData& data) {
                 if (r > 0.2 && r <= 1.0) ratios.push_back(r);
             }
         }
-    }
-    double gate = 1.0;
-    if (ratios.size() >= 8) {
-        // 按 0.02 分桶取众数
-        std::map<int, int> hist;
-        for (double r : ratios) hist[(int)std::lround(r * 50)]++;
-        int bestBin = -1, bestCnt = 0;
-        for (auto& kv : hist) if (kv.second > bestCnt) { bestCnt = kv.second; bestBin = kv.first; }
-        // 众数至少要占样本的四分之一，否则说明这份 MIDI 没有统一门限
-        if (bestCnt * 4 >= (int)ratios.size()) {
-            gate = bestBin / 50.0;
-            if (gate < 0.45 || gate > 1.0) gate = 1.0;
+        std::map<long, long> wholeNext;
+        for (size_t k = 0; k + 1 < onsets.size(); k++) wholeNext[onsets[k]] = onsets[k + 1];
+        const LaneLayout lay = buildLaneLayout(data, idxs);
+        for (size_t i : idxs) {
+            const long s = data.notes[i].startTicks;
+            const long ln = lay.laneNext[i];
+            if (ln <= s) continue;
+            auto it = wholeNext.find(s);
+            const long wn = (it == wholeNext.end()) ? 0 : it->second;
+            if (wn > s && wn < ln) {
+                laneOnlyNotes[i] = 1;
+                // 连奏音（r 接近 1）不携带门限信息，不能参与门限众数。
+                double r = (double)data.notes[i].durationTicks / (ln - s);
+                if (r > 0.2 && r < 0.98) laneRatios.push_back(r);
+            }
         }
     }
+    const double gate = estimateGate(ratios);
+    const double laneGate = estimateGate(laneRatios);
+    // 只有当本声部口径确实估出「更短、更真实」的门限时才启用这条支路。
+    const bool laneEffective = laneGate < gate - 0.02;
     rep.gate = gate;
+    rep.laneGate = laneEffective ? laneGate : 1.0;
 
     // ---- 第二遍：吸附音头与音尾 ----
     for (auto& kv : byTrack) {
@@ -623,45 +701,9 @@ QuantizeReport quantizeTiming(MidiData& data) {
             long s = data.notes[i].startTicks;
             if (onsets.empty() || onsets.back() != s) onsets.push_back(s);
         }
-        // 本声部（lane）内的下一个音头。整轨 onsets 混着所有声部的音头，
-        // 复调轨里拿它当本音的收尾会截断别的声部的长音，所以 v1.54.0 的
-        // 空档合并只在「整轨无重叠」时生效。但左手一个按住的全音符就足以
-        // 让整轨判成复调，右手门限四分音符的空档因此完全没人补。
-        // 这里按贪心 lane 把同轨音拆开（口径与 splitVoices 一致：同拍同值
-        // 算和弦，其余优先复用已经收尾的 lane），lane 内保证首尾不交叠，
-        // 于是每个音都有属于自己声部的下一个音头。
-        struct Lane { long start = -1; long end = -1; };
-        std::vector<Lane> lanes;
-        std::vector<int> laneOf(data.notes.size(), 0);
-        for (size_t i : idxs) {
-            const long s = data.notes[i].startTicks;
-            const long dd = std::max<long>(data.notes[i].durationTicks, 1);
-            int chosen = -1;
-            for (size_t v = 0; v < lanes.size(); v++)
-                if (lanes[v].start == s && lanes[v].end - lanes[v].start == dd) {
-                    chosen = (int)v; break;
-                }
-            if (chosen < 0)
-                for (size_t v = 0; v < lanes.size(); v++)
-                    if (lanes[v].end <= s) { chosen = (int)v; break; }
-            if (chosen < 0) { lanes.push_back(Lane()); chosen = (int)lanes.size() - 1; }
-            laneOf[i] = chosen;
-            lanes[chosen].start = s;
-            lanes[chosen].end = std::max(lanes[chosen].end, s + dd);
-        }
-        std::map<int, std::vector<long>> laneOnsets;
-        for (size_t i : idxs) {
-            auto& o = laneOnsets[laneOf[i]];
-            if (o.empty() || o.back() != data.notes[i].startTicks)
-                o.push_back(data.notes[i].startTicks);
-        }
-        std::vector<long> laneNext(data.notes.size(), 0);
-        for (size_t i : idxs) {
-            const auto& o = laneOnsets[laneOf[i]];
-            const long s = data.notes[i].startTicks;
-            for (size_t k = 0; k + 1 < o.size(); k++)
-                if (o[k] == s) { laneNext[i] = o[k + 1]; break; }
-        }
+        // 本声部（lane）内的下一个音头：复调轨里不能用整轨 onsets 当本音的
+        // 收尾，否则左手按住的长音会被右手的音头截断（见 v1.55.0）。
+        const LaneLayout lay = buildLaneLayout(data, idxs);
 
         // 该轨是否单声部：不同音头的音之间没有交叠，才敢用"到下一音头的间隔"当音值。
         // 钢琴这类复调轨一旦套用，左手长音会被右手音头截断。
@@ -695,7 +737,20 @@ QuantizeReport quantizeTiming(MidiData& data) {
                 // （复调，monophonic=false）没有这层兜底，虚增会真的落进谱面：
                 // 一个 4 拍的和弦被写成 4 拍 + 0.75 拍延音，整段小节线错位。
                 const bool heldNote = oldDur >= 3L * div;
-                double est = heldNote ? (double)oldDur : (double)oldDur / gate;
+                const long laneIoi = (lay.laneNext[i] > s) ? lay.laneNext[i] - s : 0;
+                double est;
+                if (heldNote) {
+                    est = (double)oldDur;
+                } else if (laneEffective && laneOnlyNotes[i]) {
+                    // 本声部口径还原必须有「本声部下一个音头」作参照：末音
+                    // 没有参照，除一次 gate 会把 480 tick 虚增成 720、谱面
+                    // 凭空多一小节；连奏音与长于间隔的复调音同理都不还原。
+                    const bool eligible = laneIoi > 0 && oldDur < laneIoi &&
+                                         oldDur >= 0.45 * laneIoi;
+                    est = eligible ? (double)oldDur / laneGate : (double)oldDur;
+                } else {
+                    est = (double)oldDur / gate;   // 旧行为，逐字节保留
+                }
 
                 long dur;
                 if (monophonic && ioi > 0 && est >= 0.9 * ioi) {
@@ -720,7 +775,7 @@ QuantizeReport quantizeTiming(MidiData& data) {
                 // 再加一道相对门槛（空档不到音长三分之一，即门限 >= 3/4）：
                 // 一半音长就收尾的那种是刻意的断奏 / 打击乐击打，120 tick 的
                 // 鼓点占 240 tick 的格，拉成八分会把十六分音符写丢。
-                const long nextInLane = laneNext[i];
+                const long nextInLane = lay.laneNext[i];
                 const long gap = (nextInLane > s) ? nextInLane - s - oldDur : 0;
                 if (gap > 0 && gap < restGateTicks(div) && gap * 3 <= oldDur &&
                     nextInLane - s > dur)

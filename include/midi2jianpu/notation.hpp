@@ -103,6 +103,7 @@ struct QuantizeReport {
     int adjusted = 0;    // 被修正时值/位置的音符数
     long gridTicks = 0;  // 实际使用的音头网格（tick）
     double gate = 1.0;   // 估计出的门限因子（note-off 提前比例）
+    double laneGate = 1.0;  // 复调轨里被整轨音头挡住的音，另按本声部估出的门限
     bool changed() const { return adjusted > 0; }
 };
 
