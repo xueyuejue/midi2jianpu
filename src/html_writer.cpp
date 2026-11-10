@@ -683,6 +683,25 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 flushBeam();                                  // 小节线截断减时线
                 flushSlur();                                  // 小节线同样截断连音线
                 curSlur = 0;                                  // 跨小节的组各画各的一段弧
+
+                // 跨小节收口：上一小节末尾若还有空拍（上一个音中途结束、
+                // 下一音落在下一小节正拍），先把这段休止补进上一小节。否则
+                // 后面 openBar 把 prevEnd 抬到新小节起点后，这段间隙会被整段
+                // 吞掉——文本谱 / MusicXML 都按 emitRestUntil / splitRestDuration
+                // 把这段尾休止补出来，HTML 若丢则三端不一致（parts/和弦素材
+                // 里很常见：一句落在第 1 拍、下一句从下一小节正拍起）。
+                if (curBar >= 0) {
+                    long prevBarEnd = grid.barEnd(curBar);
+                    long tailGap = prevBarEnd - prevEnd;
+                    if (tailGap >= restGateTicks(data.division)) {
+                        double tailBeats = (double)tailGap / data.division;
+                        emit(restColumns(tailGap, data.division, tailBeats,
+                                         chordMarkFor(prevEnd), dynMarkFor(prevEnd)),
+                             prevEnd, true);
+                        prevEnd = prevBarEnd;                 // 收口，避免新小节再补一次
+                    }
+                }
+
                 if (curBar >= 0) body << "</span></span>";   // 收尾上一个小节的音符行与小节
 
                 // 补齐开头与中间完全空的小节。

@@ -256,15 +256,17 @@ def structural_regress(old_exe, new_exe):
             for _, v in new_pure:
                 if not exact_beats(v):
                     errors.append("%s: 新增列不是精确档 %r" % (stem, v))
-            # 新版必须比旧版更精确（近似问题严格减少）
+    # 跨版本零回归判据：HTML 变化只能是「纯休止列新增」——txt/xml 字节不变、
+    # 其余 HTML 字节不变、新增列都是精确档、补回拍数为正、近似问题不增加。
+    # 无论这是精度提升（1.61.0：少画的近似档改精确）还是正确性修复
+    # （1.63.0：补回被吞掉的跨小节尾休止），都满足本判据；反过来，若新版
+    # 把休止列删掉（补回拍数为负）或近似问题变多，一定会被上面的几条抓住。
     print("变化素材 %d 份 / 插入 0 列 %d 个 / 补回 %.3f 拍: %s"
           % (len(changed), added_cols, added_beats, ", ".join(changed)))
     print("近似问题: 旧版 %d 项 -> 新版 %d 项" % (approx_before, approx_after))
     if approx_after > approx_before:
         errors.append("新版近似问题反而变多（%d -> %d）"
                       % (approx_before, approx_after))
-    if approx_after >= approx_before and changed:
-        errors.append("有素材变化但近似问题没有减少")
     return errors
 
 
