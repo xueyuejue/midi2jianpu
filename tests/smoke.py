@@ -2764,6 +2764,74 @@ def main():
     check(rc == 0 and "1_. 2_. 3_. 4_." in out,
           "--no-quantize 仍按原始 336 tick 记谱")
 
+    group("[79] MusicXML 休止符时值拆成标准时值：duration 与 type/dot 严格一致")
+    # rest_split.mid 故意留下 1.75 / 1.25 / 3.75 拍三段 DAW 常见的不规则
+    # 休止，外加一段 3 拍附点二分休止作精确对照。旧版把三段写成
+    # half / quarter / whole，<duration> 精确而 <type> 只是近似值。
+    rs = os.path.join(FIXTURES, "rest_split.mid")
+    rc, out, err = run(exe, rs)
+    check(rc == 0, "输出 rest_split.mid 文本谱", out[-200:] if rc else "")
+    check("1= 0 - - -_.  |" in out and "2 0 - -  |" in out,
+          "文本谱不受拆分影响：前两小节仍各守恒 4 拍")
+    check("3= 0. 4= 0 5_  |" in out,
+          "最后一小节按惯例允许尾上休止不满")
+
+    with tempfile.TemporaryDirectory() as td:
+        rx = os.path.join(td, "rest_split.xml")
+        rr, _, _ = run(exe, rs, "--musicxml", rx)
+        xml = open(rx, encoding="utf-8").read() if os.path.exists(rx) else ""
+    check(rr == 0 and "<score-partwise" in xml, "导出 MusicXML")
+    check("<duration>840</duration>" not in xml and
+              "<duration>600</duration>" not in xml and
+              "<duration>1800</duration>" not in xml,
+          "三段不规则间隙不再各写成一个近似休止符")
+    check("<note><rest/><duration>720</duration><voice>1</voice>"
+              "<type>quarter</type><dot/></note>" in xml,
+          "1.75 拍拆出附点四分休止 720")
+    check("<note><rest/><duration>480</duration><voice>1</voice>"
+              "<type>quarter</type></note>" in xml,
+          "1.25 拍拆出四分休止 480")
+    check("<note><rest/><duration>1440</duration><voice>1</voice>"
+              "<type>half</type><dot/></note>" in xml and
+              "<note><rest/><duration>360</duration><voice>1</voice>"
+              "<type>eighth</type><dot/></note>" in xml,
+          "3.75 拍拆成附点二分 1440 + 附点八分 360")
+    check("<note><rest/><duration>120</duration><voice>1</voice>"
+              "<type>16th</type></note>" in xml,
+          "余下的十六分休止也单独成符")
+
+    # 逐行核对每个休止符的 duration 与 type/dot，并确认小节时长守恒。
+    tp = {"whole": 4.0, "half": 2.0, "quarter": 1.0, "eighth": 0.5,
+          "16th": 0.25, "32nd": 0.125, "64th": 0.0625}
+    bad, rest_rows = [], []
+    for line in xml.splitlines():
+        if "<note><rest/>" not in line:
+            continue
+        dm = re.search(r"<duration>(\d+)</duration>", line)
+        tm = re.search(r"<type>([^<]+)</type>", line)
+        if not dm or not tm:
+            continue
+        rest_rows.append(line)
+        want = tp.get(tm.group(1), 1.0) * (1.5 if "<dot/>" in line else 1.0)
+        if abs(int(dm.group(1)) / 480.0 - want) > 1e-6:
+            bad.append(line.strip())
+    check(not bad, "每个休止符的 duration 与 type/dot 严格一致", str(bad[:2]))
+    check(len(rest_rows) == 7, "共 7 个休止符（三段拆成 6 个 + 一个精确对照）",
+          str(len(rest_rows)))
+    sums = [sum(int(x) for x in re.findall(r"<duration>(\d+)</duration>", m))
+            for m in re.findall(r"<measure[^>]*>(.*?)</measure>", xml, re.S)]
+    check(sums == [1920, 1920, 1920], "三个小节的总时长都守恒为 1920 tick",
+          str(sums))
+
+    # 全量素材 + 纯逻辑自测：把新增的守护也纳入 CLI 冒烟。
+    audit = os.path.join(ROOT, "tests", "check_xml_durations.py")
+    rc2, out2, _ = run(sys.executable, audit, "--self-test")
+    check(rc2 == 0 and "0 失败" in out2, "MusicXML 时值校验自测通过",
+          out2[-200:])
+    rc3, out3, _ = run(sys.executable, audit)
+    check(rc3 == 0 and "0 处不一致" in out3,
+          "全部 85 份素材的 MusicXML 时值一致性校验通过", out3[-200:])
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

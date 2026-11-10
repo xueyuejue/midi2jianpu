@@ -1791,6 +1791,58 @@ if (existsSync(pgatePath)) {
     'WASM HTML 是 24 个八分音符列');
 }
 
+// ---- 54. v1.58.0 休止符时值拆分（网页端同一份 core）----
+// rest_split.mid：1.75 / 1.25 / 3.75 拍三段不规则休止必须拆成标准时值之和，
+// 每个 <note><rest/> 的 <duration> 与 <type>/<dot/> 严格一致，总时长守恒。
+const rsPath = path.join(FIXTURES, 'rest_split.mid');
+if (existsSync(rsPath)) {
+  const rst = makeCaller(mod);
+  rst.setMidi(new Uint8Array(readFileSync(rsPath)));
+  rst.setLyrics('');
+  const rsText = rst.call('midi2jianpu_parse', -1, 1) || '';
+  check(rsText.includes('1= 0 - - -_.  |') && rsText.includes('2 0 - -  |'),
+    'WASM 文本谱不受拆分影响：前两小节仍各守恒 4 拍', rsText);
+  check(rsText.includes('3= 0. 4= 0 5_  |'),
+    'WASM 最后一小节按惯例允许尾上休止不满', rsText);
+
+  const rsXml = rst.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(rsXml.includes('<score-partwise'), 'WASM 导出 MusicXML');
+  check(!rsXml.includes('<duration>840</duration>') &&
+        !rsXml.includes('<duration>600</duration>') &&
+        !rsXml.includes('<duration>1800</duration>'),
+    'WASM 三段不规则间隙不再各写成一个近似休止符');
+  check(rsXml.includes('<note><rest/><duration>720</duration><voice>1</voice>'
+        + '<type>quarter</type><dot/></note>'),
+    'WASM 1.75 拍拆出附点四分休止 720');
+  check(rsXml.includes('<note><rest/><duration>360</duration><voice>1</voice>'
+        + '<type>eighth</type><dot/></note>'),
+    'WASM 3.75 拍拆出附点八分休止 360');
+
+  const TP = { whole: 4, half: 2, quarter: 1, eighth: 0.5,
+               '16th': 0.25, '32nd': 0.125, '64th': 0.0625 };
+  const divM = rsXml.match(/<divisions>(\d+)<\/divisions>/);
+  const div = divM ? Number(divM[1]) : 480;
+  const restLines = (rsXml.match(/<note><rest\/>[^\n]*<\/note>/g) || []);
+  let rsBad = 0;
+  for (const line of restLines) {
+    const dm = line.match(/<duration>(\d+)<\/duration>/);
+    const tm = line.match(/<type>([^<]+)<\/type>/);
+    if (!dm || !tm) continue;
+    let want = TP[tm[1]] === undefined ? 1 : TP[tm[1]];
+    if (line.includes('<dot/>')) want *= 1.5;
+    if (Math.abs(Number(dm[1]) / div - want) > 1e-6) rsBad++;
+  }
+  check(rsBad === 0, 'WASM 每个休止符 duration 与 type/dot 严格一致',
+    String(rsBad));
+  check(restLines.length === 7, 'WASM 共 7 个休止符（6 段拆分 + 1 个精确对照）',
+    String(restLines.length));
+  const rsSums = [...rsXml.matchAll(/<measure[^>]*>([\s\S]*?)<\/measure>/g)]
+    .map(m => [...m[1].matchAll(/<duration>(\d+)<\/duration>/g)]
+      .reduce((a, d) => a + Number(d[1]), 0));
+  check(JSON.stringify(rsSums) === JSON.stringify([1920, 1920, 1920]),
+    'WASM 三个小节总时长都守恒为 1920 tick', JSON.stringify(rsSums));
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

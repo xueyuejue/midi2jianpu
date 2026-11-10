@@ -5,7 +5,8 @@
 //       拍号 map 与逐小节网格、调号 map（中途转调 / KeyMap）、
 //       五声调式（宫商角徵羽）宫音判定与校正、tempo map 时间轴与 LRC 对齐、
 //       SysEx 里的 GS/XG 鼓模式与 GM/GS/XG Reset、--track 按轨隔离、
-//       截断 / 损坏 MIDI 的边界安全、SMF chunk 级边界重同步。
+//       截断 / 损坏 MIDI 的边界安全、SMF chunk 级边界重同步、
+//       MusicXML 休止符时值与 <type>/<dot/> 的严格一致。
 #include "midi2jianpu/notation.hpp"
 #include "midi2jianpu/musicxml_writer.hpp"
 #include "midi2jianpu/html_writer.hpp"
@@ -5399,6 +5400,183 @@ int main() {
         check(fr.laneGate == 1.0,
               "本声部样本不足时不臆造门限，实际: " +
                   std::to_string(fr.laneGate));
+    }
+
+    // -----------------------------------------------------------------
+    // v1.58.0: MusicXML 休止符时值拆成标准时值之和
+    //   <duration> 精确但 <type> 是 durTypeDot() 猜的近似值时，MuseScore
+    //   按 type 画形状、按 duration 推进游标，谱面会把休止符画错。
+    // -----------------------------------------------------------------
+    std::cout << "\n测试 MusicXML 休止符时值一致性\n";
+    {
+        auto add = [](MidiData& d, long start, long dur, int pitch) {
+            NoteEvent n;
+            n.startTicks = start;
+            n.durationTicks = dur;
+            n.rawDurationTicks = dur;
+            n.pitch = pitch;
+            n.channel = 0;
+            n.track = 0;
+            d.notes.push_back(n);
+        };
+        const KeyEstimate c{0, true};
+
+        // 逐行取出所有 <note><rest/>，核对 duration 与 type/dot 是否严格一致。
+        auto restRows = [](const std::string& x) {
+            std::vector<std::string> rows;
+            size_t pos = 0;
+            while ((pos = x.find("<note><rest/>", pos)) != std::string::npos) {
+                const size_t end = x.find("</note>", pos);
+                if (end == std::string::npos) break;
+                rows.push_back(x.substr(pos, end + 7 - pos));
+                pos = end + 7;
+            }
+            return rows;
+        };
+        auto fieldNum = [](const std::string& row, const std::string& tag) {
+            const size_t p = row.find(tag);
+            if (p == std::string::npos) return -1;
+            const size_t b = p + tag.size();
+            const size_t e = row.find('<', b);
+            if (e == std::string::npos) return -1;
+            return std::stoi(row.substr(b, e - b));
+        };
+        auto fieldStr = [](const std::string& row, const std::string& tag) {
+            const size_t p = row.find(tag);
+            if (p == std::string::npos) return std::string();
+            const size_t b = p + tag.size();
+            const size_t e = row.find('<', b);
+            return e == std::string::npos ? std::string() : row.substr(b, e - b);
+        };
+        auto badRests = [&](const std::string& x, int div) {
+            static const struct { const char* name; double beats; } kTypes[] = {
+                {"whole", 4.0}, {"half", 2.0}, {"quarter", 1.0},
+                {"eighth", 0.5}, {"16th", 0.25}, {"32nd", 0.125}, {"64th", 0.0625},
+            };
+            int bad = 0;
+            for (const auto& row : restRows(x)) {
+                const int dur = fieldNum(row, "<duration>");
+                if (dur < 0) continue;
+                const std::string tp = fieldStr(row, "<type>");
+                double want = 1.0;
+                bool known = false;
+                for (const auto& k : kTypes) {
+                    if (tp == k.name) { want = k.beats; known = true; break; }
+                }
+                if (!known) { bad++; continue; }
+                if (row.find("<dot/>") != std::string::npos) want *= 1.5;
+                if (std::abs(dur / (double)div - want) > 1e-6) bad++;
+            }
+            return bad;
+        };
+        auto measureSums = [](const std::string& x) {
+            std::vector<long> sums;
+            size_t pos = 0;
+            while ((pos = x.find("<measure", pos)) != std::string::npos) {
+                const size_t open = x.find('>', pos);
+                const size_t end = x.find("</measure>", open);
+                if (open == std::string::npos || end == std::string::npos) break;
+                const std::string body = x.substr(open + 1, end - open - 1);
+                long sum = 0;
+                size_t p = 0;
+                while ((p = body.find("<note>", p)) != std::string::npos) {
+                    const size_t ne = body.find("</note>", p);
+                    if (ne == std::string::npos) break;
+                    const std::string row = body.substr(p, ne - p);
+                    const size_t dp = row.find("<duration>");
+                    if (dp != std::string::npos) {
+                        const size_t b = dp + 10, e = row.find('<', b);
+                        if (e != std::string::npos)
+                            sum += std::stol(row.substr(b, e - b));
+                    }
+                    p = ne + 7;
+                }
+                sums.push_back(sum);
+                pos = end + 10;
+            }
+            return sums;
+        };
+
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.trackNames[0] = "Vocal";
+        add(d, 0, 120, 60);        // 小节 1 末尾剩 1800 = 3.75 拍
+        add(d, 1920, 480, 62);     // 小节 2 末尾剩 1440 = 3 拍（精确对照）
+        add(d, 3840, 120, 64);     // 小节 3：间隙 840 = 1.75 拍
+        add(d, 4800, 120, 65);     //            间隙 600 = 1.25 拍
+        add(d, 5520, 240, 67);
+        const std::string xml = renderMusicXml(d, c);
+
+        check(badRests(xml, 480) == 0,
+              "全部休止符 duration 与 type/dot 严格一致，实际不一致: " +
+                  std::to_string(badRests(xml, 480)));
+        check(xml.find("<duration>840</duration>") == std::string::npos &&
+                  xml.find("<duration>600</duration>") == std::string::npos &&
+                  xml.find("<duration>1800</duration>") == std::string::npos,
+              "三段不规则间隙不再写成单个近似休止符");
+        check(xml.find("<note><rest/><duration>720</duration><voice>1</voice>"
+                       "<type>quarter</type><dot/></note>") != std::string::npos,
+              "1.75 拍拆出附点四分休止（720）");
+        check(xml.find("<note><rest/><duration>480</duration><voice>1</voice>"
+                       "<type>quarter</type></note>") != std::string::npos,
+              "1.25 拍拆出四分休止（480）");
+        check(xml.find("<note><rest/><duration>360</duration><voice>1</voice>"
+                       "<type>eighth</type><dot/></note>") != std::string::npos,
+              "3.75 拍拆出附点八分休止（360）");
+        check(xml.find("<note><rest/><duration>120</duration><voice>1</voice>"
+                       "<type>16th</type></note>") != std::string::npos,
+              "余下的十六分休止也单独成符");
+        const std::vector<long> sums = measureSums(xml);
+        check(sums.size() == 3 && sums[0] == 1920 && sums[1] == 1920 &&
+                  sums[2] == 1920,
+              "三个小节的总时长都守恒为 1920 tick");
+        check(restRows(xml).size() == 7,
+              "拆出 7 个休止符（3 段拆 6 个 + 1 个精确对照），实际: " +
+                  std::to_string(restRows(xml).size()));
+
+        // 精确档不许被拆散：3 拍的附点二分休止仍是单个 note。
+        auto countOf = [](const std::string& s, const std::string& sub) {
+            size_t n = 0, pos = 0;
+            while ((pos = s.find(sub, pos)) != std::string::npos) { n++; pos += sub.size(); }
+            return n;
+        };
+        check(countOf(xml, "<note><rest/><duration>1440</duration><voice>1</voice>"
+                           "<type>half</type><dot/></note>") == 2,
+              "3 拍精确档逐字节保持（3.75 拍拆出的那段 + 第 3 小节对照）");
+
+        // 音符路径完全不动：仍是八分 / 十六分 / 四分。
+        check(xml.find("<type>eighth</type>") != std::string::npos &&
+                  xml.find("<type>16th</type>") != std::string::npos &&
+                  xml.find("<type>quarter</type>") != std::string::npos,
+              "音符时值符号不受拆分影响");
+
+        // 反向闸门：不足一个 64 分音符的极不规则间隙无法精确拆，
+        // 必须保留旧的单一休止符兜底，不许擅自改动时间推进。
+        MidiData odd;
+        odd.division = 480;
+        odd.timeSig.valid = true;
+        odd.trackNames[0] = "Vocal";
+        add(odd, 0, 470, 60);
+        add(odd, 480, 480, 62);
+        const std::string oddXml = renderMusicXml(odd, c);
+        check(oddXml.find("<duration>10</duration>") != std::string::npos,
+              "10 tick 的不规则间隙保留旧兜底、时长不丢失");
+        check(countOf(oddXml, "<duration>10</duration>") == 1,
+              "不规则间隙只写一个休止符，不拆成多个");
+        check(countOf(oddXml, "<note><rest/>") == 2,
+              "除 10 tick 兜底外，小节末仍照常补一个半休止");
+
+        // 反向闸门：全小节休止 <rest measure="yes"/> 是标准写法，不拆。
+        MidiData empty;
+        empty.division = 480;
+        empty.timeSig.valid = true;
+        empty.trackNames[0] = "Vocal";
+        add(empty, 0, 480, 60);
+        add(empty, 3840, 480, 62);   // 第 2 小节完全空
+        const std::string emptyXml = renderMusicXml(empty, c);
+        check(emptyXml.find("<rest measure=\"yes\"/>") != std::string::npos,
+              "整小节空档仍写成全小节休止");
     }
 
     std::cout << "\n------------------------------------------------\n";

@@ -6,6 +6,7 @@
 //   - 跨小节的音符必须切开，段间用 <tie> 连接，否则小节时长会溢出
 //   - 三连音的 <type> 要写名义时值（乘 3/2），不能写实际时长
 //   - 每个小节的总时长必须等于拍号规定值，不足要补休止符
+//   - 休止符间隙拆成标准时值之和，<duration> 与 <type>/<dot/> 必须严格一致
 #include "midi2jianpu/musicxml_writer.hpp"
 #include "midi2jianpu/notation.hpp"
 
@@ -103,6 +104,56 @@ static std::pair<std::string, bool> durTypeDot(double beats) {
         if (d < best) { best = d; bestType = s.type; }
     }
     return {bestType, false};
+}
+
+// 休止符时值拆分：音符走 quantizeTiming() 吸附到标准档，休止符却是按两个
+// 音头之间的原始 tick 间隙直接写出来的。durTypeDot() 的 8% 容差与「取最
+// 接近基础时值」的兜底会把 1.75 拍写成二分休止、3.75 拍写成全休止 ——
+// <duration> 精确但 <type> 只是近似值。MuseScore 按 type 画形状、按
+// duration 推进游标，谱面就会把休止符画错。
+// 这里把间隙贪心拆成若干标准时值（含附点）之和：每个 <note><rest/> 的
+// duration 与 type/dot 严格一致，各段相加仍等于原间隙（拍数守恒）。
+struct RestPart {
+    long ticks = 0;
+    const char* type = "quarter";
+    bool dotted = false;
+};
+
+// units 以 64 分音符为单位：1 拍 = 16，whole = 64，附点全音符 = 96。
+// 按 tick 长度从大到小排列，贪心才不会把 3 拍拆成「半 + 四分之一」。
+static const struct { int units; const char* type; bool dotted; } kRestSteps[] = {
+    {96, "whole", true},   {64, "whole", false},
+    {48, "half", true},    {32, "half", false},
+    {24, "quarter", true}, {16, "quarter", false},
+    {12, "eighth", true},  {8, "eighth", false},
+    {6, "16th", true},     {4, "16th", false},
+    {3, "32nd", true},     {2, "32nd", false},
+    {1, "64th", false},
+};
+
+// 返回空向量表示「这段间隙无法由标准时值精确拼出」，调用方保留旧兜底。
+static std::vector<RestPart> splitRestDuration(long ticks, int division) {
+    std::vector<RestPart> parts;
+    if (ticks <= 0 || division <= 0) return parts;
+    long long rem = ticks;
+    while (rem > 0) {
+        bool picked = false;
+        for (const auto& step : kRestSteps) {
+            const long long scaled = 1LL * division * step.units;
+            if (scaled % 16 != 0) continue;   // 非整 tick 的档位跳过
+            const long long len = scaled / 16;
+            if (len > 0 && len <= rem) {
+                parts.push_back({(long)len, step.type, step.dotted});
+                rem -= len;
+                picked = true;
+                break;
+            }
+        }
+        // 余下不足一个 64 分音符（或 division 让某档除不尽）：不擅自改时长，
+        // 交回旧的单一休止符兜底。
+        if (!picked) { parts.clear(); return parts; }
+    }
+    return parts;
 }
 
 // 一个待输出的音符片段。
@@ -420,14 +471,27 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
 
         auto emitRest = [&](long from, long to, int voice) {
             if (to <= from) return;
-            long len = to - from;
-            auto [rt, rd] = durTypeDot(len / (double)division);
-            xml << "      <note><rest/><duration>" << len
-                << "</duration><voice>" << (voice + 1) << "</voice><type>" << rt << "</type>";
-            if (rd) xml << "<dot/>";
-            // 大谱表：休止也要标到对应谱表，否则落到上行谱与音符错位。
-            if (grand && curStaff >= 1) xml << "<staff>" << curStaff << "</staff>";
-            xml << "</note>\n";
+            const long len = to - from;
+            const std::vector<RestPart> parts = splitRestDuration(len, division);
+            // 单段且精确时，输出与旧实现逐字节一致（durTypeDot 的精确匹配档）。
+            // 无法精确拆分的极不规则 tick 也保留旧兜底，不动时间推进。
+            if (parts.empty()) {
+                auto [rt, rd] = durTypeDot(len / (double)division);
+                xml << "      <note><rest/><duration>" << len
+                    << "</duration><voice>" << (voice + 1) << "</voice><type>" << rt << "</type>";
+                if (rd) xml << "<dot/>";
+                if (grand && curStaff >= 1) xml << "<staff>" << curStaff << "</staff>";
+                xml << "</note>\n";
+                return;
+            }
+            for (const auto& p : parts) {
+                xml << "      <note><rest/><duration>" << p.ticks
+                    << "</duration><voice>" << (voice + 1) << "</voice><type>" << p.type << "</type>";
+                if (p.dotted) xml << "<dot/>";
+                // 大谱表：休止也要标到对应谱表，否则落到上行谱与音符错位。
+                if (grand && curStaff >= 1) xml << "<staff>" << curStaff << "</staff>";
+                xml << "</note>\n";
+            }
         };
 
         // <attributes> 只能在第一个真正写出来的小节里出现一次。

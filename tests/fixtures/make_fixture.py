@@ -2,7 +2,7 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 84 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 85 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
@@ -13,7 +13,8 @@ running_meta / running_sysex / running_realtime / running_standard /
 port_pedal / port_bend / port_prefix / port_prefix_base / port_standard /
 sysex_gs_drum / sysex_xg_drum / sysex_gs_normal / sysex_gs_reset /
 sysex_gm_reset / sysex_xg_reset / sysex_conductor / sysex_ch9_normal /
-sysex_ch9_drum / sysex_unknown / sysex_port_drum / gate_gap / poly_gap / poly_gate（另配 3 份 LRC 歌词）。
+sysex_ch9_drum / sysex_unknown / sysex_port_drum / gate_gap / poly_gap / poly_gate /
+rest_split（另配 3 份 LRC 歌词）。
 meter 是把变拍号、变速、鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」，
 modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五声调式
 （C 宫、G 徵调式，故意不写 0x59 逼自动猜调暴露宫音判错），tempo_ramp 用
@@ -72,6 +73,10 @@ voice_trio 把三个通道、三条反向 CC11 曲线塞进同一条轨（8 个�
 2 个二分音符 / 1 个全小节长音），逼 splitVoices 拆出 3 个 <voice>：锁住
 MusicXML 每个声部各写自己的力度与楔形、direction 带 <voice> 归属、wedge
 number 递增到 3，而全局段落名 Verse 仍只写一次。
+rest_split 故意留下 3.75 拍 / 1.75 拍 / 1.25 拍三段 DAW 常见的不规则休止，
+外加一段 3 拍附点二分休止作精确对照：休止符必须拆成标准时值之和，
+每个 <note><rest/> 的 <duration> 与 <type>/<dot/> 严格一致，小节总时长不变。
+前两小节文本谱照样守恒 4 拍，最后一小节按惯例允许尾上休止不满。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -746,6 +751,35 @@ def build_poly_gap() -> bytes:
 
     header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
     return header + t0.render() + t1.render()
+
+
+def build_rest_split() -> bytes:
+    """v1.58.0：不规则休止间隙必须拆成标准时值之和。
+
+    4/4 三小节，非标准间隙都放在小节末尾，前两小节文本谱仍守恒 4 拍：
+      小节 1  0 起十六分(120)      -> 小节末剩 1800(3.75 拍)
+      小节 2  1920 起四分(480)     -> 小节末剩 1440(3 拍，附点二分，精确对照)
+      小节 3  3840 起十六分(120)、4800 起十六分、5520 起八分
+              -> 间隙 840(1.75 拍)、600(1.25 拍)，最后一小节按惯例允许
+                 尾上休止不满
+    旧版把三段分别写成 whole / half / quarter 休止，<duration> 精确但
+    <type> 只是 durTypeDot() 兜底猜的近似值；修复后应拆成
+    (附点二分 + 附点八分) / (附点四分 + 16 分) / (四分 + 16 分)。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"rest_split"))
+    t0.add(0, meta(0x51, struct.pack(">I", 500000)[1:]))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    t = Track()
+    t.add(0, meta(0x03, b"Vocal"))
+    t.note(0, 60, 100, 0, 120)
+    t.note(0, 62, 100, BAR, 480)
+    t.note(0, 64, 100, BAR * 2, 120)
+    t.note(0, 65, 100, BAR * 2 + 960, 120)
+    t.note(0, 67, 100, BAR * 2 + 1680, 240)
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t.render()
 
 
 def build_gate_gap() -> bytes:
@@ -2916,6 +2950,16 @@ def main() -> None:
     # 它前面的休止
     for name, builder in (
         ("overfull", build_overfull),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # 不规则休止间隙：MusicXML 拆成标准时值之和，duration/type 严格一致
+    for name, builder in (
+        ("rest_split", build_rest_split),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:
