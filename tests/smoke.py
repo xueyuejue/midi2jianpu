@@ -2830,7 +2830,7 @@ def main():
           out2[-200:])
     rc3, out3, _ = run(sys.executable, audit)
     check(rc3 == 0 and "0 处不一致" in out3,
-          "全部 85 份素材的 MusicXML 时值一致性校验通过", out3[-200:])
+          "全部 87 份素材的 MusicXML 时值一致性校验通过", out3[-200:])
 
     group("[80] v1.59.0 小节中间休止符精确拆段：文本谱拍数守恒")
     # rest_midbar.mid 把 1.75 / 1.25 拍两段非标准间隙夹在小节中间，后面
@@ -2871,7 +2871,49 @@ def main():
           out2[-200:])
     rc3, out3, _ = run(sys.executable, audit)
     check(rc3 == 0 and "0 处不守恒" in out3,
-          "全部 86 份素材的文本谱拍数守恒", out3[-200:])
+          "全部 87 份素材的文本谱拍数守恒", out3[-200:])
+
+    group("[81] v1.60.0 HTML 谱面附点标记：文本谱 / MusicXML / HTML 三端一致")
+    # DurStyle::dotted 与 CSS 的 .dotted .num::after 一直都在，noteColumn()
+    # 却没把 class 拼上去：0.75 拍画成八分、1.5 拍画成四分，读者数出来的
+    # 拍数凭空少 1/3。html_dots.mid 把附点单音、附点休止、柱式和弦附点、
+    # 3 拍延音线长音放在同一份素材里。
+    hd = os.path.join(FIXTURES, "html_dots.mid")
+    with tempfile.TemporaryDirectory() as td:
+        hh = os.path.join(td, "html_dots.html")
+        rc, _, err = run(exe, hd, "--html", hh)
+        html = open(hh, encoding="utf-8").read() if os.path.exists(hh) else ""
+        hx = os.path.join(td, "html_dots.xml")
+        run(exe, hd, "--musicxml", hx)
+        xml = open(hx, encoding="utf-8").read() if os.path.exists(hx) else ""
+    check(rc == 0 and html, "导出 html_dots.mid 的 HTML 谱面", err[-200:])
+    check(html.count("class='note eighth dotted'") == 3,
+          "两处 0.75 拍单音与附点八分休止都画点")
+    check(html.count("class='note sixteenth dotted'") == 2,
+          "两个 0.375 拍都画附点十六分")
+    check(html.count("class='note quarter dotted'") == 2,
+          "1.5 拍单音与和弦都画附点四分")
+    check(html.count("class='tone dotted'") == 3,
+          "三串柱式和弦各只画一个点（挂在最低音）")
+    check("class='note chordcol eighth dotted'" not in html,
+          "和弦整列不挂 dotted，否则叠写的每个音会各画一个点")
+    check("class='note half dotted'" not in html and
+          "class='note whole dotted'" not in html,
+          "3 拍 / 6 拍靠延音线表达，不画附点")
+    check(xml.count("<dot/>") >= 16,
+          "MusicXML 侧仍有 <dot/> 作真值，实际 %d 个" % xml.count("<dot/>"))
+    rc, out, _ = run(exe, hd)
+    check("1_. 2=. 3=. 4. 5  |" in out and "0_." in out,
+          "文本谱的附点记号与 HTML 一一对应", out[-200:])
+
+    # 新守护脚本：纯逻辑自测 + 全量审计 + 结构性零回归口径。
+    audit2 = os.path.join(ROOT, "tests", "check_html_dots.py")
+    rc2, out2, _ = run(sys.executable, audit2, "--self-test")
+    check(rc2 == 0 and "失败 0 项" in out2, "HTML 附点校验自测通过",
+          out2[-200:])
+    rc3, out3, _ = run(sys.executable, audit2)
+    check(rc3 == 0 and "0 项问题" in out3,
+          "全部 87 份素材的 HTML 附点一致性通过", out3[-200:])
 
     print("\n" + "-" * 48)
     if failures:

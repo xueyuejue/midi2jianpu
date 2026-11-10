@@ -1872,6 +1872,42 @@ if (existsSync(rmPath)) {
     'WASM HTML 十六分音符排版不受休止拆段影响', rmHtml.slice(-200));
 }
 
+
+// ---- 56. v1.60.0 HTML 谱面附点标记（网页端同一份 core）----
+// html_dots.mid 把 0.375 / 0.75 / 1.5 拍的附点单音、附点休止符、柱式和弦
+// 与 3 拍延音线长音放在同一份素材里。旧版 HTML 一个 dotted class 都没有，
+// 网页端读同一份 core，必须一起把 CSS 的 .dotted .num::after 接上。
+const hdpPath = path.join(FIXTURES, 'html_dots.mid');
+if (existsSync(hdpPath)) {
+  const hdp = makeCaller(mod);
+  hdp.setMidi(new Uint8Array(readFileSync(hdpPath)));
+  hdp.setLyrics('');
+  const hdpText = hdp.call('midi2jianpu_parse', -1, 1) || '';
+  check(hdpText.includes('1_. 2=. 3=. 4. 5  |'),
+    'WASM 文本谱附点记号不变', hdpText);
+  check(hdpText.includes('0_.'),
+    'WASM 文本谱保留附点八分休止', hdpText);
+
+  const hdpHtml = hdp.call('midi2jianpu_html', -1, 1) || '';
+  check((hdpHtml.match(/class='note eighth dotted'/g) || []).length === 3,
+    'WASM HTML 两处 0.75 拍单音与附点八分休止都画点');
+  check((hdpHtml.match(/class='note sixteenth dotted'/g) || []).length === 2,
+    'WASM HTML 两个 0.375 拍画附点十六分');
+  check((hdpHtml.match(/class='note quarter dotted'/g) || []).length === 2,
+    'WASM HTML 1.5 拍单音与和弦都画附点四分');
+  check((hdpHtml.match(/class='tone dotted'/g) || []).length === 3,
+    'WASM HTML 三串柱式和弦各只画一个点（挂在最低音）');
+  check(!hdpHtml.includes("class='note chordcol eighth dotted'"),
+    'WASM HTML 和弦整列不挂 dotted');
+  check(!hdpHtml.includes("class='note half dotted'") &&
+        !hdpHtml.includes("class='note whole dotted'"),
+    'WASM HTML 3 拍 / 6 拍靠延音线表达，不画附点');
+
+  const hdpXml = hdp.call('midi2jianpu_musicxml', -1, 1) || '';
+  check((hdpXml.match(/<dot\/>/g) || []).length >= 16,
+    'WASM MusicXML 仍有 <dot/> 作真值');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

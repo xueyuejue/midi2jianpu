@@ -52,9 +52,12 @@ static DurStyle durStyleOf(double beats) {
         {1.0,   {"quarter",      false, 0, 0}},
         {1.5,   {"quarter",      true,  0, 0}},
         {2.0,   {"half",         false, 1, 0}},
-        {3.0,   {"half",         true,  2, 0}},
+        // 3 拍 / 6 拍在简谱里靠延音线条数表达（5 - - / 5 - - - - -），
+        // 与文本谱 DUR_TABLE 的 "--" / 延长线写法一致，不画附点。
+        // dotted 的语义是「需要在数字右侧补一个点」，只留给 0.375 / 0.75 / 1.5 拍。
+        {3.0,   {"half",         false, 2, 0}},
         {4.0,   {"whole",        false, 3, 0}},
-        {6.0,   {"whole",        true,  5, 0}},
+        {6.0,   {"whole",        false, 5, 0}},
     };
     double best = 1e9;
     DurStyle out{"quarter", false, 0, 0};
@@ -88,7 +91,11 @@ static std::string noteColumn(const std::string& numText, int highDots, int lowD
     DurStyle ds = overrideStyle ? *overrideStyle : durStyleOf(beats);
 
     std::ostringstream os;
-    os << "<span class='note " << ds.cls << extraClass << "'";
+    // 附点档位必须在数字右侧补一个点，否则画出来就是基础时值：
+    // 0.75 拍看成 0.5 拍、1.5 拍看成 1 拍，读者数出来的拍数凭空少 1/3。
+    // CSS 的 .dotted .num::after 早就写好了，这里把它接上。
+    os << "<span class='note " << ds.cls << (ds.dotted ? " dotted" : "")
+       << extraClass << "'";
     // --n 是延音线条数，用来给 .note 预留右侧空间
     if (ds.extLines > 0) os << " style='--n:" << ds.extLines << "'";
     os << ">";
@@ -171,8 +178,13 @@ static std::string chordColumn(const std::vector<std::pair<std::string, std::pai
     if (ds.extLines > 0) os << " style='--n:" << ds.extLines << "'";
     os << "><span class='core'><span class='stack'>";
 
-    for (const auto& tn : tones) {
-        os << "<span class='tone'>";
+    for (size_t ti = 0; ti < tones.size(); ti++) {
+        const auto& tn = tones[ti];
+        // 附点只画在最下面那个音右侧（与减时线只画最低音同口径）：
+        // .dotted 挂在单个 tone 上，CSS 的 .dotted .num::after 就只命中它；
+        // 若挂在整列上，叠写的每个音都会各画一个点，看起来像一串附点。
+        const bool lastTone = (ti + 1 == tones.size());
+        os << "<span class='tone" << (lastTone && ds.dotted ? " dotted" : "") << "'>";
         os << "<span class='oct'>";
         for (int i = 0; i < tn.second.first; i++) os << "<i></i>";
         os << "</span>";

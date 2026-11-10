@@ -2,7 +2,7 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 86 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 87 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
@@ -81,6 +81,9 @@ rest_split 故意留下 3.75 拍 / 1.75 拍 / 1.25 拍三段 DAW 常见的不规
 现在拆成 0. -= / 0 -= 后同样守恒 4 拍。
 rest_midbar 把这两段不规则间隙挪到小节中间，专门守护「后面紧跟音头时
 休止符也不许按最近档吸附」：旧版第一小节读 3.5 拍，修复后两小节都 4 拍。
+html_dots 专测 HTML 谱面的附点：0.375 / 0.75 / 1.5 拍的单音、休止符与
+和弦都必须在数字右侧画一个点，而 3 拍靠延音线表达（不画点）、三连音
+不画点、和弦列只画一次点（挂在最低音那个 tone 上）。
 
 用法：
     python tests/fixtures/make_fixture.py            # 写入本目录 sample.mid / sample.lrc
@@ -811,6 +814,52 @@ def build_rest_midbar() -> bytes:
     t.note(0, 67, 100, BAR + 480, 480)
     t.note(0, 69, 100, BAR + 960, 480)
     t.note(0, 71, 100, BAR + 1440, 480)
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t.render()
+
+
+
+def build_html_dots() -> bytes:
+    """v1.60.0：HTML 附点标记的三端一致性素材。
+
+    4/4 四小节，DIV=480：
+      小节 1  0.75 / 0.375 / 0.375 / 1.5 / 1.0 拍的单音（首尾相接，不留空档）
+      小节 2  0.75 拍单音 + 0.75 拍附点八分休止 + 1.5 拍单音 + 1.0 拍单音
+              （首尾填满 1920 tick，不留不足半拍的尾休止）
+      小节 3  两串 0.75 拍柱式和弦 + 一串 1.5 拍和弦 + 1.0 拍单音
+      小节 4  3.0 拍长音（简谱 5 - -，靠延音线表达，不该画附点）+ 1.0 拍单音
+    文本谱的附点后缀与 MusicXML 的 <dot/> 是既有的真值，HTML 必须跟上。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"html_dots"))
+    t0.add(0, meta(0x51, struct.pack(">I", 500000)[1:]))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    t = Track()
+    t.add(0, meta(0x03, b"Vocal"))
+    # 小节 1：四种附点档位都不留空档，避免时值量化把它们拉长
+    t.note(0, 60, 100, 0, 360)        # 0.75  附点八分
+    t.note(0, 62, 100, 360, 180)      # 0.375 附点十六分
+    t.note(0, 64, 100, 540, 180)      # 0.375 附点十六分
+    t.note(0, 65, 100, 720, 720)      # 1.5   附点四分
+    t.note(0, 67, 100, 1440, 480)     # 1.0   四分（精确档，不画点）
+    # 小节 2：0.75 拍附点八分单音 + 0.75 拍附点八分休止 + 1.5 拍附点四分
+    # + 1.0 拍四分，正好填满 1920 tick；不留 0.25 拍尾休止（不足半拍门槛
+    # 会被吞掉，check_bar_beats.py 会报这一小节只有 3.75 拍）。
+    t.note(0, 69, 100, 1920, 360)
+    t.note(0, 71, 100, 2640, 720)     # 前面 2280..2640 留 360 附点八分休止
+    t.note(0, 72, 100, 3360, 480)
+    # 小节 3：柱式和弦走 chordColumn，附点只能画一次
+    for p in (60, 64, 67):
+        t.note(1, p, 90, 3840, 360)
+    for p in (62, 65, 69):
+        t.note(1, p, 90, 4200, 360)
+    for p in (59, 62, 67):
+        t.note(1, p, 90, 4560, 720)
+    t.note(0, 74, 100, 5280, 480)
+    # 小节 4：3 拍长音靠延音线表达，不该画附点
+    t.note(0, 72, 100, 5760, 1440)
+    t.note(0, 71, 100, 7200, 480)
     return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t.render()
 
 
@@ -2993,6 +3042,7 @@ def main() -> None:
     for name, builder in (
         ("rest_split", build_rest_split),
         ("rest_midbar", build_rest_midbar),
+        ("html_dots", build_html_dots),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

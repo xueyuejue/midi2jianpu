@@ -5685,6 +5685,105 @@ int main() {
               "拆不干净的间隙仍记成一拍 0：" + jo);
     }
 
+
+    // -----------------------------------------------------------------
+    // v1.60.0: HTML 谱面必须把附点画出来。DurStyle::dotted 与 CSS 的
+    // .dotted .num::after 一直在，noteColumn() 却没把 class 拼上去，
+    // 0.75 拍画成八分、1.5 拍画成四分，视觉拍数凭空少 1/3。
+    // -----------------------------------------------------------------
+    std::cout << "\n测试 HTML 附点标记\n";
+    {
+        auto add = [](MidiData& d, long start, long dur, int pitch) {
+            NoteEvent n;
+            n.startTicks = start;
+            n.durationTicks = dur;
+            n.rawDurationTicks = dur;
+            n.pitch = pitch;
+            n.channel = 0;
+            n.track = 0;
+            d.notes.push_back(n);
+        };
+        auto countOf = [](const std::string& s, const std::string& sub) {
+            size_t n = 0, pos = 0;
+            while ((pos = s.find(sub, pos)) != std::string::npos) {
+                n++; pos += sub.size();
+            }
+            return n;
+        };
+        const KeyEstimate c{0, true};
+
+        // 4/4 一小节：0.75 / 0.375 / 0.375 / 1.5 / 1.0 拍，首尾相接不留空档，
+        // 免得时值量化的补空档逻辑改掉这些精确档位。
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.trackNames[0] = "Vocal";
+        add(d, 0, 360, 60);
+        add(d, 360, 180, 62);
+        add(d, 540, 180, 64);
+        add(d, 720, 720, 65);
+        add(d, 1440, 480, 67);
+        const std::string h = renderHtml(d, c, "t");
+        check(countOf(h, "class='note eighth dotted'") == 1,
+              "0.75 拍是附点八分列：" + h.substr(0, 200));
+        check(countOf(h, "class='note sixteenth dotted'") == 2,
+              "两个 0.375 拍都是附点十六分列");
+        check(countOf(h, "class='note quarter dotted'") == 1,
+              "1.5 拍是附点四分列");
+        check(h.find("class='note quarter'") != std::string::npos,
+              "1 拍精确档仍是不带点的四分列");
+        check(h.find("class='note half dotted'") == std::string::npos,
+              "二分列不该带附点");
+        check(h.find("class='note whole dotted'") == std::string::npos,
+              "全音符列不该带附点");
+        const std::string jp = formatJianpu(d, c);
+        check(jp.find("1_. 2=. 3=. 4. 5") != std::string::npos,
+              "文本谱的附点记号不受 HTML 修复影响：" + jp);
+
+        // 附点休止符：2400..2760 留 360 tick（0.75 拍）间隙，HTML 也要画点。
+        MidiData r;
+        r.division = 480;
+        r.timeSig.valid = true;
+        r.trackNames[0] = "Vocal";
+        add(r, 1920, 480, 60);
+        add(r, 2760, 720, 62);
+        add(r, 3480, 240, 64);
+        const std::string hr = renderHtml(r, c, "t");
+        check(countOf(hr, "class='note eighth dotted'") == 1,
+              "0.75 拍附点八分休止也画点");
+
+        // 和弦列：三个音同时发 0.75 拍，附点只挂在最低音那个 tone 上。
+        MidiData ch;
+        ch.division = 480;
+        ch.timeSig.valid = true;
+        ch.trackNames[0] = "Vocal";
+        add(ch, 0, 360, 60);
+        add(ch, 0, 360, 64);
+        add(ch, 0, 360, 67);
+        add(ch, 360, 1560, 69);
+        const std::string hc = renderHtml(ch, c, "t");
+        check(countOf(hc, "class='tone dotted'") == 1,
+              "和弦列只画一个附点（挂在最低音）：" + hc.substr(0, 200));
+        check(hc.find("class='note chordcol eighth'") != std::string::npos,
+              "和弦列本身仍是 eighth 档");
+        check(hc.find("class='note chordcol eighth dotted'") == std::string::npos,
+              "和弦整列不挂 dotted，否则每个音都会各画一个点");
+
+        // 3 拍长音靠两条延音线表达（简谱 5 - -），不该再画附点。
+        MidiData lg;
+        lg.division = 480;
+        lg.timeSig.valid = true;
+        lg.trackNames[0] = "Vocal";
+        add(lg, 0, 1440, 60);
+        add(lg, 1440, 480, 62);
+        const std::string hl = renderHtml(lg, c, "t");
+        check(hl.find("class='note half dotted'") == std::string::npos,
+              "3 拍长音不画附点（durStyleOf 的 3.0 档已收窄语义）");
+        check(hl.find("class='note half'") != std::string::npos &&
+                  hl.find("--n:2") != std::string::npos,
+              "3 拍长音仍是二分列加两条延音线");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";
