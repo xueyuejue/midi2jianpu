@@ -212,6 +212,15 @@ def strip_pure_rest_columns(html):
     return REST_COL_RE.sub("", html)
 
 
+# v1.64.0 起 MusicXML 会写 <beam> 连梁。本脚本只管 HTML 休止维度，
+# XML 只要求「除连梁外逐字节一致」，否则每份有八分音符的素材都会假报。
+BEAM_RE = re.compile(rb'<beam number="\d">\w+</beam>')
+
+
+def strip_beams(xml):
+    return BEAM_RE.sub(b"", xml)
+
+
 def exact_beats(value):
     return value is not None and any(abs(value - b) < EPS
                                     for _, b in EXACT_STEPS)
@@ -231,6 +240,8 @@ def structural_regress(old_exe, new_exe):
             b = render(new_exe, mid, td, "new")
             for ext in ("txt", "xml"):
                 if a[ext] != b[ext]:
+                    if ext == "xml" and strip_beams(a[ext]) == strip_beams(b[ext]):
+                        continue          # 只多了 <beam>，属 v1.64.0 的预期变化
                     errors.append("%s: %s 发生变化（本轮只应改 HTML）" % (stem, ext))
             old_html = norm_html(a["html"].decode("utf-8", "replace"))
             new_html = norm_html(b["html"].decode("utf-8", "replace"))

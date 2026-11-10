@@ -452,6 +452,98 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             return a.start < b.start;
         });
 
+        // ---- 3.5 连梁（beam）预计算 ----
+        // MusicXML 用 <beam> 把 < 四分音符的连续音符连成梁；没有它时 MuseScore
+        // 只能靠自动连梁，遇到跨拍的连音、混合时值、三连音就会连错。
+        // 规则与 HTML 端减时线对齐：同一 (小节, 谱表, 声部) 内、时值 < 四分、
+        // 首尾相接（中间无休止）、同三连音归属，且落在同一拍上（三连音例外，
+        // 它本来就跨拍）的连续音符并成一组。单音不画梁。同拍和弦（多颗同
+        // start 的音符）算一个事件。
+        struct BeamInfo { int levels = 0; char state[5] = {0,0,0,0,0}; };
+        std::vector<BeamInfo> beamOf(segs.size());
+        const char* kBeamWord[4] = {"", "begin", "continue", "end"};
+        auto beamLevelOfType = [](const std::string& t) -> int {
+            if (t == "eighth") return 1;
+            if (t == "16th")   return 2;
+            if (t == "32nd")   return 3;
+            if (t == "64th")   return 4;
+            return 0; // quarter/half/whole 不画梁
+        };
+        struct BeamEvent {
+            long start = 0, end = 0, beat = 0;
+            int bar = 0, staff = 0, voice = 0, trip = 0, level = 0;
+            std::vector<int> segs;
+        };
+        std::vector<BeamEvent> bev;
+        for (size_t i = 0; i < segs.size(); ) {
+            size_t j = i;
+            const long st = segs[i].start;
+            while (j < segs.size() && segs[j].bar == segs[i].bar &&
+                   segs[j].staff == segs[i].staff && segs[j].voice == segs[i].voice &&
+                   segs[j].start == st) ++j;
+            BeamEvent ev;
+            ev.start = segs[i].start;
+            ev.end   = segs[i].start + segs[i].dur;
+            ev.bar   = segs[i].bar;  ev.staff = segs[i].staff;
+            ev.voice = segs[i].voice;
+            ev.trip  = segs[i].triplet ? 1 : 0;
+            ev.level = beamLevelOfType(durTypeDot(
+                segs[i].triplet ? (segs[i].dur / (double)division) * 1.5
+                               : (segs[i].dur / (double)division)).first);
+            // 拍长按本小节拍号算（6/8 是八分音符一拍），与 HTML 端同一口径；
+            // 不按拍分组会把整小节的八分音符连成一条跨强拍的长梁。
+            const long beatLen = (long)std::llround(
+                grid.sigForBar(ev.bar).barLengthTicks(division) /
+                std::max(1, grid.beatsForBar(ev.bar)));
+            ev.beat = beatLen > 0 ? (ev.start - grid.barStart(ev.bar)) / beatLen : 0;
+            for (size_t k = i; k < j; ++k) ev.segs.push_back((int)k);
+            bev.push_back(ev);
+            i = j;
+        }
+        auto flushBeamGroup = [&](std::vector<int>& grp) {
+            if (grp.size() >= 2) {
+                int maxL = 0;
+                for (int ei : grp) maxL = std::max(maxL, bev[ei].level);
+                for (int L = 1; L <= maxL; ++L) {
+                    // 该层只连「连续的参与者」：中间夹着更短的音就断开，否则
+                    // 次级梁会跨过它——MusicXML 没有钩形梁，画出来就是错的。
+                    size_t k = 0;
+                    while (k < grp.size()) {
+                        if (bev[grp[k]].level < L) { ++k; continue; }
+                        size_t m = k;
+                        while (m < grp.size() && bev[grp[m]].level >= L) ++m;
+                        if (m - k >= 2) {   // 单颗音不画梁，免得出现孤立次级梁
+                            for (size_t u = k; u < m; ++u) {
+                                const int w = (u == k) ? 1 : (u + 1 == m) ? 3 : 2;
+                                for (int si : bev[grp[u]].segs)
+                                    beamOf[si].state[L] = (char)w;
+                            }
+                        }
+                        k = m;
+                    }
+                }
+            }
+            grp.clear();
+        };
+        std::vector<int> beamGrp;
+        int pb = -1, ps = -1, pv = -1, pt = -1;
+        long pe = -1, pbeat = -1;
+        bool prevBeamable = false;   // 上一个事件本身可连梁；长音会把梁截断
+        for (size_t e = 0; e < bev.size(); ++e) {
+            const BeamEvent& ev = bev[e];
+            const bool sameCtx = (ev.bar == pb && ev.staff == ps && ev.voice == pv);
+            const bool cont = prevBeamable && ev.level > 0 && sameCtx &&
+                              ev.start == pe && ev.trip == pt &&
+                              (ev.trip != 0 || ev.beat == pbeat);
+            if (!cont) flushBeamGroup(beamGrp);   // 断点：先收上一组
+            if (ev.level > 0) beamGrp.push_back((int)e);
+            for (int si : ev.segs) beamOf[si].levels = ev.level;
+            pb = ev.bar; ps = ev.staff; pv = ev.voice; pt = ev.trip;
+            pe = ev.end; pbeat = ev.beat;
+            prevBeamable = (ev.level > 0);
+        }
+        flushBeamGroup(beamGrp);
+
         // ---- 3. 谱号：音域偏低时用低音谱号，否则高音谱号 ----
         // 不判断的话钢琴左手会用高音谱号写，满屏加线。
         double pitchSum = 0;
@@ -751,7 +843,9 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             xml << "    </measure>\n";
         };
 
-        for (const auto& seg : segs) {
+        for (size_t si = 0; si < segs.size(); ++si) {
+            const Segment& seg = segs[si];
+            const BeamInfo& bi = beamOf[si];
             if (seg.bar != curBar) {
                 if (curBar >= 0) closeMeasure();
 
@@ -915,6 +1009,14 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             }
             // 大谱表：每个音符标明所属谱表，否则 MuseScore 全堆到上行谱。
             if (grand) xml << "<staff>" << seg.staff << "</staff>";
+            // 连梁：MusicXML 的 note 子元素顺序是 <type>/<dot>/
+            // <time-modification> -> <staff> -> <beam> -> <notations>，
+            // 写反了严格校验的软件会整条丢掉。
+            for (int L = 1; L <= bi.levels; ++L) {
+                int bst = bi.state[L];
+                if (bst == 0) continue;
+                xml << "<beam number=\"" << L << "\">" << kBeamWord[bst] << "</beam>";
+            }
             // MusicXML 的 note 子元素有固定顺序：notations 在 lyric 之前。
             // tied 与 slur 必须合进同一个 <notations>，分两个写会让某些
             // 记谱软件只认第一个。

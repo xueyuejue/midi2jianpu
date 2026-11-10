@@ -34,6 +34,9 @@ TYPE_BEATS = {
 
 NOTE_RE = re.compile(r"<note>(.*?)</note>", re.S)
 REST_LINE_RE = re.compile(r"^[ \t]*<note><rest[^>]*>[^\n]*</note>\r?\n", re.M)
+# v1.64.0 起音符行会带 <beam> 连梁元素，比对「除休止符外逐字节一致」时
+# 必须先剥掉，否则每份有八分音符的素材都会假报差异。
+BEAM_RE = re.compile(r'<beam number="\d">\w+</beam>')
 
 
 def default_exe():
@@ -71,8 +74,8 @@ def note_mismatches(xml):
 
 
 def strip_rest_lines(xml):
-    """移除所有休止符 note 行，用于比对「除休止符外逐字节一致」。"""
-    return REST_LINE_RE.sub("", xml)
+    """移除所有休止符 note 行与 <beam> 元素，用于比对「除休止符/连梁外逐字节一致」。"""
+    return BEAM_RE.sub("", REST_LINE_RE.sub("", xml))
 
 
 def rest_total(xml):
@@ -215,6 +218,10 @@ def self_test():
     ok(REST_LINE_RE.sub("", '<note><rest measure="yes"/><duration>960</duration>'
                         '<type>whole</type></note>\nX') == "X",
        "整小节休止行同样会被 strip")
+    ok(strip_rest_lines('<note><type>eighth</type>'
+                        '<beam number="1">begin</beam></note>\nX')
+       == '<note><type>eighth</type></note>\nX',
+       "<beam> 也会被剥掉，连梁不参与零回归比对")
     ok(note_mismatches(doc(note(240, "eighth"), div=480)) == [],
        "显式 divisions=480")
     print("check_xml_durations self-test: %d 项，%d 失败" % (n, len(failed)))
@@ -233,7 +240,7 @@ def main():
             print("用法: check_xml_durations.py --regress <旧版exe>")
             return 2
         changed, errors, notes = structural_regress(args[idx + 1])
-        print("结构性零回归：%d 份素材的 XML 按预期变化（仅休止符拆分）" % len(changed))
+        print("结构性零回归：%d 份素材的 XML 按预期变化（仅休止符拆分与连梁）" % len(changed))
         for n in notes:
             print("  [NOTE]", n)
         for e in errors:

@@ -30,7 +30,7 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 2
 
-      - name: 单元测试（857 项）
+      - name: 单元测试（869 项）
         working-directory: build
         run: ctest --output-on-failure
 
@@ -48,12 +48,20 @@ jobs:
         # 这条通道自己先自测，避免「诊断工具坏了却没人知道」。
         run: python3 tests/smoke.py --self-test
 
-      - name: MusicXML 时值一致性（17 项自测 + 88 份素材）
+      - name: MusicXML 时值一致性（18 项自测 + 88 份素材）
         # 逐个 <note> 核对 <duration> 与 <type>/<dot/>；休止符间隙必须拆成
         # 标准时值之和，<rest measure="yes"/> 全小节休止按惯例豁免。
         run: |
           python3 tests/check_xml_durations.py --self-test
           python3 tests/check_xml_durations.py
+
+      - name: MusicXML 连梁结构（18 项自测 + 88 份素材）
+        # <beam> 必须按 begin/continue/end 闭合、只出现在短于四分的音符上、
+        # 子元素顺序为 type/dot/time-modification -> staff -> beam -> notations。
+        # 顺序错或悬挂的梁会让 MuseScore 丢掉整条音符，比不写梁更糟。
+        run: |
+          python3 tests/check_xml_beams.py --self-test
+          python3 tests/check_xml_beams.py
 
       - name: 文本谱拍数守恒（26 项自测 + 88 份素材）
         # 一小节印出来的拍数必须等于拍号；休止符按最近档吸附会让谱面少拍。

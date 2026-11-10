@@ -210,6 +210,15 @@ def audit(exe, verbose=True):
     return errors, stats
 
 
+# v1.64.0 起 MusicXML 会写 <beam> 连梁；本脚本只管附点维度，
+# XML 只要求「除连梁外逐字节一致」。
+BEAM_RE = re.compile(rb'<beam number="\d">\w+</beam>')
+
+
+def strip_beams(xml):
+    return BEAM_RE.sub(b"", xml)
+
+
 def structural_regress(old_exe, new_exe):
     """附点维度必须零变化；HTML 其他维度的变化降级为 [NOTE]。
 
@@ -230,6 +239,8 @@ def structural_regress(old_exe, new_exe):
             b = render(new_exe, mid, td, "new")
             for ext in ("txt", "xml"):
                 if a[ext] != b[ext]:
+                    if ext == "xml" and strip_beams(a[ext]) == strip_beams(b[ext]):
+                        continue          # 只多了 <beam>，属 v1.64.0 的预期变化
                     errors.append("%s: %s 发生变化（本轮只应改 HTML）" % (stem, ext))
             old_html = norm_html(a["html"].decode("utf-8", "replace"))
             new_html = norm_html(b["html"].decode("utf-8", "replace"))

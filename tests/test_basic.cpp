@@ -5877,6 +5877,145 @@ int main() {
               "兜底路径不擅自改成 2 拍");
     }
 
+    {
+        // ---- MusicXML 连梁（<beam>）----
+        // 没有 <beam> 时 MuseScore 只能靠自动连梁，混合时值 / 跨拍连音会连错。
+        // 口径与 HTML 端减时线一致：同小节、同谱表、同声部、首尾相接、
+        // 同一拍（三连音例外）；时值 >= 四分不画梁。
+        std::cout << "\n测试 MusicXML <beam> 连梁\n";
+        auto add = [](MidiData& d, long start, long dur, int pitch) {
+            NoteEvent n;
+            n.startTicks = start;
+            n.durationTicks = dur;
+            n.rawDurationTicks = dur;
+            n.pitch = pitch;
+            n.channel = 0;
+            n.track = 0;
+            d.notes.push_back(n);
+        };
+        auto countOf = [](const std::string& s, const std::string& sub) {
+            size_t n = 0, pos = 0;
+            while ((pos = s.find(sub, pos)) != std::string::npos) {
+                n++; pos += sub.size();
+            }
+            return n;
+        };
+        KeyEstimate c{0, true};
+
+        // 同拍两个八分 + 一个四分：八分成一组，四分不画梁。
+        MidiData a;
+        a.division = 480;
+        a.timeSig.valid = true;
+        a.trackNames[0] = "Vocal";
+        add(a, 0, 240, 60);
+        add(a, 240, 240, 62);
+        add(a, 480, 480, 64);
+        const std::string ax = renderMusicXml(a, c);
+        check(countOf(ax, "<beam number=\"1\">begin</beam>") == 1 &&
+                  countOf(ax, "<beam number=\"1\">end</beam>") == 1,
+              "同拍两个八分连成一组梁（begin/end 各一）");
+        check(countOf(ax, "<beam ") == 2,
+              "四分音符不参与连梁，全曲只有 2 个 <beam> 元素");
+        const size_t aType = ax.find("<type>eighth</type>");
+        const size_t aBeam = ax.find("<beam number=\"1\">begin</beam>");
+        check(aType != std::string::npos && aBeam != std::string::npos &&
+                  aType < aBeam,
+              "<beam> 排在 <type> 之后（MusicXML 子元素顺序）");
+
+        // 跨拍不连：两拍各自成一组。
+        MidiData b;
+        b.division = 480;
+        b.timeSig.valid = true;
+        b.trackNames[0] = "Vocal";
+        add(b, 0, 240, 60);
+        add(b, 240, 240, 62);
+        add(b, 480, 240, 64);
+        add(b, 720, 240, 65);
+        const std::string bx = renderMusicXml(b, c);
+        check(countOf(bx, "<beam number=\"1\">begin</beam>") == 2 &&
+                  countOf(bx, "<beam number=\"1\">end</beam>") == 2,
+              "按拍分组：跨拍的两个八分各成一组，不连成跨强拍长梁");
+
+        // 一拍四个十六分：一级梁 + 二级梁都成一组（begin/continue*2/end）。
+        MidiData s;
+        s.division = 480;
+        s.timeSig.valid = true;
+        s.trackNames[0] = "Vocal";
+        add(s, 0, 120, 60);
+        add(s, 120, 120, 62);
+        add(s, 240, 120, 64);
+        add(s, 360, 120, 65);
+        add(s, 480, 1440, 67);
+        const std::string sx = renderMusicXml(s, c);
+        check(countOf(sx, "<beam number=\"2\">begin</beam>") == 1 &&
+                  countOf(sx, "<beam number=\"2\">continue</beam>") == 2 &&
+                  countOf(sx, "<beam number=\"2\">end</beam>") == 1,
+              "十六分音符连出二级梁（begin/continue/continue/end）");
+
+        // 十六 + 十六 + 八分：一级梁连三个，二级梁只覆盖前面两个十六分。
+        MidiData m;
+        m.division = 480;
+        m.timeSig.valid = true;
+        m.trackNames[0] = "Vocal";
+        add(m, 0, 120, 60);
+        add(m, 120, 120, 62);
+        add(m, 240, 240, 64);
+        add(m, 480, 1440, 65);
+        const std::string mx = renderMusicXml(m, c);
+        check(countOf(mx, "<beam number=\"1\">begin</beam>") == 1 &&
+                  countOf(mx, "<beam number=\"1\">continue</beam>") == 1 &&
+                  countOf(mx, "<beam number=\"1\">end</beam>") == 1,
+              "混合时值：一级梁仍连成一组三颗音");
+        check(countOf(mx, "<beam number=\"2\">begin</beam>") == 1 &&
+                  countOf(mx, "<beam number=\"2\">end</beam>") == 1,
+              "次级梁只盖住两个十六分，不延伸到八分上");
+
+        // 十六 + 八分 + 十六：二级梁的参与者不连续，宁可不画也不画错。
+        MidiData h;
+        h.division = 480;
+        h.timeSig.valid = true;
+        h.trackNames[0] = "Vocal";
+        add(h, 0, 120, 60);
+        add(h, 120, 240, 62);
+        add(h, 360, 120, 64);
+        add(h, 480, 1440, 65);
+        const std::string hx = renderMusicXml(h, c);
+        check(countOf(hx, "<beam number=\"2\"") == 0,
+              "次级梁不跨过更短的音（无钩形梁时宁可不画）");
+        check(countOf(hx, "<beam number=\"1\">begin</beam>") == 1 &&
+                  countOf(hx, "<beam number=\"1\">end</beam>") == 1,
+              "一级梁仍把三颗音连成一组");
+
+        // 孤立的八分（后面跟着休止）：单颗音不画梁。
+        MidiData iso;
+        iso.division = 480;
+        iso.timeSig.valid = true;
+        iso.trackNames[0] = "Vocal";
+        add(iso, 0, 480, 60);
+        add(iso, 480, 240, 62);      // 八分，之后是 240 tick 休止
+        add(iso, 960, 960, 64);
+        const std::string ix = renderMusicXml(iso, c);
+        check(countOf(ix, "<beam ") == 0,
+              "休止打断连梁：孤立八分不画梁");
+
+        // 大谱表：按谱表分组，且 <staff> 必须排在 <beam> 之前。
+        MidiData g;
+        g.division = 480;
+        g.timeSig.valid = true;
+        g.trackNames[0] = "Piano";
+        add(g, 0, 240, 84);          // 上行谱两个八分
+        add(g, 240, 240, 86);
+        add(g, 480, 240, 36);        // 下行谱两个八分
+        add(g, 720, 240, 38);
+        const std::string gx = renderMusicXml(g, c);
+        check(gx.find("<staff>1</staff><beam number=\"1\">begin</beam>") !=
+                  std::string::npos,
+              "大谱表上行谱的梁落在 staff 1，且 <beam> 排在 <staff> 之后");
+        check(gx.find("<staff>2</staff><beam number=\"1\">begin</beam>") !=
+                  std::string::npos,
+              "大谱表下行谱的梁落在 staff 2，不跨谱表连梁");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";
