@@ -5998,6 +5998,51 @@ int main() {
         check(countOf(ix, "<beam ") == 0,
               "休止打断连梁：孤立八分不画梁");
 
+        // 复拍子：6/8 的梁组是附点四分（三个八分一组），不是每个八分一组。
+        // 按「分母分之一」算拍长的话，六个八分全落在不同的拍上，一条梁都
+        // 画不出来——旧版正是如此，而 HTML 端与它同一口径，一起画错。
+        MidiData s68;
+        s68.division = 480;
+        s68.timeSig.valid = true;
+        s68.timeSig.numerator = 6;
+        s68.timeSig.denomPow = 3;      // 6/8
+        s68.trackNames[0] = "Vocal";
+        for (int i = 0; i < 6; ++i) add(s68, 240L * i, 240, 60 + i);
+        const std::string s68x = renderMusicXml(s68, c);
+        check(countOf(s68x, "<beam number=\"1\">begin</beam>") == 2 &&
+                  countOf(s68x, "<beam number=\"1\">continue</beam>") == 2 &&
+                  countOf(s68x, "<beam number=\"1\">end</beam>") == 2,
+              "6/8 六个八分连成两组三音，而不是六个单颗音各成一组");
+        check(countOf(s68x, "<beam ") == 6,
+              "6/8 全曲共 6 个 <beam> 元素（两组各三颗音）");
+
+        // 3/8：整小节三个八分连成一组（分子能被 3 整除且分母 >= 8）。
+        MidiData s38;
+        s38.division = 480;
+        s38.timeSig.valid = true;
+        s38.timeSig.numerator = 3;
+        s38.timeSig.denomPow = 3;      // 3/8
+        s38.trackNames[0] = "Vocal";
+        for (int i = 0; i < 3; ++i) add(s38, 240L * i, 240, 60 + i);
+        const std::string s38x = renderMusicXml(s38, c);
+        check(countOf(s38x, "<beam number=\"1\">begin</beam>") == 1 &&
+                  countOf(s38x, "<beam number=\"1\">continue</beam>") == 1 &&
+                  countOf(s38x, "<beam number=\"1\">end</beam>") == 1,
+              "3/8 整小节三个八分连成一组");
+
+        // 分组边长本身：单拍子一拍、复拍子附点拍（1/分母 x 3）。
+        check(TimeSignature{4, 2, true}.beamUnitTicks(480) == 480,
+              "4/4 的分组边长是一拍");
+        check(TimeSignature{3, 2, true}.beamUnitTicks(480) == 480,
+              "3/4 的分组边长也是一拍");
+        check(TimeSignature{2, 1, true}.beamUnitTicks(480) == 960,
+              "2/2 的分组边长是二分音符");
+        check(TimeSignature{6, 3, true}.beamUnitTicks(480) == 720,
+              "6/8 的分组边长是附点四分（三个八分）");
+        check(TimeSignature{9, 3, true}.beamUnitTicks(480) == 720,
+              "9/8 同样是附点四分一组");
+        check(TimeSignature{3, 3, true}.beamUnitTicks(480) == 720,
+              "3/8 整小节一组");
         // 大谱表：按谱表分组，且 <staff> 必须排在 <beam> 之前。
         MidiData g;
         g.division = 480;

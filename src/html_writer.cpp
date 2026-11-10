@@ -814,13 +814,13 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 const int g = hasSlur ? lyrics.groupAt(n.startTicks) : 0;
 
                 // 能否接上上一条减时线：同小节、首尾相接、减时线条数相同，
-                // 且同属一拍（三连音组例外，它本来就跨拍）。
+                // 且同属一个梁组（三连音组例外，它本来就跨组）。
                 // 还要同属一个一字多音组：一条减时线跨两个字会把连音线切断。
-                // 一拍多长要按「当前小节的拍号」算：6/8 是八分音符一拍，
-                // 沿用 4/4 的 480 tick 会把六拍全算成三拍，减时线乱连。
-                long beatLen = (long)std::llround(
-                    grid.sigForBar(bar).barLengthTicks(data.division) /
-                    std::max(1, grid.beatsForBar(bar)));
+                // 梁组边长由 TimeSignature::beamUnitTicks() 给：单拍子是一拍，
+                // 复拍子（6/8 / 9/8 / 12/8）是附点拍。按「分母分之一」算的话
+                // 6/8 的每个八分都自成一拍，六个音全部落在不同的拍上，
+                // 一条减时线都画不出来。
+                long beatLen = grid.sigForBar(bar).beamUnitTicks(data.division);
                 long curBeat = beatLen > 0
                     ? (n.startTicks - grid.barStart(bar)) / beatLen : 0;
                 long endTick = n.startTicks + std::max<long>(n.durationTicks, 1);

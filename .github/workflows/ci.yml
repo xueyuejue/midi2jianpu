@@ -30,7 +30,7 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 2
 
-      - name: 单元测试（869 项）
+      - name: 单元测试（878 项）
         working-directory: build
         run: ctest --output-on-failure
 
@@ -77,7 +77,7 @@ jobs:
           python3 tests/check_html_dots.py --self-test
           python3 tests/check_html_dots.py
 
-      - name: HTML 休止符精确性（72 项自测 + 88 份素材）
+      - name: HTML 休止符精确性（77 项自测 + 88 份素材）
         # 文本谱 / MusicXML 已精确拆段，HTML 也必须拆成标准时值之和；
         # 精确档不碎片化、拆不干净保留旧兜底。--regress 在本地做结构回归。
         run: |

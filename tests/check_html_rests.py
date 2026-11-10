@@ -212,6 +212,49 @@ def strip_pure_rest_columns(html):
     return REST_COL_RE.sub("", html)
 
 
+def strip_beam_groups(html):
+    """把 <span class='bgrp...'>…</span> 这层外壳整体摘掉，只留里面的音符列。
+
+    减时线分组是 v1.65.0 的主题：复拍子（6/8 / 9/8 / 12/8）改为按附点拍
+    分组，bgrp 的包裹范围因此变化（12 个单音壳收敛成 4 个三音壳）。跨版本
+    逐字节比对前先摘掉这层外壳，与 check_html_dots 剥 ` dotted` 同一思路：
+    只放开本轮该变的维度，其余字节仍要求逐字节一致。
+    外壳内部嵌着音符列自己的 <span>，所以必须按 <span> 计数找到配对的
+    </span>，非贪婪匹配到第一个 </span> 是错的。
+    """
+    out = []
+    i = 0
+    n = len(html)
+    mark = "<span class='bgrp"
+    while i < n:
+        k = html.find(mark, i)
+        if k < 0:
+            out.append(html[i:])
+            break
+        out.append(html[i:k])
+        body = html.index(">", k) + 1          # 跳过 bgrp 开标签
+        depth = 1
+        j = body
+        while j < n:
+            ns = html.find("<span", j)
+            ne = html.find("</span>", j)
+            if ne < 0:
+                j = n
+                break
+            if 0 <= ns < ne:
+                depth += 1
+                j = html.index(">", ns) + 1
+            else:
+                depth -= 1
+                if depth == 0:
+                    out.append(html[body:ne])
+                    j = ne + len("</span>")
+                    break
+                j = ne + len("</span>")
+        i = j
+    return "".join(out)
+
+
 # v1.64.0 起 MusicXML 会写 <beam> 连梁。本脚本只管 HTML 休止维度，
 # XML 只要求「除连梁外逐字节一致」，否则每份有八分音符的素材都会假报。
 BEAM_RE = re.compile(rb'<beam number="\d">\w+</beam>')
@@ -243,11 +286,14 @@ def structural_regress(old_exe, new_exe):
                     if ext == "xml" and strip_beams(a[ext]) == strip_beams(b[ext]):
                         continue          # 只多了 <beam>，属 v1.64.0 的预期变化
                     errors.append("%s: %s 发生变化（本轮只应改 HTML）" % (stem, ext))
-            old_html = norm_html(a["html"].decode("utf-8", "replace"))
-            new_html = norm_html(b["html"].decode("utf-8", "replace"))
+            raw_old = norm_html(a["html"].decode("utf-8", "replace"))
+            raw_new = norm_html(b["html"].decode("utf-8", "replace"))
             xs = xml_rest_segments(b["xml"].decode("utf-8", "replace"))
-            approx_before += len(find_approx(html_rest_segments(old_html), xs))
-            approx_after += len(find_approx(html_rest_segments(new_html), xs))
+            approx_before += len(find_approx(html_rest_segments(raw_old), xs))
+            approx_after += len(find_approx(html_rest_segments(raw_new), xs))
+            # 减时线组的包裹范围归 v1.65.0 的复拍子分组管，逐字节比对前先摘壳。
+            old_html = strip_beam_groups(raw_old)
+            new_html = strip_beam_groups(raw_new)
             if old_html == new_html:
                 continue
             changed.append(stem)
@@ -385,6 +431,30 @@ def self_test():
     ck(sum(v or 0 for _, v in pure_rest_columns(repl))
        < sum(v or 0 for _, v in pure_rest_columns(old_h)),
        "替换成更短时值会让补回拍数变负")
+
+    # v1.65.0：复拍子的减时线分组由「每个八分自成一组」改成「三个八分一组」，
+    # bgrp 外壳的包裹范围随之变化。摘壳后其余字节必须逐字节一致，这正是
+    # 跨版本零回归的判据；外壳内部嵌着 num 那个 <span>，配对扫描必须按
+    # 深度找到真正的闭合标签。
+    def note_col(v):
+        return "<span class='note eighth'><span class='num'>%s</span></span>" % v
+
+    def shell(inner, cls="bgrp"):
+        return "<span class='%s'>%s</span>" % (cls, inner)
+
+    six = [note_col(i) for i in range(6)]
+    old_six = "".join(shell(c) for c in six)                  # 6 个单音壳
+    new_six = shell("".join(six[:3])) + shell("".join(six[3:]))  # 2 个三音壳
+    ck(strip_beam_groups(old_six) == strip_beam_groups(new_six),
+       "单音壳与三音壳摘壳后逐字节一致")
+    ck(strip_beam_groups(old_six) == "".join(six),
+       "摘壳后只剩各音自己的音符列")
+    ck(strip_beam_groups(shell(note_col(1), "bgrp b2")) == note_col(1),
+       "带次级梁层级的壳同样能摘")
+    ck(strip_beam_groups("A" + shell(note_col(1) + note_col(2)) + "B")
+       == "A" + note_col(1) + note_col(2) + "B", "壳外字节原样保留")
+    ck(strip_beam_groups("<span class='note'>7</span>")
+       == "<span class='note'>7</span>", "没有 bgrp 时原样返回")
     print("自测通过：%d 项" % n)
     return n
 

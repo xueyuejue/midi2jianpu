@@ -490,11 +490,10 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             ev.level = beamLevelOfType(durTypeDot(
                 segs[i].triplet ? (segs[i].dur / (double)division) * 1.5
                                : (segs[i].dur / (double)division)).first);
-            // 拍长按本小节拍号算（6/8 是八分音符一拍），与 HTML 端同一口径；
-            // 不按拍分组会把整小节的八分音符连成一条跨强拍的长梁。
-            const long beatLen = (long)std::llround(
-                grid.sigForBar(ev.bar).barLengthTicks(division) /
-                std::max(1, grid.beatsForBar(ev.bar)));
+            // 梁组边长与 HTML 端同一口径，都走 TimeSignature::beamUnitTicks()：
+            // 单拍子一拍、复拍子附点拍。既不把整小节连成一条跨强拍的长梁，
+            // 也不会让 6/8 的每个八分各自成组（那样一条梁都画不出来）。
+            const long beatLen = grid.sigForBar(ev.bar).beamUnitTicks(division);
             ev.beat = beatLen > 0 ? (ev.start - grid.barStart(ev.bar)) / beatLen : 0;
             for (size_t k = i; k < j; ++k) ev.segs.push_back((int)k);
             bev.push_back(ev);

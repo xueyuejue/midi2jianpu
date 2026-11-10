@@ -41,6 +41,17 @@ struct TimeSignature {
         return std::to_string(numerator) + "/" +
                std::to_string(1 << denomPow);
     }
+
+    // 连梁 / 减时线的分组边长（tick）：单拍子取一拍（1/分母），复拍子取
+    // 附点拍（3 个 1/分母，6/8 就是附点四分）。分子能被 3 整除且分母 >= 8
+    // 视为复拍子——否则 6/8 / 9/8 / 12/8 会算成「每个八分各一拍」，六个音
+    // 全都落在不同的拍上，连一条梁都画不出来。3/8 同理按整小节一组。
+    long beamUnitTicks(long division) const {
+        const int denom = 1 << denomPow;
+        const long unit = division * 4 / (denom > 0 ? denom : 1);
+        if (denom >= 8 && numerator > 0 && numerator % 3 == 0) return unit * 3;
+        return unit;
+    }
 };
 
 // 调号（从 MIDI 0x59 meta 事件解析）
