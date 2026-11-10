@@ -78,6 +78,8 @@ python tests/check_html_dots.py --self-test         # 35 项 HTML 附点自测
 python tests/check_html_dots.py                    # 全部 88 份素材 HTML 附点一致性
 python tests/check_html_rests.py --self-test        # 72 项 HTML 休止符自测
 python tests/check_html_rests.py                   # 全部 88 份素材 HTML 休止符精确性
+python tests/check_three_way.py --self-test         # 11 项三端结构守卫自测
+python tests/check_three_way.py                    # 全部 88 份素材三端结构一致性
 python tests/check_bar_beats.py --regress <旧版exe>  # 结构性零回归
 ```
 
@@ -241,7 +243,7 @@ python3 tests/check_wasm_sync.py --changed docs/wasm/midi2jianpu.wasm \
 
 | job | 步骤 |
 | --- | --- |
-| `cpp` | CMake 编译 CLI 与单测 → `ctest`（857 项）→ 全量重生成 88 份 `.mid` 并要求零 diff、无未跟踪素材 → `smoke.py --self-test` 28 项 → `check_xml_durations.py` 17 项自测 + 88 份素材 → `check_bar_beats.py` 26 项自测 + 88 份素材 → `check_html_dots.py` 35 项自测 + 88 份素材 → `check_html_rests.py` 72 项自测 + 88 份素材 → `smoke.py` 83 组 |
+| `cpp` | CMake 编译 CLI 与单测 → `ctest`（857 项）→ 全量重生成 88 份 `.mid` 并要求零 diff、无未跟踪素材 → `smoke.py --self-test` 28 项 → `check_xml_durations.py` 17 项自测 + 88 份素材 → `check_bar_beats.py` 26 项自测 + 88 份素材 → `check_html_dots.py` 35 项自测 + 88 份素材 → `check_html_rests.py` 72 项自测 + 88 份素材 → `check_three_way.py` 11 项自测 + 88 份素材 → `smoke.py` 83 组 |
 | `wasm` | `check_wasm_sync.py --self-test`（16 组）+ 实跑（含反向版本守护）→ `check_wasm_exports.py` → `wasm_smoke.mjs` 57 组（含产物版本号与 `version.hpp` 比对） |
 
 客户端可以忘了跑测试，这里在服务端兜底；**升过版本号却忘了重编 `docs/wasm/`，

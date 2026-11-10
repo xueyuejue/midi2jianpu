@@ -76,6 +76,14 @@ jobs:
           python3 tests/check_html_rests.py --self-test
           python3 tests/check_html_rests.py
 
+      - name: 三端结构一致性（11 项自测 + 88 份素材）
+        # 文本谱↔HTML 轨数与逐轨小节数、三端名义拍号、文本谱↔MusicXML
+        # 按对齐下标逐轨小节数与逐小节拍号（首/末小节豁免）。比逐音符时值
+        # 求和更稳健：和弦并发/多谱表<backup>/三连音编码都会让时值累加失真。
+        run: |
+          python3 tests/check_three_way.py --self-test
+          python3 tests/check_three_way.py
+
       - name: CLI 端到端冒烟（83 组）
         # 失败项由 tests/ci_report.py 同步写进 annotations 与 step summary。
         run: python3 tests/smoke.py build/midi2jianpu

@@ -67,7 +67,7 @@
 - [x] **损坏 / 截断 MIDI 的安全解析**：`MTrk` 长度字段写着原值、文件却只下载到一半时，不再越过 buffer 末尾把堆里相邻内存当成新事件继续解析（那会凭空冒出幻影音符与乱码歌词）。所有事件统一按 `min(trkEnd, size)` 取硬边界，残缺事件整条丢弃，CLI / HTML / 网页文件面板写明「文件数据不完整」并按可用字节正常出谱；合法文件逐字节零回归
 - [x] **CC67 软踏板**：踩下期间起音的音符力度按 ×0.7 衰减，重音记号 / 力度分析 / 网页播放 JSON 同步变化，时值与 CC11 力度表不动（没有 CC67 的文件逐字节零回归）；系数经 `--soft-pedal-scale` / `--no-soft-pedal` 与网页强度下拉可配（0.3~1.0 或关闭），纯整数公式零漂移
 - [x] **SMF chunk 级边界重同步**：轨间夹 DAW 私有扩展块（`XFIH` 等）或某条 `MTrk` 长度字段写错时，不再停掉整个 chunk 循环把后续旋律轨整条丢掉（旧版直接报「未提取到音符」）；改为按 chunk 通用规则跳过非 `MTrk` 块，并用「EOT 锚定 + 长度可信」的下一个轨头校正偏长 / 偏短的边界。歌词 / SysEx 里恰好出现的字面 `MTrk` 不会被误判，合法文件逐字节零回归；CLI / HTML / 网页文件面板写明「文件结构提示」
-- [x] 857 项单元测试 + 83 组端到端冒烟测试 + 28 项 CI 失败报告自测 + 17 项 MusicXML 时值自测 + 26 项文本谱拍数自测 + 35 项 HTML 附点自测 + 72 项 HTML 休止符自测 + 57 组 WASM 产物一致性检查（含产物版本号、源码一致性、「改了源码必须重编」与「重编了必须升版本」的双向纯 git 守护）
+- [x] 857 项单元测试 + 83 组端到端冒烟测试 + 28 项 CI 失败报告自测 + 17 项 MusicXML 时值自测 + 26 项文本谱拍数自测 + 35 项 HTML 附点自测 + 72 项 HTML 休止符自测 + 11 项三端结构守卫自测 + 57 组 WASM 产物一致性检查（含产物版本号、源码一致性、「改了源码必须重编」与「重编了必须升版本」的双向纯 git 守护）
 
 ## 在线 Demo 功能
 
@@ -873,6 +873,8 @@ XG 鼓组通道与中途换音色的通道，新导出 `_midi2jianpu_bank_info`�
 
 - [x] **HTML 休止符不再按最近档少画拍**：① 缺陷：文本谱 v1.59.0 的 `exactRest` 与 MusicXML v1.58.0 的 `splitRestDuration()` 都已把不规则间隙拆成标准时值之和，HTML 却仍用 `durStyleOf(restBeats)` 取最近档画**一个** `0` 列——`rest_midbar.mid` 的文本谱 / XML 都是 1.75 + 1.25 拍，HTML 却画成 1.5 + 1.0 拍，同一份谱三端读出的拍数不一致；`expression.mid` 的 `0_.` 在 v1.60.0 补回附点后也只是把 0.75 拍画对，非标准间隙仍按最近档。② 修复：`src/html_writer.cpp` 新增 `kExactRestSteps` / `splitRestBeats()`，以 1/16 拍为单位把间隙贪心拆成 `durStyleOf()` 能精确还原的档位之和，`restColumns()` 逐档输出 `0` 列；精确档不拆（逐字节不变）、余量不足 1/8 拍或除不尽时保留旧的最近档单列兜底，与另外两端口径一致。和弦 / 力度标记只挂第一列，CSS 一行未动。③ 守护：新增 `tests/check_html_rests.py`（72 项纯逻辑自测 + 88 份素材全量审计 + `--regress` 结构性零回归：差异只能落在不带标记的完整 `0` 列、txt/xml 零变化、近似问题严格减少；旧版审计报 7 项问题、新版 0 项），新增 `html_rests.mid` 覆盖 1.75 / 1.25 / 2.5 / 2.25 拍四段拆列与 0.75 / 1.0 拍精确档对照；857 项单测、CLI 冒烟 [82]、WASM 冒烟第 57 组与 CI 独立 step 一起锁住。④ 结果：对 v1.60.0 基线 **txt / xml 零变化，HTML 仅 3 份变化，插入 8 个 `0` 列、补回 2.25 拍**，真实曲目三端逐字节一致（v1.61.0）
 
+- [x] **HTML 谱面不再重复画小节（结构性三端守卫收口）**：① 缺陷：`src/html_writer.cpp` 的渲染分段按「音符」逐一切分小节，同一音符跨小节被拆成多段，不同音符的分段按音符交错出现（note1_bar0, note1_bar1, note2_bar0, note2_bar1 …）；渲染循环假设小节号单调推进，遇到后面的音符把小节号带回前一小节（bar 1 → bar 0）时，补齐空小节的循环会把已画过的小节再画一遍——钢琴轨等复调 / 和弦素材于是冒出十几二十个小节，而文本谱 / MusicXML 只有 5 小节，三端结构分叉（`parts.mid` 第 2 轨 HTML 被画成 21 小节）。② 修复：在分段构建之后、同拍分组之前插入 `std::stable_sort(seq, by startTicks)`，让分段以「小节」为主序、同小节内保留原有相对顺序，渲染循环不再回退重画。③ 结构性守卫（比逐音符时值求和更稳健：和弦并发、多谱表 `<backup>`、三连音编码都会让时值累加失真）：新增 `tests/check_three_way.py`，用真正的 HTML 解析器按 `div.track` 嵌套深度计 `<span class='measure'>` 个数，三端校验收口——文本谱↔HTML 轨数与逐轨小节数、三端全局名义拍号、文本谱↔MusicXML 按对齐下标逐轨小节数与逐小节名义拍号（首 / 末小节豁免）；MusicXML 把多声部收进同一 `<part>`、文本谱 / HTML 按声部拆成多条轨，属合理格式差，守卫只比文本谱↔HTML 轨数，XML 仅参与拍号与小节数比对。④ 守护 11 项纯逻辑自测 + 88 份素材全量审计（旧版审计报 1 处结构分叉、新版 0 处），`--regress <旧版exe>` 跨版本结构性零回归证明：除 `parts.mid` HTML 第 2 轨 21→5 小节这处预期修复外，其余素材三端结构零变化；857 项单测与 CI 独立 step 一起锁住（v1.62.0）
+
 ## 为什么开源
 
 中文简谱是中国特有的记谱体系，国外打谱软件（MuseScore、Finale）对它支持很差，国内又一直缺少一个干净的、可二次开发的基础库。这个项目想把「MIDI → 简谱」这层地基打好，让后来的人不用重复造轮子。
@@ -923,9 +925,11 @@ python tests/check_html_dots.py --self-test            # 35 项 HTML 附点自�
 python tests/check_html_dots.py                       # 全部 88 份素材 HTML 附点一致性
 python tests/check_html_rests.py --self-test           # 72 项 HTML 休止符自测
 python tests/check_html_rests.py                      # 全部 88 份素材 HTML 休止符精确性
+python tests/check_three_way.py --self-test            # 11 项三端结构守卫自测
+python tests/check_three_way.py                       # 全部 88 份素材三端结构一致性
 ```
 
-推送后 `.github/workflows/ci.yml` 还会在 Ubuntu 上再跑一遍两个 job：CMake 编译 + 857 项单测 + 28 项 CI 失败报告自测 + 17 项 MusicXML 时值自测 + 26 项文本谱拍数自测 + 35 项 HTML 附点自测 + 72 项 HTML 休止符自测 + 83 组 CLI 冒烟 + 88 份素材可复现校验，以及 57 组 WASM 冒烟 + 导出清单守护 + 产物同步守护。`docs/wasm/` 漏重编会让 CI 直接变红。
+推送后 `.github/workflows/ci.yml` 还会在 Ubuntu 上再跑一遍两个 job：CMake 编译 + 857 项单测 + 28 项 CI 失败报告自测 + 17 项 MusicXML 时值自测 + 26 项文本谱拍数自测 + 35 项 HTML 附点自测 + 72 项 HTML 休止符自测 + 11 项三端结构守卫自测 + 83 组 CLI 冒烟 + 88 份素材可复现校验，以及 57 组 WASM 冒烟 + 导出清单守护 + 产物同步守护。`docs/wasm/` 漏重编会让 CI 直接变红。
 
 产物同步守护是纯 git 检查（`tests/check_wasm_sync.py`）：`wasm_smoke.mjs` 第 34 组只比对 `version.hpp` 与 wasm 页脚版本，若有人**改了 `src/` 却不升版本、也不重编**，页脚仍然「一致」，那道守护会静默放过。同步守护直接看本次提交动了哪些文件：`src/**`、`include/**`、`cmake/**`、`CMakeLists.txt`、`build/build_wasm.cmd` 里只要有一个变更，`docs/wasm/midi2jianpu.wasm` 就必须一起变；胶水层 `.js` 单独变也不行。只改测试 / 文档 / CI 配置不要求重编。
 自 v1.41.0 起还加了一条**反向规则**：`.wasm` 变了（说明重编过）却没动

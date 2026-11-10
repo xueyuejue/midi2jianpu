@@ -458,6 +458,19 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             }
         }
 
+        // 按时间顺序重排分段：上面是按「音符」逐一切分小节的，于是同一音符跨
+        // 小节会被拆成多个分段，不同音符的分段便按「音符」交错出现
+        // （note1_bar0, note1_bar1, note2_bar0, note2_bar1 …）。而下面的渲染循环
+        // 假设小节号单调推进，一旦遇到后面的音符把 bar 带回到前一小节
+        // （bar 1 → bar 0），补齐空小节的循环就会把已经画过的小节再画一遍——
+        // 钢琴轨于是冒出十几二十个小节，而文本谱 / MusicXML 只有 5 小节，三端
+        // 结构就此分叉。这里按 startTicks 稳定排序，让分段以「小节」为主序、
+        // 同小节内保留原有相对顺序，渲染循环便不会再回退重画。
+        std::stable_sort(seq.begin(), seq.end(),
+                         [](const HNote& a, const HNote& b) {
+                             return a.n.startTicks < b.n.startTicks;
+                         });
+
         // ---- 同拍分组：同一 startTicks 的音符属于同一个和弦 ----
         std::vector<std::vector<const HNote*>> groups;
         for (const auto& s : seq) {
