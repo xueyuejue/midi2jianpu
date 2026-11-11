@@ -30,7 +30,7 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 2
 
-      - name: 单元测试（892 项）
+      - name: 单元测试（904 项）
         working-directory: build
         run: ctest --output-on-failure
 
@@ -108,7 +108,7 @@ jobs:
           python3 tests/check_xml_structure.py --self-test
           python3 tests/check_xml_structure.py
 
-      - name: CLI 端到端冒烟（84 组）
+      - name: CLI 端到端冒烟（85 组）
         # 失败项由 tests/ci_report.py 同步写进 annotations 与 step summary。
         run: python3 tests/smoke.py build/midi2jianpu
 

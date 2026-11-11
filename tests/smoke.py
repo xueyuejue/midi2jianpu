@@ -2980,6 +2980,59 @@ def main():
           "crescendo 起与 stop 止都落 staff 1（旧实现 stop 落 staff 2）",
           "实际 %s" % wstaff)
 
+    group("[84] v1.71.0 参数与外部输入校验：静默失败改成明确报错")
+    # 三处旧行为都属于「退出码 0、用户完全看不出参数被丢掉了」：
+    #   --track -1   负数被当成内部「不过滤」哨兵，静默输出全曲；
+    #   --pickup 4   等于整小节，被钳成 0（谱面无弱起），命令行却打出一行
+    #                只剩后缀的「（手动指定）」；
+    #   --lyrics <不存在>  读不到就是 0 行，仍报成功。
+    smp = os.path.join(FIXTURES, "sample.mid")
+
+    rc, _, err = run(exe, smp, "--track", "-1")
+    check(rc != 0 and "非负整数" in err,
+          "--track -1 明确报错（不再静默输出全曲）", (rc, err[-160:]))
+
+    rc, _, err = run(exe, smp, "--track", "0", "--list-tracks")
+    check("非负整数" not in err, "--list-tracks 与 --track 0 不受新校验影响",
+          err[-160:])
+
+    # 4/4 里 4 拍 = 整小节，弱起必须严格短于小节
+    rc, out, err = run(exe, smp, "--pickup", "4")
+    check(rc != 0 and "不小于整小节" in err,
+          "--pickup 4 在 4/4 里被拒绝并说明原因", (rc, err[-160:]))
+    check("（手动指定）" not in out,
+          "拒绝时不再输出只剩后缀的「（手动指定）」空壳行", out[:200])
+
+    rc, _, err = run(exe, smp, "--pickup", "99")
+    check(rc != 0 and "不小于整小节" in err, "--pickup 99 同样被拒绝", err[-160:])
+
+    rc, _, err = run(exe, smp, "--pickup", "0")
+    check(rc != 0 and "--no-pickup" in err,
+          "--pickup 0 引导用户改用 --no-pickup", (rc, err[-160:]))
+
+    rc, out, err = run(exe, smp, "--pickup", "3.5")
+    check(rc == 0 and "弱起 3.5 拍（手动指定）" in out,
+          "合法的 3.5 拍弱起照旧生效", (rc, out[:200], err[-160:]))
+
+    missing = os.path.join(tmp, "no_such_lyrics.lrc")
+    rc, _, err = run(exe, smp, "--html", os.path.join(tmp, "lyr1.html"),
+                     "--lyrics", missing)
+    check(rc != 0 and "无法打开歌词文件" in err,
+          "--lyrics 指向不存在的文件时明确报错", (rc, err[-160:]))
+
+    rc, _, err = run(exe, smp, "--lyrics", os.path.join(FIXTURES, "sample.lrc"))
+    check(rc == 0 and "只作用于" in err,
+          "纯文本谱给 --lyrics 时提示它会被忽略", (rc, err[-160:]))
+
+    empty_lrc = os.path.join(tmp, "empty_lyrics.lrc")
+    with open(empty_lrc, "w", encoding="utf-8") as f:
+        f.write("[ti:没有时间戳]\n纯文本一行\n")
+    rc, out, err = run(exe, smp, "--html", os.path.join(tmp, "lyr2.html"),
+                       "--lyrics", empty_lrc)
+    check(rc == 0 and "没有解析出任何歌词行" in err,
+          "文件可读但解析不出歌词时给出警告（不再只有「0 行」）",
+          (rc, out[-160:], err[-200:]))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

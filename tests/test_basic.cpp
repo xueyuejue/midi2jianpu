@@ -712,6 +712,40 @@ int main() {
         d.pickupTicks = 0;
         check(barGridOf(d).pickup == 0, "--no-pickup 关掉弱起");
     }
+    {
+        // --pickup 的手动值必须在入口就拦下越界数。0 拍不是「零长度弱起」；
+        // 等于或超过整小节的值会被 barGridOf 钳成 0（谱面当没有弱起），而
+        // 命令行那侧仍会报「弱起 N 拍」并把「（手动指定）」打出来——两处口径
+        // 相反，用户看到的是一个被静默丢弃的参数。
+        TimeSignature s44;
+        s44.numerator = 4;
+        s44.denomPow = 2;                   // 4/4
+        check(pickupArgError(1.0, s44).empty(), "4/4 的 1 拍弱起合法");
+        check(pickupArgError(3.5, s44).empty(), "4/4 的 3.5 拍弱起合法");
+        check(pickupArgError(3.9, s44).empty(), "4/4 的 3.9 拍弱起合法");
+        check(pickupArgError(4.0, s44).find("不小于整小节") != std::string::npos,
+              "4/4 里 4 拍等于整小节，必须报错");
+        check(pickupArgError(99.0, s44).find("不小于整小节") != std::string::npos,
+              "4/4 里 99 拍必须报错");
+        check(pickupArgError(3.999999999, s44).find("不小于整小节") != std::string::npos,
+              "浮点误差不能放过「其实就是整小节」的值");
+        check(pickupArgError(0.0, s44).find("--no-pickup") != std::string::npos,
+              "0 拍要引导用户改用 --no-pickup");
+        check(pickupArgError(-1.0, s44).find("大于 0") != std::string::npos,
+              "负数同样拦下（防止绕过 parseBeats 的调用方）");
+        TimeSignature s68;
+        s68.numerator = 6;
+        s68.denomPow = 3;                   // 6/8：拍 = 八分音符
+        check(pickupArgError(5.5, s68).empty(), "6/8 的 5.5 拍弱起合法");
+        check(pickupArgError(6.0, s68).find("不小于整小节") != std::string::npos,
+              "6/8 的 6 拍等于整小节，必须报错");
+        TimeSignature s34;
+        s34.numerator = 3;
+        s34.denomPow = 2;                   // 3/4
+        check(pickupArgError(2.0, s34).empty(), "3/4 的 2 拍弱起合法");
+        check(pickupArgError(3.0, s34).find("不小于整小节") != std::string::npos,
+              "3/4 的 3 拍等于整小节，必须报错");
+    }
 
     // ---- 歌词分配与一字多音 ----
     // HTML 的连音线弧线和 MusicXML 的 syllabic/slur 都从这一份结果出发。

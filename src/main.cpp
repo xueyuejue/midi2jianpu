@@ -19,12 +19,12 @@ static void printHelp() {
         "  midi2jianpu <input.mid> --musicxml out.xml  导出 MusicXML(可用 MuseScore 打开)\n"
         "  midi2jianpu <input.mid> --key Am         手动指定调性(如 Am=小调, C=大调)\n"
         "  midi2jianpu <input.mid> --output out.txt  文本简谱输出到文件\n"
-        "  midi2jianpu <input.mid> --track 0         只输出指定轨道\n"
+        "  midi2jianpu <input.mid> --track 0         只输出指定轨道（轨号从 0 起）\n"
         "  midi2jianpu <input.mid> --list-tracks     列出所有轨道（选 --track 前先看清）\n"
         "  midi2jianpu <input.mid> --transpose +2     移调(半音, 正负都可)\n"
         "  midi2jianpu <input.mid> --lyrics lyrics.lrc  加载歌词(优先于 MIDI 内置歌词)\n"
         "  midi2jianpu <input.mid> --no-midi-lyrics  忽略 MIDI 文件自带的歌词\n"
-        "  midi2jianpu <input.mid> --pickup 1       手动指定弱起小节长度(拍)\n"
+        "  midi2jianpu <input.mid> --pickup 1       手动指定弱起小节长度(拍, 须短于小节)\n"
         "  midi2jianpu <input.mid> --no-pickup      关闭弱起自动判定\n"
         "  midi2jianpu <input.mid> --no-key-changes 忽略中途转调(全曲按一个调记谱)\n"
         "  midi2jianpu <input.mid> --gong C        手动指定五声调式的宫音(简谱 1)\n"
@@ -203,6 +203,12 @@ int main(int argc, char** argv) {
             if (!parseInt(argv[++i], trackFilter)) {
                 std::cerr << "错误: --track 需要整数\n"; return 1;
             }
+            // 轨号从 0 起；负数是内部「不过滤」的哨兵值，用户写 --track -1
+            // 本意绝不会是「把全曲都输出」，静默照做等于骗人。
+            if (trackFilter < 0) {
+                std::cerr << "错误: --track 需要非负整数（轨号从 0 起，"
+                             "用 --list-tracks 查看）\n"; return 1;
+            }
         }
         else if (a == "--list-tracks") { listTracks = true; }
         else if (a == "--transpose" && i + 1 < argc) {
@@ -356,14 +362,32 @@ int main(int argc, char** argv) {
     if (noPickup) {
         data.pickupTicks = 0;
     } else if (pickupBeats >= 0) {
+        // 越界的弱起（等于或超过整小节）不能悄悄接受：barGridOf 会把它钳成
+        // 0（谱面完全没有弱起），命令行却照样报「弱起 N 拍」，两处口径相反。
+        // 早先的表现是一行残缺的「（手动指定）」——前半句为空、只剩后缀。
+        const std::string pe = m2j::pickupArgError(pickupBeats, data.timeSig);
+        if (!pe.empty()) {
+            std::cerr << "错误: " << pe << "\n"; return 1;
+        }
         double beatLen = data.division * 4.0 / (double)(1 << data.timeSig.denomPow);
         if (!(beatLen > 0)) beatLen = data.division;
         data.pickupTicks = (long)std::llround(pickupBeats * beatLen);
+        // tick 换算后再兜一次：拍数合法但四舍五入顶满小节时，同样会被
+        // barGridOf 钳成 0，这里提前报错，不让「提示有弱起、谱面无弱起」发生。
+        const long barLen = (long)std::llround(
+            data.timeSig.barLengthTicks(data.division));
+        if (barLen > 0 && data.pickupTicks >= barLen) {
+            std::cerr << "错误: 弱起拍数换算成 tick 后顶满整小节"
+                         "（弱起必须短于小节）\n";
+            return 1;
+        }
     }
     {
-        long pk = m2j::effectivePickupTicks(data);
-        if (pk > 0) {
-            std::cout << m2j::pickupLabel(data)
+        const long pk = m2j::effectivePickupTicks(data);
+        const std::string label = pk > 0 ? m2j::pickupLabel(data) : std::string();
+        // 标签为空就一个字都不打：否则会剩下一行只有「（手动指定）」的空壳。
+        if (!label.empty()) {
+            std::cout << label
                       << (pickupBeats >= 0 ? "（手动指定）" : "（自动判定，如不对用 --pickup / --no-pickup 覆盖）")
                       << "\n";
         }
@@ -428,6 +452,21 @@ int main(int argc, char** argv) {
     // 早先解析写在 --html 分支里，导 MusicXML 时整份歌词都丢了。
     std::vector<m2j::LyricLine> lyricLines;
     const std::vector<m2j::LyricLine>* lyricPtr = nullptr;
+    if (!lyricsPath.empty()) {
+        // 路径写错必须当场报错。旧实现直接去读，读不到就是 0 行，然后
+        // 「歌词已加载: 0 行」+ 退出码 0——用户完全不知道被告知的那个文件
+        // 根本没打开过，导出的谱子静默地没有歌词。
+        std::ifstream probe(lyricsPath.c_str(), std::ios::binary);
+        if (!probe) {
+            std::cerr << "错误: 无法打开歌词文件 " << lyricsPath << "\n"; return 1;
+        }
+        probe.close();
+        if (htmlOut.empty() && xmlOut.empty()) {
+            // 纯文本谱没有挂歌词的位置，说了比不说好，否则用户会以为歌词丢了。
+            std::cerr << "警告: --lyrics 只作用于 --html / --musicxml 输出，"
+                         "文本谱会忽略它\n";
+        }
+    }
     if (!lyricsPath.empty() && (!htmlOut.empty() || !xmlOut.empty())) {
         size_t dot = lyricsPath.find_last_of(".");
         std::string ext = (dot != std::string::npos) ? lyricsPath.substr(dot) : "";
@@ -441,6 +480,12 @@ int main(int argc, char** argv) {
             for (const auto& s : syls) lyricLines.push_back({s.tick, s.text});
         }
         std::cout << "歌词已加载: " << lyricLines.size() << " 行\n";
+        // 文件读到了却一行都没解析出来，通常是时间戳格式不对（[mm:ss] 写成
+        // 了 mm:ss，或者整篇是纯文本）。这不是正常状态，得说出来——否则页眉
+        // 只写一句「0 行」，用户还以为工具坏了。
+        if (lyricLines.empty())
+            std::cerr << "警告: 歌词文件里没有解析出任何歌词行"
+                         "（检查是否以 [mm:ss.xx] 时间戳开头）\n";
         if (ext == ".lrc" || ext == ".LRC") {
             const int tc = m2j::tempoChangeCount(data);
             if (tc > 0)

@@ -545,6 +545,16 @@ long effectivePickupTicks(const MidiData& data);
 // 文本谱头与 HTML 页眉共用，判错了用户一眼能看出来并去改 --pickup。
 std::string pickupLabel(const MidiData& data);
 
+// --pickup 手动值的合法性：弱起必须严格短于整个小节（0 < 拍数 < 分子）。
+// 返回空串表示合法，否则返回直接送给用户看的中文原因。
+//
+// 为什么要有这个函数：越界的弱起值（比如 4/4 里 --pickup 4 / 99）会被
+// barGridOf 当成「没有弱起」悄悄钳成 0，谱面因此不留下任何痕迹；而命令行
+// 那侧只拿 effectivePickupTicks() > 0 做判断，仍会打出一行「（手动指定）」，
+// 用户看到的是一个没有内容的空壳提示，完全不知道自己的参数被丢掉了。
+// 判定抽到库里才能单测——它只依赖拍号的分子，与 division 无关。
+std::string pickupArgError(double beats, const TimeSignature& sig);
+
 // 和声窗长度（tick）：4/4 半小节、6/8 附点四分、3/4 整小节
 long chordWindowTicks(const MidiData& data);
 

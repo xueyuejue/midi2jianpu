@@ -1137,14 +1137,10 @@ long detectPickupTicks(const MidiData& data) {
 }
 
 // 弱起的小节数按「拍」来报：简谱读者想的是一共少了几拍，不是几百个 tick。
-std::string pickupLabel(const MidiData& data) {
-    BarGrid grid = barGridOf(data);
-    if (grid.pickup <= 0) return std::string();
-    long beatLen = grid.barLen / std::max(1, grid.beatsPerBar);
-    if (beatLen <= 0) return std::string();
-    double beats = (double)grid.pickup / (double)beatLen;
+// 拍数的显示口径：接近整数就写整数，否则保留一位小数。弱起说明与
+// --pickup 的报错文案共用，避免出现「弱起 1.0 拍」这种不一致写法。
+static std::string formatBeatCount(double beats) {
     std::ostringstream os;
-    os << "弱起 ";
     if (std::fabs(beats - std::round(beats)) < 0.05) {
         os << (long)std::lround(beats);
     } else {
@@ -1152,8 +1148,33 @@ std::string pickupLabel(const MidiData& data) {
         os.precision(1);
         os << beats;
     }
-    os << " 拍";
     return os.str();
+}
+
+std::string pickupLabel(const MidiData& data) {
+    BarGrid grid = barGridOf(data);
+    if (grid.pickup <= 0) return std::string();
+    long beatLen = grid.barLen / std::max(1, grid.beatsPerBar);
+    if (beatLen <= 0) return std::string();
+    double beats = (double)grid.pickup / (double)beatLen;
+    return "弱起 " + formatBeatCount(beats) + " 拍";
+}
+
+std::string pickupArgError(double beats, const TimeSignature& sig) {
+    // 0 拍是 --no-pickup 的语义，不是「长度为零的弱起」；负数早已被参数
+    // 解析拦下，这里仍然兜一次，免得以后有别的调用方绕过 parseBeats。
+    if (!(beats > 0.0))
+        return "弱起长度必须大于 0 拍（不要弱起请用 --no-pickup）";
+    const int num = sig.numerator > 0 ? sig.numerator : 4;
+    // 容差取 1e-9：3.9999999 拍在 4/4 里就是整整一小节，不能被浮点误差放过；
+    // 而 3.9 拍仍然合法（简谱里确实有 3.9 拍的弱起）。
+    if (beats >= (double)num - 1e-9) {
+        std::ostringstream os;
+        os << "弱起 " << formatBeatCount(beats) << " 拍不小于整小节 "
+           << num << " 拍（弱起必须短于小节）";
+        return os.str();
+    }
+    return std::string();
 }
 
 // 输出一个音符记号：延长线拆成独立 token，读起来是 "1 - -" 而不是 "1--"
