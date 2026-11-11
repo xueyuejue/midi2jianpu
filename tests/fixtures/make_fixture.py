@@ -2,7 +2,7 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 88 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 89 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
@@ -14,7 +14,11 @@ port_pedal / port_bend / port_prefix / port_prefix_base / port_standard /
 sysex_gs_drum / sysex_xg_drum / sysex_gs_normal / sysex_gs_reset /
 sysex_gm_reset / sysex_xg_reset / sysex_conductor / sysex_ch9_normal /
 sysex_ch9_drum / sysex_unknown / sysex_port_drum / gate_gap / poly_gap / poly_gate /
-rest_split / rest_midbar（另配 3 份 LRC 歌词）。
+rest_split / rest_midbar / beam_levels（另配 3 份 LRC 歌词）。
+beam_levels 是连梁的「压力样本」：4/4 四小节分别放全十六分、混合时值、
+次级梁不连续、附点十六分，再变拍号到 6/8 两小节放三音连梁——在它之前
+88 份素材里一个十六分音符都没有，MusicXML 的二级梁与 continue 状态只能靠
+单测和临时探针覆盖，CI 从未在真实素材上审到。
 meter 是把变拍号、变速、鼓轨、内置歌词、伴奏和弦混在一起的「压力样本」，
 modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五声调式
 （C 宫、G 徵调式，故意不写 0x59 逼自动猜调暴露宫音判错），tempo_ramp 用
@@ -2628,6 +2632,54 @@ def build_dyn_step() -> bytes:
     return bytes(header + t0.render() + t1.render())
 
 
+def build_beam_levels() -> bytes:
+    """v1.66.0：连梁压力样本，让 CI 在真实素材上覆盖二级梁与复拍子。
+
+    DIV=480，前四小节 4/4（每小节 1920 tick），后两小节变拍号到 6/8
+    （每小节 1440 tick）：
+
+        小节 1  16 个十六分（120 tick）         -> 一级 + 二级梁各 4 组
+        小节 2  [十六 十六 八分] x2 + [八分 十六 十六] x2
+                                              -> 二级梁只盖相邻两个十六分
+        小节 3  [十六 八分 十六] x2 + 八分 八分 四分
+                                              -> 二级梁参与者不连续，不画
+        小节 4  附点十六分 x4 + 附点八分 x2 + 四分
+                                              -> 0.375 / 0.75 拍附点档
+        小节 5-6  6/8 各 6 个八分             -> 两组三音连梁（begin/continue/end）
+
+    一级梁的 continue 状态、二级梁（number="2"）、以及 6/8 的附点拍分组，
+    在新增这份素材之前都只有单测覆盖；check_xml_beams.py 的覆盖硬约束会
+    盯着这几个维度，缺一个就报错。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120 BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(7680, meta(0x58, bytes([6, 3, 24, 8])))     # 小节 5 起 6/8
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    t1.program(0, 0, 0)
+
+    def fill(offset, pattern, length):
+        cur = offset
+        for i, dur in enumerate(pattern):
+            t1.note(0, 60 + (i % 7), 96, cur, dur)
+            cur += dur
+        assert cur - offset == length, (offset, cur - offset)
+
+    fill(0,     [120] * 16, BAR)
+    fill(BAR,   [120, 120, 240] * 2 + [240, 120, 120] * 2, BAR)
+    fill(2*BAR, [120, 240, 120] * 2 + [240, 240, 480], BAR)
+    fill(3*BAR, [180, 180, 180, 180, 360, 360, 480], BAR)
+    for b in range(2):
+        fill(4*BAR + b * 1440, [240] * 6, 1440)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return bytes(header + t0.render() + t1.render())
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -3091,6 +3143,17 @@ def main() -> None:
         ("rest_midbar", build_rest_midbar),
         ("html_dots", build_html_dots),
         ("html_rests", build_html_rests),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+
+    # 连梁压力样本：十六分音符的二级梁 / continue / 6/8 三音连梁
+    for name, builder in (
+        ("beam_levels", build_beam_levels),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

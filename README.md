@@ -67,7 +67,7 @@
 - [x] **损坏 / 截断 MIDI 的安全解析**：`MTrk` 长度字段写着原值、文件却只下载到一半时，不再越过 buffer 末尾把堆里相邻内存当成新事件继续解析（那会凭空冒出幻影音符与乱码歌词）。所有事件统一按 `min(trkEnd, size)` 取硬边界，残缺事件整条丢弃，CLI / HTML / 网页文件面板写明「文件数据不完整」并按可用字节正常出谱；合法文件逐字节零回归
 - [x] **CC67 软踏板**：踩下期间起音的音符力度按 ×0.7 衰减，重音记号 / 力度分析 / 网页播放 JSON 同步变化，时值与 CC11 力度表不动（没有 CC67 的文件逐字节零回归）；系数经 `--soft-pedal-scale` / `--no-soft-pedal` 与网页强度下拉可配（0.3~1.0 或关闭），纯整数公式零漂移
 - [x] **SMF chunk 级边界重同步**：轨间夹 DAW 私有扩展块（`XFIH` 等）或某条 `MTrk` 长度字段写错时，不再停掉整个 chunk 循环把后续旋律轨整条丢掉（旧版直接报「未提取到音符」）；改为按 chunk 通用规则跳过非 `MTrk` 块，并用「EOT 锚定 + 长度可信」的下一个轨头校正偏长 / 偏短的边界。歌词 / SysEx 里恰好出现的字面 `MTrk` 不会被误判，合法文件逐字节零回归；CLI / HTML / 网页文件面板写明「文件结构提示」
-- [x] 878 项单元测试 + 83 组端到端冒烟测试 + 28 项 CI 失败报告自测 + 18 项 MusicXML 时值自测 + 18 项 MusicXML 连梁自测 + 26 项文本谱拍数自测 + 35 项 HTML 附点自测 + 77 项 HTML 休止符自测 + 11 项三端结构守卫自测 + 57 组 WASM 产物一致性检查（含产物版本号、源码一致性、「改了源码必须重编」与「重编了必须升版本」的双向纯 git 守护）
+- [x] 878 项单元测试 + 83 组端到端冒烟测试 + 28 项 CI 失败报告自测 + 18 项 MusicXML 时值自测 + 23 项 MusicXML 连梁自测 + 26 项文本谱拍数自测 + 35 项 HTML 附点自测 + 77 项 HTML 休止符自测 + 11 项三端结构守卫自测 + 57 组 WASM 产物一致性检查（含产物版本号、源码一致性、「改了源码必须重编」与「重编了必须升版本」的双向纯 git 守护）
 
 ## 在线 Demo 功能
 
@@ -880,6 +880,8 @@ XG 鼓组通道与中途换音色的通道，新导出 `_midi2jianpu_bank_info`�
 
 - [x] **复拍子的连梁不再整块消失（6/8 / 9/8 / 12/8）**：① 缺陷：6/8 小节里的八分音符**一条梁都画不出来**。减时线（HTML）与 `<beam>`（MusicXML）的分组边长都按 `barLengthTicks() / beatsForBar()` 算，而 `beatsForBar()` 返回的就是拍号分子，于是 6/8 得到 240 tick（一个八分）；六个八分正好全落在不同的「拍」上，分组条件 `curBeat == beamBeat` 永不成立，每个音各自成组。实测 `meter.mid` 的 6/8 两小节：MusicXML 零个 `<beam>`，HTML 是 12 个只包一个音的 `bgrp` 壳；文本谱在这处本来是对的（时值、休止都不受影响），所以这是 HTML / MusicXML 相对文本谱的记谱错误。② 实现：新增 `TimeSignature::beamUnitTicks()` 作为两端唯一口径——单拍子取一拍（1/分母），复拍子取**附点拍**（3 个 1/分母，6/8 即附点四分）；判据是「分母 >= 8 且分子能被 3 整除」。4/4、3/4、2/2 的取值与旧公式逐 tick 相同（480 / 480 / 960），所以只有复拍子受影响；3/8 一并按整小节一组（记谱惯例）。`src/html_writer.cpp` 与 `src/musicxml_writer.cpp` 都改为调用它，避免两处公式再次漂移。③ 结果：`meter.mid` 的 6/8 变成两组三音连梁（XML 各 `begin/continue/end`，HTML 4 个包三颗音的 `bgrp` 壳），4/4 与 3/4 素材的 HTML / XML 逐字节零变化。④ 守护：单测 869 → 878 项（新增 6/8 两组三音、3/8 整小节一组，以及 4/4、3/4、2/2、6/8、9/8、3/8 六种拍号的分组边长）；`tests/check_html_rests.py` 新增 `strip_beam_groups()` 归一化——减时线组的包裹范围本来就是本轮该变的维度，跨版本比对前先摘掉这层外壳（内部嵌着音符列自己的 `<span>`，必须按深度配对找闭合标签，非贪婪匹配会错），自测 72 → 77 项。摘壳后 88 份素材的 HTML 与 v1.64.0 **逐字节一致**（比对输出「变化素材 0 份」），证明除了分组方式本身，其余一个字节都没动。⑤ 全量：`<beam>` 273 → 285 个（+12，正是 6/8 那十二个八分），25 份素材有梁、0 处结构问题；`check_three_way` 0 不一致；`check_bar_beats` 文本谱零变化（v1.65.0）
 
+- [x] **连梁的真实素材覆盖补齐（十六分 / 二级梁 / 复拍子）**：① 缺口：v1.64.0 补了 `<beam>`、v1.65.0 修了复拍子分组，但 88 份回归素材里**一个十六分音符都没有**——二级梁（`number="2"`）、`continue` 状态、混合时值的次级梁只由 C++ 单测和临时探针覆盖，CI 在真实素材上一次都没审到；写错层级、漏掉一串梁的中间音、把十六分退化成八分，全都会静悄悄溜过去。② 新增可复现素材 `tests/fixtures/beam_levels.mid`（`make_fixture.py` 注册，CI 重生成后逐字节零 diff）：4/4 四小节依次放全十六分、混合时值（十六十六八分 / 八分十六十六）、次级梁参与者不连续、附点十六分，再变拍号到 6/8 两小节各放 6 个八分（两组三音连梁）。③ 它同时是一份压力样本：把它放进素材库后，`check_xml_durations` / `check_bar_beats` / `check_html_dots` / `check_html_rests` / `check_three_way` / `check_xml_beams` 六个守护全量审计 **0 问题**，证明现有实现在十六分 + 复拍子组合下本来就稳；HTML 侧也正确产出 14 个 `bgrp b2` 双减时线组。④ 把覆盖锁成硬约束：`tests/check_xml_beams.py` 新增 `coverage_errors()`，要求全量审计里必须有二级及以上 `<beam>`、必须有 `continue` 状态、且 `beam_levels.mid` 必须存在（CI 原有「无未跟踪素材」只防新增，不防删除）；缺任一条直接 `FAIL`。实测把新素材临时移走，审计立刻报「没有二级及以上 `<beam>`」，恢复后转绿；自测 18 → 23 项。⑤ 结果：`<beam>` 285 → 365 个（新素材贡献 80 个：1 级 53、2 级 27，含 28 个 `continue`），26 份素材有梁、0 处结构问题；单测 878 项、CLI 冒烟 83 组不变；六个 `check_* --regress` 对 v1.65.0 基线 **89 份素材零变化**（本轮不动功能代码）。⑥ 计数级联 88 → 89：README / BUILD.md / `ci.yml` / `smoke.py` / 生成器文档串 / `check_html_dots.py` 注释，并顺手修正 BUILD.md 的 CI 表里过期的「`check_html_rests.py` 72 项自测」→ 77（v1.66.0）
+
 ## 为什么开源
 
 中文简谱是中国特有的记谱体系，国外打谱软件（MuseScore、Finale）对它支持很差，国内又一直缺少一个干净的、可二次开发的基础库。这个项目想把「MIDI → 简谱」这层地基打好，让后来的人不用重复造轮子。
@@ -923,20 +925,20 @@ python tests/check_wasm_exports.py                     # WASM 导出清单五处
 python tests/check_wasm_sync.py --self-test             # WASM 产物同步守护自测
 python tests/smoke.py --self-test                       # 28 项 CI 失败报告自测
 python tests/check_xml_durations.py --self-test       # 18 项 MusicXML 时值自测
-python tests/check_xml_durations.py                    # 全部 88 份素材时值一致性
-python tests/check_xml_beams.py --self-test           # 18 项 MusicXML 连梁自测
-python tests/check_xml_beams.py                        # 全部 88 份素材 <beam> 结构审计
+python tests/check_xml_durations.py                    # 全部 89 份素材时值一致性
+python tests/check_xml_beams.py --self-test           # 23 项 MusicXML 连梁自测
+python tests/check_xml_beams.py                        # 全部 89 份素材 <beam> 结构审计
 python tests/check_bar_beats.py --self-test             # 26 项拍数守恒自测
-python tests/check_bar_beats.py                        # 全部 88 份素材拍数守恒
+python tests/check_bar_beats.py                        # 全部 89 份素材拍数守恒
 python tests/check_html_dots.py --self-test            # 35 项 HTML 附点自测
-python tests/check_html_dots.py                       # 全部 88 份素材 HTML 附点一致性
+python tests/check_html_dots.py                       # 全部 89 份素材 HTML 附点一致性
 python tests/check_html_rests.py --self-test           # 77 项 HTML 休止符自测
-python tests/check_html_rests.py                      # 全部 88 份素材 HTML 休止符精确性
+python tests/check_html_rests.py                      # 全部 89 份素材 HTML 休止符精确性
 python tests/check_three_way.py --self-test            # 11 项三端结构守卫自测
-python tests/check_three_way.py                       # 全部 88 份素材三端结构一致性
+python tests/check_three_way.py                       # 全部 89 份素材三端结构一致性
 ```
 
-推送后 `.github/workflows/ci.yml` 还会在 Ubuntu 上再跑一遍两个 job：CMake 编译 + 878 项单测 + 28 项 CI 失败报告自测 + 18 项 MusicXML 时值自测 + 18 项 MusicXML 连梁自测 + 26 项文本谱拍数自测 + 35 项 HTML 附点自测 + 77 项 HTML 休止符自测 + 11 项三端结构守卫自测 + 83 组 CLI 冒烟 + 88 份素材可复现校验，以及 57 组 WASM 冒烟 + 导出清单守护 + 产物同步守护。`docs/wasm/` 漏重编会让 CI 直接变红。
+推送后 `.github/workflows/ci.yml` 还会在 Ubuntu 上再跑一遍两个 job：CMake 编译 + 878 项单测 + 28 项 CI 失败报告自测 + 18 项 MusicXML 时值自测 + 23 项 MusicXML 连梁自测 + 26 项文本谱拍数自测 + 35 项 HTML 附点自测 + 77 项 HTML 休止符自测 + 11 项三端结构守卫自测 + 83 组 CLI 冒烟 + 89 份素材可复现校验，以及 57 组 WASM 冒烟 + 导出清单守护 + 产物同步守护。`docs/wasm/` 漏重编会让 CI 直接变红。
 
 产物同步守护是纯 git 检查（`tests/check_wasm_sync.py`）：`wasm_smoke.mjs` 第 34 组只比对 `version.hpp` 与 wasm 页脚版本，若有人**改了 `src/` 却不升版本、也不重编**，页脚仍然「一致」，那道守护会静默放过。同步守护直接看本次提交动了哪些文件：`src/**`、`include/**`、`cmake/**`、`CMakeLists.txt`、`build/build_wasm.cmd` 里只要有一个变更，`docs/wasm/midi2jianpu.wasm` 就必须一起变；胶水层 `.js` 单独变也不行。只改测试 / 文档 / CI 配置不要求重编。
 自 v1.41.0 起还加了一条**反向规则**：`.wasm` 变了（说明重编过）却没动

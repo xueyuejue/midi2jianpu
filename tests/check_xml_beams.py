@@ -163,6 +163,33 @@ def beam_stats(xml):
     return total, per
 
 
+def beam_states(xml):
+    """返回各 beam 状态（begin / continue / end）的出现次数。"""
+    out = {}
+    for _, word in BEAM_RE.findall(xml):
+        out[word] = out.get(word, 0) + 1
+    return out
+
+
+def coverage_errors(per, states, has_fixture=True):
+    """真实素材必须覆盖到多级梁与三音以上连梁，否则返回问题描述。
+
+    v1.66.0 之前 88 份素材里一个十六分音符都没有：二级梁（number="2"）
+    与 continue 状态只由单测和临时探针覆盖，写错层级、漏掉串中间音这类
+    回归不会被 CI 抓到。beam_levels.mid 补上这份覆盖，这里锁成硬约束——
+    素材被删、生成器漏跑、或实现退化让十六分不再画二级梁，都会直接变红。
+    """
+    out = []
+    if not has_fixture:
+        # CI 只查「没有多出未跟踪素材」，不防有人把既有素材删掉。
+        out.append("beam_levels.mid 缺失：连梁压力样本没进素材库（生成器漏跑或被删）")
+    if sum(c for level, c in per.items() if level >= 2) <= 0:
+        out.append("没有二级及以上 <beam>：十六分音符 / 次级梁的真实素材覆盖丢失")
+    if states.get("continue", 0) <= 0:
+        out.append("没有 continue 状态：三音以上连梁的真实素材覆盖丢失")
+    return out
+
+
 def run_xml(exe, mid, outdir):
     out = os.path.join(outdir, "o.xml")
     if os.path.exists(out):
@@ -180,11 +207,12 @@ def fixtures():
 
 
 def audit_fixtures(exe):
-    """全量审计。返回 (违规列表, 有梁的文件数, 梁元素总数, 层分布)。"""
+    """全量审计。返回 (违规列表, 有梁的文件数, 梁元素总数, 层分布, 状态分布)。"""
     bad = []
     with_beam = 0
     total = 0
     per = {}
+    states = {}
     with tempfile.TemporaryDirectory() as td:
         for mid in fixtures():
             xml = run_xml(exe, mid, td)
@@ -200,7 +228,9 @@ def audit_fixtures(exe):
             total += n
             for k, c in p.items():
                 per[k] = per.get(k, 0) + c
-    return bad, with_beam, total, per
+            for w, c in beam_states(xml).items():
+                states[w] = states.get(w, 0) + c
+    return bad, with_beam, total, per, states
 
 
 def structural_regress(old_exe):
@@ -358,6 +388,27 @@ def self_test():
                                note(240, "eighth", [(1, "continue")])))) == 1,
        "小节末未闭合被抓到")
 
+    # 19 覆盖硬约束：缺二级梁
+    ok(any("二级" in x for x in coverage_errors({1: 10}, {"begin": 5, "end": 5})),
+       "二级梁覆盖丢失被抓到")
+    # 20 覆盖硬约束：缺 continue
+    ok(any("continue" in x for x in coverage_errors({1: 10, 2: 3},
+                                                    {"begin": 2, "end": 2})),
+       "continue 覆盖丢失被抓到")
+    # 21 覆盖齐全时不报错，且状态统计口径正确
+    ok(coverage_errors({1: 10, 2: 3},
+                       {"begin": 2, "continue": 1, "end": 2}) == [],
+       "二级梁与 continue 都在时不报错")
+    # 22 压力样本被删也要报（CI 的「无未跟踪素材」只防新增，不防删除）
+    ok(any("beam_levels" in x for x in coverage_errors(
+           {1: 10, 2: 3}, {"begin": 2, "continue": 1, "end": 2}, False)),
+       "压力样本被删被抓到")
+    ok(beam_states('<beam number="1">begin</beam>'
+                   '<beam number="2">continue</beam>'
+                   '<beam number="1">end</beam>')
+       == {"begin": 1, "continue": 1, "end": 1},
+       "beam_states 按状态计数")
+
     print("check_xml_beams self-test: %d 项，%d 失败" % (n, len(failed)))
     for f in failed:
         print("  [FAIL]", f)
@@ -385,11 +436,18 @@ def main():
     if not os.path.exists(exe):
         print("找不到 CLI：", exe)
         return 2
-    bad, with_beam, total, per = audit_fixtures(exe)
+    bad, with_beam, total, per, states = audit_fixtures(exe)
     if bad:
         print("MusicXML 连梁结构问题：%d 处" % len(bad))
         for name, msg in bad[:20]:
             print("  %s: %s" % (name, msg))
+        return 1
+    cov = coverage_errors(per, states,
+                          os.path.exists(os.path.join(FIX, "beam_levels.mid")))
+    if cov:
+        print("MusicXML 连梁覆盖不足：")
+        for c in cov:
+            print("  [FAIL]", c)
         return 1
     dist = ", ".join("%d 级 %d 个" % (k, per[k]) for k in sorted(per))
     print("MusicXML 连梁：%d 份素材有梁，共 %d 个 <beam>（%s），0 处结构问题"
