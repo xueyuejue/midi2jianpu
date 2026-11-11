@@ -4824,6 +4824,36 @@ int main() {
         check(renderHtml(plain, key, "t").find("dynx") == std::string::npos,
               "没有中途换档时不输出 dynx 样式");
 
+        // v1.72.0 试听播放器（--player）：默认不生成任何东西，开了才带数据。
+        // 这也是零回归的护栏——不带开关的页面必须一个字节都不多。
+        {
+            MidiData mp;
+            mp.division = 480;
+            mp.timeSig.valid = true;
+            NoteEvent e0;
+            e0.track = 1; e0.channel = 0; e0.startTicks = 0;
+            e0.durationTicks = 480; e0.pitch = 60;
+            mp.notes.push_back(e0);
+            e0.startTicks = 480; e0.pitch = 64;
+            mp.notes.push_back(e0);
+            const KeyEstimate mpk = estimateKey(mp);
+            const std::string off = renderHtml(mp, mpk, "t");
+            check(off.find("data-t=") == std::string::npos &&
+                  off.find("<script") == std::string::npos &&
+                  off.find("playerbar") == std::string::npos,
+                  "不带 --player 时页面没有任何播放器痕迹");
+            const std::string on = renderHtml(mp, mpk, "t", nullptr, true);
+            check(on.find("M2J_PLAY") != std::string::npos &&
+                  on.find("data-t='0'") != std::string::npos &&
+                  on.find("id='playerbar'") != std::string::npos,
+                  "带 --player 时内嵌播放数据与高亮锚点");
+            check(on.find("\"notes\":[[0,480,60,1],[480,480,64,1]]")
+                      != std::string::npos,
+                  "播放数据按「起点/时长/音高/轨号」逐音导出");
+            check(on.find("#playerbar{display:none}") != std::string::npos,
+                  "打印时隐藏播放器");
+        }
+
         // 渐变段内部的中间档位由楔形表达，文本谱不能逐点印成 [mp]。
         MidiData r;
         r.division = 480;

@@ -7,6 +7,7 @@
 
 不依赖第三方库；失败时返回非 0 退出码，可直接用于 CI。
 """
+import json
 import os
 import re
 import subprocess
@@ -3032,6 +3033,50 @@ def main():
     check(rc == 0 and "没有解析出任何歌词行" in err,
           "文件可读但解析不出歌词时给出警告（不再只有「0 行」）",
           (rc, out[-160:], err[-200:]))
+
+    group("[85] v1.72.0 HTML 试听播放器（--player）：数据、高亮锚点、默认零回归")
+    # 播放器是纯增量：不带开关时页面必须与旧版逐字节一致，带开关时
+    # PLAY 数据里的音符数要与命令行报的「共提取 N 个音符」对齐。
+    pl = os.path.join(tmp, "player.html")
+    rc, out, err = run(exe, smp, "--html", pl, "--player")
+    phtml = open(pl, encoding="utf-8").read() if (rc == 0 and os.path.exists(pl)) else ""
+    check(rc == 0 and "id='playerbar'" in phtml and "<script>" in phtml,
+          "--player 生成了播放器工具条与脚本", err[-200:])
+
+    pm = re.search(r"var M2J_PLAY = (\{.*?\});", phtml, re.S)
+    pdata = None
+    if pm:
+        try:
+            pdata = json.loads(pm.group(1))
+        except ValueError:
+            pdata = None
+    check(pdata is not None and isinstance(pdata.get("notes"), list),
+          "内嵌播放数据是合法 JSON", (phtml[:0], (pm.group(1)[:120] if pm else "")))
+
+    nm = re.search(r"共提取 (\d+) 个音符", out)
+    want = int(nm.group(1)) if nm else -1
+    got = len(pdata["notes"]) if pdata else -1
+    check(want > 0 and got == want,
+          "播放数据里的音符数与「共提取 N 个音符」一致", (want, got))
+
+    anchors = len(re.findall(r"data-t='\d+'", phtml))
+    check(anchors > 0 and anchors <= got,
+          "每个音头都有高亮锚点 data-t（和弦并格后锚点数不多于音符数）",
+          (anchors, got))
+
+    check("data-t" in phtml and ".note.playing" in phtml,
+          "页面带高亮样式与锚点", phtml.count("data-t"))
+
+    plain = os.path.join(tmp, "plain.html")
+    rc, _, _ = run(exe, smp, "--html", plain)
+    pplain = open(plain, encoding="utf-8").read() if os.path.exists(plain) else ""
+    check(rc == 0 and "<script" not in pplain and "data-t" not in pplain
+          and "playerbar" not in pplain,
+          "不带 --player 的页面不留任何播放器痕迹（零回归）")
+
+    rc, _, err = run(exe, smp, "--player")
+    check(rc == 0 and "只作用于 --html" in err,
+          "--player 配纯文本输出时提示会被忽略", (rc, err[-160:]))
 
     print("\n" + "-" * 48)
     if failures:

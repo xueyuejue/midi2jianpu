@@ -263,9 +263,200 @@ static std::string chordColumn(const std::vector<std::pair<std::string, std::pai
     return os.str();
 }
 
+// 把属性注入音符列的 <span class='note ...'> 开标签。
+//
+// 试听播放器要高亮「此刻正在响的那个音」，就得让每列知道自己的起点 tick。
+// 属性不能挂在包装层上（withChord / withDyn / withArticulation 都会在外面
+// 再套一层 span），所以这里只找第一个 class='note 的开标签——那些包装层的
+// class 都不是 note，不会误命中。
+static std::string withTick(const std::string& col, long tick) {
+    const std::string key = "<span class='note";
+    size_t p = col.find(key);
+    if (p == std::string::npos) return col;
+    size_t gt = col.find('>', p);
+    if (gt == std::string::npos) return col;
+    return col.substr(0, gt) + " data-t='" + std::to_string(tick) + "'" + col.substr(gt);
+}
+
+// 试听播放器：工具条 + Web Audio 合成 + 当前音符高亮。
+//
+// 为什么内联而不是外链 JS：导出的 HTML 要能离线双击打开、直接打印，也不能
+// 依赖 CDN。旋律用三角波 + 指数包络合成，够听清音高与节奏；不做音色还原，
+// 那是 MIDI 合成器的活。播放数据是 [起点tick, 时长tick, 音高, 轨号] 的扁平
+// 数组，配一张 tempo 分段表在浏览器里换算成秒（变速曲目才对得上）。
+static std::string playerBlock(const std::string& playJson) {
+    return "<div id='playerbar'>"
+           "<button id='pp' type='button'>▶ 试听</button>"
+           "<label class='spd'>速度 <select id='spd'>"
+           "<option value='0.5'>0.5×</option>"
+           "<option value='0.75'>0.75×</option>"
+           "<option value='1' selected>1×</option>"
+           "<option value='1.25'>1.25×</option>"
+           "<option value='1.5'>1.5×</option>"
+           "</select></label>"
+           "<span id='pstat'></span>"
+           "</div>"
+           "<script>\n"
+           "var M2J_PLAY = " + playJson + ";\n"
+           R"JS((function () {
+  var btn = document.getElementById('pp');
+  var sel = document.getElementById('spd');
+  var stat = document.getElementById('pstat');
+  var P = M2J_PLAY;
+  if (!btn || !P || !P.notes || !P.notes.length) return;
+  var div = P.division > 0 ? P.division : 480;
+  var tempo = (P.tempo && P.tempo.length) ? P.tempo : [[0, 500000]];
+
+  function secAt(tick) {
+    var s = 0, prev = 0, us = tempo[0][1] > 0 ? tempo[0][1] : 500000;
+    for (var i = 0; i < tempo.length; i++) {
+      var seg = tempo[i];
+      if (seg[0] > tick) break;
+      s += (seg[0] - prev) / div * us / 1e6;
+      prev = seg[0];
+      if (seg[1] > 0) us = seg[1];
+    }
+    return s + (tick - prev) / div * us / 1e6;
+  }
+
+  var lastEnd = 0;
+  for (var i = 0; i < P.notes.length; i++) {
+    var n = P.notes[i];
+    if (n[0] + n[1] > lastEnd) lastEnd = n[0] + n[1];
+  }
+
+  var ctx = null, master = null, nodes = [], timers = [], raf = 0;
+  var evts = [], cursor = 0, active = [], t0 = 0, speed = 1, playing = false;
+
+  function mmss(sec) {
+    var m = Math.floor(sec / 60), s = Math.round(sec - m * 60);
+    if (s === 60) { m += 1; s = 0; }
+    return m + ':' + (s < 10 ? '0' : '') + s;
+  }
+  if (stat) stat.textContent = P.notes.length + ' 个音 · 约 ' + mmss(secAt(lastEnd));
+
+  function clearMarks() {
+    for (var i = 0; i < active.length; i++) {
+      for (var k = 0; k < active[i].els.length; k++)
+        active[i].els[k].classList.remove('playing');
+    }
+    active = [];
+  }
+
+  function hush() {
+    for (var i = 0; i < nodes.length; i++) {
+      try { nodes[i].stop(0); } catch (e) {}
+    }
+    nodes = [];
+    for (var j = 0; j < timers.length; j++) clearTimeout(timers[j]);
+    timers = [];
+    if (raf) { cancelAnimationFrame(raf); raf = 0; }
+  }
+
+  function stop() {
+    playing = false;
+    hush();
+    clearMarks();
+    cursor = 0;
+    if (btn) btn.textContent = '\u25b6 试听';
+  }
+
+  function mark(ev) {
+    for (var k = 0; k < ev.els.length; k++) ev.els[k].classList.add('playing');
+    active.push(ev);
+    // 只在这一列已经滚出视口时才滚回来，否则播放时页面会一直上下跳
+    if (ev.els.length) {
+      var el = ev.els[0], r = el.getBoundingClientRect();
+      if (r.top < 60 || r.bottom > (window.innerHeight - 40)) {
+        try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+        catch (e) { el.scrollIntoView(); }
+      }
+    }
+  }
+
+  function tone(at, dur, pitch) {
+    var o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = 'triangle';
+    o.frequency.value = 440 * Math.pow(2, (pitch - 69) / 12);
+    var end = at + Math.max(dur, 0.06);
+    g.gain.setValueAtTime(0.0001, at);
+    g.gain.exponentialRampToValueAtTime(0.22, at + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, end);
+    o.connect(g);
+    g.connect(master);
+    o.start(at);
+    o.stop(end + 0.02);
+    nodes.push(o);
+  }
+
+  function tick() {
+    if (!playing) return;
+    var now = ctx.currentTime - t0;
+    while (cursor < evts.length && evts[cursor].start <= now) mark(evts[cursor++]);
+    for (var i = active.length - 1; i >= 0; i--) {
+      if (active[i].end <= now) {
+        for (var k = 0; k < active[i].els.length; k++)
+          active[i].els[k].classList.remove('playing');
+        active.splice(i, 1);
+      }
+    }
+    if (now > evts.length && evts.length && now > evts[evts.length - 1].end + 0.25) {
+      stop();
+      return;
+    }
+    raf = requestAnimationFrame(tick);
+  }
+
+  function start() {
+    stop();
+    if (!ctx) {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) { if (stat) stat.textContent = '此浏览器不支持 Web Audio，无法试听'; return; }
+      ctx = new AC();
+      master = ctx.createGain();
+      master.gain.value = 0.6;
+      master.connect(ctx.destination);
+    }
+    if (ctx.state === 'suspended') ctx.resume();
+    speed = parseFloat(sel && sel.value) || 1;
+    // 每个音一个事件；同一 tick 的多个音（和弦 / 多轨）共用同一批 DOM 列
+    evts = [];
+    for (var i = 0; i < P.notes.length; i++) {
+      var n = P.notes[i];
+      var s = secAt(n[0]) / speed;
+      var e = secAt(n[0] + Math.max(n[1], 1)) / speed;
+      var els = document.querySelectorAll("[data-t='" + n[0] + "']");
+      evts.push({ start: s, end: e, tick: n[0], pitch: n[2], els: els });
+    }
+    evts.sort(function (a, b) { return a.start - b.start || a.pitch - b.pitch; });
+    cursor = 0;
+    active = [];
+    t0 = ctx.currentTime + 0.12;
+    for (var j = 0; j < evts.length; j++) {
+      var ev = evts[j];
+      (function (ev) {
+        var at = t0 + ev.start, dur = ev.end - ev.start;
+        timers.push(setTimeout(function () { tone(at, dur, ev.pitch); },
+                               Math.max(0, (at - ctx.currentTime) * 1000)));
+      })(ev);
+    }
+    playing = true;
+    if (btn) btn.textContent = '\u25a0 停止';
+    raf = requestAnimationFrame(tick);
+  }
+
+  btn.addEventListener('click', function () { if (playing) stop(); else start(); });
+  if (sel) sel.addEventListener('change', function () { if (playing) start(); });
+  window.addEventListener('beforeunload', hush);
+})();
+)JS"
+           "</script>";
+}
+
 std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                        const std::string& title,
-                       const std::vector<LyricLine>* lyricLines) {
+                       const std::vector<LyricLine>* lyricLines,
+                       bool player) {
     std::string displayTitle = title.empty() ? "简谱" : title;
     const std::string lyricLabel = lyricSourceLabel(data, lyricLines);
 
@@ -367,6 +558,39 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             pv.channel = dominantChannel(pv.notes);
             if (!pv.notes.empty()) parts.push_back(std::move(pv));
         }
+    }
+
+    // ---- 试听播放器的数据 ----
+    // 直接从 parts 取音符：它就是谱面上真正画出来的那一份（已按声部拆开、
+    // 已做同音合并前的基础集），播放与谱面不会各说各话。
+    // 只给 --player 生成；不带开关时 playJson 保持空串，输出逐字节不变。
+    std::string playJson;
+    if (player) {
+        std::ostringstream pj;
+        pj << "{\"division\":" << (data.division > 0 ? data.division : 480)
+           << ",\"tempo\":[";
+        bool firstSeg = true;
+        for (const auto& tp : data.tempoChanges) {
+            if (!(tp.bpm > 0)) continue;
+            if (!firstSeg) pj << ",";
+            pj << "[" << tp.tick << ","
+               << (long)std::llround(60000000.0 / tp.bpm) << "]";
+            firstSeg = false;
+        }
+        if (firstSeg) pj << "[0,500000]";     // 没有 set_tempo 就是 120 BPM
+        pj << "],\"notes\":[";
+        bool firstNote = true;
+        for (const auto& pv : parts) {
+            for (const auto& n : pv.notes) {
+                if (n.durationTicks <= 0) continue;
+                if (!firstNote) pj << ",";
+                pj << "[" << n.startTicks << "," << n.durationTicks << ","
+                   << n.pitch << "," << pv.track << "]";
+                firstNote = false;
+            }
+        }
+        pj << "]}";
+        playJson = pj.str();
     }
 
     for (size_t pi = 0; pi < parts.size(); pi++) {
@@ -811,6 +1035,9 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                                       chordMarkFor(n.startTicks)),
                             dynMarkFor(n.startTicks)),
                     ne.symbol());
+                // 试听播放器按这一列自己的起点 tick 找它（高亮用），
+                // 延续段（"-"）与休止不需要，它们不是音头。
+                if (player) col = withTick(col, n.startTicks);
                 const int g = hasSlur ? lyrics.groupAt(n.startTicks) : 0;
 
                 // 能否接上上一条减时线：同小节、首尾相接、减时线条数相同，
@@ -873,12 +1100,13 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                     }
                     tones.push_back({num, {hi, lo}});
                 }
-                emit(graceHtml + withArticulation(
+                std::string ccol = graceHtml + withArticulation(
                          withDyn(withChord(chordColumn(tones, beats, ""),
                                            chordMarkFor(n.startTicks)),
                                  dynMarkFor(n.startTicks)),
-                         ne.symbol()),
-                     n.startTicks);
+                         ne.symbol());
+                if (player) ccol = withTick(ccol, n.startTicks);
+                emit(ccol, n.startTicks);
             }
 
             for (const auto* h : grp) prevEnd = std::max(prevEnd, h->n.startTicks + h->n.durationTicks);
@@ -1048,8 +1276,31 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
              << ".dynx.pair{left:0;transform:translateX(-115%)}"
              << ".hasslur .dynx{bottom:calc(100% + 22px)}"
              << "</style>";
+    // 试听播放器的样式也只在开关打开时才写：不带 --player 的页面（以及所有
+    // 既有素材）必须逐字节不变，这条是零回归的底线。
+    if (player) {
+        html << "<style>"
+             << "#playerbar{position:sticky;top:0;z-index:9;display:flex;gap:14px;"
+                "align-items:center;justify-content:center;flex-wrap:wrap;"
+                "padding:8px 12px;margin:0 0 14px;background:#fff;"
+                "border-bottom:1px solid #eee;font-size:13px;color:#555}"
+             << "#playerbar button{font:inherit;font-weight:600;color:#b03030;"
+                "background:#fff;border:1px solid #e3c9c9;border-radius:16px;"
+                "padding:5px 16px;cursor:pointer}"
+             << "#playerbar button:hover{background:#fdf3f3}"
+             << "#playerbar .spd select{font:inherit;padding:2px 4px;margin-left:4px}"
+             << "#pstat{color:#aaa}"
+             << ".note.playing{background:rgba(176,48,48,.09);border-radius:5px}"
+             << ".note.playing .num{color:#b03030}"
+             << "@media print{#playerbar{display:none}}"
+             << "</style>";
+    }
     html << R"(</head><body>
-<h1>)" << htmlEscape(displayTitle) << R"(</h1>
+)";
+    // 播放器必须紧跟在 <body> 之后：position:sticky 只有在元素位于文档流前部
+    // 时才「粘」得住，放到页尾就变成一个只能滚到底才看得见的按钮。
+    if (player) html << playerBlock(playJson);
+    html << R"(<h1>)" << htmlEscape(displayTitle) << R"(</h1>
 <div class="meta">)"
          << htmlEscape(keys.summary(grid))
          << " ｜ " << meterSummary(data)
