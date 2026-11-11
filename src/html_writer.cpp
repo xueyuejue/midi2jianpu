@@ -278,12 +278,12 @@ static std::string withTick(const std::string& col, long tick) {
     return col.substr(0, gt) + " data-t='" + std::to_string(tick) + "'" + col.substr(gt);
 }
 
-// 试听播放器：工具条 + Web Audio 合成 + 当前音符高亮。
+// 试听播放器：工具条 + Web Audio 合成 + 当前音符高亮 + 点击定位起播。
 //
 // 为什么内联而不是外链 JS：导出的 HTML 要能离线双击打开、直接打印，也不能
 // 依赖 CDN。旋律用三角波 + 指数包络合成，够听清音高与节奏；不做音色还原，
-// 那是 MIDI 合成器的活。播放数据是 [起点tick, 时长tick, 音高, 轨号] 的扁平
-// 数组，配一张 tempo 分段表在浏览器里换算成秒（变速曲目才对得上）。
+// 那是 MIDI 合成器的活。播放数据是 [起点tick, 时长tick, 音高, 轨号, 力度]
+// 的扁平数组，配一张 tempo 分段表在浏览器里换算成秒（变速曲目才对得上）。
 static std::string playerBlock(const std::string& playJson) {
     return "<div id='playerbar'>"
            "<button id='pp' type='button'>▶ 试听</button>"
@@ -295,6 +295,7 @@ static std::string playerBlock(const std::string& playJson) {
            "<option value='1.5'>1.5×</option>"
            "</select></label>"
            "<span id='pstat'></span>"
+           "<span class='hint'>点谱面上任一音符即从该处起播</span>"
            "</div>"
            "<script>\n"
            "var M2J_PLAY = " + playJson + ";\n"
@@ -374,13 +375,21 @@ static std::string playerBlock(const std::string& playJson) {
     }
   }
 
-  function tone(at, dur, pitch) {
+  // 力度 -> 峰值增益。note-on velocity 在解析层早就有了（演奏法判定要用它），
+  // 以前只拿它判重音、没送进播放层，于是重音和弱起听起来一样响。线性映射
+  // 让强弱能听出来；缺第 5 位（老数据）按 96 处理，等于原来的固定音量。
+  function peak(vel) {
+    var v = (vel > 0 && vel <= 127) ? vel : 96;
+    return 0.04 + 0.26 * v / 127;
+  }
+
+  function tone(at, dur, pitch, vel) {
     var o = ctx.createOscillator(), g = ctx.createGain();
     o.type = 'triangle';
     o.frequency.value = 440 * Math.pow(2, (pitch - 69) / 12);
     var end = at + Math.max(dur, 0.06);
     g.gain.setValueAtTime(0.0001, at);
-    g.gain.exponentialRampToValueAtTime(0.22, at + 0.012);
+    g.gain.exponentialRampToValueAtTime(peak(vel), at + 0.012);
     g.gain.exponentialRampToValueAtTime(0.0001, end);
     o.connect(g);
     g.connect(master);
@@ -407,7 +416,7 @@ static std::string playerBlock(const std::string& playJson) {
     raf = requestAnimationFrame(tick);
   }
 
-  function start() {
+  function start(from) {
     stop();
     if (!ctx) {
       var AC = window.AudioContext || window.webkitAudioContext;
@@ -419,15 +428,22 @@ static std::string playerBlock(const std::string& playJson) {
     }
     if (ctx.state === 'suspended') ctx.resume();
     speed = parseFloat(sel && sel.value) || 1;
+    // from = 起播 tick：0 表示从曲子开头（保留弱起前的空白），点谱面时传该音
+    // 的起点，于是「从这一小节开始听」不用真的等前面几十秒。
+    from = from > 0 ? from : 0;
+    var s0 = secAt(from);
     // 每个音一个事件；同一 tick 的多个音（和弦 / 多轨）共用同一批 DOM 列
     evts = [];
     for (var i = 0; i < P.notes.length; i++) {
       var n = P.notes[i];
-      var s = secAt(n[0]) / speed;
-      var e = secAt(n[0] + Math.max(n[1], 1)) / speed;
+      if (n[0] < from) continue;
+      var s = (secAt(n[0]) - s0) / speed;
+      var e = (secAt(n[0] + Math.max(n[1], 1)) - s0) / speed;
       var els = document.querySelectorAll("[data-t='" + n[0] + "']");
-      evts.push({ start: s, end: e, tick: n[0], pitch: n[2], els: els });
+      evts.push({ start: s, end: e, tick: n[0], pitch: n[2],
+                  vel: n.length > 4 ? n[4] : 96, els: els });
     }
+    if (!evts.length) return;        // 点在最后一个音之后：没有可播的内容
     evts.sort(function (a, b) { return a.start - b.start || a.pitch - b.pitch; });
     cursor = 0;
     active = [];
@@ -436,7 +452,7 @@ static std::string playerBlock(const std::string& playJson) {
       var ev = evts[j];
       (function (ev) {
         var at = t0 + ev.start, dur = ev.end - ev.start;
-        timers.push(setTimeout(function () { tone(at, dur, ev.pitch); },
+        timers.push(setTimeout(function () { tone(at, dur, ev.pitch, ev.vel); },
                                Math.max(0, (at - ctx.currentTime) * 1000)));
       })(ev);
     }
@@ -445,8 +461,21 @@ static std::string playerBlock(const std::string& playJson) {
     raf = requestAnimationFrame(tick);
   }
 
-  btn.addEventListener('click', function () { if (playing) stop(); else start(); });
-  if (sel) sel.addEventListener('change', function () { if (playing) start(); });
+  // 点击谱面任一音符从该处起播。用事件委托而不是逐个绑定：这段脚本插在
+  // <body> 最前面，执行时下面的音符列还没解析出来，逐个绑定会一个都绑不上。
+  document.addEventListener('click', function (ev) {
+    var el = ev.target;
+    while (el && el.getAttribute && !el.getAttribute('data-t')) {
+      if (!el.parentNode) { el = null; break; }
+      el = el.parentNode;
+    }
+    if (!el || !el.getAttribute) return;
+    var tk = parseInt(el.getAttribute('data-t'), 10);
+    if (!isNaN(tk)) start(tk);
+  });
+
+  btn.addEventListener('click', function () { if (playing) stop(); else start(0); });
+  if (sel) sel.addEventListener('change', function () { if (playing) start(0); });
   window.addEventListener('beforeunload', hush);
 })();
 )JS"
@@ -583,9 +612,12 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         for (const auto& pv : parts) {
             for (const auto& n : pv.notes) {
                 if (n.durationTicks <= 0) continue;
+                int vel = n.velocity;
+                if (vel < 1) vel = 1;
+                if (vel > 127) vel = 127;
                 if (!firstNote) pj << ",";
                 pj << "[" << n.startTicks << "," << n.durationTicks << ","
-                   << n.pitch << "," << pv.track << "]";
+                   << n.pitch << "," << pv.track << "," << vel << "]";
                 firstNote = false;
             }
         }
@@ -1289,7 +1321,9 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
                 "padding:5px 16px;cursor:pointer}"
              << "#playerbar button:hover{background:#fdf3f3}"
              << "#playerbar .spd select{font:inherit;padding:2px 4px;margin-left:4px}"
+             << "#playerbar .hint{color:#bbb;font-size:12px}"
              << "#pstat{color:#aaa}"
+             << ".note[data-t]{cursor:pointer}"
              << ".note.playing{background:rgba(176,48,48,.09);border-radius:5px}"
              << ".note.playing .num{color:#b03030}"
              << "@media print{#playerbar{display:none}}"

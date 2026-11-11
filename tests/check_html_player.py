@@ -13,10 +13,13 @@ r"""HTML 试听播放器校验（v1.72.0）。
 
 所以这里做四层校验：
   A. 结构：playerbar / script / PLAY JSON / CSS 齐全且自洽；
-  B. 语义：notes 的时长 > 0、音高 0~127、tick ≥ 0；tempo 段升序且 us > 0；
-    每个 `data-t` 都能在某条 note 的起点里找到（否则高亮永远不亮）；
-  C. 运行时：用假的 DOM + 假 AudioContext 在 node 里真跑一遍那段 JS，
-     断言「排出去的振荡器个数 == PLAY 里的音符数」；
+  B. 语义：notes 的时长 > 0、音高 0~127、tick ≥ 0、力度 1~127 且真的导出
+    了（v1.73.0 起第 5 位）；tempo 段升序且 us > 0；每个 `data-t` 都能在
+    某条 note 的起点里找到（否则高亮永远不亮）；
+  C. 运行时：用假的 DOM + 假 AudioContext 在 node 里真跑一遍那段 JS，断言
+     ①「排出去的振荡器个数 == PLAY 里的音符数」，②峰值增益集合恰好等于各音
+     力度换算出的集合（力度没有真正影响音量就会红），③点击某个音符后从该
+     tick 起播、第一个排出的音正是它；
   D. 反向：不带 `--player` 时必须没有 data-t / script / playerbar。
 
 用法：
@@ -45,16 +48,18 @@ HARNESS = r"""
 const fs = require('fs');
 const src = fs.readFileSync(process.argv[2], 'utf8');
 
-function mkEl() {
+function mkEl(tick) {
   const set = new Set();
   return {
-    _h: {},
+    _h: {}, _tick: (tick === undefined || tick === null) ? null : String(tick),
+    parentNode: null,
     classList: {
       add: c => set.add(c),
       remove: c => set.delete(c),
       contains: c => set.has(c),
     },
     addEventListener(t, fn) { this._h[t] = fn; },
+    getAttribute(n) { return n === 'data-t' ? this._tick : null; },
     textContent: '', value: '1', style: {},
     getBoundingClientRect: () => ({ top: 100, bottom: 120 }),
     scrollIntoView() {},
@@ -62,22 +67,40 @@ function mkEl() {
   };
 }
 const btn = mkEl(), sel = mkEl(), stat = mkEl();
+const byTick = {};
+function elsFor(tick) {
+  const k = String(tick);
+  if (!byTick[k]) byTick[k] = [mkEl(tick)];
+  return byTick[k];
+}
+const docHandlers = {};
 global.document = {
   getElementById: id => (id === 'pp' ? btn : id === 'spd' ? sel
                         : id === 'pstat' ? stat : null),
-  querySelectorAll: () => [mkEl()],
+  querySelectorAll: q => {
+    const m = /^\[data-t='(\d+)'\]$/.exec(q);
+    return m ? elsFor(m[1]) : [];
+  },
+  addEventListener(t, fn) { docHandlers[t] = fn; },
 };
 const started = [];
-class Osc {
-  constructor() { this.type = ''; this.frequency = { value: 0 }; }
-  connect() {} start(t) { started.push({ t, f: this.frequency.value }); } stop() {}
-}
 class Gain {
   constructor() {
+    this._ramps = [];
+    const self = this;
     this.gain = { value: 1, setValueAtTime() {},
-                  exponentialRampToValueAtTime() {} };
+                  exponentialRampToValueAtTime(v) { self._ramps.push(v); } };
   }
   connect() {}
+}
+class Osc {
+  constructor() { this.type = ''; this.frequency = { value: 0 }; }
+  connect(t) { this._g = t; }
+  start(t) {
+    const g = (this._g && this._g._ramps.length) ? Math.max.apply(null, this._g._ramps) : 1;
+    started.push({ t: t, f: this.frequency.value, gain: g });
+  }
+  stop() {}
 }
 global.window = {
   innerHeight: 800, addEventListener() {},
@@ -91,7 +114,6 @@ global.window = {
 };
 global.requestAnimationFrame = () => 0;
 global.cancelAnimationFrame = () => {};
-const realTimeout = setTimeout;
 global.setTimeout = (fn) => { fn(); return 0; };
 global.clearTimeout = () => {};
 
@@ -99,7 +121,44 @@ eval(src);
 
 if (!btn._h.click) { console.log('NO_HANDLER'); process.exit(0); }
 btn._h.click();
-console.log(JSON.stringify({ scheduled: started.length }));
+const full = started.slice();
+
+const P = JSON.parse(/var M2J_PLAY = (\{[\s\S]*?\});/.exec(src)[1]);
+const peak = v => 0.04 + 0.26 * ((v > 0 && v <= 127) ? v : 96) / 127;
+const uniq = a => [...new Set(a)].sort((x, y) => x - y);
+const r6 = a => uniq(a.map(v => Math.round(v * 1e6)));
+
+// 力度 -> 增益：出现的每个峰值增益都必须对应某个音符的力度换算值。
+const wantGain = r6(P.notes.map(n => peak(n.length > 4 ? n[4] : 96)));
+const gotGain = r6(full.map(s => s.gain));
+const gainOK = JSON.stringify(wantGain) === JSON.stringify(gotGain);
+const gainSpread = full.length
+  ? Math.max.apply(null, full.map(s => s.gain)) - Math.min.apply(null, full.map(s => s.gain))
+  : 0;
+
+// 点击某个音符：应从该 tick 起播，第一个排出的音就是它。
+const ticks = uniq(P.notes.map(n => n[0]));
+const from = ticks[Math.floor(ticks.length / 2)];
+started.length = 0;
+let seekOK = false, seekCount = -1, wantCount = 0;
+const els = elsFor(from);
+if (docHandlers.click && els.length) {
+  docHandlers.click({ target: els[0] });
+  const seeked = started.slice();
+  wantCount = P.notes.filter(n => n[0] >= from).length;
+  seekCount = seeked.length;
+  const wantF = 440 * Math.pow(2,
+    (Math.min.apply(null, P.notes.filter(n => n[0] === from).map(n => n[2])) - 69) / 12);
+  if (seeked.length) {
+    const minT = Math.min.apply(null, seeked.map(s => s.t));
+    const atMin = seeked.filter(s => Math.abs(s.t - minT) < 1e-9);
+    seekOK = seeked.length === wantCount && Math.abs(minT - 0.12) < 1e-9 &&
+             atMin.some(s => Math.abs(s.f - wantF) < 1e-6);
+  }
+}
+
+console.log(JSON.stringify({ scheduled: full.length, gainOK, gainSpread,
+                             seekOK, seekCount, wantCount }));
 """
 
 
@@ -165,18 +224,27 @@ def scan(html):
     if not notes:
         errs.append("notes 为空（点了播放会没声音）")
     note_ticks = set()
+    n_with_vel = 0
     for n in notes:
-        if not (isinstance(n, list) and len(n) == 4):
+        if not (isinstance(n, list) and len(n) in (4, 5)):
             errs.append("音符格式非法: %r" % (n,))
             continue
-        tick, dur, pitch, _track = n
+        tick, dur, pitch, _track = n[:4]
         if dur <= 0:
             errs.append("音符时长 %d <= 0 (tick=%d)" % (dur, tick))
         if not (0 <= pitch <= 127):
             errs.append("音高越界 %d (tick=%d)" % (pitch, tick))
         if tick < 0:
             errs.append("起点 tick 为负: %d" % tick)
+        if len(n) == 5:
+            n_with_vel += 1
+            if not (1 <= n[4] <= 127):
+                errs.append("力度越界 %r (tick=%d)" % (n[4], tick))
         note_ticks.add(tick)
+    # v1.73.0 起力度必须真的送进播放层；老页面（全 4 元音）按 96 处理能跑，
+    # 但本项目自己导出的页面不许退回去——否则重音与弱起又听着一样响。
+    if notes and n_with_vel == 0:
+        errs.append("播放数据里没有力度（第 5 位），强弱会全一样响")
 
     ticks = TICK_RE.findall(html)
     if not ticks:
@@ -188,6 +256,8 @@ def scan(html):
 
     if ".note.playing" not in html:
         errs.append("缺少 .note.playing 高亮样式")
+    if "document.addEventListener('click'" not in html:
+        errs.append("缺少点击谱面定位起播的委托监听")
     if "@media print" not in html or "#playerbar{display:none}" not in html:
         errs.append("打印样式没有隐藏播放器")
     return data, errs
@@ -235,12 +305,20 @@ def runtime_errors(html, expect, td):
     if out == "NO_HANDLER":
         return ["播放按钮没有绑定 click 事件"]
     try:
-        got = json.loads(out)["scheduled"]
-    except (ValueError, KeyError):
+        got = json.loads(out)
+    except ValueError:
         return ["node 输出不可解析: %r" % out[:120]]
-    if got != expect:
-        return ["排了 %d 个音，PLAY 里有 %d 个（应相等）" % (got, expect)]
-    return []
+    errs = []
+    if got.get("scheduled") != expect:
+        errs.append("排了 %r 个音，PLAY 里有 %d 个（应相等）"
+                    % (got.get("scheduled"), expect))
+    if not got.get("gainOK"):
+        errs.append("峰值增益与音符力度对不上（力度没有真正影响音量）")
+    if not got.get("seekOK"):
+        errs.append("点击第 %r 个 tick 应从该处起播 %r 个音，实际 %r 个"
+                    % (got.get("seekCount"), got.get("wantCount"),
+                       got.get("seekCount")))
+    return errs
 
 
 def audit(exe):
@@ -312,49 +390,66 @@ def self_test():
                 "<style>.note.playing{}@media print{#playerbar{display:none}}"
                 "</style>"
                 "<span class='note' data-t='0'></span>"
-                "<script>\nvar M2J_PLAY = %s;\n(function(){})();\n</script>%s"
-                % (json_text, extra))
+                "<script>\nvar M2J_PLAY = %s;\n(function(){"
+                "document.addEventListener('click',function(){});})();\n"
+                "</script>%s" % (json_text, extra))
 
     good = ('{"division":480,"tempo":[[0,500000]],'
-            '"notes":[[0,480,60,0],[480,480,62,0]]}')
+            '"notes":[[0,480,60,0,96],[480,480,62,0,40]]}')
     data, errs = scan(page(good))
     ok(errs == [] and data is not None and len(data["notes"]) == 2,
        "正向：合法页面应无问题，实际 %s" % errs)
 
-    _, e = scan(page('{"division":0,"tempo":[[0,500000]],"notes":[[0,480,60,0]]}'))
+    # v1.73.0 力度：老页面（全 4 元音）能跑，但本项目导出的页面不许退回去。
+    _, e = scan(page('{"division":480,"tempo":[[0,500000]],"notes":[[0,480,60,0]]}'))
+    ok(any("没有力度" in x for x in e), "全 4 元音必须报「没有力度」，实际 %s" % e)
+
+    _, e = scan(page('{"division":480,"tempo":[[0,500000]],"notes":[[0,480,60,0,0]]}'))
+    ok(any("力度越界" in x for x in e), "力度 0 必须报错，实际 %s" % e)
+
+    _, e = scan(page('{"division":480,"tempo":[[0,500000]],"notes":[[0,480,60,0,128]]}'))
+    ok(any("力度越界" in x for x in e), "力度 128 必须报错，实际 %s" % e)
+
+    _, e = scan(page('{"division":480,"tempo":[[0,500000]],"notes":[[0,480,60,0,1]]}'))
+    ok(e == [], "力度 1 合法，实际 %s" % e)
+
+    _, e = scan(page(good).replace("document.addEventListener('click'", "x"))
+    ok(any("委托监听" in x for x in e), "缺点击定位必须报错，实际 %s" % e)
+
+    _, e = scan(page('{"division":0,"tempo":[[0,500000]],"notes":[[0,480,60,0,96]]}'))
     ok(any("division" in x for x in e), "division=0 必须报错，实际 %s" % e)
 
-    _, e = scan(page('{"division":480,"tempo":[],"notes":[[0,480,60,0]]}'))
+    _, e = scan(page('{"division":480,"tempo":[],"notes":[[0,480,60,0,96]]}'))
     ok(any("tempo" in x for x in e), "tempo 为空必须报错，实际 %s" % e)
 
     _, e = scan(page('{"division":480,"tempo":[[0,500000],[0,400000]],'
-                     '"notes":[[0,480,60,0]]}'))
+                     '"notes":[[0,480,60,0,96]]}'))
     ok(not any("升序" in x for x in e), "同 tick 的 tempo 段不算乱序")
 
     _, e = scan(page('{"division":480,"tempo":[[480,500000],[0,400000]],'
-                     '"notes":[[0,480,60,0]]}'))
+                     '"notes":[[0,480,60,0,96]]}'))
     ok(any("升序" in x for x in e), "tempo 倒序必须报错，实际 %s" % e)
 
-    _, e = scan(page('{"division":480,"tempo":[[0,0]],"notes":[[0,480,60,0]]}'))
+    _, e = scan(page('{"division":480,"tempo":[[0,0]],"notes":[[0,480,60,0,96]]}'))
     ok(any("us/拍" in x for x in e), "tempo 的 us=0 必须报错，实际 %s" % e)
 
-    _, e = scan(page('{"division":480,"tempo":[[0,500000]],"notes":[[0,0,60,0]]}'))
+    _, e = scan(page('{"division":480,"tempo":[[0,500000]],"notes":[[0,0,60,0,96]]}'))
     ok(any("时长" in x for x in e), "时长为 0 的音必须报错，实际 %s" % e)
 
-    _, e = scan(page('{"division":480,"tempo":[[0,500000]],"notes":[[0,480,200,0]]}'))
+    _, e = scan(page('{"division":480,"tempo":[[0,500000]],"notes":[[0,480,200,0,96]]}'))
     ok(any("音高越界" in x for x in e), "音高 200 必须报错，实际 %s" % e)
 
-    _, e = scan(page('{"division":480,"tempo":[[0,500000]],"notes":[[-5,480,60,0]]}'))
+    _, e = scan(page('{"division":480,"tempo":[[0,500000]],"notes":[[-5,480,60,0,96]]}'))
     ok(any("负" in x for x in e), "负 tick 必须报错，实际 %s" % e)
 
     _, e = scan(page('{"division":480,"tempo":[[0,500000]],"notes":[]}'))
     ok(any("notes 为空" in x for x in e), "空 notes 必须报错，实际 %s" % e)
 
-    _, e = scan(page('{"division":480,"tempo":[[0,500000]],"notes":[[0,480,60,0]]}')
+    _, e = scan(page('{"division":480,"tempo":[[0,500000]],"notes":[[0,480,60,0,96]]}')
                 .replace("data-t='0'", "data-t='999'"))
     ok(any("找不到对应音" in x for x in e), "data-t 对不上必须报错，实际 %s" % e)
 
-    _, e = scan(page('{"division":480,"tempo":[[0,500000]],"notes":[[0,480,60,0]]}')
+    _, e = scan(page('{"division":480,"tempo":[[0,500000]],"notes":[[0,480,60,0,96]]}')
                 .replace("data-t='0'", ""))
     ok(any("没有任何 data-t" in x for x in e), "缺 data-t 必须报错，实际 %s" % e)
 

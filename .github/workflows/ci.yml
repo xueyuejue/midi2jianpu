@@ -108,7 +108,7 @@ jobs:
           python3 tests/check_xml_structure.py --self-test
           python3 tests/check_xml_structure.py
 
-      - name: HTML 试听播放器（18 项自测 + 93 份素材）
+      - name: HTML 试听播放器（23 项自测 + 93 份素材）
         # --player 必须只加播放数据与高亮锚点，不改谱面本身；不带开关时
         # 输出里不得残留 script / data-t / playerbar 任何痕迹。
         run: |

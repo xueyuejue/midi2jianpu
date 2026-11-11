@@ -4847,11 +4847,33 @@ int main() {
                   on.find("data-t='0'") != std::string::npos &&
                   on.find("id='playerbar'") != std::string::npos,
                   "带 --player 时内嵌播放数据与高亮锚点");
-            check(on.find("\"notes\":[[0,480,60,1],[480,480,64,1]]")
+            check(on.find("\"notes\":[[0,480,60,1,96],[480,480,64,1,96]]")
                       != std::string::npos,
-                  "播放数据按「起点/时长/音高/轨号」逐音导出");
+                  "播放数据按「起点/时长/音高/轨号/力度」逐音导出");
             check(on.find("#playerbar{display:none}") != std::string::npos,
                   "打印时隐藏播放器");
+
+            // v1.73.0：力度进播放数据，且是每个音自己的 note-on velocity
+            // （以前只拿它判重音、不送进播放层，重音听着和弱起一样响）。
+            MidiData vd = mp;
+            vd.notes[0].velocity = 24;
+            vd.notes[1].velocity = 120;
+            const std::string von = renderHtml(vd, estimateKey(vd), "t", nullptr, true);
+            check(von.find("[0,480,60,1,24]") != std::string::npos &&
+                  von.find("[480,480,64,1,120]") != std::string::npos,
+                  "每个音的力度都进播放数据（不是整份一个常数）");
+            // 0 与 200 都是非法力度，必须钳到 1 / 127，否则播放端按 0 除或算出负增益。
+            MidiData cd = mp;
+            cd.notes[0].velocity = 0;
+            cd.notes[1].velocity = 200;
+            const std::string con = renderHtml(cd, estimateKey(cd), "t", nullptr, true);
+            check(con.find("[0,480,60,1,1]") != std::string::npos &&
+                  con.find("[480,480,64,1,127]") != std::string::npos,
+                  "越界力度被钳到 1 / 127");
+            check(on.find("点谱面上任一音符") != std::string::npos &&
+                  on.find("addEventListener('click'") != std::string::npos &&
+                  on.find(".note[data-t]{cursor:pointer}") != std::string::npos,
+                  "点击谱面音符即可从该处起播（事件委托 + 手型光标）");
         }
 
         // 渐变段内部的中间档位由楔形表达，文本谱不能逐点印成 [mp]。

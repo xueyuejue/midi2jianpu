@@ -3078,6 +3078,45 @@ def main():
     check(rc == 0 and "只作用于 --html" in err,
           "--player 配纯文本输出时提示会被忽略", (rc, err[-160:]))
 
+    group("[86] v1.73.0 播放器力度与点击定位：velocity 进数据、点谱面从该处起播")
+    # note-on velocity 早就在解析层（演奏法判定要用），但以前只判重音、不送
+    # 进播放层，于是重音和弱起听着一样响；这里锁死「每个音带自己的力度」。
+    exp = os.path.join(FIXTURES, "expression.mid")
+    ph2 = os.path.join(tmp, "player2.html")
+    rc, out2, err = run(exe, exp, "--html", ph2, "--player")
+    h2 = open(ph2, encoding="utf-8").read() if (rc == 0 and os.path.exists(ph2)) else ""
+    m2 = re.search(r"var M2J_PLAY = (\{.*?\});", h2, re.S)
+    d2 = None
+    if m2:
+        try:
+            d2 = json.loads(m2.group(1))
+        except ValueError:
+            d2 = None
+    check(rc == 0 and d2 is not None, "--player 在表情素材上渲染成功", err[-200:])
+    notes2 = (d2 or {}).get("notes") or []
+    check(notes2 and all(len(n) == 5 for n in notes2),
+          "每个音都带第 5 位力度", [len(n) for n in notes2][:6])
+    vels = [n[4] for n in notes2]
+    check(vels and all(1 <= v <= 127 for v in vels),
+          "力度都落在 1~127", (min(vels) if vels else None,
+                              max(vels) if vels else None))
+    check(vels and min(vels) < max(vels),
+          "重音素材的力度不是一个常数（强弱真能听出来）",
+          (min(vels) if vels else None, max(vels) if vels else None))
+    check("document.addEventListener('click'" in h2
+          and ".note[data-t]{cursor:pointer}" in h2
+          and "点谱面上任一音符" in h2,
+          "点击谱面任一音符可从该处起播（委托监听 + 手型光标 + 提示文案）")
+    # 播放器只许「加数据与锚点」，谱面骨架（音符列数 / 小节数）必须与默认页一致。
+    plain2 = os.path.join(tmp, "plain2.html")
+    rc, _, _ = run(exe, exp, "--html", plain2)
+    pp2 = open(plain2, encoding="utf-8").read() if os.path.exists(plain2) else ""
+    check(rc == 0 and pp2.count("class='note") == h2.count("class='note")
+          and pp2.count("class='measure") == h2.count("class='measure"),
+          "带播放器不改变谱面骨架（音符列 / 小节数一致）",
+          (pp2.count("class='note"), h2.count("class='note"),
+           pp2.count("class='measure"), h2.count("class='measure")))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")
