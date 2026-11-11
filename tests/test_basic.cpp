@@ -4906,6 +4906,62 @@ int main() {
                   "--bars 3 排成 3 行（末行 2 小节），小节总数仍为 8");
         }
 
+        // v1.75.0 弱起 × 变拍号的网格边界：弱起小节永远按曲首拍号（它短于一小节，
+        // 不存在「按新拍号重算」的问题），换拍号从它之后的那一整小节起生效。
+        {
+            MidiData d;
+            d.division = 480;
+            d.timeSig.valid = true;                     // 4/4
+            NoteEvent e;
+            e.track = 1; e.channel = 0; e.pitch = 60; e.durationTicks = 240;
+            d.notes.push_back(e);                       // 弱起那一拍
+            for (int i = 1; i < 10; i++) {
+                e.startTicks = 480 * i; e.pitch = 60 + (i % 3);
+                d.notes.push_back(e);
+            }
+            d.pickupTicks = 480;                        // 手动 1 拍弱起
+            TimeSignature threeFour{3, 2, true};         // 3/4
+            d.timeSigChanges.push_back({960, threeFour});   // 落在第 1 小节内
+            const BarGrid g = barGridOf(d);
+            check(g.pickup == 480 && g.barStart(1) == 480,
+                  "弱起小节仍在 0~480，第一个完整小节从 480 起");
+            check(g.sigForBar(0).numerator == 4 && g.sigForBar(0).denomPow == 2,
+                  "弱起小节按曲首拍号（4/4），不受后面的换拍号影响");
+            // 换拍号落在第 1 小节中段，按「就在事件 tick 处截断」处理：
+            // 第 1 小节被切成 480~960 与 960~2400 两段，后一段起改用 3/4。
+            check(g.barIndex(960) > g.barIndex(480),
+                  "换拍号 tick 之后算新的一小节");
+            check(g.sigForBar(g.barIndex(960)).numerator == 3,
+                  "换拍号之后的小节用 3/4，实际 "
+                      + std::to_string(g.sigForBar(g.barIndex(960)).numerator));
+            // 不变量：起点严格递增、每段长度 == 相邻起点之差、尾长 == 最后一段
+            bool inc = true, span = true;
+            for (size_t k = 1; k < g.starts.size(); k++)
+                if (g.starts[k] <= g.starts[k - 1]) inc = false;
+            for (size_t k = 0; k + 1 < g.starts.size(); k++)
+                if (g.barSpan((int)k) != g.starts[k + 1] - g.starts[k]) span = false;
+            check(inc, "小节起点严格递增");
+            check(span, "每小节长度 == 相邻起点之差");
+            check(g.tailBarLen == g.barSpan((int)g.starts.size() - 2),
+                  "tailBarLen 等于最后一段的小节长度");
+            // 每个起点都必须落在自己那一小节里（跨小节查找的根）
+            bool self = true;
+            for (size_t k = 0; k < g.starts.size(); k++)
+                if (g.barIndex(g.starts[k]) != (int)k) self = false;
+            check(self, "barIndex(每小节起点) == 该小节序号");
+        }
+        // 调号五度圈跨零点：+7 等价于 -5，但不能写成 7（七升号）；
+        // 归一区间是 [-6,6]，跨过去要取升降号少的那一侧。
+        check(transposeFifths(5, 2) == -5, "5 + 2 = 7 要归一成 -5，实际 "
+              + std::to_string(transposeFifths(5, 2)));
+        check(transposeFifths(-5, -2) == 5, "-5 - 2 = -7 要归一成 5，实际 "
+              + std::to_string(transposeFifths(-5, -2)));
+        // 已知缺陷（记在 MEMORY「下一轮候选」）：六个降号(-6, Gb) 会在
+        // normalizeFifths12 里被归一成 +6(F#)，页眉与 <fifths> 都写升号侧。
+        // 这里只锁「不越界」这一半，等修好再补 -6 的断言。
+        check(transposeFifths(6, 0) == 6 && transposeFifths(0, 0) == 0,
+              "边界 +6 与 0 原样保留（不越界）");
+
         // 渐变段内部的中间档位由楔形表达，文本谱不能逐点印成 [mp]。
         MidiData r;
         r.division = 480;
