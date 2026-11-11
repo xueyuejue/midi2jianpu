@@ -67,23 +67,25 @@ cd build && ctest --output-on-failure
 需要 Python 3（只用标准库）：
 
 ```bash
-python tests/fixtures/make_fixture.py     # 生成 91 份 .mid 素材（含 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony / smpte / format2 / aftertouch / retrigger / dangling / twolyrics / pedal / allnotesoff / cc7volume / pedal_channels / pedal_hysteresis / bendrange_channels / bendrange_timeline / bendrange_crosstrack / running_meta / running_sysex / running_realtime / running_standard / port_pedal / port_bend / port_prefix / port_prefix_base / port_standard / sysex_gs_drum / sysex_xg_drum / sysex_gs_normal / sysex_gs_reset / sysex_gm_reset / sysex_xg_reset / sysex_conductor / sysex_ch9_normal / sysex_ch9_drum / sysex_unknown / sysex_port_drum / bank_xg_drum / bank_normal / bank_switch_back / bank_conductor / bank_port / bank_reset / bank_ch9_plain / bank_no_program / program_timeline / diag_consistency / track_pedal / track_rpn_setup / track_conductor / track_leak / track_leak_base / track_empty / track_fmt2 / truncated / sostenuto / dyn_channels / soft_pedal / chunk_resync / wedge_tracks / oversized_len / voice_trio / grand_staff / midtempo / dyn_step / transpose_key / overfull / gate_gap / poly_gap / poly_gate / rest_split / rest_midbar / html_dots / html_rests / beam_levels / beam_hooks / staff_switch）+ 3 份变速 LRC
+python tests/fixtures/make_fixture.py     # 生成 92 份 .mid 素材（含 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony / smpte / format2 / aftertouch / retrigger / dangling / twolyrics / pedal / allnotesoff / cc7volume / pedal_channels / pedal_hysteresis / bendrange_channels / bendrange_timeline / bendrange_crosstrack / running_meta / running_sysex / running_realtime / running_standard / port_pedal / port_bend / port_prefix / port_prefix_base / port_standard / sysex_gs_drum / sysex_xg_drum / sysex_gs_normal / sysex_gs_reset / sysex_gm_reset / sysex_xg_reset / sysex_conductor / sysex_ch9_normal / sysex_ch9_drum / sysex_unknown / sysex_port_drum / bank_xg_drum / bank_normal / bank_switch_back / bank_conductor / bank_port / bank_reset / bank_ch9_plain / bank_no_program / program_timeline / diag_consistency / track_pedal / track_rpn_setup / track_conductor / track_leak / track_leak_base / track_empty / track_fmt2 / truncated / sostenuto / dyn_channels / soft_pedal / chunk_resync / wedge_tracks / oversized_len / voice_trio / grand_staff / midtempo / dyn_step / transpose_key / overfull / gate_gap / poly_gap / poly_gate / rest_split / rest_midbar / html_dots / html_rests / beam_levels / beam_hooks / staff_switch）+ 3 份变速 LRC
 python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2jianpu.exe
 python tests/smoke.py --self-test        # 28 项 CI 失败报告自测（不编译也能跑）
 python tests/check_xml_durations.py --self-test   # 18 项 MusicXML 时值自测（不编译也能跑）
-python tests/check_xml_durations.py               # 全部 91 份素材逐个 note 校验
+python tests/check_xml_durations.py               # 全部 92 份素材逐个 note 校验
 python tests/check_xml_beams.py --self-test       # 39 项 MusicXML 连梁自测
-python tests/check_xml_beams.py                   # 全部 91 份素材 <beam> 结构审计
+python tests/check_xml_beams.py                   # 全部 92 份素材 <beam> 结构审计
 python tests/check_xml_staff.py --self-test      # 25 项大谱表方向记号自测
-python tests/check_xml_staff.py                  # 全部 91 份素材方向记号谱表归属
+python tests/check_xml_staff.py                  # 全部 92 份素材方向记号谱表归属
 python tests/check_bar_beats.py --self-test        # 26 项文本谱拍数自测（不编译也能跑）
-python tests/check_bar_beats.py                    # 全部 91 份素材拍数守恒
+python tests/check_bar_beats.py                    # 全部 92 份素材拍数守恒
 python tests/check_html_dots.py --self-test         # 35 项 HTML 附点自测
-python tests/check_html_dots.py                    # 全部 91 份素材 HTML 附点一致性
+python tests/check_html_dots.py                    # 全部 92 份素材 HTML 附点一致性
 python tests/check_html_rests.py --self-test        # 77 项 HTML 休止符自测
-python tests/check_html_rests.py                   # 全部 91 份素材 HTML 休止符精确性
+python tests/check_html_rests.py                   # 全部 92 份素材 HTML 休止符精确性
 python tests/check_three_way.py --self-test         # 11 项三端结构守卫自测
-python tests/check_three_way.py                    # 全部 91 份素材三端结构一致性
+python tests/check_three_way.py                    # 全部 92 份素材三端结构一致性
+python tests/check_xml_structure.py --self-test    # 34 项 XML 结构守卫自测
+python tests/check_xml_structure.py                # 全部 92 份素材严格解析 / 时值守恒 / 元素顺序 / HTML 配对
 python tests/check_bar_beats.py --regress <旧版exe>  # 结构性零回归
 ```
 
@@ -247,7 +249,7 @@ python3 tests/check_wasm_sync.py --changed docs/wasm/midi2jianpu.wasm \
 
 | job | 步骤 |
 | --- | --- |
-| `cpp` | CMake 编译 CLI 与单测 → `ctest`（890 项）→ 全量重生成 91 份 `.mid` 并要求零 diff、无未跟踪素材 → `smoke.py --self-test` 28 项 → `check_xml_durations.py` 18 项自测 + 91 份素材 → `check_xml_beams.py` 39 项自测 + 91 份素材 → `check_xml_staff.py` 25 项自测 + 91 份素材 → `check_bar_beats.py` 26 项自测 + 91 份素材 → `check_html_dots.py` 35 项自测 + 91 份素材 → `check_html_rests.py` 77 项自测 + 91 份素材 → `check_three_way.py` 11 项自测 + 91 份素材 → `smoke.py` 83 组 |
+| `cpp` | CMake 编译 CLI 与单测 → `ctest`（890 项）→ 全量重生成 92 份 `.mid` 并要求零 diff、无未跟踪素材 → `smoke.py --self-test` 28 项 → `check_xml_durations.py` 18 项自测 + 92 份素材 → `check_xml_beams.py` 39 项自测 + 92 份素材 → `check_xml_staff.py` 25 项自测 + 92 份素材 → `check_bar_beats.py` 26 项自测 + 92 份素材 → `check_html_dots.py` 35 项自测 + 92 份素材 → `check_html_rests.py` 77 项自测 + 92 份素材 → `check_three_way.py` 11 项自测 + 92 份素材 → `check_xml_structure.py` 34 项自测 + 92 份素材 → `smoke.py` 83 组 |
 | `wasm` | `check_wasm_sync.py --self-test`（16 组）+ 实跑（含反向版本守护）→ `check_wasm_exports.py` → `wasm_smoke.mjs` 57 组（含产物版本号与 `version.hpp` 比对） |
 
 客户端可以忘了跑测试，这里在服务端兜底；**升过版本号却忘了重编 `docs/wasm/`，

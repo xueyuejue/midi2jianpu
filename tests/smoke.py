@@ -2830,7 +2830,7 @@ def main():
           out2[-200:])
     rc3, out3, _ = run(sys.executable, audit)
     check(rc3 == 0 and "0 处不一致" in out3,
-          "全部 91 份素材的 MusicXML 时值一致性校验通过", out3[-200:])
+          "全部 92 份素材的 MusicXML 时值一致性校验通过", out3[-200:])
 
     group("[80] v1.59.0 小节中间休止符精确拆段：文本谱拍数守恒")
     # rest_midbar.mid 把 1.75 / 1.25 拍两段非标准间隙夹在小节中间，后面
@@ -2871,7 +2871,7 @@ def main():
           out2[-200:])
     rc3, out3, _ = run(sys.executable, audit)
     check(rc3 == 0 and "0 处不守恒" in out3,
-          "全部 91 份素材的文本谱拍数守恒", out3[-200:])
+          "全部 92 份素材的文本谱拍数守恒", out3[-200:])
 
     group("[81] v1.60.0 HTML 谱面附点标记：文本谱 / MusicXML / HTML 三端一致")
     # DurStyle::dotted 与 CSS 的 .dotted .num::after 一直都在，noteColumn()
@@ -2913,7 +2913,7 @@ def main():
           out2[-200:])
     rc3, out3, _ = run(sys.executable, audit2)
     check(rc3 == 0 and "0 项问题" in out3,
-          "全部 91 份素材的 HTML 附点一致性通过", out3[-200:])
+          "全部 92 份素材的 HTML 附点一致性通过", out3[-200:])
 
     group("[82] v1.61.0 HTML 休止符精确拆列：三端拍数一致")
     # 文本谱 v1.59.0 与 MusicXML v1.58.0 都已把不规则间隙精确拆段，
@@ -2958,7 +2958,7 @@ def main():
           "HTML 休止符校验自测通过", out4[-200:])
     rc5, out5, _ = run(sys.executable, audit3)
     check(rc5 == 0 and "0 项问题" in out5,
-          "全部 91 份素材的 HTML 休止符精确性通过", out5[-200:])
+          "全部 92 份素材的 HTML 休止符精确性通过", out5[-200:])
 
     print("\n" + "-" * 48)
     if failures:

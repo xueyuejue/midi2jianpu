@@ -2,7 +2,7 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 91 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 92 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
@@ -14,8 +14,10 @@ port_pedal / port_bend / port_prefix / port_prefix_base / port_standard /
 sysex_gs_drum / sysex_xg_drum / sysex_gs_normal / sysex_gs_reset /
 sysex_gm_reset / sysex_xg_reset / sysex_conductor / sysex_ch9_normal /
 sysex_ch9_drum / sysex_unknown / sysex_port_drum / gate_gap / poly_gap / poly_gate /
-rest_split / rest_midbar / beam_levels / beam_hooks / staff_switch
+rest_split / rest_midbar / beam_levels / beam_hooks / staff_switch / xml_structure
 （另配 3 份 LRC 歌词）。
+xml_structure 把三连音 / 和弦 / 多声部 backup / 变拍号 / 跨小节长音
+叠进一份文件，供 check_xml_structure.py 审逐小节逐声部时值守恒。
 staff_switch 是大谱表的换谱表压力样本：同一个声部在四个小节里分别
 落在上行谱 / 下行谱 / 上行谱 / 前后各半，逼出「方向记号按小节与拍位
 跟随音符所在谱表」这条口径。beam_hooks 是钩形梁压力样本：同一梁组里孤立的十六分 / 三十二分音符，
@@ -2586,6 +2588,57 @@ def build_grand_staff() -> bytes:
     return bytes(header + t0.render() + t1.render())
 
 
+def build_xml_structure() -> bytes:
+    """结构性守卫压力样本（v1.69.0）。
+
+    把最容易让「逐小节逐声部时值求和」失真的几种机制叠进同一份文件：
+    三连音（160 tick x 3 占一拍）、同拍和弦（<chord/> 成员不占时长）、
+    同拍不同时值（splitVoices 拆 <voice> + <backup>）、跨小节长音（<tie>
+    切段）、休止间隙、4/4 -> 6/8 变拍号。守卫按 <backup> 切时间线、跳过
+    <chord/> 成员、跨小节继承拍号，每条时间线都应恰好等于该小节长度。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120 BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x06, b"Bridge"))                   # 全局段落名
+    t0.add(3 * BAR, meta(0x58, bytes([6, 3, 24, 8])))  # 第 4 小节起 6/8
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Piano"))
+    t1.program(0, 0, 0)
+
+    # 小节 1：三连音一拍 + 同值和弦一拍 + 长音/短音同起点（拆两声部）
+    for i, p in enumerate((60, 62, 64)):
+        t1.note(0, p, 88, i * 160, 160)
+    for p in (67, 71, 74):
+        t1.note(0, p, 84, 480, 480)
+    t1.note(0, 48, 70, 960, 960)
+    t1.note(0, 72, 92, 960, 480)
+
+    # 小节 2：整小节长音与四个四分同时进入（再拆一次声部）
+    t1.note(0, 36, 66, BAR, BAR)
+    for i, p in enumerate((72, 74, 76, 77)):
+        t1.note(0, p, 90, BAR + i * DIV, DIV)
+
+    # 小节 3：先留一拍休止，再三个四分，末尾一个跨小节长音
+    for i, p in enumerate((69, 71, 72)):
+        t1.note(0, p, 90, 2 * BAR + DIV + i * DIV, DIV)
+    t1.note(0, 55, 72, 2 * BAR + 3 * DIV, 2 * DIV)   # 5280 -> 6240，跨到 6/8
+
+    # 小节 4（6/8 = 1440 tick）：长音延续段 480 + 四个八分 240 x 4
+    for i, p in enumerate((79, 81, 83, 84)):
+        t1.note(0, p, 92, 3 * BAR + DIV + i * (DIV // 2), DIV // 2)
+
+    # 力度换档与段落名，让 <direction> 也进审计范围
+    t1.cc(0, 11, 40, 0)
+    t1.cc(0, 11, 110, BAR)
+    t1.cc(0, 11, 60, 2 * BAR)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return bytes(header + t0.render() + t1.render())
+
+
 def build_staff_switch() -> bytes:
     """大谱表同一声部跨小节换谱表（v1.68.0）。
 
@@ -3157,6 +3210,16 @@ def main() -> None:
     # 键盘大谱表：宽音域钢琴轨排成上下两行谱（高音 + 低音谱号）
     for name, builder in (
         ("grand_staff", build_grand_staff),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # 结构守卫压力样本：三连音 / 和弦 / backup / 变拍号 / 跨小节长音
+    for name, builder in (
+        ("xml_structure", build_xml_structure),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:
