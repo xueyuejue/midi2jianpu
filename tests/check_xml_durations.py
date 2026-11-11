@@ -36,7 +36,7 @@ NOTE_RE = re.compile(r"<note>(.*?)</note>", re.S)
 REST_LINE_RE = re.compile(r"^[ \t]*<note><rest[^>]*>[^\n]*</note>\r?\n", re.M)
 # v1.64.0 起音符行会带 <beam> 连梁元素，比对「除休止符外逐字节一致」时
 # 必须先剥掉，否则每份有八分音符的素材都会假报差异。
-BEAM_RE = re.compile(r'<beam number="\d">\w+</beam>')
+BEAM_RE = re.compile(r'<beam number="\d">[^<]+</beam>')
 
 
 def default_exe():

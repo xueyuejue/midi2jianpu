@@ -2,7 +2,7 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 89 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 90 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
@@ -14,7 +14,9 @@ port_pedal / port_bend / port_prefix / port_prefix_base / port_standard /
 sysex_gs_drum / sysex_xg_drum / sysex_gs_normal / sysex_gs_reset /
 sysex_gm_reset / sysex_xg_reset / sysex_conductor / sysex_ch9_normal /
 sysex_ch9_drum / sysex_unknown / sysex_port_drum / gate_gap / poly_gap / poly_gate /
-rest_split / rest_midbar / beam_levels（另配 3 份 LRC 歌词）。
+rest_split / rest_midbar / beam_levels / beam_hooks（另配 3 份 LRC 歌词）。
+beam_hooks 是钩形梁压力样本：同一梁组里孤立的十六分 / 三十二分音符，
+次级梁既连不成段也不能整层丢掉，必须写 forward/backward hook。
 beam_levels 是连梁的「压力样本」：4/4 四小节分别放全十六分、混合时值、
 次级梁不连续、附点十六分，再变拍号到 6/8 两小节放三音连梁——在它之前
 88 份素材里一个十六分音符都没有，MusicXML 的二级梁与 continue 状态只能靠
@@ -2680,6 +2682,55 @@ def build_beam_levels() -> bytes:
     return bytes(header + t0.render() + t1.render())
 
 
+def build_beam_hooks() -> bytes:
+    """v1.67.0：钩形梁压力样本，让 CI 在真实素材上审到 forward/backward hook。
+
+    DIV=480，前两小节 4/4（每小节 1920 tick），后两小节变拍号到 6/8
+    （每小节 1440 tick，梁组边长 720 tick = 附点四分）：
+
+        小节 1 拍 1  [十六 八分 十六]       -> 二级梁两颗孤立项：
+                                              组首 forward hook、组尾 backward hook
+              拍 2  [十六 十六 八分]       -> 二级梁正常 begin/end（对照组）
+              拍 3  [八分 八分]            -> 一级梁成对
+              拍 4  [四分]                 -> 长音截断梁组
+        小节 2 拍 1  [32 32 十六 八分]     -> 三级梁连续段（无需 hook）
+              拍 2  [32 十六 32 八分]     -> 三级梁两颗孤立项（level 3 hook）
+              拍 3/4 同上小节
+        小节 3-4  6/8 各 [十六 八分 十六 八分] x2
+                                          -> 每颗十六分都是孤立项，
+                                             组首 forward、组内 backward hook
+
+    在它之前，混合时值下的孤立短音符只由单测和临时探针覆盖；少了 hook，
+    MusicXML 里十六分音符会被显示成八分，而 HTML 端仍按自身时值画两条减时线。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120 BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(2 * BAR, meta(0x58, bytes([6, 3, 24, 8])))  # 小节 3 起 6/8
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    t1.program(0, 0, 0)
+
+    def fill(offset, pattern, length):
+        cur = offset
+        for i, dur in enumerate(pattern):
+            t1.note(0, 60 + (i % 7), 96, cur, dur)
+            cur += dur
+        assert cur - offset == length, (offset, cur - offset)
+
+    # 16th=120, eighth=240, quarter=480, 32nd=60
+    fill(0, [120, 240, 120, 120, 120, 240, 240, 240, 480], BAR)
+    fill(BAR, [60, 60, 120, 240, 60, 120, 60, 240, 240, 240, 480], BAR)
+    for b in range(2):
+        fill(2 * BAR + b * 1440, [120, 240, 120, 240] * 2, 1440)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return bytes(header + t0.render() + t1.render())
+
+
 def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     mid = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "sample.mid")
@@ -3154,6 +3205,7 @@ def main() -> None:
     # 连梁压力样本：十六分音符的二级梁 / continue / 6/8 三音连梁
     for name, builder in (
         ("beam_levels", build_beam_levels),
+        ("beam_hooks", build_beam_hooks),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

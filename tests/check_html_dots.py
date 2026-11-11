@@ -48,7 +48,7 @@ DOT_CLASSES = ("sixteenth", "eighth", "quarter")
 NOTE_CLASS_RE = re.compile(r"<span class='note ([^']*)'")
 TONE_CLASS_RE = re.compile(r"<span class='tone([^']*)'")
 NOTE_RE = re.compile(r"<note>(.*?)</note>", re.S)
-# HTML 页脚内嵌 M2J_VERSION，跨版本比对必须先归一化，否则 89 份素材
+# HTML 页脚内嵌 M2J_VERSION，跨版本比对必须先归一化，否则 90 份素材
 # 都会因为版本号字符串变化而误报（与 regress.py 同一口径）。
 VER_RE = re.compile(r"midi2jianpu v\d+\.\d+\.\d+")
 
@@ -212,7 +212,7 @@ def audit(exe, verbose=True):
 
 # v1.64.0 起 MusicXML 会写 <beam> 连梁；本脚本只管附点维度，
 # XML 只要求「除连梁外逐字节一致」。
-BEAM_RE = re.compile(rb'<beam number="\d">\w+</beam>')
+BEAM_RE = re.compile(rb'<beam number="\d">[^<]+</beam>')
 
 
 def strip_beams(xml):

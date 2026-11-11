@@ -257,7 +257,7 @@ def strip_beam_groups(html):
 
 # v1.64.0 起 MusicXML 会写 <beam> 连梁。本脚本只管 HTML 休止维度，
 # XML 只要求「除连梁外逐字节一致」，否则每份有八分音符的素材都会假报。
-BEAM_RE = re.compile(rb'<beam number="\d">\w+</beam>')
+BEAM_RE = re.compile(rb'<beam number="\d">[^<]+</beam>')
 
 
 def strip_beams(xml):

@@ -461,7 +461,11 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
         // start 的音符）算一个事件。
         struct BeamInfo { int levels = 0; char state[5] = {0,0,0,0,0}; };
         std::vector<BeamInfo> beamOf(segs.size());
-        const char* kBeamWord[4] = {"", "begin", "continue", "end"};
+        // 4/5 是钩形梁：孤立短音符的次级梁画不成长梁，只能画一小段钩。
+        // MusicXML 规范里 forward hook 从符干向右（组首，朝后一个音），
+        // backward hook 向左（组尾，朝前一个音）。
+        const char* kBeamWord[6] = {"", "begin", "continue", "end",
+                                    "forward hook", "backward hook"};
         auto beamLevelOfType = [](const std::string& t) -> int {
             if (t == "eighth") return 1;
             if (t == "16th")   return 2;
@@ -504,19 +508,29 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                 int maxL = 0;
                 for (int ei : grp) maxL = std::max(maxL, bev[ei].level);
                 for (int L = 1; L <= maxL; ++L) {
-                    // 该层只连「连续的参与者」：中间夹着更短的音就断开，否则
-                    // 次级梁会跨过它——MusicXML 没有钩形梁，画出来就是错的。
+                    // 该层只连「连续的参与者」：中间夹着更短的音就断开，
+                    // 否则次级梁会跨过它。断开后只剩一颗音时不能整条丢掉：
+                    // 十六分音符少一层梁，在记谱软件里就显示成八分音符。
+                    // 这种情况用钩形梁（hook）——组首向右画 forward hook，
+                    // 其余位置向左画 backward hook，与 HTML 端按自身时值
+                    // 画两条减时线表达的是同一件事。
                     size_t k = 0;
                     while (k < grp.size()) {
                         if (bev[grp[k]].level < L) { ++k; continue; }
                         size_t m = k;
                         while (m < grp.size() && bev[grp[m]].level >= L) ++m;
-                        if (m - k >= 2) {   // 单颗音不画梁，免得出现孤立次级梁
+                        if (m - k >= 2) {
                             for (size_t u = k; u < m; ++u) {
                                 const int w = (u == k) ? 1 : (u + 1 == m) ? 3 : 2;
                                 for (int si : bev[grp[u]].segs)
                                     beamOf[si].state[L] = (char)w;
                             }
+                        } else if (L >= 2) {
+                            // 一级梁的参与者必然是整组（grp 里全是短音符），
+                            // 所以孤立项只会出现在次级梁上。
+                            const int w = (k == 0) ? 4 : 5;
+                            for (int si : bev[grp[k]].segs)
+                                beamOf[si].state[L] = (char)w;
                         }
                         k = m;
                     }

@@ -5970,7 +5970,9 @@ int main() {
                   countOf(mx, "<beam number=\"2\">end</beam>") == 1,
               "次级梁只盖住两个十六分，不延伸到八分上");
 
-        // 十六 + 八分 + 十六：二级梁的参与者不连续，宁可不画也不画错。
+        // 十六 + 八分 + 十六：二级梁的两颗参与者各自孤立，不能整层丢掉。
+        // 少了第二层梁，记谱软件就把十六分显示成八分；HTML 端却按
+        // 自身时值画两条减时线，两端读出的节奏会分叉。
         MidiData h;
         h.division = 480;
         h.timeSig.valid = true;
@@ -5980,9 +5982,17 @@ int main() {
         add(h, 360, 120, 64);
         add(h, 480, 1440, 65);
         const std::string hx = renderMusicXml(h, c);
-        check(countOf(hx, "<beam number=\"2\"") == 0,
-              "次级梁不跨过更短的音（无钩形梁时宁可不画）");
+        check(countOf(hx, "<beam number=\"2\">forward hook</beam>") == 1 &&
+                  countOf(hx, "<beam number=\"2\">backward hook</beam>") == 1,
+              "二级梁两颗孤立项各画一个钩形梁，组首 forward / 组尾 backward");
+        check(countOf(hx, "<beam number=\"2\">begin</beam>") == 0 &&
+                  countOf(hx, "<beam number=\"2\">continue</beam>") == 0 &&
+                  countOf(hx, "<beam number=\"2\">end</beam>") == 0,
+              "孤立项不伪装成长梁，钩不会跨过中间的八分");
+        check(countOf(hx, "<beam number=\"2\"") == 2,
+              "参与连梁的每颗十六分都带第二层梁（层级完整）");
         check(countOf(hx, "<beam number=\"1\">begin</beam>") == 1 &&
+                  countOf(hx, "<beam number=\"1\">continue</beam>") == 1 &&
                   countOf(hx, "<beam number=\"1\">end</beam>") == 1,
               "一级梁仍把三颗音连成一组");
 
@@ -6059,6 +6069,60 @@ int main() {
         check(gx.find("<staff>2</staff><beam number=\"1\">begin</beam>") !=
                   std::string::npos,
               "大谱表下行谱的梁落在 staff 2，不跨谱表连梁");
+
+        // 三十二分 + 十六分 + 三十二分 + 八分：三级梁同样两颗孤立项，
+        // 而二级梁仍是一整段 begin/continue/end。
+        MidiData h3;
+        h3.division = 480;
+        h3.timeSig.valid = true;
+        h3.trackNames[0] = "Vocal";
+        add(h3, 0, 60, 60);
+        add(h3, 60, 120, 62);
+        add(h3, 180, 60, 64);
+        add(h3, 240, 240, 65);
+        add(h3, 480, 1440, 67);
+        const std::string h3x = renderMusicXml(h3, c);
+        check(countOf(h3x, "<beam number=\"3\">forward hook</beam>") == 1 &&
+                  countOf(h3x, "<beam number=\"3\">backward hook</beam>") == 1,
+              "三级梁的孤立项也画 forward/backward hook");
+        check(countOf(h3x, "<beam number=\"2\">begin</beam>") == 1 &&
+                  countOf(h3x, "<beam number=\"2\">continue</beam>") == 1 &&
+                  countOf(h3x, "<beam number=\"2\">end</beam>") == 1,
+              "三级梁孤立时二级梁仍是完整三音段");
+
+        // 2/2 一拍（960 tick）内混合时值：组首孤立项 forward、
+        // 组内中间孤立项 backward，末尾两颗连续十六分仍画 begin/end。
+        MidiData mid;
+        mid.division = 480;
+        mid.timeSig.valid = true;
+        mid.timeSig.numerator = 2;
+        mid.timeSig.denomPow = 1;
+        mid.trackNames[0] = "Vocal";
+        add(mid, 0, 120, 60);
+        add(mid, 120, 240, 62);
+        add(mid, 360, 120, 64);
+        add(mid, 480, 240, 65);
+        add(mid, 720, 120, 67);
+        add(mid, 840, 120, 69);
+        add(mid, 960, 960, 72);
+        const std::string midx = renderMusicXml(mid, c);
+        check(countOf(midx, "<beam number=\"2\">forward hook</beam>") == 1 &&
+                  countOf(midx, "<beam number=\"2\">backward hook</beam>") == 1 &&
+                  countOf(midx, "<beam number=\"2\">begin</beam>") == 1 &&
+                  countOf(midx, "<beam number=\"2\">end</beam>") == 1,
+              "2/2 一拍内：组首/中间孤立项画钩，末尾连续段画 begin/end");
+
+        // 完全孤立的十六分音符画的是符尾（flag），不该凭空出现梁或钩。
+        MidiData iso16;
+        iso16.division = 480;
+        iso16.timeSig.valid = true;
+        iso16.trackNames[0] = "Vocal";
+        add(iso16, 0, 480, 60);
+        add(iso16, 480, 120, 62);
+        add(iso16, 960, 960, 64);
+        const std::string i16x = renderMusicXml(iso16, c);
+        check(countOf(i16x, "<beam ") == 0,
+              "完全孤立的十六分音符画符尾而不是梁或钩");
     }
 
     std::cout << "\n------------------------------------------------\n";
