@@ -34,6 +34,9 @@ import tempfile
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from xml_norm import strip_direction_staff  # noqa: E402
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIX = os.path.join(ROOT, "tests", "fixtures")
 
@@ -276,7 +279,14 @@ def audit_fixtures(exe):
 
 
 def structural_regress(old_exe, new_exe):
-    """本轮不动功能代码：三端归一化页脚后应与旧版逐字节一致。"""
+    """归一化页脚与 direction 的 <staff> 后，三端应与旧版逐字节一致。
+
+    本轮（v1.70.0）只改了大谱表跨谱表楔形的 <direction><staff> 取值：
+    起点与 stop 必须落同一谱表，stop 不再按自己的拍位取到另一行谱。这与
+    check_xml_staff 的口径一致——跨版本比对前先摘掉 direction 内的
+    <staff> 行（<note> 里的 <staff> 是大谱表游标语义，保留不动），其余
+    结构一个字节都不许动。
+    """
     errors, changed = [], []
     with tempfile.TemporaryDirectory() as td:
         for mid in fixtures():
@@ -287,6 +297,8 @@ def structural_regress(old_exe, new_exe):
                 a, b = o[i], n[i]
                 if ext != "xml":
                     a, b = normalize_footer(a), normalize_footer(b)
+                else:
+                    a, b = strip_direction_staff(a), strip_direction_staff(b)
                 if a != b:
                     changed.append(name + "." + ext)
                     errors.append("%s: %s 与旧版不一致" % (name, ext))

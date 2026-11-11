@@ -2,7 +2,7 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 92 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 93 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
@@ -14,13 +14,15 @@ port_pedal / port_bend / port_prefix / port_prefix_base / port_standard /
 sysex_gs_drum / sysex_xg_drum / sysex_gs_normal / sysex_gs_reset /
 sysex_gm_reset / sysex_xg_reset / sysex_conductor / sysex_ch9_normal /
 sysex_ch9_drum / sysex_unknown / sysex_port_drum / gate_gap / poly_gap / poly_gate /
-rest_split / rest_midbar / beam_levels / beam_hooks / staff_switch / xml_structure
-（另配 3 份 LRC 歌词）。
+rest_split / rest_midbar / beam_levels / beam_hooks / staff_switch / xml_structure /
+grand_staff_wedge（另配 3 份 LRC 歌词）。
 xml_structure 把三连音 / 和弦 / 多声部 backup / 变拍号 / 跨小节长音
 叠进一份文件，供 check_xml_structure.py 审逐小节逐声部时值守恒。
 staff_switch 是大谱表的换谱表压力样本：同一个声部在四个小节里分别
 落在上行谱 / 下行谱 / 上行谱 / 前后各半，逼出「方向记号按小节与拍位
-跟随音符所在谱表」这条口径。beam_hooks 是钩形梁压力样本：同一梁组里孤立的十六分 / 三十二分音符，
+跟随音符所在谱表」这条口径。grand_staff_wedge 在大谱表上放一条跨谱表的
+渐强楔形：起点在上行谱、终点落在下行谱，逼出「同一条 wedge 起止必须落
+同一谱表」这条口径。beam_hooks 是钩形梁压力样本：同一梁组里孤立的十六分 / 三十二分音符，
 次级梁既连不成段也不能整层丢掉，必须写 forward/backward hook。
 beam_levels 是连梁的「压力样本」：4/4 四小节分别放全十六分、混合时值、
 次级梁不连续、附点十六分，再变拍号到 6/8 两小节放三音连梁——在它之前
@@ -2684,6 +2686,43 @@ def build_staff_switch() -> bytes:
     return bytes(header + t0.render() + t1.render())
 
 
+def build_grand_staff_wedge() -> bytes:
+    """大谱表跨谱表渐强楔形（v1.70.0）。
+
+    单条钢琴轨（program 0）音域 F2(34) ~ F5(77)，跨度 43 半音且跨中音 C，
+    触发 <staves>2</staves>。一条 CC11 斜坡把整段写成一个 crescendo：
+      第 1 小节全在上行谱(1)：72 74 76 77，CC11 30->55->100 起点在 tick 0；
+      第 2 小节全在下行谱(2)：34 38 43 48，楔形终点落在 tick 960。
+    旧实现每条 <direction> 的 <staff> 按各自拍位取：crescendo 起在 <staff>1</staff>、
+    stop 落在 <staff>2</staff>，一条 hairpin 被拆到两个谱表，MuseScore 渲染成
+    断裂的楔形。修复后同一条 wedge 以起点谱表为锚，stop 复用同一 <staff>。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120 BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C major
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Piano"))
+    t1.program(0, 0, 0)                                # Acoustic Grand Piano
+
+    # 第 1 小节：上行谱
+    for i, p in enumerate((72, 74, 76, 77)):
+        t1.note(0, p, 80, i * DIV, DIV)
+    # 第 2 小节：下行谱
+    for i, p in enumerate((34, 38, 43, 48)):
+        t1.note(0, p, 80, BAR + i * DIV, DIV)
+
+    # CC11 斜坡 30->55->100：>=3 点、总变化 >=24 -> 一个 crescendo（起点 0、终点 960）
+    t1.cc(0, 11, 30, 0)
+    t1.cc(0, 11, 55, DIV // 2)
+    t1.cc(0, 11, 100, BAR)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return bytes(header + t0.render() + t1.render())
+
+
 def build_midtempo() -> bytes:
     # 小节中途变速（v1.48.0）。
     # 旧实现把速度记号按小节归并成 map<bar, mark>：同一小节的多个阶跃只留
@@ -3230,6 +3269,16 @@ def main() -> None:
     # 大谱表换谱表：方向记号的 <staff> 按小节 / 拍位跟随实际音符
     for name, builder in (
         ("staff_switch", build_staff_switch),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # 大谱表跨谱表渐强楔形：同一条 wedge 起止必须落同一谱表
+    for name, builder in (
+        ("grand_staff_wedge", build_grand_staff_wedge),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

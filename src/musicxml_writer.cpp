@@ -401,6 +401,10 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             voiceStaff[v] = (lo >= hi) ? 2 : 1;
         }
         std::vector<std::string> lastDyn(voiceCount);
+        // 一条楔形（crescendo / diminuendo → stop）的起止必须落同一谱表：
+        // 以「起点音头所在谱表」为锚，stop 复用该 <staff>。起点与终点常跨小节，
+        // 所以锚记在 emitDirections 之外（按 voice 记），stop 消费后清零。
+        std::vector<int> wedgeAnchorStaff(voiceCount, -1);
         auto triplets = detectTriplets(ns, division);
         std::vector<Segment> segs;
         segs.reserve(ns.size() * 2);
@@ -812,22 +816,35 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                 }
                 // 渐强渐弱是通道级演奏表情：每个 part / 每个 voice 按自己的
                 // 主导通道各写一份，方向记号用 <voice> 标明归属。
+                // 一条楔形必须落同一谱表：以起点音头所在谱表为锚，stop 复用
+                // 同一 <staff>，不要再按各自拍位重新解析——大谱表里左手段与
+                // 右手段的渐强，若起点在上一行、终点在下一行，旧写法把一条
+                // hairpin 拆到两个谱表，MuseScore 渲染成断裂的楔形。
                 for (const auto& m : expr.inRange(bs, be, ch)) {
-                    if (m.wedge != 0)
+                    if (m.wedge != 0) {
+                        const int anchor = (grand ? staffAt(bar, v, m.tick) : 1);
+                        wedgeAnchorStaff[v] = anchor;
                         xml << "      <direction placement=\"above\">\n"
                             << "        <direction-type><wedge type=\""
                             << (m.wedge > 0 ? "crescendo" : "diminuendo")
                             << "\" number=\"" << wedgeNum << "\"/></direction-type>\n"
                             << voiceTag
-                            << staffTagFor(m.tick)
+                            << (grand ? ("        <staff>" + std::to_string(anchor)
+                                         + "</staff>\n") : std::string())
                             << "      </direction>\n";
-                    if (m.wedgeStop)
+                    }
+                    if (m.wedgeStop) {
+                        const int anchor = (wedgeAnchorStaff[v] > 0)
+                            ? wedgeAnchorStaff[v] : (grand ? staffAt(bar, v, m.tick) : 1);
                         xml << "      <direction placement=\"above\">\n"
                             << "        <direction-type><wedge type=\"stop\" "
                             << "number=\"" << wedgeNum << "\"/></direction-type>\n"
                             << voiceTag
-                            << staffTagFor(m.tick)
+                            << (grand ? ("        <staff>" + std::to_string(anchor)
+                                         + "</staff>\n") : std::string())
                             << "      </direction>\n";
+                        wedgeAnchorStaff[v] = -1;
+                    }
                 }
             }
         };

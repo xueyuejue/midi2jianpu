@@ -1946,6 +1946,31 @@ if (existsSync(hrpPath)) {
     'WASM MusicXML 也是 10 个 rest note，与 HTML 逐列对应');
 }
 
+// ---- 58. v1.70.0 大谱表跨谱表楔形：WASM 起止落同一谱表 ----
+// 旧产物每条 <direction> 的 <staff> 各自按拍位取：渐强起点在上行谱、终点
+// 在下行谱，hairpin 被拆成两段断裂的楔形。修复后以起点谱表为锚，stop 与
+// 起音共用同一 <staff>，整条楔形留在同一行谱。
+const gswPath = path.join(FIXTURES, 'grand_staff_wedge.mid');
+if (existsSync(gswPath)) {
+  mod._midi2jianpu_set_track(-1);
+  const gsw = makeCaller(mod);
+  gsw.setMidi(new Uint8Array(readFileSync(gswPath)));
+  gsw.setLyrics('');
+  const gswXml = gsw.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(/<staves>2<\/staves>/.test(gswXml),
+    'WASM 跨谱表楔形素材被判为大谱表');
+  const wstaffs = [];
+  for (const blk of gswXml.match(/<direction\b[^>]*>[\s\S]*?<\/direction>/g) || []) {
+    if (blk.includes('<wedge')) {
+      const m = blk.match(/<staff>(\d+)<\/staff>/);
+      wstaffs.push(m ? m[1] : null);
+    }
+  }
+  check(wstaffs.length === 2 && wstaffs[0] === '1' && wstaffs[1] === '1',
+    'WASM crescendo 起与 stop 止都落 staff 1（旧产物 stop 落 staff 2），实际 ' +
+    JSON.stringify(wstaffs));
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

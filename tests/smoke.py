@@ -2830,7 +2830,7 @@ def main():
           out2[-200:])
     rc3, out3, _ = run(sys.executable, audit)
     check(rc3 == 0 and "0 处不一致" in out3,
-          "全部 92 份素材的 MusicXML 时值一致性校验通过", out3[-200:])
+          "全部 93 份素材的 MusicXML 时值一致性校验通过", out3[-200:])
 
     group("[80] v1.59.0 小节中间休止符精确拆段：文本谱拍数守恒")
     # rest_midbar.mid 把 1.75 / 1.25 拍两段非标准间隙夹在小节中间，后面
@@ -2871,7 +2871,7 @@ def main():
           out2[-200:])
     rc3, out3, _ = run(sys.executable, audit)
     check(rc3 == 0 and "0 处不守恒" in out3,
-          "全部 92 份素材的文本谱拍数守恒", out3[-200:])
+          "全部 93 份素材的文本谱拍数守恒", out3[-200:])
 
     group("[81] v1.60.0 HTML 谱面附点标记：文本谱 / MusicXML / HTML 三端一致")
     # DurStyle::dotted 与 CSS 的 .dotted .num::after 一直都在，noteColumn()
@@ -2913,7 +2913,7 @@ def main():
           out2[-200:])
     rc3, out3, _ = run(sys.executable, audit2)
     check(rc3 == 0 and "0 项问题" in out3,
-          "全部 92 份素材的 HTML 附点一致性通过", out3[-200:])
+          "全部 93 份素材的 HTML 附点一致性通过", out3[-200:])
 
     group("[82] v1.61.0 HTML 休止符精确拆列：三端拍数一致")
     # 文本谱 v1.59.0 与 MusicXML v1.58.0 都已把不规则间隙精确拆段，
@@ -2958,7 +2958,27 @@ def main():
           "HTML 休止符校验自测通过", out4[-200:])
     rc5, out5, _ = run(sys.executable, audit3)
     check(rc5 == 0 and "0 项问题" in out5,
-          "全部 92 份素材的 HTML 休止符精确性通过", out5[-200:])
+          "全部 93 份素材的 HTML 休止符精确性通过", out5[-200:])
+
+    group("[83] v1.70.0 大谱表跨谱表楔形：crescendo 起止落同一谱表")
+    # 旧实现每条 <direction> 的 <staff> 各自按拍位取：渐强起点在上行谱、
+    # 终点在下行谱，一条 hairpin 被拆到两个谱表，MuseScore 渲染成断裂的
+    # 楔形。修复后以起点谱表为锚，stop 复用同一 <staff>。
+    gsw = os.path.join(FIXTURES, "grand_staff_wedge.mid")
+    gswx = os.path.join(tmp, "grand_staff_wedge.xml")
+    rc, _, err = run(exe, gsw, "--musicxml", gswx)
+    gxml = open(gswx, encoding="utf-8").read() if (rc == 0 and
+                                                   os.path.exists(gswx)) else ""
+    check(rc == 0 and "<staves>2</staves>" in gxml,
+          "跨谱表楔形素材被判为大谱表", err[-200:])
+    wstaff = []
+    for blk in re.findall(r"<direction\b[^>]*>.*?</direction>", gxml, re.S):
+        if "<wedge" in blk:
+            m = re.search(r"<staff>(\d+)</staff>", blk)
+            wstaff.append(m.group(1) if m else None)
+    check(len(wstaff) == 2 and wstaff[0] == wstaff[1] == "1",
+          "crescendo 起与 stop 止都落 staff 1（旧实现 stop 落 staff 2）",
+          "实际 %s" % wstaff)
 
     print("\n" + "-" * 48)
     if failures:

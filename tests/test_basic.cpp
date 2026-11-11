@@ -6183,6 +6183,63 @@ int main() {
         check(countOf(swx, "<staff>1</staff>") >= 4 &&
                   countOf(swx, "<staff>2</staff>") >= 4,
               "两行谱的音符与方向记号都实际出现");
+
+        // ---- 大谱表跨谱表渐强楔形必须落同一谱表（v1.70.0）----
+        // 旧实现每条 <direction> 的 <staff> 各自按拍位取：crescendo 起点在
+        // 上行谱(1)、stop 落在下行谱(2)，一条 hairpin 被拆到两个谱表，
+        // MuseScore 渲染成断裂的楔形。修复后以起点谱表为锚，stop 复用同一
+        // <staff>，整条楔形留在同一行谱上。
+        auto addGsw = [](MidiData& d, long start, long dur, int pitch) {
+            NoteEvent n;
+            n.startTicks = start;
+            n.durationTicks = dur;
+            n.rawDurationTicks = dur;
+            n.pitch = pitch;
+            n.channel = 0;
+            n.track = 0;
+            d.notes.push_back(n);
+        };
+        MidiData gsw;
+        gsw.division = 480;
+        gsw.timeSig.valid = true;
+        gsw.trackNames[0] = "Piano";
+        gsw.channelProgram[0] = 0;
+        // 第 1 小节上行谱(72-77)，第 2 小节下行谱(34-48)：跨度 43、跨 C(60)
+        const int gswHi[4] = {72, 74, 76, 77};
+        const int gswLo[4] = {34, 38, 43, 48};
+        for (int i = 0; i < 4; i++) {
+            addGsw(gsw, i * 480, 480, gswHi[i]);
+            addGsw(gsw, 1920 + i * 480, 480, gswLo[i]);
+        }
+        // CC11 斜坡 30->55->100（>=3 点、跨度>=24）-> 一条 crescendo，
+        // 起点 tick 0（落在第 1 小节上行谱）、终点 tick 1920（落在第 2 小节下行谱）
+        gsw.dynamics.push_back({0, 30, 0});
+        gsw.dynamics.push_back({960, 55, 0});
+        gsw.dynamics.push_back({1920, 100, 0});
+        const KeyEstimate gswKey{0, true};
+        const std::string gswx = renderMusicXml(gsw, gswKey);
+        check(gswx.find("<staves>2</staves>") != std::string::npos,
+              "跨谱表楔形样本被判为大谱表");
+        auto wedgeStaffs = [](const std::string& xml) {
+            std::vector<int> out;
+            size_t pos = 0;
+            while ((pos = xml.find("<direction", pos)) != std::string::npos) {
+                const size_t e = xml.find("</direction>", pos);
+                if (e == std::string::npos) break;
+                const std::string d = xml.substr(pos, e - pos);
+                if (d.find("wedge") != std::string::npos) {
+                    const size_t s = d.find("<staff>");
+                    if (s != std::string::npos)
+                        out.push_back(std::stoi(d.substr(s + 7)));
+                }
+                pos = e + 12;
+            }
+            return out;
+        };
+        const std::vector<int> ws = wedgeStaffs(gswx);
+        check(ws.size() == 2 && ws[0] == 1 && ws[1] == 1,
+              "crescendo 起与 stop 止都落同一谱表（起点 staff 1），"
+              "不再跨谱表断裂（旧实现 stop 落 staff 2）");
     }
 
     std::cout << "\n------------------------------------------------\n";

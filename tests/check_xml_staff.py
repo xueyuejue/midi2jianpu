@@ -111,12 +111,60 @@ def direction_violations(xml):
             sm = STAFF_RE.search(inner)
             if not sm:
                 continue          # 速度 / 段落名等全局记号不带 <staff>
+            if "<wedge" in inner:
+                # 渐强渐弱楔形是一条跨小节（可能跨谱表）的 hairpin：起止必须
+                # 落同一谱表（以起点谱表为锚），stop 所在小节的音符可能是另一
+                # 行谱，逐小节归属检查在此不适用，改由 wedge_same_staff 保证
+                # 「起止同 staff」。
+                continue
             vm = VOICE_RE.search(inner)
             allowed = voices.get(vm.group(1), allst) if vm else allst
             if sm.group(1) not in allowed:
                 detail = ",".join(sorted(allowed)) if allowed else "无音符"
                 out.append("第 %d 小节 <direction> 标 staff=%s，但该声部该小节"
                            "只有 %s" % (mi, sm.group(1), detail))
+    return out
+
+
+PART_RE = re.compile(r"<part\b[^>]*>(.*?)</part>", re.S)
+
+
+def wedge_pairs(xml):
+    """逐 part 抽取楔形起止的 (start_staff, stop_staff, number) 列表。
+
+    楔形是跨小节（可能跨谱表）的一条 hairpin：crescendo / diminuendo 是
+    起点，type="stop" 是终点，二者用同一个 number 配对；配对口径与
+    MusicXML 导出层一致（按 part 内的 number 匹配）。
+    """
+    out = []
+    for part in PART_RE.finditer(xml):
+        body = part.group(1)
+        starts = {}            # number -> start staff
+        for d in DIRECTION_RE.finditer(body):
+            inner = d.group(1)
+            wm = re.search(r"<wedge type=\"(\w+)\" number=\"(\d+)\"", inner)
+            if not wm:
+                continue
+            num = wm.group(2)
+            sm = STAFF_RE.search(inner)
+            staff = sm.group(1) if sm else None
+            if wm.group(1) == "stop":
+                out.append((starts.get(num), staff, num))
+            else:
+                starts[num] = staff
+    return out
+
+
+def wedge_same_staff(xml):
+    """一条楔形起止必须落同一谱表（v1.70.0 不变量）。"""
+    out = []
+    for start_staff, stop_staff, num in wedge_pairs(xml):
+        if start_staff is None or stop_staff is None:
+            continue
+        if start_staff != stop_staff:
+            out.append("楔形 number=%s 起 staff=%s、止 staff=%s："
+                       "跨谱表断裂（起止必须落同一谱表）"
+                       % (num, start_staff, stop_staff))
     return out
 
 
@@ -137,7 +185,7 @@ def has_switch(xml):
 
 def coverage_stats(exe):
     stats = dict(grand_files=0, switch_files=0, directions=0,
-                 staff2_dirs=0, offset_dirs=0)
+                 staff2_dirs=0, offset_dirs=0, wedge_dirs=0)
     with tempfile.TemporaryDirectory() as td:
         for mid in fixtures():
             xml = run_xml(exe, mid, td, "audit")
@@ -158,7 +206,11 @@ def coverage_stats(exe):
                     stats["staff2_dirs"] += 1
                 if OFFSET_RE.search(inner):
                     stats["offset_dirs"] += 1
+                if "<wedge" in inner:
+                    stats["wedge_dirs"] += 1
     stats["has_fixture"] = os.path.exists(os.path.join(FIX, "staff_switch.mid"))
+    stats["has_wedge_fixture"] = os.path.exists(
+        os.path.join(FIX, "grand_staff_wedge.mid"))
     return stats
 
 
@@ -166,6 +218,8 @@ def coverage_errors(stats):
     out = []
     if not stats.get("has_fixture"):
         out.append("staff_switch.mid 缺失：大谱表换谱表压力样本没进素材库")
+    if not stats.get("has_wedge_fixture"):
+        out.append("grand_staff_wedge.mid 缺失：跨谱表楔形压力样本没进素材库")
     if stats.get("grand_files", 0) <= 0:
         out.append("没有任何 <staves>2</staves> 素材：大谱表维度没被真实覆盖")
     if stats.get("switch_files", 0) <= 0:
@@ -175,6 +229,8 @@ def coverage_errors(stats):
     if stats.get("offset_dirs", 0) <= 0:
         out.append("没有带 <offset> 且带 <staff> 的 <direction>："
                    "中途换档按拍位定位的覆盖丢失")
+    if stats.get("wedge_dirs", 0) <= 0:
+        out.append("没有任何 wedge 素材：渐强渐弱楔形覆盖丢失")
     return out
 
 
@@ -188,6 +244,8 @@ def audit_fixtures(exe):
                 bad.append(name + ": 生成 MusicXML 失败")
                 continue
             for v in direction_violations(xml):
+                bad.append(name + ": " + v)
+            for v in wedge_same_staff(xml):
                 bad.append(name + ": " + v)
     stats = coverage_stats(exe)
     for e in coverage_errors(stats):
@@ -340,14 +398,17 @@ def self_test():
        "没有 <staff> 的非大谱表不算换谱表")
 
     # 19~24 覆盖硬约束
-    good = dict(has_fixture=True, grand_files=2, switch_files=1,
-                directions=9, staff2_dirs=4, offset_dirs=1)
+    good = dict(has_fixture=True, has_wedge_fixture=True, grand_files=2,
+                switch_files=1, directions=9, staff2_dirs=4, offset_dirs=1,
+                wedge_dirs=2)
     ok(coverage_errors(good) == [], "覆盖齐全时不报错")
     for key, word in (("has_fixture", "staff_switch.mid"),
+                      ("has_wedge_fixture", "grand_staff_wedge"),
                       ("grand_files", "staves"),
                       ("switch_files", "换谱表"),
                       ("staff2_dirs", "staff=2"),
-                      ("offset_dirs", "offset")):
+                      ("offset_dirs", "offset"),
+                      ("wedge_dirs", "wedge")):
         missing = dict(good)
         missing[key] = False if key == "has_fixture" else 0
         ok(any(word in x for x in coverage_errors(missing)),
@@ -355,6 +416,38 @@ def self_test():
     ok(any("方向记号" in x or "只有" in x for x in
            direction_violations(doc(direction(staff=1), note(staff=2)))),
        "负向：旧实现把低音小节记号标到上行谱一定变红")
+
+    # 25~26 楔形豁免逐小节归属：跨谱表的 stop 不被误抓，
+    #         非楔形的方向记号仍被逐小节检查抓到
+    wedge_stop = ('<direction placement="above"><direction-type>'
+                  '<wedge type="stop" number="1"/></direction-type>'
+                  '<staff>1</staff></direction>')
+    ok(direction_violations(doc(direction(staff=1), note(staff=1), wedge_stop)) == [],
+       "楔形 stop 不参与逐小节归属检查（豁免）")
+    ok(any("只有 2" in x for x in direction_violations(
+           doc(direction(staff=1), note(staff=2)))),
+       "非楔形的方向记号仍按逐小节归属抓到")
+
+    # 27~29 wedge_same_staff：起止同 staff 合法、跨谱表断裂被抓、缺 staff 不误报
+    w_start = ('<direction placement="above"><direction-type>'
+               '<wedge type="crescendo" number="1"/></direction-type>'
+               '<staff>1</staff></direction>')
+    def wdoc(stop_staff):
+        ws = ('<direction placement="above"><direction-type>'
+              '<wedge type="stop" number="1"/></direction-type>'
+              '<staff>%s</staff></direction>' % stop_staff)
+        return ('<?xml version="1.0" encoding="UTF-8"?>'
+                '<score-partwise version="3.1"><part id="P1">'
+                '<measure number="1"><staves>2</staves>' + note(staff=1)
+                + w_start + '</measure>'
+                '<measure number="2"><staves>2</staves>' + note(staff=2)
+                + ws + '</measure></part></score-partwise>')
+    ok(wedge_same_staff(wdoc("1")) == [], "跨谱表楔形起止同 staff 合法")
+    ok(any("跨谱表断裂" in x for x in wedge_same_staff(wdoc("2"))),
+       "起 staff=1 止 staff=2 的跨谱表楔形被抓到")
+    ok(wedge_same_staff('<direction><direction-type><wedge type="crescendo" '
+                        'number="1"/></direction-type></direction>') == [],
+       "楔形缺 <staff> 不误报（start/stop 缺一不判）")
 
     print("check_xml_staff self-test: %d 项，%d 失败" % (n, len(failed)))
     for f in failed:
@@ -391,9 +484,11 @@ def main():
             print("  [FAIL]", x)
         return 1
     print("方向记号谱表归属全部正确：%d 份素材 / %d 条带 <staff> 的 <direction>"
-          "（staff=2 共 %d 条、带 <offset> %d 条、大谱表 %d 份、换谱表 %d 份）"
+          "（staff=2 共 %d 条、带 <offset> %d 条、wedge %d 条、大谱表 %d 份、"
+          "换谱表 %d 份）"
           % (len(fixtures()), stats["directions"], stats["staff2_dirs"],
-             stats["offset_dirs"], stats["grand_files"], stats["switch_files"]))
+             stats["offset_dirs"], stats["wedge_dirs"],
+             stats["grand_files"], stats["switch_files"]))
     return 0
 
 
