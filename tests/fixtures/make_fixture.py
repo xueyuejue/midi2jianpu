@@ -2,7 +2,7 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 90 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 91 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
@@ -14,8 +14,11 @@ port_pedal / port_bend / port_prefix / port_prefix_base / port_standard /
 sysex_gs_drum / sysex_xg_drum / sysex_gs_normal / sysex_gs_reset /
 sysex_gm_reset / sysex_xg_reset / sysex_conductor / sysex_ch9_normal /
 sysex_ch9_drum / sysex_unknown / sysex_port_drum / gate_gap / poly_gap / poly_gate /
-rest_split / rest_midbar / beam_levels / beam_hooks（另配 3 份 LRC 歌词）。
-beam_hooks 是钩形梁压力样本：同一梁组里孤立的十六分 / 三十二分音符，
+rest_split / rest_midbar / beam_levels / beam_hooks / staff_switch
+（另配 3 份 LRC 歌词）。
+staff_switch 是大谱表的换谱表压力样本：同一个声部在四个小节里分别
+落在上行谱 / 下行谱 / 上行谱 / 前后各半，逼出「方向记号按小节与拍位
+跟随音符所在谱表」这条口径。beam_hooks 是钩形梁压力样本：同一梁组里孤立的十六分 / 三十二分音符，
 次级梁既连不成段也不能整层丢掉，必须写 forward/backward hook。
 beam_levels 是连梁的「压力样本」：4/4 四小节分别放全十六分、混合时值、
 次级梁不连续、附点十六分，再变拍号到 6/8 两小节放三音连梁——在它之前
@@ -2583,6 +2586,51 @@ def build_grand_staff() -> bytes:
     return bytes(header + t0.render() + t1.render())
 
 
+def build_staff_switch() -> bytes:
+    """大谱表同一声部跨小节换谱表（v1.68.0）。
+
+    单条钢琴轨（program 0）音域 C2(36) ~ C6(84)，跨度 48 半音且跨中音 C，
+    触发 <staves>2</staves>；四个小节都是单声部：
+      第 1 小节全在上行谱(1)，第 2 小节全在下行谱(2)，
+      第 3 小节回到上行谱，第 4 小节前半上行 / 后半下行。
+    高音 10 个、低音 6 个，全曲多数侧是上行谱。旧实现给 <direction> 的
+    <staff> 用这个全曲多数侧，于是第 2 小节的 ff 与渐弱楔形被印到空白的
+    上行谱，真正发声的下行谱看不到力度。修复后每条记号按自己的拍位找
+    最近音头：第 4 小节第 3 拍换档那条带 <offset> 的 direction 也该落在
+    后半小节的低音谱表。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120 BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Piano"))
+    t1.program(0, 0, 0)                                # Acoustic Grand Piano
+
+    bars = (
+        (72, 74, 76, 77),   # 第 1 小节：全在上行谱
+        (36, 40, 43, 48),   # 第 2 小节：全在下行谱
+        (79, 81, 83, 84),   # 第 3 小节：又回到上行谱
+        (72, 74, 43, 48),   # 第 4 小节：前半上行、后半下行
+    )
+    for b, pitches in enumerate(bars):
+        for i, p in enumerate(pitches):
+            t1.note(0, p, 90, b * BAR + i * DIV, DIV)
+
+    # 每小节开头换档；第 2 小节叠一段 CC11 渐弱斜坡（楔形）；第 4 小节
+    # 第 3 拍再换一次档，逼出带 <offset> 的 direction。
+    t1.cc(0, 11, 30, 0)                     # p
+    t1.cc(0, 11, 100, BAR)                  # ff
+    for i, v in enumerate((100, 80, 60, 40, 20)):
+        t1.cc(0, 11, v, BAR + i * (BAR // 8))
+    t1.cc(0, 11, 70, 2 * BAR)               # mf
+    t1.cc(0, 11, 110, 3 * BAR + 2 * DIV)    # 第 4 小节中途 -> <offset>
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return bytes(header + t0.render() + t1.render())
+
+
 def build_midtempo() -> bytes:
     # 小节中途变速（v1.48.0）。
     # 旧实现把速度记号按小节归并成 map<bar, mark>：同一小节的多个阶跃只留
@@ -3109,6 +3157,16 @@ def main() -> None:
     # 键盘大谱表：宽音域钢琴轨排成上下两行谱（高音 + 低音谱号）
     for name, builder in (
         ("grand_staff", build_grand_staff),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+    # 大谱表换谱表：方向记号的 <staff> 按小节 / 拍位跟随实际音符
+    for name, builder in (
+        ("staff_switch", build_staff_switch),
     ):
         path = os.path.join(here, name + ".mid")
         with open(path, "wb") as f:

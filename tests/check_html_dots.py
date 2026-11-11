@@ -26,6 +26,11 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIX = os.path.join(ROOT, "tests", "fixtures")
+
+# v1.68.0 起 <direction> 的 <staff> 会按小节 / 拍位换谱表；该维度由
+# check_xml_staff.py 单独守护，这里的跨版本逐字节比对先把它摘掉。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from xml_norm import strip_direction_staff
 HTML_CPP = os.path.join(ROOT, "src", "html_writer.cpp")
 
 # 与 src/html_writer.cpp::durStyleOf 同源；dotted 语义是「要画一个点」。
@@ -48,7 +53,7 @@ DOT_CLASSES = ("sixteenth", "eighth", "quarter")
 NOTE_CLASS_RE = re.compile(r"<span class='note ([^']*)'")
 TONE_CLASS_RE = re.compile(r"<span class='tone([^']*)'")
 NOTE_RE = re.compile(r"<note>(.*?)</note>", re.S)
-# HTML 页脚内嵌 M2J_VERSION，跨版本比对必须先归一化，否则 90 份素材
+# HTML 页脚内嵌 M2J_VERSION，跨版本比对必须先归一化，否则 91 份素材
 # 都会因为版本号字符串变化而误报（与 regress.py 同一口径）。
 VER_RE = re.compile(r"midi2jianpu v\d+\.\d+\.\d+")
 
@@ -239,7 +244,9 @@ def structural_regress(old_exe, new_exe):
             b = render(new_exe, mid, td, "new")
             for ext in ("txt", "xml"):
                 if a[ext] != b[ext]:
-                    if ext == "xml" and strip_beams(a[ext]) == strip_beams(b[ext]):
+                    if (ext == "xml" and
+                            strip_direction_staff(strip_beams(a[ext])) ==
+                            strip_direction_staff(strip_beams(b[ext]))):
                         continue          # 只多了 <beam>，属 v1.64.0 的预期变化
                     errors.append("%s: %s 发生变化（本轮只应改 HTML）" % (stem, ext))
             old_html = norm_html(a["html"].decode("utf-8", "replace"))

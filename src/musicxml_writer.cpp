@@ -666,6 +666,27 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             }
         };
 
+        // 大谱表下 <direction> 的 <staff> 必须跟着「这条记号实际影响的音符」
+        // 走，不能用全曲多数侧。钢琴曲里同一声部常整小节移到另一行谱（左手
+        // 独奏段、右手华彩段），若按全曲多数算，力度 / 渐变会印到完全没有
+        // 音符的那一行谱上，真正发声的谱表反而看不到记号。下面按「本小节、
+        // 本声部、该拍位之后最近的音头」取谱表；整小节都是休止时才用全曲
+        // 多数侧兜底。segs 已按 (小节, 谱表, 声部, tick) 排好序，但同一声部
+        // 两行谱的片段并不相邻，所以要取 start 最小的那个而不是第一个命中。
+        auto staffAt = [&](int bar, int voice, long tick) -> int {
+            if (!grand) return 1;
+            const Segment* next = nullptr;   // tick 之后（含）最近的音头
+            const Segment* last = nullptr;   // 本小节最后一个音头（兜底）
+            for (const auto& s : segs) {
+                if (s.bar != bar || s.voice != voice) continue;
+                if (!last || s.start > last->start) last = &s;
+                if (s.start >= tick && (!next || s.start < next->start)) next = &s;
+            }
+            if (next) return next->staff;
+            if (last) return last->staff;
+            return voiceStaff[voice];
+        };
+
         // 演奏表情写进 <direction>：必须排在 <attributes> 之后、第一个
         // <note> 之前，MuseScore 才会把它显示在小节上方而不是吞掉。
         // 每个 <voice> 各按自己的主导通道写力度与楔形、各记一份 lastDyn：
@@ -685,18 +706,20 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                     ? ("        <voice>" + std::to_string(v + 1) + "</voice>\n")
                     : std::string();
                 const std::string wedgeNum = std::to_string(v + 1);
-                // 大谱表：每个声部的演奏记号标到对应谱表（上行/下行），否则
-                // 会被默认堆到上行谱，左右手力度/渐变对不上。
-                const std::string staffTag = grand
-                    ? ("        <staff>" + std::to_string(voiceStaff[v]) + "</staff>\n")
-                    : std::string();
+                // 大谱表：每条方向记号按自己的拍位找该声部最近的音符，标到
+                // 那颗音所在的谱表；声部在小节之间换谱表时记号不会留在空白谱上。
+                auto staffTagFor = [&](long tick) -> std::string {
+                    if (!grand) return std::string();
+                    return "        <staff>" + std::to_string(staffAt(bar, v, tick))
+                         + "</staff>\n";
+                };
                 const std::string dyn = expr.dynamicAt(bs, ch);
                 if (!dyn.empty() && dyn != lastDyn[v]) {
                     xml << "      <direction placement=\"above\">\n"
                         << "        <direction-type><dynamics><" << dyn
                         << "/></dynamics></direction-type>\n"
                         << voiceTag
-                        << staffTag
+                        << staffTagFor(bs)
                         << "        <sound dynamics=\"" << dynamicToMidiVolume(dyn)
                         << "\"/>\n"
                         << "      </direction>\n";
@@ -715,7 +738,7 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                         << "/></dynamics></direction-type>\n"
                         << "        <offset>" << (m.tick - bs) << "</offset>\n"
                         << voiceTag
-                        << staffTag
+                        << staffTagFor(m.tick)
                         << "        <sound dynamics=\"" << dynamicToMidiVolume(m.dynamic)
                         << "\"/>\n"
                         << "      </direction>\n";
@@ -796,14 +819,14 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                             << (m.wedge > 0 ? "crescendo" : "diminuendo")
                             << "\" number=\"" << wedgeNum << "\"/></direction-type>\n"
                             << voiceTag
-                            << staffTag
+                            << staffTagFor(m.tick)
                             << "      </direction>\n";
                     if (m.wedgeStop)
                         xml << "      <direction placement=\"above\">\n"
                             << "        <direction-type><wedge type=\"stop\" "
                             << "number=\"" << wedgeNum << "\"/></direction-type>\n"
                             << voiceTag
-                            << staffTag
+                            << staffTagFor(m.tick)
                             << "      </direction>\n";
                 }
             }

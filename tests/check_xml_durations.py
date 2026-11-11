@@ -27,6 +27,11 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIX = os.path.join(ROOT, "tests", "fixtures")
 
+# v1.68.0 起 <direction> 的 <staff> 会按小节 / 拍位换谱表；该维度由
+# check_xml_staff.py 单独守护，这里的跨版本逐字节比对先把它摘掉。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from xml_norm import strip_direction_staff
+
 TYPE_BEATS = {
     "whole": 4.0, "half": 2.0, "quarter": 1.0, "eighth": 0.5,
     "16th": 0.25, "32nd": 0.125, "64th": 0.0625,
@@ -145,7 +150,8 @@ def structural_regress(old_exe):
                 notes.append(name + ": 文本谱同时变化（由 check_bar_beats.py 守护）")
             if new_html != old_html:
                 notes.append(name + ": HTML 同时变化（由 regress.py 守护）")
-            if strip_rest_lines(new_xml) != strip_rest_lines(old_xml):
+            if (strip_direction_staff(strip_rest_lines(new_xml))
+                    != strip_direction_staff(strip_rest_lines(old_xml))):
                 errors.append(name + ": XML 差异不止休止符块")
             if rest_total(new_xml) != rest_total(old_xml):
                 errors.append(name + ": 休止符总时长变化")

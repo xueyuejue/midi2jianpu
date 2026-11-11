@@ -6123,6 +6123,66 @@ int main() {
         const std::string i16x = renderMusicXml(iso16, c);
         check(countOf(i16x, "<beam ") == 0,
               "完全孤立的十六分音符画符尾而不是梁或钩");
+
+        // ---- 大谱表方向记号的谱表归属（v1.68.0）----
+        // 旧实现给整个声部只算一次「全曲多数音高侧」：同一声部整小节换到
+        // 另一行谱时，力度记号会印到完全没有音符的空白谱行。下面第 2 小节
+        // 全是低音，第 4 小节前半高音 / 后半低音且中途换档，全曲高音 10 个
+        // 低音 6 个，多数侧仍是上行谱，正好复现这个缺陷。
+        auto measureBody = [](const std::string& xml, int num) {
+            const std::string tag = "<measure number=\"" + std::to_string(num) + "\">";
+            const size_t a = xml.find(tag);
+            if (a == std::string::npos) return std::string();
+            const size_t b = xml.find("</measure>", a);
+            return xml.substr(a, b == std::string::npos ? std::string::npos : b - a);
+        };
+        auto dirStaffs = [](const std::string& body) {
+            std::vector<int> out;
+            size_t pos = 0;
+            while ((pos = body.find("<direction", pos)) != std::string::npos) {
+                const size_t e = body.find("</direction>", pos);
+                if (e == std::string::npos) break;
+                const std::string d = body.substr(pos, e - pos);
+                const size_t s = d.find("<staff>");
+                if (s != std::string::npos)
+                    out.push_back(std::stoi(d.substr(s + 7)));
+                pos = e + 12;
+            }
+            return out;
+        };
+        MidiData sw;
+        sw.division = 480;
+        sw.timeSig.valid = true;
+        sw.trackNames[0] = "Piano";
+        sw.channelProgram[0] = 0;
+        const int swBars[4][4] = {{72, 74, 76, 77}, {36, 40, 43, 48},
+                                  {79, 81, 83, 84}, {72, 74, 43, 48}};
+        for (int b = 0; b < 4; ++b)
+            for (int i = 0; i < 4; ++i)
+                add(sw, b * 1920 + i * 480, 480, swBars[b][i]);
+        sw.dynamics.push_back({0, 30, 0});        // p
+        sw.dynamics.push_back({1920, 100, 0});    // ff（第 2 小节，全低音）
+        sw.dynamics.push_back({3840, 70, 0});     // mf
+        sw.dynamics.push_back({6720, 110, 0});    // 第 4 小节第 3 拍中途换档
+        const std::string swx = renderMusicXml(sw, c);
+        check(swx.find("<staves>2</staves>") != std::string::npos,
+              "换谱表样本被判为大谱表");
+        const std::vector<int> d1 = dirStaffs(measureBody(swx, 1));
+        const std::vector<int> d2 = dirStaffs(measureBody(swx, 2));
+        const std::vector<int> d3 = dirStaffs(measureBody(swx, 3));
+        const std::vector<int> d4 = dirStaffs(measureBody(swx, 4));
+        check(!d1.empty() && d1 == std::vector<int>{1},
+              "第 1 小节全在上行谱，方向记号标 staff 1");
+        check(!d2.empty() && d2 == std::vector<int>(d2.size(), 2),
+              "第 2 小节全在下行谱，方向记号全部标 staff 2（旧实现会标 1）");
+        check(!d3.empty() && d3 == std::vector<int>{1},
+              "第 3 小节回到上行谱，方向记号再次标 staff 1");
+        check(measureBody(swx, 4).find("<offset>960</offset>") != std::string::npos &&
+                  !d4.empty() && d4 == std::vector<int>(d4.size(), 2),
+              "第 4 小节中途换档按拍位定位到后半小节的低音谱表");
+        check(countOf(swx, "<staff>1</staff>") >= 4 &&
+                  countOf(swx, "<staff>2</staff>") >= 4,
+              "两行谱的音符与方向记号都实际出现");
     }
 
     std::cout << "\n------------------------------------------------\n";

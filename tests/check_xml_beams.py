@@ -34,6 +34,11 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIX = os.path.join(ROOT, "tests", "fixtures")
 
+# v1.68.0 起 <direction> 的 <staff> 会按小节 / 拍位换谱表；该维度由
+# check_xml_staff.py 单独守护，这里的跨版本逐字节比对先把它摘掉。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from xml_norm import strip_direction_staff
+
 NOTE_RE = re.compile(r"<note>(.*?)</note>", re.S)
 MEASURE_RE = re.compile(r"<measure\b(.*?)</measure>", re.S)
 BEAM_RE = re.compile(r'<beam number="(\d)">([^<]+)</beam>')
@@ -308,7 +313,8 @@ def structural_regress(old_exe):
             if old_xml is None or new_xml is None:
                 errors.append("%s: 生成 MusicXML 失败" % name)
                 continue
-            if strip_beams(old_xml) != strip_beams(new_xml):
+            if (strip_direction_staff(strip_beams(old_xml))
+                    != strip_direction_staff(strip_beams(new_xml))):
                 errors.append("%s: 除 <beam> 之外还有别的差异" % name)
             no, _ = beam_stats(old_xml)
             nn, _ = beam_stats(new_xml)
