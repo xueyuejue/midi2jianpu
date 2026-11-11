@@ -485,7 +485,7 @@ static std::string playerBlock(const std::string& playJson) {
 std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                        const std::string& title,
                        const std::vector<LyricLine>* lyricLines,
-                       bool player) {
+                       bool player, int barsPerRow) {
     std::string displayTitle = title.empty() ? "简谱" : title;
     const std::string lyricLabel = lyricSourceLabel(data, lyricLines);
 
@@ -683,12 +683,17 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
 
         // 每行放多少小节：按 16 拍折算（4/4 即 4 小节一行），与简谱歌本的习惯一致。
         // 原来靠 flex 自动换行，每行 3~4 小节不等，整页行宽参差。
+        //
+        // --bars N 直接指定行内小节数。变拍号曲目（4/4 转 6/8 之类）里自动折算
+        // 只认第一小节的拍号，一个 N 套到底，6/8 段与 4/4 段的行宽就差得明显；
+        // 这时用户能按自己的排版习惯压成统一的 N。
         double beatsPerBar = (double)barLen / data.division;
         int measuresPerRow = 1;
         if (beatsPerBar > 0) {
             int n = (int)std::lround(16.0 / beatsPerBar);
             measuresPerRow = n < 1 ? 1 : (n > 8 ? 8 : n);
         }
+        if (barsPerRow > 0) measuresPerRow = barsPerRow;
 
         // ---- 按小节切分 ----
         // 简谱的 `-` 是「延长一拍」，不能跨过小节线：一个 6 拍的长音若整个画在
@@ -1329,6 +1334,11 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
              << "@media print{#playerbar{display:none}}"
              << "</style>";
     }
+    // 固定了每行小节数，就得保证那一行打印时不被分页撕开：只护住 .measure
+    // （基础样式里已有）仍会把一行拆成两页，剩下的半行看着像漏印。
+    if (barsPerRow > 0)
+        html << "<style>@media print{.row{break-inside:avoid;"
+                "page-break-inside:avoid}}</style>";
     html << R"(</head><body>
 )";
     // 播放器必须紧跟在 <body> 之后：position:sticky 只有在元素位于文档流前部

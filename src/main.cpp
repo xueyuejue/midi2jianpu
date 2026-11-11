@@ -27,6 +27,7 @@ static void printHelp() {
         "  midi2jianpu <input.mid> --pickup 1       手动指定弱起小节长度(拍, 须短于小节)\n"
         "  midi2jianpu <input.mid> --no-pickup      关闭弱起自动判定\n"
         "  midi2jianpu <input.mid> --html o.html --player  谱面内嵌试听播放器\n"
+        "  midi2jianpu <input.mid> --html o.html --bars 4  每行固定 4 小节\n"
         "  midi2jianpu <input.mid> --no-key-changes 忽略中途转调(全曲按一个调记谱)\n"
         "  midi2jianpu <input.mid> --gong C        手动指定五声调式的宫音(简谱 1)\n"
         "  midi2jianpu <input.mid> --no-pentatonic  关闭五声调式宫音自动校正\n"
@@ -169,6 +170,7 @@ int main(int argc, char** argv) {
     double pickupBeats = -1;   // <0 表示没指定（走自动判定）
     bool noPickup = false;
     bool player = false;       // --player：HTML 内嵌试听播放器
+    int barsPerRow = 0;        // --bars N：每行固定 N 小节（0 = 自动折算）
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--help" || a == "-h") { printHelp(); return 0; }
@@ -196,6 +198,13 @@ int main(int argc, char** argv) {
         else if (a == "--no-midi-lyrics") { noMidiLyrics = true; }
         else if (a == "--no-pickup") { noPickup = true; }
         else if (a == "--player") { player = true; }
+        else if (a == "--bars" && i + 1 < argc) {
+            int n = 0;
+            if (!parseInt(argv[++i], n) || n < 1 || n > 8) {
+                std::cerr << "错误: --bars 需要 1~8 的整数（每行小节数）\n"; return 1;
+            }
+            barsPerRow = n;
+        }
         else if (a == "--no-key-changes") { noKeyChanges = true; }
         else if (a == "--pickup" && i + 1 < argc) {
             if (!parseBeats(argv[++i], pickupBeats)) {
@@ -228,6 +237,8 @@ int main(int argc, char** argv) {
     if (input.empty()) { printHelp(); return 1; }
     // --player 是 HTML 专属：纯文本谱 / MusicXML 没有承载播放器的地方，
     // 静默忽略会让用户以为导出的文件能试听。
+    if (barsPerRow > 0 && htmlOut.empty())
+        std::cerr << "警告: --bars 只作用于 --html 输出，其它输出会忽略它\n";
     if (player && htmlOut.empty())
         std::cerr << "警告: --player 只作用于 --html 输出，其它输出会忽略它\n";
 
@@ -533,7 +544,7 @@ int main(int argc, char** argv) {
         if (slash != std::string::npos) title = title.substr(slash + 1);
         size_t dot = title.find_last_of(".");
         if (dot != std::string::npos) title = title.substr(0, dot);
-        f << m2j::renderHtml(data, key, title, lyricPtr, player);
+        f << m2j::renderHtml(data, key, title, lyricPtr, player, barsPerRow);
         std::cout << "HTML 谱面已写入: " << htmlOut << "\n";
     }
     if (!xmlOut.empty()) {

@@ -3117,6 +3117,32 @@ def main():
           (pp2.count("class='note"), h2.count("class='note"),
            pp2.count("class='measure"), h2.count("class='measure")))
 
+    group("[87] v1.74.0 每行小节数（--bars N）：排版可控、打印不撕行、越界报错")
+    # 默认仍是「一行约 16 拍」自动折算；--bars 只改行边界，不改小节内容。
+    preader = lambda: open(ph2, encoding="utf-8").read()
+    rows_def = preader().count("<div class='row'>")
+    bk = os.path.join(tmp, "bars2.html")
+    rc, _, err = run(exe, exp, "--html", bk, "--bars", "2")
+    bhtml = open(bk, encoding="utf-8").read() if (rc == 0 and os.path.exists(bk)) else ""
+    check(rc == 0 and bhtml.count("<div class='row'>") > rows_def,
+          "--bars 2 让行数变多（默认 %d 行）" % rows_def,
+          (rc, bhtml.count("<div class='row'>")))
+    check(bhtml.count("<span class='measure'>")
+          == preader().count("<span class='measure'>"),
+          "只改行边界，小节总数不变",
+          (bhtml.count("<span class='measure'>"),
+           preader().count("<span class='measure'>")))
+    check(".row{break-inside:avoid" in bhtml
+          and ".row{break-inside:avoid" not in preader(),
+          "--bars 顺带加打印整行保护，默认页不加")
+    rc, _, err = run(exe, exp, "--html", os.path.join(tmp, "x.html"), "--bars", "9")
+    check(rc == 1 and "1~8" in err, "--bars 9 越界报错", (rc, err[-120:]))
+    rc, _, err = run(exe, exp, "--html", os.path.join(tmp, "x.html"), "--bars", "0")
+    check(rc == 1 and "1~8" in err, "--bars 0 越界报错", (rc, err[-120:]))
+    rc, _, err = run(exe, exp, "--bars", "2")
+    check(rc == 0 and "只作用于 --html" in err,
+          "--bars 配纯文本输出时提示会被忽略", (rc, err[-160:]))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

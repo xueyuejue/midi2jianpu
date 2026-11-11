@@ -4876,6 +4876,36 @@ int main() {
                   "点击谱面音符即可从该处起播（事件委托 + 手型光标）");
         }
 
+        // v1.74.0 每行小节数（--bars N）：默认仍按「一行 16 拍」折算，传了才定死。
+        {
+            MidiData bd;
+            bd.division = 480;
+            bd.timeSig.valid = true;
+            for (int i = 0; i < 8; i++) {
+                NoteEvent e;
+                e.track = 1; e.channel = 0; e.startTicks = i * 1920L;
+                e.durationTicks = 480; e.pitch = 60;
+                bd.notes.push_back(e);
+            }
+            const KeyEstimate bk = estimateKey(bd);
+            const std::string d0 = renderHtml(bd, bk, "t");
+            const std::string d1 = renderHtml(bd, bk, "t", nullptr, false, 0);
+            check(d0 == d1, "barsPerRow=0 与不传参数逐字节一致（自动折算）");
+            check(occurrences(d0, "<div class='row'>") == 2,
+                  "4/4 八小节按自动折算排成 2 行");
+            check(d0.find(".row{break-inside:avoid") == std::string::npos,
+                  "默认不加打印整行保护（零回归）");
+            const std::string b2 = renderHtml(bd, bk, "t", nullptr, false, 2);
+            check(occurrences(b2, "<div class='row'>") == 4,
+                  "--bars 2 把八小节排成 4 行");
+            check(b2.find(".row{break-inside:avoid") != std::string::npos,
+                  "--bars 顺带加上「一行不被分页撕开」");
+            const std::string b3 = renderHtml(bd, bk, "t", nullptr, false, 3);
+            check(occurrences(b3, "<div class='row'>") == 3 &&
+                  occurrences(b3, "<span class='measure'>") == 8,
+                  "--bars 3 排成 3 行（末行 2 小节），小节总数仍为 8");
+        }
+
         // 渐变段内部的中间档位由楔形表达，文本谱不能逐点印成 [mp]。
         MidiData r;
         r.division = 480;
