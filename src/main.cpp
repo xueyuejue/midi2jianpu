@@ -4,6 +4,7 @@
 #include "midi2jianpu/html_writer.hpp"
 #include "midi2jianpu/musicxml_writer.hpp"
 #include "midi2jianpu/version.hpp"
+#include "cli_args.hpp"
 
 #include <cmath>
 #include <fstream>
@@ -182,6 +183,17 @@ int main(int argc, char** argv) {
     bool barNumbers = false;   // --bar-numbers：文本谱每行标出小节号
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
+        // ---- 带值选项必须有取值 ----
+        // 旧版 `--output --html o.html` 会把 --html 当成输出文件名，谱子被静默
+        // 写进一个叫 "--html" 的文件；`--html` 放在命令行末尾则只打一行「未知参数」
+        // 然后照常输出文本谱——用户以为指定了，其实什么都没发生。
+        // 负数合法取值（--transpose -2 / --pickup -1）不算选项，见 isOptionToken()。
+        if (m2j::cli::optionNeedsValue(a)) {
+            if (i + 1 >= argc || m2j::cli::isOptionToken(argv[i + 1])) {
+                std::cerr << "错误: " << a << " 需要一个值（用 --help 查看用法）\n";
+                return 1;
+            }
+        }
         if (a == "--help" || a == "-h") { printHelp(); return 0; }
         else if (a == "--version" || a == "-v") {
             std::cout << "midi2jianpu " M2J_VERSION "\n";
@@ -238,13 +250,34 @@ int main(int argc, char** argv) {
                 std::cerr << "错误: --transpose 需要整数（半音数，可为负）\n"; return 1;
             }
         }
-        else if (a.substr(0, 2) != "--") input = a;
-        else {
-            std::cerr << "警告: 未知参数 " << a << "（用 --help 查看用法）\n";
+        else if (a.substr(0, 2) == "--") {
+            // 未知长参数：保留 v1.77 的「警告但不吞后续合法参数」口径，
+            // 只多给一条拼写建议——打错一个字母不该全靠用户自己瞪眼找。
+            std::cerr << "警告: 未知参数 " << a;
+            const std::string hint = m2j::cli::suggestOption(a);
+            if (!hint.empty()) std::cerr << "（是否想用 " << hint << "）";
+            std::cerr << "（用 --help 查看用法）\n";
             // 只跳过「看起来像取值」的下一个词。早先无条件 ++i，于是
             // `--foo --html o.html` 会连 --html 一起吃掉，HTML 静默不生成——
             // 打错一个参数名就丢掉一项输出，比不警告还糟。
             if (i + 1 < argc && argv[i + 1][0] != '-') ++i;
+        }
+        else if (a.size() > 1 && a[0] == '-') {
+            // 未知短参数（-x / -q）：旧版落到「位置参数」分支被当成输入文件名，
+            // 于是报「无法读取或解析 MIDI 文件: -x」，把参数拼错伪装成文件缺失；
+            // 若前面已经给了合法文件，它还会把那个文件静默覆盖掉。
+            std::cerr << "错误: 未知参数 " << a << "（用 --help 查看用法）\n";
+            return 1;
+        }
+        else {
+            // 位置参数只许有一个。旧版后面那个会静默覆盖前面那个，
+            // `a.mid b.mid` 看起来像「两个都转」，其实只转了 b.mid。
+            if (!input.empty()) {
+                std::cerr << "错误: 只能指定一个输入文件：已有 " << input
+                          << "，又给了 " << a << "\n";
+                return 1;
+            }
+            input = a;
         }
     }
     if (input.empty()) { printHelp(); return 1; }

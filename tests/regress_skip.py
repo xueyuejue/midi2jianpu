@@ -15,11 +15,10 @@ exe 去跑它，产出的是「旧版对新文件的第一次渲染」，不是�
 import os
 
 # 与其在 8 个脚本里各写一份，不如集中一处；加新素材时只改这一行。
-NEW_FIXTURES = {
-    "legacy_gbk.mid",      # v1.80.0：GBK 裸字节文本 meta
-    "legacy_sjis.mid",     # v1.80.0：Shift-JIS 裸字节文本 meta
-    "legacy_utf8.mid",     # v1.80.0：GBK 的 UTF-8 对照基准
-}
+# v1.81.0 没有新增 .mid 素材（本轮只动 CLI 参数解析）。v1.80.0 登记的三份
+# legacy_* 对 _baseline_v1800.exe 已经是「旧版见过的素材」，移出跳过清单，
+# 让它们重新参与逐字节回归，扩大守护面。
+NEW_FIXTURES = set()
 
 
 def skip(path):

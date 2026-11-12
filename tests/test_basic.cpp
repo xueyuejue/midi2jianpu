@@ -11,6 +11,7 @@
 #include "midi2jianpu/musicxml_writer.hpp"
 #include "midi2jianpu/html_writer.hpp"
 #include "../src/text_encoding.hpp"
+#include "../src/cli_args.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -6753,6 +6754,63 @@ int main() {
               "GBK 与 UTF-8 两份同源 SMF 解析出的文本完全一致");
     }
 
+    // ---- v1.81.0 CLI 参数校验层（header-only，CLI 与单测共用同一套口径） ----
+    // 这些纯函数决定了「某个词是选项还是取值」，判错就会把参数拼错伪装成
+    // 文件缺失，或者把 --output 的值写成另一个选项名。
+    {
+        using namespace m2j::cli;
+        check(valueOptions().size() == 11, "带值选项表共 11 项");
+        check(flagOptions().size() == 14, "开关选项表共 14 项");
+        check(optionNeedsValue("--html") && optionNeedsValue("--musicxml") &&
+              optionNeedsValue("--soft-pedal-scale"), "输出/路径/系数类选项都需要取值");
+        check(optionNeedsValue("--transpose") && optionNeedsValue("--track") &&
+              optionNeedsValue("--pickup") && optionNeedsValue("--bars"),
+              "数值类选项都需要取值");
+        check(optionNeedsValue("--key") && optionNeedsValue("--gong") &&
+              optionNeedsValue("--lyrics") && optionNeedsValue("--output"),
+              "调性/歌词/文本输出选项都需要取值");
+        check(!optionNeedsValue("--player") && !optionNeedsValue("--bar-numbers"),
+              "纯开关不需要取值");
+        check(!optionNeedsValue("--help") && !optionNeedsValue("--version"),
+              "帮助/版本不需要取值");
+        check(!optionNeedsValue("--bogus"), "未知选项不在带值表里");
+        check(isKnownOption("--bar-numbers") && isKnownOption("--html"),
+              "已知长选项能被识别");
+        check(isKnownOption("-h") && isKnownOption("-v"), "短别名也算已知选项");
+        check(!isKnownOption("--foo") && !isKnownOption("-x"),
+              "未知长短选项都不算已知");
+        check(isNumericToken("-2") && isNumericToken("-0.5") &&
+              isNumericToken("+2") && isNumericToken("1.5"),
+              "负数/带符号小数是合法取值 token");
+        check(!isNumericToken("") && !isNumericToken("-2x") &&
+              !isNumericToken("o.html") && !isNumericToken("--html"),
+              "空串/残缺数字/文件名/选项名都不是数值 token");
+        check(isOptionToken("--html") && isOptionToken("--foo") &&
+              isOptionToken("-x"), "长选项与未知短参数都是选项 token");
+        check(!isOptionToken("-2") && !isOptionToken("-1.5"),
+              "负数值不能被误判成选项（--transpose -2 要用）");
+        check(!isOptionToken("a.mid") && !isOptionToken("o.html"),
+              "普通文件名不是选项 token");
+        check(!isOptionToken("-") && isOptionToken("--"),
+              "单独一个 - 是取值，-- 是选项分隔符");
+        check(editDistance("kitten", "sitting") == 3, "编辑距离标准样例 = 3");
+        check(editDistance("abc", "abc") == 0 && editDistance("a", "") == 1,
+              "编辑距离：相同为 0、删一字符为 1");
+        check(editDistance("", "") == 0, "编辑距离：两空串为 0");
+        check(suggestOption("--bar-number") == "--bar-numbers",
+              "少打一个 s 时建议 --bar-numbers");
+        check(suggestOption("--musixml") == "--musicxml",
+              "拼错 --musicxml 时给出正确写法");
+        check(suggestOption("--no-dynamic") == "--no-dynamics",
+              "拼错 --no-dynamics 时给出正确写法");
+        check(suggestOption("--transposee") == "--transpose",
+              "多打一个字母时也能建议 --transpose");
+        check(suggestOption("--foo").empty() && suggestOption("-x").empty() &&
+              suggestOption("--help").empty(),
+              "离得太远 / 短参数 / 本来就正确时都不给建议");
+        check(suggestOption("--bar-number").size() > 2,
+              "建议返回的是完整长选项名");
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

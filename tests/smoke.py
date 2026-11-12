@@ -3448,6 +3448,71 @@ def main():
     check(rc == 0 and cp_ok and "\u2019" in cp_blob.decode("utf-8", "replace"),
           "Windows-1252 弯引号折叠成 U+2019（没有被误猜成 CJK 汉字）", err[-160:])
 
+    group("[94] v1.81.0 CLI 参数校验：静默吞并一律改报错 + 拼错给建议")
+    # 老实现把任何不以 "--" 开头的词都当输入文件，且后面的覆盖前面的：
+    # -x / -q 被当成文件名（报「无法读取 MIDI」把参数拼错伪装成文件缺失）；
+    # a.mid b.mid 只转后者；带值选项缺值时静默忽略，最糟的是
+    # `--output --html o.html` 会把谱写进一个名叫 "--html" 的文件。
+    rc, _, err = run(exe, "-x")
+    check(rc == 1 and "未知参数 -x" in err and "无法读取" not in err,
+          "未知短参数报「未知参数」而不是「找不到 MIDI 文件」", (rc, err[:160]))
+    rc, _, err = run(exe, mid, "-q")
+    check(rc == 1 and "未知参数 -q" in err,
+          "短参数不再覆盖前面已给的合法输入文件", (rc, err[:160]))
+    rc, _, err = run(exe, mid, mid)
+    check(rc == 1 and "只能指定一个输入文件" in err,
+          "两个输入文件明确报错，不再静默只转后一个", (rc, err[:160]))
+
+    # 带值选项缺值：命令行末尾。
+    for opt in ("--html", "--musicxml", "--output", "--key", "--gong",
+                "--track", "--transpose", "--lyrics", "--pickup", "--bars",
+                "--soft-pedal-scale"):
+        rc, _, err = run(exe, mid, opt)
+        check(rc == 1 and (opt + " 需要一个值") in err,
+              "%s 缺值明确报错" % opt, (rc, err[:160]))
+    # 值被下一个选项顶替：更隐蔽，旧版 rc=0 还把谱写到怪文件里。
+    weird = os.path.join(tmp, "--html")
+    p94 = subprocess.run([exe, "--output", "--html", "o.html", mid],
+                         cwd=tmp, capture_output=True, text=True,
+                         encoding="utf-8", errors="replace", timeout=120)
+    check(p94.returncode == 1 and "--output 需要一个值" in (p94.stderr or "")
+          and not os.path.exists(weird),
+          "--output 的值被 --html 顶替时报错，且不再生成名为 --html 的文件",
+          (p94.returncode, (p94.stderr or "")[:160]))
+    rc, _, err = run(exe, mid, "--bars", "--html", "x.html")
+    check(rc == 1 and "--bars 需要一个值" in err,
+          "带值选项后面紧跟另一个选项时报错", (rc, err[:160]))
+    rc, _, err = run(exe, "--key", "--transpose", "2", mid)
+    check(rc == 1 and "--key 需要一个值" in err and "无法识别" not in err,
+          "--key 的值被 --transpose 顶替时不再降级成自动识别", (rc, err[:160]))
+
+    # 合法负数值不能被误判成选项（--transpose -2 是冒烟 [73] 的既有用法）。
+    rc, out, err = run(exe, mid, "--transpose", "-2")
+    check(rc == 0 and "移调: -2" in out,
+          "负数合法取值仍可用，没有误判成「缺值」", (rc, err[:160]))
+    rc, _, err = run(exe, mid, "--track", "-1")
+    check(rc == 1 and "非负整数" in err,
+          "--track -1 仍走原有的越界报错", (rc, err[:160]))
+    rc, _, err = run(exe, mid, "--bars", "9")
+    check(rc == 1 and "1~8" in err,
+          "--bars 9 仍走原有的范围报错", (rc, err[:160]))
+
+    # 新设想：拼错长选项给最接近的建议；v1.77 的「只警告不吞参」口径不变。
+    rc, _, err = run(exe, mid, "--bar-number")
+    check(rc == 0 and "--bar-numbers" in err and "是否想用" in err,
+          "拼错 --bar-numbers 时给出最接近的合法选项", (rc, err[:160]))
+    rc, _, err = run(exe, mid, "--musixml")
+    check(rc == 0 and "--musicxml" in err,
+          "拼错 --musicxml 时给出建议", (rc, err[:160]))
+    rc, _, err = run(exe, mid, "--foo")
+    check(rc == 0 and "未知参数 --foo" in err and "是否想用" not in err,
+          "离所有选项都很远的 --foo 不乱给建议", (rc, err[:160]))
+    unk94 = os.path.join(tmp, "v181_unk.html")
+    rc, _, err = run(exe, mid, "--foo", "--html", unk94)
+    check(rc == 0 and "未知参数 --foo" in err and os.path.exists(unk94),
+          "v1.77 口径保持：未知长参数只警告，后面的 --html 仍生效",
+          (rc, err[:160]))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")
