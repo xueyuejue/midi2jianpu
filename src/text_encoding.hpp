@@ -13,8 +13,11 @@
 // 任何分支都只产生合法 UTF-8，不产生 U+FFFD（那等于把问题藏起来）。
 //
 // 映射表由 tools/gen_legacy_tables.py 生成，纯数据、无平台 API、无第三方库，
-// MSVC 与 Emscripten 三端结果完全一致。只覆盖 GB2312 / JIS X 0208 常用区；
-// GBK 扩展区的生僻字会落到折叠分支（合法但可能不是原字），这是有意的取舍。
+// MSVC 与 Emscripten 三端结果完全一致。两张 GBK 表覆盖完整 GBK：
+//   kGb2312Hex —— GBK/GB2312 常用区（lead 0xA1..0xFE, trail 0xA1..0xFE, 94x94）；
+//   kGbkExtHex  —— GBK 扩展区（lead 0x81..0xA0 全 trail / lead 0xA1..0xFE 的
+//                  trail 0x40..0x7E、0x80..0xA0），镕/喆/堃/淼/鑫 这类生僻字都在这里。
+// 任何 GBK 字节对都尽量解出原字；实在解不出的才落到 CP1252 折叠分支。
 #ifndef M2J_TEXT_ENCODING_HPP
 #define M2J_TEXT_ENCODING_HPP
 
@@ -64,13 +67,39 @@ inline uint32_t foldByte(uint8_t b) {
     return b;
 }
 
-inline uint16_t cellAt(const char* hex, int row, int col) {
-    const char* p = hex + (((row - 1) * 94) + (col - 1)) * 4;
+inline uint16_t readCell4(const char* p) {
     auto nib = [](char c) -> uint16_t {
         return (uint16_t)((c >= '0' && c <= '9') ? (c - '0') : (c - 'A' + 10));
     };
     return (uint16_t)((nib(p[0]) << 12) | (nib(p[1]) << 8) |
                       (nib(p[2]) << 4) | nib(p[3]));
+}
+
+inline uint16_t cellAt(const char* hex, int row, int col) {
+    return readCell4(hex + (((row - 1) * 94) + (col - 1)) * 4);
+}
+
+// GBK 扩展区的扁平偏移：lead 0x81..0xA0 共 32 行 x 190 列在前，
+// 其后接 lead 0xA1..0xFE 共 94 行 x 96 列。trail 在 0x40..0x7E（63 个）之后接
+// 0x80 起的合法段。返回 -1 表示 (lead, trail) 不是扩展区码位。
+inline int gbkExtOffset(uint8_t lead, uint8_t trail) {
+    if (lead >= 0x81u && lead <= 0xA0u) {
+        const int rs = (int)(lead - 0x81u) * 190;
+        int ti;
+        if (trail >= 0x40u && trail <= 0x7Eu)      ti = (int)trail - 0x40;
+        else if (trail >= 0x80u && trail <= 0xFEu) ti = 63 + ((int)trail - 0x80);
+        else return -1;
+        return rs + ti;
+    }
+    if (lead >= 0xA1u && lead <= 0xFEu) {
+        const int rs = 32 * 190 + (int)(lead - 0xA1u) * 96;
+        int ti;
+        if (trail >= 0x40u && trail <= 0x7Eu)      ti = (int)trail - 0x40;
+        else if (trail >= 0x80u && trail <= 0xA0u) ti = 63 + ((int)trail - 0x80);
+        else return -1;
+        return rs + ti;
+    }
+    return -1;
 }
 
 // 严格 UTF-8 前缀长度：拒绝过长编码、代理区、>U+10FFFF、非法续字节。
@@ -130,16 +159,20 @@ inline Candidate decodeGb2312(const std::string& s) {
             continue;
         }
         // GBK 双字节：lead 0x81..0xFE、trail 0x40..0xFE（不含 0x7F）。
-        // 表只收 GB2312 常用区 0xA1..0xFE，其余整对折叠掉。
+        // 常用区走 kGb2312Hex；落在扩展区（lead 0x81..0xA0 或 trail 不在
+        // 0xA1..0xFE）的查 kGbkExtHex；都查不到才整对折叠。
+        const uint8_t t = (i + 1 < s.size()) ? (uint8_t)s[i + 1] : 0u;
         const bool hasTrail = (i + 1 < s.size()) &&
-                              ((uint8_t)s[i + 1] >= 0x40u) &&
-                              ((uint8_t)s[i + 1] != 0x7Fu);
+                              (t >= 0x40u) && (t != 0x7Fu);
         const size_t used = hasTrail ? 2 : 1;
         uint32_t cp = 0;
-        if (hasTrail && b >= 0xA1u && b <= 0xFEu) {
-            const uint8_t t = (uint8_t)s[i + 1];
-            if (t >= 0xA1u && t <= 0xFEu)
+        if (hasTrail) {
+            if (b >= 0xA1u && b <= 0xFEu && t >= 0xA1u && t <= 0xFEu) {
                 cp = cellAt(kGb2312Hex, (int)b - 0xA0, (int)t - 0xA0);
+            } else {
+                const int off = gbkExtOffset(b, t);
+                if (off >= 0) cp = readCell4(kGbkExtHex + off * 4);
+            }
         }
         if (cp) {
             appendUtf8(c.text, cp);

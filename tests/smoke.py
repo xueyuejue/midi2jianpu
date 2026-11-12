@@ -3667,6 +3667,33 @@ def main():
     rc, out, err = run(exe, mid, "--soft-pedal-scale", "0.5")
     check(rc == 0, "合法软踏板系数 0.5 仍可用", (rc, err[:160]))
 
+    group("[97] v1.84.0 GBK 扩展区生僻字：镕喆堃淼鑫 不再折叠成乱码")
+    # 这五个字落在 GBK 常用区之外（镕 E9 46 / 喆 86 B4 / 堃 88 D2 / 淼 ED B5 /
+    # 鑫 F6 CE），v1.83 及以前会整对折叠成 Latin-1 乱码。三端都必须解成正确
+    # 的 UTF-8 且一个 U+FFFD 都不许有。
+    gext = os.path.join(FIXTURES, "gbk_ext.mid")
+    check(os.path.exists(gext), "gbk_ext.mid 素材存在", gext)
+    rc, out, err = run(exe, gext)
+    check(rc == 0, "文本谱退出码 0", err)
+    for ch in ("镕", "喆", "堃", "淼", "鑫"):
+        check(ch in out, "文本谱解出 %s" % ch, out[:200])
+    check("\uFFFD" not in out, "文本谱无 U+FFFD", out[:200])
+    check("镕喆堃淼鑫五声" in out, "段落名里的生僻字一并解对", out[:300])
+    html = os.path.join(tmp, "gbk_ext.html")
+    rc, _, err = run(exe, gext, "--html", html)
+    check(rc == 0 and os.path.exists(html), "HTML 退出码 0 且生成文件", err)
+    htm = open(html, encoding="utf-8").read()
+    for ch in ("镕", "喆", "堃", "淼", "鑫"):
+        check(ch in htm, "HTML 解出 %s" % ch, htm[:200])
+    check("\uFFFD" not in htm, "HTML 无 U+FFFD", htm[:200])
+    xml = os.path.join(tmp, "gbk_ext.xml")
+    rc, _, err = run(exe, gext, "--musicxml", xml)
+    check(rc == 0 and os.path.exists(xml), "MusicXML 退出码 0 且生成文件", err)
+    xm = open(xml, encoding="utf-8").read()
+    for ch in ("镕", "喆", "堃", "淼", "鑫"):
+        check(ch in xm, "MusicXML 解出 %s" % ch, xm[:200])
+    check("\uFFFD" not in xm, "MusicXML 无 U+FFFD", xm[:200])
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

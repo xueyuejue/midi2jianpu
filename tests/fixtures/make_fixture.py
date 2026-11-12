@@ -3418,6 +3418,13 @@ def main() -> None:
             f.write(blob)
         print(f"wrote {path} ({len(blob)} bytes)")
 
+    # v1.84.0：GBK 扩展区生僻字（镕喆堃淼鑫）
+    gext = os.path.join(here, "gbk_ext.mid")
+    with open(gext, "wb") as f:
+        gdata = build_gbk_ext()
+        f.write(gdata)
+    print(f"wrote {gext} ({len(gdata)} bytes)")
+
 def build_utf8_marker() -> bytes:
     """段落名截断必须落在 UTF-8 字符边界上（v1.79.0）。
 
@@ -3448,6 +3455,34 @@ def build_utf8_marker() -> bytes:
     for i in range(24):
         t1.note(0, [60, 62, 64, 65, 67, 69][i % 6], 88, i * 480, 480)
 
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + t1.render()
+
+
+def build_gbk_ext() -> bytes:
+    """v1.84.0：GBK 扩展区生僻字（镕喆堃淼鑫）正确解码。
+
+    轨名 / 段落名 / 逐音歌词里放进 GBK 扩展区生僻字，三端都必须解成正确的
+    UTF-8（不再整对折叠成 Latin-1 乱码）。这些字的字节落在常用区之外：
+        镕 E9 46 / 喆 86 B4 / 堃 88 D2 / 淼 ED B5 / 鑫 F6 CE
+    其中 淼/鑫 在 GBK 常用区（lead/trail 都在 0xA1..0xFE），其余在扩展区
+    （lead 0x81..0xA0 或 trail 不在 0xA1..0xFE）。
+    """
+    chars = "镕喆堃淼鑫"
+    name = ("主旋律 " + chars).encode("gbk")
+    mark = (chars + "五声").encode("gbk")
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+    t1 = Track()
+    t1.add(0, meta(0x03, name))
+    t1.add(0, meta(0x06, mark))
+    t1.program(0, 0, 0)
+    for i, c in enumerate(chars):
+        t1.add(i * DIV, meta(0x05, c.encode("gbk")))
+        t1.note(0, 60 + i, 88, i * DIV, DIV - 10)
     header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
     return header + t0.render() + t1.render()
 

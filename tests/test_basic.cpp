@@ -6754,6 +6754,60 @@ int main() {
               "GBK 与 UTF-8 两份同源 SMF 解析出的文本完全一致");
     }
 
+    // ---- v1.84.0：GBK 扩展区生僻字正确解码 ----
+    // v1.80 的表只收 GB2312 常用区（lead/trail 都在 0xA1..0xFE），GBK 扩展区的
+    // 生僻字（镕喆堃淼鑫 等）会被整对折叠成 Latin-1 乱码。v1.84 新增 kGbkExtHex
+    // 覆盖 lead 0x81..0xA0 全 trail、以及 lead 0xA1..0xFE 的 trail 0x40..0x7E /
+    // 0x80..0xA0，并把常用区改用 gbk 编解码（顺带把 GB2312 漏定义的同字节码位也补上）。
+    {
+        using namespace m2j::textenc;
+        // 五个生僻字：镕 E9 46 / 喆 86 B4 / 堃 88 D2 / 淼 ED B5 / 鑫 F6 CE。
+        // 其中 淼/鑫 落在常用区（A1..FE, A1..FE），其余在扩展区。
+        const std::string rare = "\xE9\x46\x86\xB4\x88\xD2\xED\xB5\xF6\xCE";  // 镕喆堃淼鑫
+        const std::string rareUtf8 = "镕喆堃淼鑫";
+        check(decodeGb2312(rare).text == rareUtf8,
+              "GBK 扩展区五生僻字解码成正确 UTF-8");
+        check(detect(rare) == Encoding::Gb2312, "含生僻字的 GBK 串判为 GB2312");
+        check(normalize(rare) == rareUtf8, "normalize 把五生僻字归一成 UTF-8");
+
+        // 扩展表本身：kGbkExtHex 的扁平偏移与码位
+        check(gbkExtOffset(0xE9, 0x46) >= 0, "镕 的扩展偏移合法");
+        check(readCell4(kGbkExtHex + gbkExtOffset(0xE9, 0x46) * 4) == 0x9555u,
+              "kGbkExtHex 表 E9 46 = 镕 U+9555");
+        check(readCell4(kGbkExtHex + gbkExtOffset(0x86, 0xB4) * 4) == 0x5586u,
+              "kGbkExtHex 表 86 B4 = 喆 U+5586");
+        check(readCell4(kGbkExtHex + gbkExtOffset(0x88, 0xD2) * 4) == 0x5803u,
+              "kGbkExtHex 表 88 D2 = 堃 U+5803");
+
+        // 常用区改用 gbk：补足 GB2312 在同字节范围内漏定义的码位。
+        // GBK 常用区表 B0 A1 = 啊 不变；补的码位如 A2 A1 = ⅰ、A1 A4 = ·。
+        check(cellAt(kGb2312Hex, 0xB0 - 0xA0, 0xA1 - 0xA0) == 0x554Au,
+              "GBK 常用区 B0 A1 = 啊 U+554A（与旧 GB2312 表一致）");
+        check(cellAt(kGb2312Hex, 0xA2 - 0xA0, 0xA1 - 0xA0) == 0x2170u,
+              "GBK 常用区 A2 A1 = ⅰ U+2170（GB2312 旧表此处为 0）");
+        check(cellAt(kGb2312Hex, 0xA1 - 0xA0, 0xA4 - 0xA0) == 0x00B7u,
+              "GBK 常用区 A1 A4 = · U+00B7（GB2312 旧表此处误为 U+30FB）");
+
+        // 端到端：轨名含生僻字，解析层必须归一成正确 UTF-8（不再折叠）。
+        auto metaEv = [](uint8_t type, const std::string& s) {
+            std::vector<uint8_t> v = {0xFFu, type};
+            putVlq(v, (uint32_t)s.size());
+            v.insert(v.end(), s.begin(), s.end());
+            return v;
+        };
+        SmfTrack t0, t1;
+        t0.at(0, ev({0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20}));
+        t0.at(0, ev({0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08}));
+        t1.at(0, metaEv(0x03, rare));
+        t1.at(0, ev({0x90, 60, 88}));
+        t1.at(470, ev({0x80, 60, 0x40}));
+        const auto bytes = buildSmf(2, 480, {t0, t1});
+        MidiData dm;
+        const bool ok = loadMidiFromMemory(bytes.data(), bytes.size(), dm);
+        check(ok && dm.trackNames[1] == rareUtf8,
+              "解析层把含生僻字的 GBK 轨名归一成正确 UTF-8");
+    }
+
     // ---- v1.81.0 CLI 参数校验层（header-only，CLI 与单测共用同一套口径） ----
     // 这些纯函数决定了「某个词是选项还是取值」，判错就会把参数拼错伪装成
     // 文件缺失，或者把 --output 的值写成另一个选项名。
