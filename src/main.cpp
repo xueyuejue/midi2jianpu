@@ -51,12 +51,19 @@ static bool parseKey(const std::string& s, m2j::KeyEstimate& out) {
     if (name[0] >= 'a' && name[0] <= 'z') name[0] = char(name[0] - 'a' + 'A');
 
     int pc = -1;
+    bool flatSpelling = false;
     for (int k = 0; k < 12; k++) if (names[k] == name) { pc = k; break; }
-    if (pc < 0) for (int k = 0; k < 12; k++) if (flatNames[k] == name) { pc = k; break; }
+    if (pc < 0) {
+        for (int k = 0; k < 12; k++)
+            if (flatNames[k] == name) { pc = k; flatSpelling = true; break; }
+    }
     if (pc < 0) return false;
 
+    out = m2j::KeyEstimate{};          // 先清空，避免复用对象时残留上一次的 hint
     out.tonicPitchClass = pc;
     out.isMajor = !(i < s.size() && (s[i] == 'm' || s[i] == 'M'));
+    // 用户写了 Gb 就该印 Gb：不记住这一侧，音级 6 会查表成六个升号（F#）。
+    if (flatSpelling) out.fifthsHint = m2j::keyFifthsOfFlatSpelling(pc);
     return true;
 }
 
@@ -420,8 +427,14 @@ int main(int argc, char** argv) {
             // C 宫五声移两个半音后仍然标成 C 宫，与谱面音高脱节。直接挪
             // 宫音再重推一次，调式名（徵 / 羽…）才跟着新终止音算对。
             int gpc = g.tonicPitchClass;
-            if (transposeShiftsKey) gpc = ((gpc + transpose) % 12 + 12) % 12;
-            key = m2j::keyFromGong(data, gpc);
+            int gHint = g.fifthsHint;
+            if (transposeShiftsKey) {
+                gpc = ((gpc + transpose) % 12 + 12) % 12;
+                // 宫音的升降号侧也要跟着移：Gb 宫升两个半音是 Ab 宫（-4）。
+                if (gHint != m2j::kFifthsAuto)
+                    gHint = m2j::transposeFifths(gHint, transpose);
+            }
+            key = m2j::keyFromGong(data, gpc, gHint);
             keySource = "(手动指定宫音 " + gongArg
                       + (transposeShiftsKey ? "，已随移调平移" : "") + ")";
             std::cout << "五声调式: " << key.scaleLabel

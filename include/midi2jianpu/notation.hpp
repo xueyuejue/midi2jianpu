@@ -11,6 +11,10 @@
 
 namespace m2j {
 
+// fifthsHint 的哨兵值：表示「没有文件或用户声明的调号侧，按主音音级查表」。
+// 取 99 而不是 0，因为 0 是 C 大调这个合法值。
+constexpr int kFifthsAuto = 99;
+
 // 调性识别结果
 struct KeyEstimate {
     int tonicPitchClass = 0;  // 0=C ... 11=B
@@ -19,6 +23,16 @@ struct KeyEstimate {
     // 文字标注：简谱的唱名换算仍只由 tonicPitchClass + isMajor 决定，
     // 这样 KeyMap 转调、等音写法等既有链路完全不用改。
     std::string scaleLabel;
+    // 调号升降数（-7..+7），只在「有权威来源」时填，kFifthsAuto 表示查表。
+    //
+    // 为什么需要它：六降（Gb 大调，-6）与六升（F# 大调，+6）主音音级相同，
+    // 都落在 pitchClass 6。MAJOR_FIFTHS 只能挑一个（+6），于是文件里明明写着
+    // 六个降号，页眉却印成「1=F#」、MusicXML 写 <fifths>6</fifths>——同一份
+    // 谱子落到 MuseScore 里就成了六个升号，与原始 MIDI 的意图相反。
+    // 音级查表只能给出「等音里较短的那一侧」，要还原作者的写法必须记住来源。
+    // 填它的地方只有三处：MIDI 调号事件、--key 的升降号写法、KeyMap 的转调点；
+    // 自动检测与五声宫音推算是猜的，一律留 kFifthsAuto 去查表。
+    int fifthsHint = kFifthsAuto;
 };
 
 // ---- 中国五声调式（宫商角徵羽）----
@@ -50,7 +64,8 @@ std::string pentatonicModeName(PentatonicMode mode);
 
 // 手动指定宫音（CLI --gong C / --gong Bb）时按当前终止音推出调式。
 // 返回可直接交给三个输出层的 KeyEstimate，失败时返回空 label 的宫调式。
-KeyEstimate keyFromGong(const MidiData& data, int gongPitchClass);
+KeyEstimate keyFromGong(const MidiData& data, int gongPitchClass,
+                        int fifthsHint = kFifthsAuto);
 
 // 根据 MIDI 数据估计调性（优先用内置调号，否则 Krumhansl-Schmuckler 相关度匹配，
 // 再由高置信的五声调式判定校正宫音）
@@ -85,6 +100,11 @@ bool prefersFlats(const KeyEstimate& key);
 
 // 调号升降数（-7..+7），供 MusicXML 等输出使用
 int keyFifths(const KeyEstimate& key);
+
+// 按「降号写法」取升降数：Gb=-6、Db=-5、Eb=-3、Ab=-4、Bb=-2。
+// 与 keyFifths 的差别只在 Gb——六降与六升打平，查表偏爱升号。
+// --key Gb 这类「用户已经写明降号」的入口用它：写什么就印什么。
+int keyFifthsOfFlatSpelling(int pitchClass);
 
 // 单个音高 -> 简谱片段（只含数字/升降/八度，不含时值）
 std::string pitchToJianpu(int pitch, const KeyEstimate& key);

@@ -10,6 +10,7 @@
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -3142,6 +3143,59 @@ def main():
     rc, _, err = run(exe, exp, "--bars", "2")
     check(rc == 0 and "只作用于 --html" in err,
           "--bars 配纯文本输出时提示会被忽略", (rc, err[-160:]))
+
+    group("[88] v1.76.0 六降号（Gb 大调）：页眉与 <fifths> 不再翻成升号侧")
+    # 六降(-6) 与六升(+6) 是同一个音级，音级查表只会挑升号侧，于是文件里
+    # 明写 -6 的曲子被印成 1=F#。这条链路要「文件说什么就印什么」。
+    gb_mid = os.path.join(tmp, "flat6.mid")
+
+    def _vlq(n):
+        out = [n & 0x7F]
+        n >>= 7
+        while n:
+            out.insert(0, (n & 0x7F) | 0x80)
+            n >>= 7
+        return bytes(out)
+
+    _trk = b""
+    _trk += _vlq(0) + b"\xff\x59\x02" + struct.pack("bB", -6, 0)   # Gb 大调
+    _trk += _vlq(0) + b"\xff\x58\x04" + bytes([4, 2, 24, 8])
+    _trk += _vlq(0) + b"\xff\x51\x03" + bytes([0x07, 0xA1, 0x20])
+    for _i, _p in enumerate((66, 68, 70, 71) * 4):
+        _trk += _vlq(0 if _i == 0 else 480) + bytes([0x90, _p, 96])
+        _trk += _vlq(480) + bytes([0x80, _p, 0])
+    _trk += _vlq(0) + b"\xff\x2f\x00"
+    with open(gb_mid, "wb") as _f:
+        _f.write(b"MThd" + struct.pack(">IHHH", 6, 0, 1, 480))
+        _f.write(b"MTrk" + struct.pack(">I", len(_trk)) + _trk)
+
+    gb_xml = os.path.join(tmp, "flat6.xml")
+    rc, out, err = run(exe, gb_mid, "--musicxml", gb_xml)
+    xml = open(gb_xml, encoding="utf-8").read() if (rc == 0 and os.path.exists(gb_xml)) else ""
+    check(rc == 0 and "1=Gb 大调" in out,
+          "MIDI 调号 -6 的页眉写 1=Gb（不是 1=F#）", (rc, out[:200], err[-120:]))
+    check("<fifths>-6</fifths>" in xml, "MusicXML 写 <fifths>-6</fifths>")
+    check("<fifths>6</fifths>" not in xml, "不再出现六个升号的 <fifths>6</fifths>")
+
+    rc, out, _ = run(exe, gb_mid, "--key", "Gb")
+    check(rc == 0 and "1=Gb 大调" in out,
+          "--key Gb 保留用户写明的降号侧", out[:200])
+    rc, out, _ = run(exe, gb_mid, "--key", "F#")
+    check(rc == 0 and "1=F# 大调" in out, "--key F# 仍走升号侧", out[:200])
+
+    rc, out, _ = run(exe, gb_mid, "--transpose", "12", "--musicxml", gb_xml)
+    xml = open(gb_xml, encoding="utf-8").read() if rc == 0 else ""
+    check("<fifths>-6</fifths>" in xml and "1=Gb" in out,
+          "Gb 移一个八度仍是 Gb（-6），不翻成 F#", (out[:160], xml[:0]))
+    rc, out, _ = run(exe, gb_mid, "--transpose", "2", "--musicxml", gb_xml)
+    xml = open(gb_xml, encoding="utf-8").read() if rc == 0 else ""
+    check("1=Ab" in out and "<fifths>-4</fifths>" in xml,
+          "Gb 升两个半音落到 Ab（-4）", (out[:160], xml[:0]))
+
+    gb_html = os.path.join(tmp, "flat6.html")
+    rc, _, _ = run(exe, gb_mid, "--html", gb_html)
+    h = open(gb_html, encoding="utf-8").read() if (rc == 0 and os.path.exists(gb_html)) else ""
+    check("1=Gb" in h, "HTML 页眉同样写 1=Gb")
 
     print("\n" + "-" * 48)
     if failures:

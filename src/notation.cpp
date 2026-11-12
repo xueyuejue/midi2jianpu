@@ -42,6 +42,9 @@ KeyEstimate estimateKey(const MidiData& data) {
         r.isMajor = !data.keySig.isMinor;
         r.tonicPitchClass = r.isMajor ? majorTonic
                                        : (majorTonic - 3 + 12) % 12;
+        // 文件里写的升降数就是权威：-6 就是六个降号（Gb），不能因为
+        // 「F# 也只要六个升号」就翻到升号侧去。非法值夹到标准范围。
+        r.fifthsHint = sf < -7 ? -7 : (sf > 7 ? 7 : sf);
         return r;
     }
 
@@ -162,7 +165,12 @@ KeyEstimate estimateKey(const MidiData& data) {
 //   C(0) +2 -> +2  D       C(0) +1 -> -5  Db（而不是 7 个升号的 C#）
 //   C(0) -2 -> -2  Bb      C(0) +7 -> +1  G（纯五度只差一个升号）
 // 结果再归一化到 [-6, 6]：C# 大调(7) +6 会算出 13，等价写法 Db 只差 5 个降号。
+//
+// 注意「已在 [-6,6] 内就原样返回」这一步不能省：-6 与 +6 在模 12 下同余，
+// 先取模再折半会把它变成 +6，六个降号的 Gb 大调就被悄悄写成了六个升号。
+// 只有真正越界的值（12、13、-7、-11……）才需要折。
 static int normalizeFifths12(int f) {
+    if (f >= -6 && f <= 6) return f;
     int m = ((f % 12) + 12) % 12;
     if (m > 6) m -= 12;
     return m;
@@ -196,6 +204,9 @@ KeyEstimate transposeKey(const KeyEstimate& key, int semitones) {
     const int majorTonic = ((7 * sf) % 12 + 12) % 12;
     KeyEstimate r = key;
     r.tonicPitchClass = key.isMajor ? majorTonic : (majorTonic - 3 + 12) % 12;
+    // 移调后的调号是算出来的确定值，直接当 hint 记下来：否则 Gb(-6) 移一个
+    // 八度回到同一个音级，又会退化成查表的 +6。
+    r.fifthsHint = sf;
     return r;
 }
 
@@ -234,10 +245,14 @@ static PentatonicMode modeOfFinal(int gong, int finalPc) {
     }
 }
 
-static std::string makeScaleLabel(int gong, int finalPc, PentatonicMode mode) {
+static std::string makeScaleLabel(int gong, int finalPc, PentatonicMode mode,
+                                  int fifthsHint = kFifthsAuto) {
     KeyEstimate k;
     k.tonicPitchClass = ((gong % 12) + 12) % 12;
     k.isMajor = true;
+    // 宫音音级 6 有 Gb 与 F# 两种写法，标注里的升降号必须跟调用方一致，
+    // 否则会出现「宫音 Gb」但页眉另一处写 F# 的自相矛盾。
+    k.fifthsHint = fifthsHint;
     const bool flat = keyFifths(k) < 0;
     std::ostringstream os;
     os << pitchClassName(finalPc >= 0 ? finalPc : gong, flat)
@@ -343,10 +358,14 @@ PentatonicEstimate detectPentatonic(const MidiData& data) {
     return r;
 }
 
-KeyEstimate keyFromGong(const MidiData& data, int gongPitchClass) {
+KeyEstimate keyFromGong(const MidiData& data, int gongPitchClass, int fifthsHint) {
     KeyEstimate k;
     k.tonicPitchClass = ((gongPitchClass % 12) + 12) % 12;
     k.isMajor = true;
+    // 宫音本身没有升降号信息，--gong Gb 与 --gong F# 传进来都是音级 6；
+    // 由调用方（parseKey 认得 'b' 后缀）把降号侧传下来，否则五声调式
+    // 也会把 Gb 宫写成 F# 宫。
+    k.fifthsHint = fifthsHint;
     const PitchProfile prof = melodyPitchProfile(data);
     PentatonicMode mode = PentatonicMode::Gong;
     int finalPc = -1;
@@ -355,7 +374,7 @@ KeyEstimate keyFromGong(const MidiData& data, int gongPitchClass) {
         const PentatonicMode m = modeOfFinal(k.tonicPitchClass, finalPc);
         if (m != PentatonicMode::None) mode = m;
     }
-    k.scaleLabel = makeScaleLabel(k.tonicPitchClass, finalPc, mode);
+    k.scaleLabel = makeScaleLabel(k.tonicPitchClass, finalPc, mode, fifthsHint);
     return k;
 }
 
@@ -364,10 +383,20 @@ KeyEstimate keyFromGong(const MidiData& data, int gongPitchClass) {
 static const int MAJOR_FIFTHS[12] = {0, -5, 2, -3, 4, -1, 6, 1, -4, 3, -2, 5};
 
 int keyFifths(const KeyEstimate& key) {
+    // 有权威来源（MIDI 调号 / --key 的升降写法 / 转调点）就直接采信：
+    // 音级查表分不出 Gb 大调与 F# 大调，只能挑较短的一侧。
+    if (key.fifthsHint != kFifthsAuto) return key.fifthsHint;
     int pc = key.tonicPitchClass;
     if (key.isMajor) return MAJOR_FIFTHS[pc];
     // 关系小调的主音比关系大调高小三度
     return MAJOR_FIFTHS[(pc + 3) % 12];
+}
+
+int keyFifthsOfFlatSpelling(int pitchClass) {
+    const int pc = ((pitchClass % 12) + 12) % 12;
+    // 降号写法里只有 Gb 与升号侧打平（6 降 vs 6 升），而表里默认给了 +6；
+    // 其余降号（Db -5 / Eb -3 / Ab -4 / Bb -2）本来就是表里那个更短的写法。
+    return pc == 6 ? -6 : MAJOR_FIFTHS[pc];
 }
 
 bool prefersFlats(const KeyEstimate& key) {
@@ -1274,6 +1303,10 @@ KeyMap::KeyMap(const MidiData& data, const KeyEstimate& base) : base_(base) {
     const BarGrid grid = barGridOf(data);
     const int sf0 = data.keySigChanges.front().sig.sharpsFlats;
     const int doPc0 = notationDoPitchClass(base);
+    // 转调点也该记住自己的升降号侧，否则中间转进 Gb 的那一段照样会被
+    // 印成 F#。base 可能被 --key 手工平移过，所以先把「曲首偏移」算出来：
+    // 文件里写的 sf 加上这个偏移，才是输出该用的绝对调号。
+    const int sfShift = keyFifths(base) - normalizeFifths12(sf0);
     int curDo = doPc0;
 
     for (const auto& p : pts) {
@@ -1289,6 +1322,7 @@ KeyMap::KeyMap(const MidiData& data, const KeyEstimate& base) : base_(base) {
         KeyEstimate k;
         k.tonicPitchClass = base.isMajor ? doPc : (doPc - 3 + 12) % 12;
         k.isMajor = base.isMajor;      // mode 继承曲首，见头文件说明
+        k.fifthsHint = normalizeFifths12(p.sig.sharpsFlats + sfShift);
         // 吸附到小节起点：简谱的转调标记落在小节线上，不允许一小节里
         // 前半用旧唱名、后半用新唱名。
         const long tick = grid.barStart(grid.barIndex(p.tick));

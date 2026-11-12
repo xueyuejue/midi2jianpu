@@ -4956,11 +4956,13 @@ int main() {
               + std::to_string(transposeFifths(5, 2)));
         check(transposeFifths(-5, -2) == 5, "-5 - 2 = -7 要归一成 5，实际 "
               + std::to_string(transposeFifths(-5, -2)));
-        // 已知缺陷（记在 MEMORY「下一轮候选」）：六个降号(-6, Gb) 会在
-        // normalizeFifths12 里被归一成 +6(F#)，页眉与 <fifths> 都写升号侧。
-        // 这里只锁「不越界」这一半，等修好再补 -6 的断言。
         check(transposeFifths(6, 0) == 6 && transposeFifths(0, 0) == 0,
               "边界 +6 与 0 原样保留（不越界）");
+        // -6 与 +6 在模 12 下同余。先取模再折半会把 Gb 折成 F#——这正是
+        // 「六个降号被印成六个升号」的根因，所以这里必须原样保留。
+        check(transposeFifths(-6, 0) == -6, "-6 原样保留（不折成 +6），实际 "
+              + std::to_string(transposeFifths(-6, 0)));
+        check(transposeFifths(-6, 12) == -6, "Gb 移一个八度仍是 -6");
 
         // 渐变段内部的中间档位由楔形表达，文本谱不能逐点印成 [mp]。
         MidiData r;
@@ -5089,6 +5091,79 @@ int main() {
         check(same.keySig.sharpsFlats == -2 && same.notes[0].pitch == 70 &&
               same.keySigChanges[1].sig.sharpsFlats == 2,
               "移 0 半音是纯空操作");
+
+        // v1.76.0 六个降号（Gb 大调）不再被写成六个升号（F# 大调）
+        //
+        // 同样的音级 6 有两种等音写法：F#(+6) 与 Gb(-6)，升降号一样多。
+        // 音级查表只能挑一个，于是文件里明写 -6 的曲子被印成 1=F#，
+        // MusicXML 也写 <fifths>6</fifths>——落到 MuseScore 里整首变成升号。
+        {
+            // a) 没有权威来源时仍按查表（--key 未给、自动检测、五声宫音）
+            check(keyFifths(KeyEstimate{6, true}) == 6,
+                  "无声明时音级 6 仍查表给 +6（既有行为不变）");
+
+            MidiData gb;
+            gb.division = 480;
+            gb.timeSig.valid = true;
+            gb.trackNames[0] = "Piano";
+            gb.keySig.valid = true;
+            gb.keySig.sharpsFlats = -6;
+            NoteEvent g;
+            g.track = 0; g.channel = 0; g.pitch = 66; g.durationTicks = 480;
+            for (int i = 0; i < 8; i++) {
+                g.startTicks = i * 480L;
+                gb.notes.push_back(g);
+            }
+            const KeyEstimate gbk = estimateKey(gb);
+            check(gbk.tonicPitchClass == 6 && gbk.isMajor,
+                  "sf=-6 识别成音级 6 的大调（Gb / F# 等音）");
+            check(keyFifths(gbk) == -6, "六降号留在降号侧（-6），实际 "
+                  + std::to_string(keyFifths(gbk)));
+            check(prefersFlats(gbk) && keyName(gbk) == "Gb",
+                  "页眉音名是 Gb 而不是 F#，实际 " + keyName(gbk));
+            check(renderMusicXml(gb, gbk).find("<fifths>-6</fifths>")
+                      != std::string::npos,
+                  "MusicXML 写 <fifths>-6</fifths>");
+            check(renderHtml(gb, gbk, "t").find("1=Gb") != std::string::npos,
+                  "HTML 页眉写 1=Gb");
+
+            // b) 移调时调号侧跟着走：+2 落到 Ab(-4)，整八度回到 -6
+            const KeyEstimate ab = transposeKey(gbk, 2);
+            check(keyFifths(ab) == -4 && keyName(ab) == "Ab",
+                  "Gb 升两个半音是 Ab（-4），实际 " + keyName(ab) + " / "
+                      + std::to_string(keyFifths(ab)));
+            check(keyFifths(transposeKey(gbk, 12)) == -6,
+                  "Gb 移一个八度仍是 -6（不翻到升号侧）");
+
+            // c) --key Gb 这类「用户写明降号」的入口
+            check(keyFifthsOfFlatSpelling(6) == -6 &&
+                  keyFifthsOfFlatSpelling(1) == -5 &&
+                  keyFifthsOfFlatSpelling(10) == -2 &&
+                  keyFifthsOfFlatSpelling(3) == -3,
+                  "降号写法：Gb/Db/Bb/Eb 分别是 -6/-5/-2/-3");
+
+            // d) 中途转调进 Gb 的那一段也得保留降号侧
+            MidiData mod = gb;
+            mod.keySig.sharpsFlats = 0;
+            mod.keySigChanges.clear();
+            mod.keySigChanges.push_back({0, KeySignature{0, false, true}});
+            mod.keySigChanges.push_back({1920, KeySignature{-6, false, true}});
+            const BarGrid mg = barGridOf(mod);
+            const KeyMap km(mod, estimateKey(mod));
+            check(keyFifths(km.keyAtBar(0, mg)) == 0,
+                  "转调前是 C 大调（0）");
+            check(keyFifths(km.keyAtBar(1, mg)) == -6,
+                  "转调点的六降号也留在降号侧，实际 "
+                      + std::to_string(keyFifths(km.keyAtBar(1, mg))));
+            check(km.summary(mg).find("1=Gb") != std::string::npos,
+                  "页眉摘要里的转调标记写 1=Gb，实际 " + km.summary(mg));
+            // e) 五声宫音标注里的升降号：--gong Gb 不能在一处写 Gb、一处写 F#
+            const KeyEstimate gbGong = keyFromGong(gb, 6, -6);
+            check(gbGong.scaleLabel.find("Gb") != std::string::npos &&
+                  gbGong.scaleLabel.find("F#") == std::string::npos,
+                  "五声标注里的宫音写 Gb，实际 " + gbGong.scaleLabel);
+            check(keyFifths(gbGong) == -6, "五声宫音的调号也留在降号侧");
+        }
 
         // 没有 0x59 的文件（靠自动猜调）本来就跟音符走，这里锁住别退回旧路。
         MidiData nokey;
