@@ -5199,7 +5199,30 @@ int main() {
             check(pkNum.find("[1] ") != std::string::npos &&
                   pkNum.find("[0] ") == std::string::npos,
                   "弱起小节不编号，第一个完整小节标 [1]");
-        }        }
+        }
+        }
+
+        // v1.78.0 打印配色：白纸上 #ddd / #bbb 等于隐形
+        {
+            MidiData pc;
+            pc.division = 480;
+            pc.timeSig.valid = true;
+            NoteEvent pn;
+            pn.track = 0; pn.channel = 0; pn.pitch = 60; pn.durationTicks = 480;
+            for (int i = 0; i < 8; i++) {
+                pn.startTicks = i * 480L;
+                pc.notes.push_back(pn);
+            }
+            const std::string ph = renderHtml(pc, estimateKey(pc), "t");
+            check(ph.find(".barno{color:#777}") != std::string::npos &&
+                  ph.find(".barno{color:#ddd}") == std::string::npos,
+                  "打印时小节号用深灰 #777（原 #ddd 在白纸上读不出）");
+            check(ph.find(".footer{color:#888}") != std::string::npos,
+                  "打印时页脚压到 #888（原 #bbb 同样读不出）");
+            // 屏幕档位不动：只改 @media print，别的样式一个字节不该变
+            check(ph.find(".barno{font-size:10px;color:#c9c9c9") != std::string::npos,
+                  "屏幕上的小节号仍是最初的浅灰");
+        }
 
         // 没有 0x59 的文件（靠自动猜调）本来就跟音符走，这里锁住别退回旧路。
         MidiData nokey;

@@ -1294,7 +1294,11 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
   body{max-width:none;margin:0;padding:0}
   .track{page-break-inside:auto;border-bottom:none}
   .measure{page-break-inside:avoid}
-  .barno{color:#ddd}
+  /* 白纸上的对比度：屏幕上 #c9c9c9 的小节号印出来几乎是一片空白，
+     #ddd 更是等于消失；页脚的 #bbb 同理。打印档位统一压到深灰，
+     既不抢谱面的眼，也能在纸上读出「这一行是第几小节」。 */
+  .barno{color:#777}
+  .footer{color:#888}
 }
 @media (max-width:600px){
   .staff{font-size:20px}

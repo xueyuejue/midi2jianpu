@@ -3262,6 +3262,33 @@ def main():
           "未知参数的取值仍被跳过，不会当成输入文件",
           (rc, err[:160], out[:80]))
 
+    group("[91] v1.78.0 打印配色：小节号与页脚在白纸上不再是隐形灰")
+    # 打印媒体的颜色是按屏幕配色调的：小节号 #ddd、页脚 #bbb，在白纸上的
+    # 对比度不到 1.5:1，等于印不出来。判据不是「写了哪个色号」，而是
+    # 「打印块里所有文字色的亮度都足够深」。
+    pr_html = os.path.join(tmp, "printcolor.html")
+    run(exe, exp, "--html", pr_html)
+    ph = open(pr_html, encoding="utf-8").read() if os.path.exists(pr_html) else ""
+    m = re.search(r"@media print\{(.*?)\n\}", ph, re.S)
+    blk = m.group(1) if m else ""
+
+    def _lum(h):
+        h = h if len(h) == 6 else "".join(ch * 2 for ch in h)
+        r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+        return 0.299 * r + 0.587 * g + 0.114 * b
+
+    check(m is not None, "存在 @media print 块", ph[-200:])
+    check(".barno{color:#777}" in blk,
+          "打印时小节号压到深灰 #777", blk[:240])
+    check(".footer{color:#888}" in blk,
+          "打印时页脚压到 #888（原来是 #bbb）", blk[:240])
+    cols = re.findall(r"color:#([0-9a-fA-F]{3,6})", blk)
+    check(bool(cols) and all(_lum(c) < 0xA0 for c in cols),
+          "打印块内所有文字色亮度 < 0xA0（白纸上读得出）",
+          [(c, round(_lum(c))) for c in cols])
+    check(".barno{font-size:10px;color:#c9c9c9" in ph,
+          "屏幕上的小节号配色保持不变（只改打印档位）")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")
