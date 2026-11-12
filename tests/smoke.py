@@ -265,9 +265,10 @@ def main():
     check(rc == 0 and "1=Bb 大调" in out, "输出 Bb 大调")
     check("b" in out, "出现降号写法")
 
-    group("[4] 非法调性应给出警告而不是静默失败")
+    group("[4] 非法调性应明确报错而不是降级成自动识别")
     rc, out, err = run(exe, mid, "--key", "H")
-    check(rc == 0 and "无法识别" in err, "对非法调性给出警告", err)
+    check(rc == 1 and "--key" in err and "调名" in err,
+          "非法调性不再悄悄改用自动识别", (rc, err[:160]))
 
     group("[5] --track 轨道过滤")
     rc, out, _ = run(exe, mid, "--track", "1")
@@ -3601,6 +3602,70 @@ def main():
           and b"midi2jianpu" in open(ok[1], "rb").read()
           and b"<score-partwise" in open(ok[2], "rb").read(),
           "三份文件内容仍是文本谱 / HTML / MusicXML")
+
+    group("[96] v1.83.0 输入校验收口：调名不再吞尾部、冲突开关与非有限浮点")
+    # A. 旧版只取头 1~2 个字符，尾部垃圾一概吞掉：--key Cmaj7 会印出
+    #    「1=Eb (C小调)」，用户写的其实是和弦名，谱面调性完全跑偏。
+    for bad in ("Cfoo", "Amxxx", "Cmaj7", "C ", " C", "C#b", "Cmm", "H", "1"):
+        rc, out, err = run(exe, mid, "--key", bad)
+        check(rc == 1 and "--key" in err and "调名" in err,
+              "--key %r 明确报错，不再被吞成某个合法调" % bad, (rc, err[:160]))
+    rc, out, err = run(exe, mid, "--key", "Cmaj7")
+    check("C小调" not in out and "1=Eb" not in out,
+          "Cmaj7 不再曲解成 C 小调谱面", out[:120])
+
+    # B. --gong 走同一个语法表，非法值旧版只打一行警告仍照常出谱。
+    for bad in ("H", "Cfoo", "1", " C", "Cb"):
+        rc, out, err = run(exe, mid, "--gong", bad)
+        check(rc == 1 and "--gong" in err and "宫音" in err,
+              "--gong %r 明确报错，不再降级成自动识别" % bad, (rc, err[:160]))
+    rc, out, err = run(exe, mid, "--gong", "H")
+    check("已改用自动识别" not in err,
+          "非法宫音不再声称「已改用自动识别」", err[:160])
+
+    # C. 两个「指定原调」的入口同时给：旧版 --gong 优先、--key 静默丢弃。
+    for args in (("--key", "D", "--gong", "G"),
+                 ("--gong", "G", "--key", "D")):
+        rc, out, err = run(exe, mid, *args)
+        check(rc == 1 and "不能同时使用" in err,
+              "--key 与 --gong 冲突时明确报错（顺序无关）", (rc, err[:160]))
+    rc, out, err = run(exe, mid, "--key", "D")
+    check(rc == 0, "只给 --key 仍正常放行", (rc, err[:160]))
+    rc, out, err = run(exe, mid, "--gong", "G")
+    check(rc == 0, "只给 --gong 仍正常放行", (rc, err[:160]))
+
+    # D. nan / inf 穿过 std::stod 的全串消费，NaN 又让所有范围比较为 false：
+    #    --soft-pedal-scale nan 穿过 0~1 检查；--pickup nan 因 "nan >= 0"
+    #    为 false 被当成「没指定」，用户给的弱起拍数无声消失。
+    for bad in ("nan", "NaN", "inf", "-inf", "1e309"):
+        rc, out, err = run(exe, mid, "--pickup", bad)
+        check(rc == 1 and "--pickup 需要正数" in err,
+              "--pickup %r 拒绝非有限值" % bad, (rc, err[:160]))
+    for bad in ("nan", "NaN", "inf", "-inf", "1e309"):
+        rc, out, err = run(exe, mid, "--soft-pedal-scale", bad)
+        check(rc == 1 and "0~1 的系数" in err,
+              "--soft-pedal-scale %r 拒绝非有限值" % bad, (rc, err[:160]))
+
+    # E. 合法取值必须一个字节都不变（降号侧、小调、五声、移调、弱起、踏板）。
+    rc, out, err = run(exe, mid, "--key", "Gb")
+    check(rc == 0 and "1=Gb 大调" in out,
+          "合法降号调 Gb 保留降号侧", (rc, out[:160]))
+    rc, out, err = run(exe, mid, "--key", "F#")
+    check(rc == 0 and "1=F# 大调" in out,
+          "合法升号调 F# 仍走升号侧", (rc, out[:160]))
+    rc, out, err = run(exe, mid, "--key", "am")
+    check(rc == 0 and "小调" in out,
+          "小写 a 小调写法仍可用", (rc, out[:160]))
+    rc, out, err = run(exe, mid, "--gong", "F")
+    check(rc == 0 and "五声调式" in out,
+          "合法宫音 F 仍可用", (rc, out[:160]))
+    rc, out, err = run(exe, mid, "--key", "C", "--transpose", "+2")
+    check(rc == 0 and "移调: +2" in out,
+          "--key C +2 组合不受影响", (rc, out[:160]))
+    rc, out, err = run(exe, mid, "--pickup", "1")
+    check(rc == 0, "合法 --pickup 1 仍可用", (rc, err[:160]))
+    rc, out, err = run(exe, mid, "--soft-pedal-scale", "0.5")
+    check(rc == 0, "合法软踏板系数 0.5 仍可用", (rc, err[:160]))
 
     print("\n" + "-" * 48)
     if failures:

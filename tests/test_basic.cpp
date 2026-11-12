@@ -6886,6 +6886,73 @@ int main() {
         }
     }
 
+    // ---- v1.83.0 调名严格语法 + 有限浮点 + 冲突开关（纯函数） ----
+    {
+        using m2j::cli::KeySpec;
+        using m2j::cli::parseKeySpec;
+        using m2j::cli::parseFiniteDouble;
+        using m2j::cli::validateKeyOptions;
+
+        KeySpec k;
+        check(parseKeySpec("C", k) && k.pitchClass == 0 && k.isMajor
+              && !k.flatSpelling, "调名 C = 0 大调");
+        check(parseKeySpec("c", k) && k.pitchClass == 0,
+              "调名小写 c 与 C 同义");
+        check(parseKeySpec("Am", k) && k.pitchClass == 9 && !k.isMajor,
+              "调名 Am = a 小调");
+        check(parseKeySpec("aM", k) && k.pitchClass == 9 && !k.isMajor,
+              "大写 M 后缀沿用既有小调口径");
+        check(parseKeySpec("C#m", k) && k.pitchClass == 1 && !k.isMajor,
+              "调名 C#m = C# 小调");
+        check(parseKeySpec("C#M", k) && k.pitchClass == 1 && !k.isMajor,
+              "调名 C#M 同样合法（三位已是上限）");
+        check(parseKeySpec("B", k) && k.pitchClass == 11,
+              "调名 B = 11");
+        check(parseKeySpec("Bb", k) && k.pitchClass == 10 && k.flatSpelling,
+              "调名 Bb 记住降号侧");
+        check(parseKeySpec("Gb", k) && k.pitchClass == 6 && k.flatSpelling,
+              "调名 Gb 记住降号侧（v1.76 六个降号）");
+        check(parseKeySpec("F#", k) && k.pitchClass == 6 && !k.flatSpelling,
+              "调名 F# 走升号侧");
+        check(!parseKeySpec("", k), "空调名拒绝");
+        check(!parseKeySpec("H", k), "H 不是音名");
+        check(!parseKeySpec("1", k), "数字不是音名");
+        check(!parseKeySpec(" C", k), "前导空格拒绝");
+        check(!parseKeySpec("C ", k), "尾随空格拒绝（旧版被吞成 C 大调）");
+        check(!parseKeySpec("Cfoo", k),
+              "尾部垃圾 Cfoo 不再被吞成 C 大调");
+        check(!parseKeySpec("Cmaj7", k),
+              "和弦名 Cmaj7 不再被曲解成 C 小调");
+        check(!parseKeySpec("Amxxx", k),
+              "尾部垃圾 Amxxx 不再被吞成 a 小调");
+        check(!parseKeySpec("C#b", k), "C#b 两个变音记号拒绝");
+        check(!parseKeySpec("Cmm", k), "两个小调后缀拒绝");
+        check(!parseKeySpec("Cb", k), "Cb 不在写法表内（与旧版一致）");
+        check(!parseKeySpec("B#", k), "B# 不在写法表内（与旧版一致）");
+
+        double v = -1;
+        check(parseFiniteDouble("0.5", v) && v == 0.5,
+              "0.5 解析成有限浮点");
+        check(parseFiniteDouble("0", v) && v == 0.0, "0 是有限值");
+        check(parseFiniteDouble("-1.5", v) && v == -1.5,
+              "负数有限值放行");
+        check(parseFiniteDouble(" 4", v) && v == 4.0,
+              "前导空白沿用 strtod 的宽容口径");
+        check(!parseFiniteDouble("nan", v), "nan 拒绝");
+        check(!parseFiniteDouble("NaN", v), "NaN 拒绝");
+        check(!parseFiniteDouble("inf", v), "inf 拒绝");
+        check(!parseFiniteDouble("-inf", v), "-inf 拒绝");
+        check(!parseFiniteDouble("1e309", v), "溢出成 inf 的值拒绝");
+        check(!parseFiniteDouble("0.5x", v), "浮点尾部垃圾拒绝");
+        check(!parseFiniteDouble("", v), "浮点空串拒绝");
+
+        check(validateKeyOptions("C", "").empty() &&
+              validateKeyOptions("", "G").empty() &&
+              validateKeyOptions("", "").empty(),
+              "只给一个调性入口（或都不给）时放行");
+        check(validateKeyOptions("D", "G").find("不能同时使用") != std::string::npos,
+              "--key 与 --gong 同时给时明确拒绝");
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

@@ -30,7 +30,7 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 2
 
-      - name: 单元测试（1046 项）
+      - name: 单元测试（1081 项）
         working-directory: build
         run: ctest --output-on-failure
 
@@ -123,7 +123,7 @@ jobs:
           python3 tests/check_utf8.py --self-test
           python3 tests/check_utf8.py
 
-      - name: CLI 端到端冒烟（95 组）
+      - name: CLI 端到端冒烟（96 组）
         # 失败项由 tests/ci_report.py 同步写进 annotations 与 step summary。
         run: python3 tests/smoke.py build/midi2jianpu
 

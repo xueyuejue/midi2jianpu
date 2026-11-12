@@ -72,29 +72,14 @@ static void printHelp() {
 
 // 解析 --key 参数: "C"=C大调, "Am"=a小调, "F#"=F#大调, "Bb"=降B大调
 static bool parseKey(const std::string& s, m2j::KeyEstimate& out) {
-    static const char* names[]     = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
-    static const char* flatNames[] = {"C","Db","D","Eb","E","F","Gb","G","Ab","A","Bb","B"};
-    if (s.empty()) return false;
-    size_t i = 0;
-    std::string name;
-    if (s.size() >= 2 && (s[1] == '#' || s[1] == 'b')) { name = s.substr(0, 2); i = 2; }
-    else { name = s.substr(0, 1); i = 1; }
-    if (name[0] >= 'a' && name[0] <= 'z') name[0] = char(name[0] - 'a' + 'A');
-
-    int pc = -1;
-    bool flatSpelling = false;
-    for (int k = 0; k < 12; k++) if (names[k] == name) { pc = k; break; }
-    if (pc < 0) {
-        for (int k = 0; k < 12; k++)
-            if (flatNames[k] == name) { pc = k; flatSpelling = true; break; }
-    }
-    if (pc < 0) return false;
-
+    m2j::cli::KeySpec spec;
+    if (!m2j::cli::parseKeySpec(s, spec)) return false;
     out = m2j::KeyEstimate{};          // 先清空，避免复用对象时残留上一次的 hint
-    out.tonicPitchClass = pc;
-    out.isMajor = !(i < s.size() && (s[i] == 'm' || s[i] == 'M'));
+    out.tonicPitchClass = spec.pitchClass;
+    out.isMajor = spec.isMajor;
     // 用户写了 Gb 就该印 Gb：不记住这一侧，音级 6 会查表成六个升号（F#）。
-    if (flatSpelling) out.fifthsHint = m2j::keyFifthsOfFlatSpelling(pc);
+    if (spec.flatSpelling)
+        out.fifthsHint = m2j::keyFifthsOfFlatSpelling(spec.pitchClass);
     return true;
 }
 
@@ -114,30 +99,15 @@ static bool parseInt(const char* s, int& out) {
 
 // 拍数解析：弱起长度可以带小数（1.5 拍这种半拍弱起在歌本里并不罕见）
 static bool parseBeats(const char* s, double& out) {
-    try {
-        size_t used = 0;
-        std::string str(s);
-        double v = std::stod(str, &used);
-        if (used != str.size() || v < 0) return false;
-        out = v;
-        return true;
-    } catch (...) {
-        return false;
-    }
+    double v;
+    if (!m2j::cli::parseFiniteDouble(s, v) || v < 0) return false;
+    out = v;
+    return true;
 }
 
 // 浮点系数解析：软踏板衰减系数 0~1（含端点）。非法输入不再抛异常中断程序。
 static bool parseDouble(const char* s, double& out) {
-    try {
-        size_t used = 0;
-        std::string str(s);
-        double v = std::stod(str, &used);
-        if (used != str.size()) return false;
-        out = v;
-        return true;
-    } catch (...) {
-        return false;
-    }
+    return m2j::cli::parseFiniteDouble(s, out);
 }
 
 // --list-tracks：把文件里的每条轨列出来（序号 / 名称 / 旋律音数 / 乐器 /
@@ -230,8 +200,24 @@ int main(int argc, char** argv) {
             return 0;
         }
         else if (a == "--html" && i + 1 < argc) { htmlOut = argv[++i]; }
-        else if (a == "--key" && i + 1 < argc) { keyArg = argv[++i]; }
-        else if (a == "--gong" && i + 1 < argc) { gongArg = argv[++i]; }
+        else if (a == "--key" && i + 1 < argc) {
+            keyArg = argv[++i];
+            m2j::cli::KeySpec ks;
+            if (!m2j::cli::parseKeySpec(keyArg, ks)) {
+                std::cerr << "错误: --key 需要形如 C / Am / F# / Bb 的调名，收到 \""
+                          << keyArg << "\"\n";
+                return 1;
+            }
+        }
+        else if (a == "--gong" && i + 1 < argc) {
+            gongArg = argv[++i];
+            m2j::cli::KeySpec ks;
+            if (!m2j::cli::parseKeySpec(gongArg, ks)) {
+                std::cerr << "错误: --gong 需要形如 C / F / Bb 的宫音，收到 \""
+                          << gongArg << "\"\n";
+                return 1;
+            }
+        }
         else if (a == "--no-pentatonic") { noPentatonic = true; }
         else if (a == "--no-dynamics") { noDynamics = true; }
         else if (a == "--no-soft-pedal") { noSoftPedal = true; }
@@ -311,6 +297,13 @@ int main(int argc, char** argv) {
         }
     }
     if (input.empty()) { printHelp(); return 1; }
+    // --key 与 --gong 都是「指定原调」的入口，同时给时旧版静默丢掉 --key，
+    // 用户以为调性按自己写的来，谱面却是宫音推出来的另一套。
+    const std::string ke = m2j::cli::validateKeyOptions(keyArg, gongArg);
+    if (!ke.empty()) {
+        std::cerr << "错误: " << ke << "\n";
+        return 1;
+    }
     // 输出路径预检：与输入 .mid 同路径会毁掉源文件，三端互相撞路径
     // 会静默覆盖先写的那份。放在读 MIDI 之前，越界一律不干活。
     {
@@ -522,10 +515,9 @@ int main(int argc, char** argv) {
             std::cout << "五声调式: " << key.scaleLabel
                       << "，首调 1=" << m2j::keyName(key) << "\n";
         } else {
-            std::cerr << "警告: 无法识别的宫音 \"" << gongArg
-                      << "\"，已改用自动识别（示例: C / F / Bb）\n";
-            key = m2j::estimateKey(data);
-            keySource = data.keySig.valid ? "(MIDI调号)" : "(自动猜测)";
+            // 参数循环里已严格校验过，这里只作兜底：绝不再降级成自动识别。
+            std::cerr << "错误: 无法识别的宫音 \"" << gongArg << "\"\n";
+            return 1;
         }
     } else if (!keyArg.empty() && parseKey(keyArg, key)) {
         // --key 同理：它描述的是原调，移调后要一起走，否则用户在 README 里
@@ -535,8 +527,9 @@ int main(int argc, char** argv) {
                   + (transposeShiftsKey ? "，已随移调平移" : "") + ")";
     } else {
         if (!keyArg.empty()) {
-            std::cerr << "警告: 无法识别的调性 \"" << keyArg
-                      << "\"，已改用自动识别（示例: C / Am / F# / Bb）\n";
+            // 同上：严格校验已在参数循环里做过，留着防止将来有调用方绕过。
+            std::cerr << "错误: 无法识别的调性 \"" << keyArg << "\"\n";
+            return 1;
         }
         key = m2j::estimateKey(data);
         keySource = data.keySig.valid ? "(MIDI调号)" : "(自动猜测)";

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -168,6 +169,71 @@ inline std::string validateOutputPaths(const std::string& input,
                      + "），后写入的会覆盖先写入的；请分别指定";
         }
     }
+    return {};
+}
+
+// ---- 调名 / 宫音严格语法 ----
+// 旧版 parseKey 只取头 1~2 个字符，尾部一概吞掉："--key Cmaj7" 被当成
+// C 小调、"--key C " 被当成 C 大调、"--key C#b" 被当成 C# 大调——
+// 用户写错了却拿到一份看似正常、调性却完全不是自己要的谱。
+// 合法写法只有 [A-Ga-g](#|b)?[mM]?，且必须全串消费。
+struct KeySpec {
+    int pitchClass = -1;
+    bool isMajor = true;
+    bool flatSpelling = false;   // Gb / Bb 这类降号写法要记住「侧」
+};
+
+inline bool parseKeySpec(const std::string& s, KeySpec& out) {
+    out = KeySpec{};
+    if (s.empty() || s.size() > 3) return false;
+    char letter = s[0];
+    if (letter >= 'a' && letter <= 'g') letter = char(letter - 'a' + 'A');
+    if (letter < 'A' || letter > 'G') return false;
+    size_t i = 1;
+    bool accidental = false;
+    if (i < s.size() && (s[i] == '#' || s[i] == 'b')) { accidental = true; ++i; }
+    // 大小写 m/M 都表示小调（沿用既有口径，别把 "CM" 悄悄改义）。
+    if (i < s.size() && (s[i] == 'm' || s[i] == 'M')) {
+        out.isMajor = false;
+        ++i;
+    }
+    if (i != s.size()) return false;
+    static const char* names[]     = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
+    static const char* flatNames[] = {"C","Db","D","Eb","E","F","Gb","G","Ab","A","Bb","B"};
+    std::string name(1, letter);
+    if (accidental) name += s[1];
+    for (int k = 0; k < 12; ++k)
+        if (name == names[k]) { out.pitchClass = k; return true; }
+    for (int k = 0; k < 12; ++k)
+        if (name == flatNames[k]) {
+            out.pitchClass = k;
+            out.flatSpelling = true;
+            return true;
+        }
+    return false;
+}
+
+// ---- 有限浮点取值 ----
+// std::stod("nan") / ("inf") 会成功且全串消费，NaN 又让所有范围比较都为
+// false：--soft-pedal-scale nan 穿过 0~1 检查；--pickup nan 更隐蔽，
+// "nan >= 0" 为 false 时整段手动弱起逻辑被跳过，用户给的拍数无声消失。
+inline bool parseFiniteDouble(const std::string& s, double& out) {
+    if (s.empty()) return false;
+    char* end = nullptr;
+    const double v = std::strtod(s.c_str(), &end);
+    if (end == nullptr || end == s.c_str() || *end != '\0') return false;
+    if (!std::isfinite(v)) return false;
+    out = v;
+    return true;
+}
+
+// ---- 两个「指定原调」的入口不能同时给 ----
+// 旧版 --gong 优先、--key 被静默丢掉，命令行没有任何提示。
+inline std::string validateKeyOptions(const std::string& keyArg,
+                                      const std::string& gongArg) {
+    if (!keyArg.empty() && !gongArg.empty())
+        return "--key 与 --gong 不能同时使用（两者都指定原调，"
+               "--gong 会覆盖 --key）；请只保留一个";
     return {};
 }
 }  // namespace cli
