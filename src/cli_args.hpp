@@ -4,6 +4,7 @@
 #define M2J_CLI_ARGS_HPP
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -98,6 +99,77 @@ inline std::string suggestOption(const std::string& a) {
     return {};
 }
 
+// ---- 输出路径冲突预检（纯字符串，不碰文件系统）----
+// 旧版三端各写各的：--output 指到输入 .mid 上会把源文件覆盖成文本谱，
+// --output a --html a 则后写的把先写的盖掉，两次都还打印「已写入」。
+struct OutputPath {
+    const char* option;
+    std::string path;
+};
+
+// 只用于「是不是同一个目标」的保守比较：Windows 不区分大小写、
+// \ 与 / 等价，逐段吃掉 "." 与 ".."、合并重复斜杠。相对路径不与
+// 绝对路径强行等同（避免误报），命令行里两种写法都覆盖得到。
+inline std::string normalizePath(const std::string& p) {
+    std::string s;
+    s.reserve(p.size());
+    for (unsigned char c : p) {
+        char ch = (c == '\\') ? '/' : (char)c;
+        s += (char)std::tolower((unsigned char)ch);
+    }
+    std::string prefix;
+    size_t i = 0;
+    if (s.size() >= 2 && s[1] == ':') { prefix = s.substr(0, 2); i = 2; }
+    if (i < s.size() && s[i] == '/') {
+        prefix += '/';
+        while (i < s.size() && s[i] == '/') ++i;
+    }
+    std::vector<std::string> parts;
+    while (i < s.size()) {
+        const size_t j = s.find('/', i);
+        const size_t end = (j == std::string::npos) ? s.size() : j;
+        const std::string seg = s.substr(i, end - i);
+        if (!seg.empty() && seg != ".") {
+            if (seg == "..") {
+                if (!parts.empty() && parts.back() != "..") parts.pop_back();
+                else if (prefix.empty()) parts.push_back(seg);
+            } else parts.push_back(seg);
+        }
+        i = end + 1;
+    }
+    std::string out = prefix;
+    for (size_t k = 0; k < parts.size(); ++k) {
+        if (k) out += '/';
+        out += parts[k];
+    }
+    return out.empty() ? "." : out;
+}
+
+inline bool samePath(const std::string& a, const std::string& b) {
+    return !a.empty() && !b.empty() && normalizePath(a) == normalizePath(b);
+}
+
+// 返回空串表示合法，否则是给 stderr 的错误文案（不带「错误: 」前缀）。
+inline std::string validateOutputPaths(const std::string& input,
+                                        const std::vector<OutputPath>& outs) {
+    for (const auto& o : outs) {
+        if (o.path.empty()) continue;
+        if (samePath(o.path, input))
+            return std::string(o.option) + " 的输出路径与输入 MIDI 相同（"
+                 + o.path + "），会覆盖源文件；请换一个输出路径";
+    }
+    for (size_t i = 0; i < outs.size(); ++i) {
+        if (outs[i].path.empty()) continue;
+        for (size_t j = i + 1; j < outs.size(); ++j) {
+            if (outs[j].path.empty()) continue;
+            if (samePath(outs[i].path, outs[j].path))
+                return std::string(outs[i].option) + " 与 " + outs[j].option
+                     + " 指向同一文件（" + outs[i].path
+                     + "），后写入的会覆盖先写入的；请分别指定";
+        }
+    }
+    return {};
+}
 }  // namespace cli
 }  // namespace m2j
 #endif  // M2J_CLI_ARGS_HPP

@@ -6811,6 +6811,81 @@ int main() {
         check(suggestOption("--bar-number").size() > 2,
               "建议返回的是完整长选项名");
     }
+    // ---- v1.82.0 输出路径冲突预检（纯字符串，CLI 与单测共用） ----
+    {
+        using m2j::cli::normalizePath;
+        using m2j::cli::samePath;
+        using m2j::cli::validateOutputPaths;
+        using m2j::cli::OutputPath;
+
+        check(normalizePath("a.txt") == "a.txt",
+              "路径归一化：普通相对路径原样返回");
+        check(normalizePath("./a.txt") == "a.txt",
+              "路径归一化：吃掉前导 ./");
+        check(normalizePath(".\\a.txt") == "a.txt",
+              "路径归一化：反斜杠按斜杠处理");
+        check(normalizePath("dir//sub/../a.txt") == "dir/a.txt",
+              "路径归一化：合并重复斜杠、吃掉 ..");
+        check(normalizePath("C:\\TMP\\A.TXT") == "c:/tmp/a.txt",
+              "路径归一化：Windows 盘符保留、大小写折叠");
+        check(normalizePath("a/../b.txt") == "b.txt",
+              "路径归一化：同级回退");
+        check(normalizePath("../a.txt") == "../a.txt",
+              "路径归一化：越过当前目录的 .. 保留");
+        check(normalizePath("") == ".",
+              "路径归一化：空串给稳定哨兵，不判为任意路径");
+
+        check(samePath("a.mid", "./a.mid"),
+              "同路径判定：./ 前缀视为同一文件");
+        check(samePath("A.MID", "a.mid"),
+              "同路径判定：按 Windows 语义大小写不敏感");
+        check(samePath("dir\\a.mid", "dir/a.mid"),
+              "同路径判定：反斜杠与斜杠等价");
+        check(!samePath("a.mid", "b.mid") &&
+              !samePath("a.txt", "a.txt.bak"),
+              "同路径判定：不同文件名 / 加后缀不误报");
+        check(!samePath("", "a.mid") && !samePath("a.mid", ""),
+              "同路径判定：空路径不参与比较");
+
+        const std::string in = "song.mid";
+        check(validateOutputPaths(in, {}).empty(),
+              "冲突预检：没有任何输出路径时放行");
+        check(validateOutputPaths(in, {{"--output", ""}, {"--html", ""}}).empty(),
+              "冲突预检：输出路径全空时放行");
+        check(validateOutputPaths(in, {{"--output", "a.txt"},
+                                      {"--html", "a.html"},
+                                      {"--musicxml", "a.xml"}}).empty(),
+              "冲突预检：三个不同输出路径放行");
+        for (const char* opt : {"--output", "--html", "--musicxml"}) {
+            const std::string e = validateOutputPaths(
+                in, {{opt, "./song.mid"}});
+            check(!e.empty() && e.find(opt) == 0 &&
+                  e.find("覆盖源文件") != std::string::npos,
+                  std::string(opt) + " 指向输入 MIDI 时拒绝并点明会覆盖源文件");
+        }
+        check(validateOutputPaths("x/song.mid",
+                                 {{"--html", "x/./song.mid"}}).size() > 0,
+              "冲突预检：带 ./ 的同目录写法也能拦住");
+        for (size_t k = 0; k < 3; ++k) {
+            const char* opts[3] = {"--output", "--html", "--musicxml"};
+            std::vector<OutputPath> outs;
+            outs.push_back({opts[k], "same.out"});
+            outs.push_back({opts[(k + 1) % 3], "same.out"});
+            const std::string e = validateOutputPaths(in, outs);
+            check(!e.empty() && e.find("指向同一文件") != std::string::npos,
+                  std::string(opts[k]) + " 与另一个输出撞路径时拒绝");
+        }
+        check(validateOutputPaths(in, {{"--output", "same.out"},
+                                      {"--html", "same.out/../same.out"}}).size() > 0,
+              "冲突预检：.. 绕一圈回到同一路径仍判为撞车");
+        {
+            const std::string e = validateOutputPaths(in,
+                {{"--output", "./song.mid"}, {"--html", "./song.mid"}});
+            check(e.find("覆盖源文件") != std::string::npos,
+                  "同时踩两条时优先报「会覆盖源文件」");
+        }
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

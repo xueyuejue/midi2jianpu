@@ -3516,6 +3516,92 @@ def main():
           "v1.77 口径保持：未知长参数只警告，后面的 --html 仍生效",
           (rc, err[:160]))
 
+    group("[95] v1.82.0 输出文件：写不进去不再假成功，也不许覆盖源 MIDI")
+    import shutil
+
+    # 旧版三端都用 ofstream 直接 <<，目录不存在 / 路径是目录 / 磁盘满时
+    # 照样打印「已写入」并 rc=0；更糟的是 --output 指到输入 .mid 上会把
+    # 原始文件覆盖成文本谱，用户拿不回源文件。
+    dead = os.path.join(tmp, "v182_no_dir", "out")
+    for opt, label, suffix in (("--output", "文本简谱", ".txt"),
+                               ("--html", "HTML 谱面", ".html"),
+                               ("--musicxml", "MusicXML", ".xml")):
+        target = dead + suffix
+        rc, out, err = run(exe, mid, opt, target)
+        check(rc == 1 and "无法打开输出文件" in err and label in err
+              and "已写入" not in out and not os.path.exists(target),
+              "%s 目标目录不存在时明确报错，不再假报成功" % opt,
+              (rc, err[:160]))
+
+    as_dir = os.path.join(tmp, "v182_is_dir")
+    os.makedirs(as_dir, exist_ok=True)
+    rc, out, err = run(exe, mid, "--html", as_dir)
+    check(rc == 1 and "无法打开输出文件" in err and "已写入" not in out,
+          "--html 指向一个目录时明确报错", (rc, err[:160]))
+
+    # 覆盖源文件：拿一份复制件当输入，输出指回同一个路径。
+    src = os.path.join(tmp, "v182_source.mid")
+    shutil.copyfile(mid, src)
+    before = open(src, "rb").read()
+    rc, out, err = run(exe, src, "--output", src)
+    after = open(src, "rb").read()
+    check(rc == 1 and "覆盖源文件" in err and before == after
+          and "已写入" not in out,
+          "--output 与输入 .mid 同路径时拒绝，源文件字节不变", (rc, err[:160]))
+    dotted = os.path.join(os.path.dirname(src), ".", os.path.basename(src))
+    rc, _, err = run(exe, src, "--musicxml", dotted)
+    check(rc == 1 and "覆盖源文件" in err and open(src, "rb").read() == before,
+          "带 ./ 的同一路径写法也能拦住", (rc, err[:160]))
+    mixed = os.path.join(os.path.dirname(src), ".", "V182_SOURCE.MID")
+    rc, _, err = run(exe, src, "--html", mixed)
+    check(rc == 1 and "覆盖源文件" in err and open(src, "rb").read() == before,
+          "反斜杠 / 大小写变体仍判为同一源文件", (rc, err[:160]))
+
+    # 三端互相撞路径：旧版后写的把先写的盖掉，两次都打印「已写入」。
+    for a, b in (("--output", "--html"), ("--output", "--musicxml"),
+                 ("--html", "--musicxml")):
+        same = os.path.join(tmp, "v182_same.out")
+        if os.path.exists(same):
+            os.remove(same)
+        rc, out, err = run(exe, mid, a, same, b, same)
+        check(rc == 1 and "指向同一文件" in err and "已写入" not in out
+              and not os.path.exists(same),
+              "%s 与 %s 同路径时拒绝，且不再生成半成品" % (a, b),
+              (rc, err[:160]))
+    same2 = os.path.join(tmp, "v182_same2.out")
+    rc, _, err = run(exe, mid, "--output", same2,
+                     "--html", same2 + "/../" + os.path.basename(same2))
+    check(rc == 1 and "指向同一文件" in err,
+          "带 .. 绕回同一路径仍判为撞车", (rc, err[:160]))
+
+    rc, out, err = run(exe, mid, "--output", "")
+    check(rc == 1 and "--output 需要一个值" in err and "已写入" not in out,
+          "--output 空字符串明确报错，不再静默什么都不做", (rc, err[:160]))
+
+    # 一个不可写 + 一个可写：fail-fast，不能只写一半还报成功。
+    good = os.path.join(tmp, "v182_good.html")
+    if os.path.exists(good):
+        os.remove(good)
+    rc, out, err = run(exe, mid, "--output", dead + ".txt", "--html", good)
+    check(rc == 1 and out.count("已写入") == 0 and not os.path.exists(good),
+          "一个输出失败时整体 rc=1，不再留下写了一半的结果", (rc, err[:160]))
+
+    # 对照组：正常路径必须和旧版一样能同时产出三份文件。
+    ok = [os.path.join(tmp, "v182_ok." + x) for x in ("txt", "html", "xml")]
+    for f in ok:
+        if os.path.exists(f):
+            os.remove(f)
+    rc, out, err = run(exe, mid, "--output", ok[0], "--html", ok[1],
+                       "--musicxml", ok[2])
+    check(rc == 0 and out.count("已写入") == 3
+          and all(os.path.isfile(f) and os.path.getsize(f) > 0 for f in ok),
+          "三个不同路径正常写入，行为与旧版一致", (rc, err[:160]))
+    txt_bytes = open(ok[0], "rb").read()
+    check((b"\n" in txt_bytes[:8] or b"\r\n" in txt_bytes[:8])
+          and b"midi2jianpu" in open(ok[1], "rb").read()
+          and b"<score-partwise" in open(ok[2], "rb").read(),
+          "三份文件内容仍是文本谱 / HTML / MusicXML")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

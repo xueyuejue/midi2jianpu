@@ -10,7 +10,36 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <vector>
 
+// 三端写文件共用：打开 / 写入 / flush / close 每一步都要检查。
+// 旧版只管 << 完就打印「已写入」：目录不存在、路径是目录、磁盘满时
+// 用户拿到的是 rc=0 加一句假成功，回头才发现谱子根本没生成。
+// 这里刻意不开 binary：Windows 文本模式把 \n 写成 \r\n 是既有口径，
+// 改了会让所有既有素材的输出逐字节变化。
+static bool writeOutputFile(const std::string& path, const std::string& content,
+                            const char* label) {
+    std::ofstream f(path);
+    if (!f.is_open()) {
+        std::cerr << "错误: 无法打开输出文件 " << path << "（" << label
+                  << "）：检查目录是否存在、是否有写权限，或路径是不是目录\n";
+        return false;
+    }
+    f << content;
+    f.flush();
+    if (!f) {
+        std::cerr << "错误: 写入输出文件失败 " << path << "（" << label
+                  << "），可能磁盘已满\n";
+        return false;
+    }
+    f.close();
+    if (f.fail()) {
+        std::cerr << "错误: 关闭输出文件失败 " << path << "（" << label
+                  << "），可能磁盘已满\n";
+        return false;
+    }
+    return true;
+}
 static void printHelp() {
     std::cout <<
         "midi2jianpu " M2J_VERSION " - MIDI 文件转中文简谱\n"
@@ -189,7 +218,8 @@ int main(int argc, char** argv) {
         // 然后照常输出文本谱——用户以为指定了，其实什么都没发生。
         // 负数合法取值（--transpose -2 / --pickup -1）不算选项，见 isOptionToken()。
         if (m2j::cli::optionNeedsValue(a)) {
-            if (i + 1 >= argc || m2j::cli::isOptionToken(argv[i + 1])) {
+            if (i + 1 >= argc || m2j::cli::isOptionToken(argv[i + 1])
+                || argv[i + 1][0] == '\0') {
                 std::cerr << "错误: " << a << " 需要一个值（用 --help 查看用法）\n";
                 return 1;
             }
@@ -281,6 +311,19 @@ int main(int argc, char** argv) {
         }
     }
     if (input.empty()) { printHelp(); return 1; }
+    // 输出路径预检：与输入 .mid 同路径会毁掉源文件，三端互相撞路径
+    // 会静默覆盖先写的那份。放在读 MIDI 之前，越界一律不干活。
+    {
+        const std::vector<m2j::cli::OutputPath> outs = {
+            {"--output", txtOut}, {"--html", htmlOut},
+            {"--musicxml", xmlOut}
+        };
+        const std::string oe = m2j::cli::validateOutputPaths(input, outs);
+        if (!oe.empty()) {
+            std::cerr << "错误: " << oe << "\n";
+            return 1;
+        }
+    }
     // --player 是 HTML 专属：纯文本谱 / MusicXML 没有承载播放器的地方，
     // 静默忽略会让用户以为导出的文件能试听。
     if (barsPerRow > 0 && htmlOut.empty())
@@ -585,23 +628,25 @@ int main(int argc, char** argv) {
                   << " 处，唱名已按各段调号分别换算（--no-key-changes 可忽略）\n";
 
     if (!txtOut.empty()) {
-        std::ofstream f(txtOut);
-        f << header << jianpu;
+        if (!writeOutputFile(txtOut, header + jianpu, "文本简谱")) return 1;
         std::cout << "文本简谱已写入: " << txtOut << "\n";
     }
     if (!htmlOut.empty()) {
-        std::ofstream f(htmlOut);
         std::string title = input;
         size_t slash = title.find_last_of("/\\");
         if (slash != std::string::npos) title = title.substr(slash + 1);
         size_t dot = title.find_last_of(".");
         if (dot != std::string::npos) title = title.substr(0, dot);
-        f << m2j::renderHtml(data, key, title, lyricPtr, player, barsPerRow);
+        if (!writeOutputFile(htmlOut,
+                            m2j::renderHtml(data, key, title, lyricPtr,
+                                            player, barsPerRow),
+                            "HTML 谱面")) return 1;
         std::cout << "HTML 谱面已写入: " << htmlOut << "\n";
     }
     if (!xmlOut.empty()) {
-        std::ofstream f(xmlOut);
-        f << m2j::renderMusicXml(data, key, lyricPtr);
+        if (!writeOutputFile(xmlOut,
+                            m2j::renderMusicXml(data, key, lyricPtr),
+                            "MusicXML")) return 1;
         std::cout << "MusicXML 已写入: " << xmlOut << "\n";
     }
     return 0;
