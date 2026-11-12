@@ -256,6 +256,15 @@ struct MidiData {
     int skippedChunks = 0;            // 按声明长度跳过的非 MTrk 扩展块数
     int resyncedTracks = 0;           // 靠 EOT 锚点重定位边界的轨道数
 
+    // 时间轴跨度保护：畸形 delta-time（单条 VLQ 上限 2^28-1，多轨累计可达
+    // 数十亿 tick）能把音符推到数亿 tick 之外，note-on / note-off 被这段坏
+    // delta 拉到两端就拼出一条「幽灵长音」。下游按小节切分、补空小节都是
+    // O(小节数)，于是一份 300 字节的坏文件也能让 HTML 生成卡到十余秒、产出
+    // 上百 MB，网页版（WASM）整页冻结。解析末尾按「6000 小节」硬上限截断：
+    // 越界音符丢弃、尾巴越界的音符夹到界内。任何真实简谱都远在 6000 小节内，
+    // 合法文件此项恒为 0，输出逐字节不变。
+    int timelineClamped = 0;          // 因时间轴跨度异常被丢弃 / 截断的音符数
+
     // SMF 的 FF 21 01 pp（MIDI Port / Cable Number）与 FF 20 01 cc（Channel
     // Prefix）。端口是「(port, channel) 二元组」的一部分：port 0 ch0 和
     // port 1 ch0 是两台设备上的两件乐器，踏板 / 弯音范围 / 力度 / 音色都

@@ -965,6 +965,11 @@ int main() {
               g.barIndex(5279) == 2 && g.barIndex(5280) == 3 && g.barIndex(6720) == 4,
               "tick -> 小节号跨段连续");
         check(g.barStart(20) > 9600, "表尾之后按最后一段长度安全外推");
+        // v1.85.0：表尾外推必须封顶。旧版 barIndex 无上限外推，畸形 delta-time
+        // 把 tick 推到数亿时会返回上千万的小节号，调用方「补空小节」循环随之爆炸。
+        check(g.barIndex(500000000L) <= (long)g.starts.size() + BarGrid::kMaxExtrapBars,
+              "巨额 tick 的表尾外推被封顶（不再放大到千万级）");
+        check(g.barIndex(3840) == 2, "封顶不影响表内小节号");
         check(meterSummary(d) == "4/4 → 3/4(第3小节) → 6/8(第5小节)",
               "页眉摘要列出每次变化及其小节号: " + meterSummary(d));
         check(detectPickupTicks(d) == 0, "多拍号曲目禁用自动弱起判定");
@@ -7007,6 +7012,69 @@ int main() {
         check(validateKeyOptions("D", "G").find("不能同时使用") != std::string::npos,
               "--key 与 --gong 同时给时明确拒绝");
     }
+    // ---- v1.85.0 时间轴跨度保护 ----
+    // 畸形 delta-time 能把 note-on / note-off 拉到两端，拼出「幽灵长音」。
+    // 旧版按小节切分 / 补空小节是 O(小节数)，一份几 KB 的坏文件就能让 HTML
+    // 生成卡到十余秒、产出上百 MB。这里验证解析末尾把越界音符截断并留提示。
+    std::cout << "\n测试时间轴跨度保护\n";
+    {
+        SmfTrack cond;
+        cond.at(0, ev({0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08}));   // 4/4
+        SmfTrack mel;
+        for (int i = 0; i < 4; i++) {
+            long t = i * 480L;
+            mel.at(t, ev({0x90, 60 + i, 90}));
+            mel.at(t + 480, ev({0x80, 60 + i, 0}));
+        }
+        // 坏 delta：note-on 落在 3000 万 tick（远超 6000 小节 = 1152 万 tick 上限）
+        const long kJump = 30000000L;
+        mel.at(1920 + kJump, ev({0x90, 72, 90}));
+        mel.at(1920 + kJump + 480, ev({0x80, 72, 0}));
+        auto bytes = buildSmf(2, 480, {cond, mel});
+        MidiData d;
+        bool ok = loadMidiFromMemory(bytes.data(), bytes.size(), d);
+        check(ok, "含巨额 delta 的 SMF 仍能解析（不崩、不卡死）");
+        check(d.notes.size() == 4,
+              "越界幽灵音被丢弃，只剩 4 个正常音, 实际: " + std::to_string(d.notes.size()));
+        check(d.timelineClamped >= 1,
+              "记录到越界音符, 实际: " + std::to_string(d.timelineClamped));
+        const long cap = 6000L * 1920L;
+        long maxEnd = 0;
+        for (const auto& n : d.notes)
+            maxEnd = std::max(maxEnd, n.startTicks + n.durationTicks);
+        check(maxEnd <= cap, "所有音符落在 6000 小节内, 实际末端: " + std::to_string(maxEnd));
+        check(truncationLabel(d).find("时间轴跨度异常") != std::string::npos,
+              "页眉提示时间轴跨度异常: " + truncationLabel(d));
+    }
+    {
+        // 单音时值上限：起点在界内、尾巴却超长（幽灵长音的另一种形态）。
+        SmfTrack cond;
+        cond.at(0, ev({0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08}));
+        SmfTrack mel;
+        mel.at(0, ev({0x90, 60, 90}));
+        mel.at(500000, ev({0x80, 60, 0}));
+        auto bytes = buildSmf(2, 480, {cond, mel});
+        MidiData dm;
+        check(loadMidiFromMemory(bytes.data(), bytes.size(), dm), "超长单音 SMF 解析成功");
+        check(!dm.notes.empty() && dm.notes[0].durationTicks <= 256L * 1920L,
+              "单个幽灵长音被夹到 256 小节内, 实际: " +
+              std::to_string(dm.notes.empty() ? -1 : dm.notes[0].durationTicks));
+        check(dm.timelineClamped >= 1, "超长单音计一次截断");
+    }
+    {
+        // 无巨型 tick 的正常文件：timelineClamped 恒为 0，截断提示里不出现时间轴字样。
+        SmfTrack cond;
+        cond.at(0, ev({0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08}));
+        SmfTrack mel;
+        mel.at(0, ev({0x90, 60, 90}));
+        mel.at(480, ev({0x80, 60, 0}));
+        auto bytes = buildSmf(2, 480, {cond, mel});
+        MidiData dn;
+        check(loadMidiFromMemory(bytes.data(), bytes.size(), dn), "普通单音 SMF 解析成功");
+        check(dn.timelineClamped == 0 && truncationLabel(dn).find("时间轴") == std::string::npos,
+              "正常文件的截断提示不含时间轴字样（零回归）");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

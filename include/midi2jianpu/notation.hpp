@@ -433,6 +433,10 @@ std::string partSummary(const MidiData& data);
 // 所以网格不再是「一个常量 + 取模」，而是解析阶段就铺出一张逐小节的边界表：
 // starts[i] 是第 i 小节起点 tick，sigs[i] 是这一小节生效的拍号。
 struct BarGrid {
+    // 小节表尾之外最多再外推多少小节。畸形文件的巨额 tick 不再把 barIndex
+    // 放大到千万级（见 barIndex 内的注释）；正常文件的小节表覆盖全曲，用不到。
+    static constexpr long kMaxExtrapBars = 8;
+
     long barLen = 1920;   // 曲首小节长度（无变拍号时全曲都是它）
     long pickup = 0;      // 弱起小节长度 tick（0 = 没有弱起）
     int beatsPerBar = 4;  // 曲首每小节拍数
@@ -448,7 +452,18 @@ struct BarGrid {
         long idx = (long)(it - starts.begin()) - 1;
         if (it == starts.end()) {   // 超出表尾：按最后一段长度线性外推
             long tb = tailBarLen > 0 ? tailBarLen : barLen;
-            if (tb > 0) idx += (tick - starts.back()) / tb;
+            if (tb > 0) {
+                long extra = (tick - starts.back()) / tb;
+                // 防御：畸形 delta-time 可把累计 tick 推到数十亿（单条事件的
+                // VLQ delta 上限就有 2^28-1）。若无上限外推，下面的小节号会
+                // 变成上千万，调用方「补空小节」「逐小节取样」的循环随即
+                // 跑上千万次——HTML 生成从毫秒级卡到十余秒、产出上百 MB，
+                // 网页版（WASM）直接整页冻结。正常文件的小节表本已铺到
+                // songEnd+1 小节，这条分支只对「被 20000 小节上限截断的异常
+                // 文件」生效，故封顶不改变任何正常输出。
+                if (extra > kMaxExtrapBars) extra = kMaxExtrapBars;
+                idx += extra;
+            }
         }
         return idx;
     }

@@ -3425,6 +3425,13 @@ def main() -> None:
         f.write(gdata)
     print(f"wrote {gext} ({len(gdata)} bytes)")
 
+    # v1.85.0：坏 delta-time 造成的巨额 tick（时间轴跨度保护）
+    hmid = os.path.join(here, "huge_delta.mid")
+    with open(hmid, "wb") as f:
+        hdata = build_huge_delta()
+        f.write(hdata)
+    print(f"wrote {hmid} ({len(hdata)} bytes)")
+
 def build_utf8_marker() -> bytes:
     """段落名截断必须落在 UTF-8 字符边界上（v1.79.0）。
 
@@ -3512,6 +3519,38 @@ def build_legacy_encoding(spec) -> bytes:
         t1.note(0, pitches[i], 88, i * DIV, DIV - 10)
     header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
     return header + t0.render() + t1.render()
+
+def build_huge_delta() -> bytes:
+    """v1.85.0 时间轴跨度保护：坏 delta-time 把 note-on 拉到 3000 万 tick 之外。
+
+    SMF 单条 VLQ delta 的合法上限是 2^28-1（约 2.68 亿 tick），多轨累计还能更大。
+    一段坏 delta 把 note-on 与 note-off 拉到两端，就拼出一条「幽灵长音」：旧版
+    下游按小节切分、补空小节都是 O(小节数)，一份几百字节的文件也能让 HTML 生成
+    卡到十余秒、产出上百 MB，网页版（WASM）整页冻结。
+
+    本素材 4/4、division=480：
+      * 第 1 小节 4 个四分音符 —— 正常音，截断后应保留；
+      * 第 2 小节之后一条 delta = 3000 万 tick 的坏跳变，note-on 落在 3000 万
+        tick（约 15625 小节，远超 6000 小节上限），其 note-off 再 +480。
+    新版在解析末尾按「6000 小节」截断：越界幽灵音丢弃、页眉提示
+    「时间轴跨度异常」，剩余 4 个正常音照常出谱，且 HTML 体积有界。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120 BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Melody"))
+    t1.program(0, 0, 0)
+    for i, b in enumerate((0, 480, 960, 1440)):
+        t1.note(0, 60 + i, 90, b, 480)
+    # 坏 delta：note-on 落在 3000 万 tick（单条 VLQ 仍合法，属「合法但荒谬」）
+    jump = 30000000
+    t1.add(1920 + jump, bytes([0x90, 72, 90]))
+    t1.add(1920 + jump + 480, bytes([0x80, 72, 0x40]))
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
+
 
 if __name__ == "__main__":
     main()

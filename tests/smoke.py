@@ -3694,6 +3694,30 @@ def main():
         check(ch in xm, "MusicXML 解出 %s" % ch, xm[:200])
     check("\uFFFD" not in xm, "MusicXML 无 U+FFFD", xm[:200])
 
+    group("[98] v1.85.0 时间轴跨度保护：坏 delta-time 不再卡死 HTML 生成")
+    # 一条 delta=3000 万 tick 的坏跳变把 note-on 拉到 15625 小节之外。旧版
+    # 按小节切分 / 补空小节是 O(小节数)，HTML 会膨胀到数 MB 甚至卡死；新版
+    # 在解析末尾按 6000 小节截断，幽灵音丢弃、页眉提示，剩余正常音照常出谱。
+    hmid = os.path.join(FIXTURES, "huge_delta.mid")
+    check(os.path.exists(hmid), "huge_delta.mid 素材存在", hmid)
+    rc, out, err = run(exe, hmid)
+    check(rc == 0, "文本谱退出码 0（不崩、不卡死）", err)
+    check("时间轴跨度异常" in out, "页眉提示时间轴跨度异常", out[:300])
+    check("共提取 4 个音符" in out, "越界幽灵音被丢弃，只剩 4 个正常音", out[:300])
+    hhtml = os.path.join(tmp, "huge_delta.html")
+    rc, _, err = run(exe, hmid, "--html", hhtml)
+    check(rc == 0 and os.path.exists(hhtml), "HTML 退出码 0 且生成文件", err)
+    hsz = os.path.getsize(hhtml)
+    check(hsz < 1024 * 1024, "HTML 体积有界（< 1MB），实际 %d 字节" % hsz)
+    htm = open(hhtml, encoding="utf-8").read()
+    check("时间轴跨度异常" in htm, "HTML 页眉同样提示时间轴跨度异常", htm[:300])
+    check(htm.count("class='measure'") < 100,
+          "HTML 小节数有界，实际 %d" % htm.count("class='measure'"))
+    hxml = os.path.join(tmp, "huge_delta.xml")
+    rc, _, err = run(exe, hmid, "--musicxml", hxml)
+    check(rc == 0 and os.path.exists(hxml), "MusicXML 退出码 0 且生成文件", err)
+    check(os.path.getsize(hxml) < 1024 * 1024, "MusicXML 体积有界（< 1MB）")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

@@ -673,6 +673,40 @@ static void applySysExDrumMode(MidiData& out,
 //   2) format 1 文件的 set_tempo 通常在独立的 conductor 轨（track 0），
 //      如果它排在音符轨之后被解析，整份谱子的秒数全部错位。
 // 现在与 LRC 歌词共用同一张 TempoTimeline，不会再出现「音符对、歌词错」。
+// 时间轴跨度保护（动机见 MidiData::timelineClamped 的注释）。
+//
+// 放在 recomputeSeconds 之前：先把 tick 夹到合理范围，秒数 / LRC 时间轴 /
+// 下游按小节切分才不会跟着天文数字一起爆炸。越界音符多半是 note-on 与
+// note-off 被一段坏 delta 拉到两端拼出来的「幽灵长音」，整条丢弃比夹在
+// 末尾更贴近真实意图（真实简谱里不会有 6000 小节长、横跨三小时的单音）。
+static void boundTimeline(MidiData& out) {
+    long barLen = (long)std::llround(out.timeSig.barLengthTicks(out.division));
+    if (barLen <= 0) barLen = (out.division > 0 ? (long)out.division : 480L) * 4;
+    const long kMaxBars = 6000;   // 远超任何真实曲目（4/4 @120BPM 约 3.3 小时）
+    const long kMaxNoteBars = 256;// 单个 MIDI 音最长 256 小节（真实单音远短于此）
+    const long cap = kMaxBars * barLen;
+    const long maxDur = kMaxNoteBars * barLen;
+    if (out.notes.empty()) return;
+    long maxEnd = 0;
+    bool needs = false;
+    for (const auto& n : out.notes) {
+        maxEnd = std::max(maxEnd, n.startTicks + std::max<long>(n.durationTicks, 1));
+        if (n.startTicks >= cap || n.durationTicks > maxDur) needs = true;
+    }
+    if (maxEnd <= cap && !needs) return;   // 正常文件：一个字节都不动
+
+    std::vector<NoteEvent> kept;
+    kept.reserve(out.notes.size());
+    for (auto& n : out.notes) {
+        if (n.startTicks >= cap) { out.timelineClamped++; continue; }   // 起点越界：整条丢弃
+        if (n.durationTicks > maxDur) { n.durationTicks = maxDur; out.timelineClamped++; }  // 幽灵长音：夹到上限
+        long end = n.startTicks + std::max<long>(n.durationTicks, 1);
+        if (end > cap) { n.durationTicks = cap - n.startTicks; out.timelineClamped++; }      // 尾巴越界：夹住
+        kept.push_back(n);
+    }
+    out.notes.swap(kept);
+}
+
 static void recomputeSeconds(MidiData& out) {
     std::sort(out.tempoChanges.begin(), out.tempoChanges.end(),
               [](const TempoPoint& a, const TempoPoint& b) { return a.tick < b.tick; });
@@ -1335,6 +1369,7 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
     applySmpteTimeBase(out);
     out.midiPortCount = (int)portsUsed.size();
     out.midiPortMax = portsUsed.empty() ? 0 : *portsUsed.rbegin();
+    boundTimeline(out);      // 畸形 delta-time 的巨额 tick 先夹住，再算秒数
     recomputeSeconds(out);
     return true;
 }
@@ -1500,7 +1535,8 @@ std::string trackLabel(const MidiData& data) {
 std::string truncationLabel(const MidiData& data) {
     const bool damaged = data.truncatedTracks > 0 || data.truncatedEvents > 0;
     const bool repaired = data.skippedChunks > 0 || data.resyncedTracks > 0;
-    if (!damaged && !repaired) return "";
+    const bool timeline = data.timelineClamped > 0;
+    if (!damaged && !repaired && !timeline) return "";
     std::ostringstream os;
     if (damaged) {
         os << "文件数据不完整：";
@@ -1512,14 +1548,25 @@ std::string truncationLabel(const MidiData& data) {
         if (data.truncatedEvents > 0)
             os << "（丢弃 " << data.truncatedEvents << " 个不完整事件）";
     }
-    if (repaired) {
+    if (repaired || timeline) {
         if (damaged) os << "；";
         os << "文件结构提示：";
-        if (data.skippedChunks > 0)
+        bool first = true;
+        if (data.skippedChunks > 0) {
             os << "跳过 " << data.skippedChunks << " 个非 MTrk 扩展块";
-        if (data.skippedChunks > 0 && data.resyncedTracks > 0) os << "、";
-        if (data.resyncedTracks > 0)
+            first = false;
+        }
+        if (data.resyncedTracks > 0) {
+            if (!first) os << "、";
             os << "重同步 " << data.resyncedTracks << " 条轨道边界（长度字段与实际不符）";
+            first = false;
+        }
+        if (timeline) {
+            if (!first) os << "、";
+            os << "时间轴跨度异常（疑似损坏的 delta-time），已截断 "
+               << data.timelineClamped << " 个越界音符";
+            first = false;
+        }
         os << "，谱面按真实轨数据生成";
     }
     return os.str();
