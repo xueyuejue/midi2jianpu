@@ -1362,7 +1362,8 @@ std::string KeyMap::summary(const BarGrid& grid) const {
 static std::string formatTrack(
     const std::vector<NoteEvent>& notes,
     const KeyMap& keys, const MidiData& data, const ExpressionMap& expr,
-    const std::map<long, std::string>* chords = nullptr) {
+    const std::map<long, std::string>* chords = nullptr,
+    bool barNumbers = false) {
 
     std::ostringstream os;
     int currentBar = -1;
@@ -1421,6 +1422,10 @@ static std::string formatTrack(
         if ((int)bar == currentBar) return;
         if (currentBar >= 0) os << " |\n";
         currentBar = (int)bar;
+        // 小节号：与 HTML 的 .barno 同一口径——弱起小节不编号，第一个
+        // 完整小节才是 1，这样两端的「第几小节」永远指同一段音乐。
+        if (barNumbers && bar > 0)
+            os << "[" << grid.measureNumber(bar) << "] ";
         // 变拍号处把新拍号印在谱面上（只印旋律轨，伴奏轨不重复）。
         // 页眉的摘要说明「什么时候变」，这里说明「从哪一栏开始按新拍子数」。
         if (chords && grid.meterChangedAt(bar))
@@ -1783,7 +1788,8 @@ std::string partSummary(const MidiData& data) {
     return os.str();
 }
 
-std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
+std::string formatJianpu(const MidiData& data, const KeyEstimate& key,
+                           bool barNumbers) {
     const KeyMap keys(data, key);
     const BarGrid grid = barGridOf(data);
     const ExpressionMap expr(data);
@@ -1889,7 +1895,8 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key) {
             os << " · 和弦: " << distinctChordCount(chordByBar) << " 个";
         }
         os << "\n";
-        os << formatTrack(ns, keys, data, expr, isMain ? &chordByBar : nullptr);
+        os << formatTrack(ns, keys, data, expr, isMain ? &chordByBar : nullptr,
+                          barNumbers);
     }
     return os.str();
 }

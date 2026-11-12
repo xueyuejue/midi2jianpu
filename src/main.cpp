@@ -28,6 +28,7 @@ static void printHelp() {
         "  midi2jianpu <input.mid> --no-pickup      关闭弱起自动判定\n"
         "  midi2jianpu <input.mid> --html o.html --player  谱面内嵌试听播放器\n"
         "  midi2jianpu <input.mid> --html o.html --bars 4  每行固定 4 小节\n"
+        "  midi2jianpu <input.mid> --bar-numbers          文本谱每行标出小节号\n"
         "  midi2jianpu <input.mid> --no-key-changes 忽略中途转调(全曲按一个调记谱)\n"
         "  midi2jianpu <input.mid> --gong C        手动指定五声调式的宫音(简谱 1)\n"
         "  midi2jianpu <input.mid> --no-pentatonic  关闭五声调式宫音自动校正\n"
@@ -178,6 +179,7 @@ int main(int argc, char** argv) {
     bool noPickup = false;
     bool player = false;       // --player：HTML 内嵌试听播放器
     int barsPerRow = 0;        // --bars N：每行固定 N 小节（0 = 自动折算）
+    bool barNumbers = false;   // --bar-numbers：文本谱每行标出小节号
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--help" || a == "-h") { printHelp(); return 0; }
@@ -205,6 +207,7 @@ int main(int argc, char** argv) {
         else if (a == "--no-midi-lyrics") { noMidiLyrics = true; }
         else if (a == "--no-pickup") { noPickup = true; }
         else if (a == "--player") { player = true; }
+        else if (a == "--bar-numbers") { barNumbers = true; }
         else if (a == "--bars" && i + 1 < argc) {
             int n = 0;
             if (!parseInt(argv[++i], n) || n < 1 || n > 8) {
@@ -238,7 +241,10 @@ int main(int argc, char** argv) {
         else if (a.substr(0, 2) != "--") input = a;
         else {
             std::cerr << "警告: 未知参数 " << a << "（用 --help 查看用法）\n";
-            ++i;  // 跳过其可能的取值
+            // 只跳过「看起来像取值」的下一个词。早先无条件 ++i，于是
+            // `--foo --html o.html` 会连 --html 一起吃掉，HTML 静默不生成——
+            // 打错一个参数名就丢掉一项输出，比不警告还糟。
+            if (i + 1 < argc && argv[i + 1][0] != '-') ++i;
         }
     }
     if (input.empty()) { printHelp(); return 1; }
@@ -530,7 +536,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::string jianpu = m2j::formatJianpu(data, key);
+    std::string jianpu = m2j::formatJianpu(data, key, barNumbers);
     const std::string meter = m2j::meterSummary(data);
     std::string header = "\n共提取 " + std::to_string(data.notes.size())
               + " 个音符 (division=" + std::to_string(data.division)

@@ -3197,6 +3197,71 @@ def main():
     h = open(gb_html, encoding="utf-8").read() if (rc == 0 and os.path.exists(gb_html)) else ""
     check("1=Gb" in h, "HTML 页眉同样写 1=Gb")
 
+    group("[89] v1.77.0 文本谱小节号（--bar-numbers）：行首前缀、口径同 HTML")
+    # 文本谱每小节一行、小节之间是 ` |`，长曲子打印出来很难报位置。这个开关
+    # 给每行行首加 `[N] `；口径必须与 HTML 的 .barno 完全一致，否则同一份谱
+    # 在两端说的「第几小节」会差一。
+    nb_mid = os.path.join(tmp, "nb12.mid")
+    _t2 = b""
+    _t2 += _vlq(0) + b"\xff\x58\x04" + bytes([4, 2, 24, 8])
+    for _i in range(12):
+        _t2 += _vlq(0 if _i == 0 else 480) + bytes([0x90, 60, 96])
+        _t2 += _vlq(480) + bytes([0x80, 60, 0])
+    _t2 += _vlq(0) + b"\xff\x2f\x00"
+    with open(nb_mid, "wb") as _f:
+        _f.write(b"MThd" + struct.pack(">IHHH", 6, 0, 1, 480))
+        _f.write(b"MTrk" + struct.pack(">I", len(_t2)) + _t2)
+
+    rc, plain, _ = run(exe, nb_mid)
+    check(rc == 0 and "[2] " not in plain,
+          "默认不标小节号（文本谱零回归）", plain[-200:])
+    rc, num, _ = run(exe, nb_mid, "--bar-numbers")
+    check("[2] " in num and "[3] " in num,
+          "开启后从第 2 小节起逐行标号", num[-240:])
+    check("[1] " not in num,
+          "第 1 小节省号（与 HTML 的 .barno 同一口径）", num[-240:])
+    check(num.count(" |\n") == plain.count(" |\n")
+          and num.count("\n") == plain.count("\n"),
+          "只加行首前缀，行数与小节线数一个不变",
+          (num.count(" |\n"), plain.count(" |\n")))
+
+    # 弱起：弱起小节不编号，第一个完整小节才是 [1]
+    pk_mid = os.path.join(FIXTURES, "pickup.mid")
+    rc, pkout, _ = run(exe, pk_mid, "--bar-numbers")
+    first = [ln for ln in pkout.splitlines() if ln.endswith(" |")][:2]
+    # 首行可能还有和弦标记（[G]），所以判的是「有没有 [数字] 前缀」。
+    check(rc == 0 and len(first) == 2
+          and re.match(r"^\[\d+\] ", first[0]) is None
+          and first[1].startswith("[1] "),
+          "弱起小节不编号，第一个完整小节标 [1]", first)
+
+    # 与 HTML 对照：两边第一处小节号必须是同一个数字
+    nb_html = os.path.join(tmp, "nb12.html")
+    run(exe, nb_mid, "--html", nb_html)
+    hh = open(nb_html, encoding="utf-8").read() if os.path.exists(nb_html) else ""
+    m = re.search(r"<span class='barno'>(\d+)</span>", hh)
+    check(m is not None and ("[%s] " % m.group(1)) in num,
+          "文本谱与 HTML 的第一处小节号相同（%s）" % (m.group(1) if m else "缺"))
+
+    group("[90] v1.77.0 未知参数不再吞掉后面的合法参数")
+    # 旧实现遇到未知参数一律 ++i，于是 `--foo --html o.html` 会连 --html 一起
+    # 跳过：打了警告，HTML 却静默不生成——比不警告还难查。现在只在下一个词
+    # 「不像参数」（不以 - 开头）时才当它取值跳过。
+    unk_html = os.path.join(tmp, "unk.html")
+    if os.path.exists(unk_html):
+        os.remove(unk_html)
+    rc, _, err = run(exe, exp, "--foo", "--html", unk_html)
+    check(rc == 0 and "未知参数 --foo" in err,
+          "未知参数仍然报警告", (rc, err[:160]))
+    check(os.path.exists(unk_html),
+          "紧跟其后的 --html 没有被吞掉（文件已生成）",
+          os.listdir(tmp)[:6])
+
+    rc, out, err = run(exe, exp, "--foo", "4")
+    check(rc == 0 and "未知参数 --foo" in err and "共提取" in out,
+          "未知参数的取值仍被跳过，不会当成输入文件",
+          (rc, err[:160], out[:80]))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

@@ -5163,7 +5163,43 @@ int main() {
                   gbGong.scaleLabel.find("F#") == std::string::npos,
                   "五声标注里的宫音写 Gb，实际 " + gbGong.scaleLabel);
             check(keyFifths(gbGong) == -6, "五声宫音的调号也留在降号侧");
-        }
+
+        // v1.77.0 文本谱小节号（--bar-numbers）：与 HTML 的 .barno 同口径
+        {
+            MidiData nb;
+            nb.division = 480;
+            nb.timeSig.valid = true;
+            nb.trackNames[0] = "Vocal";
+            NoteEvent q;
+            q.track = 0; q.channel = 0; q.pitch = 60; q.durationTicks = 480;
+            for (int i = 0; i < 12; i++) {
+                q.startTicks = i * 480L;
+                nb.notes.push_back(q);
+            }
+            const KeyEstimate nk = estimateKey(nb);
+            const std::string plain = formatJianpu(nb, nk);
+            const std::string num = formatJianpu(nb, nk, true);
+            check(plain.find("[1] ") == std::string::npos,
+                  "默认不标小节号（文本谱零回归）");
+            // 第 1 小节省号（与 HTML 的 .barno 一致：开头不必自证是第 1 小节），
+            // 从第 2 小节起逐行标号，第 3 行就是 [3]。
+            check(num.find("[2] ") != std::string::npos &&
+                  num.find("[3] ") != std::string::npos &&
+                  num.find("[1] ") == std::string::npos,
+                  "从第 2 小节起逐行标号，第 1 小节省号");
+            // 只加前缀，小节线与行边界一个都不能动
+            check(occurrences(num, " |\n") == occurrences(plain, " |\n") &&
+                  occurrences(num, "\n") == occurrences(plain, "\n"),
+                  "小节号只是行首前缀，行数与小节线数不变");
+
+            // 弱起小节不编号：第一行留空，第一个完整小节才是 1
+            MidiData pk = nb;
+            pk.pickupTicks = 480;
+            const std::string pkNum = formatJianpu(pk, estimateKey(pk), true);
+            check(pkNum.find("[1] ") != std::string::npos &&
+                  pkNum.find("[0] ") == std::string::npos,
+                  "弱起小节不编号，第一个完整小节标 [1]");
+        }        }
 
         // 没有 0x59 的文件（靠自动猜调）本来就跟音符走，这里锁住别退回旧路。
         MidiData nokey;

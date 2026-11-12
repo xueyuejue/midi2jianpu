@@ -139,7 +139,10 @@ struct QuantizeReport {
 QuantizeReport quantizeTiming(MidiData& data);
 
 // 把音符列表格式化成文本简谱（含拍号、小节线、时值）
-std::string formatJianpu(const MidiData& data, const KeyEstimate& key);
+// barNumbers：每行开头标出小节号（默认关，纯文本复制出去时不占宽度）。
+// 口径与 HTML 的 .barno 一致：弱起小节不编号，第一个完整小节才是 1。
+std::string formatJianpu(const MidiData& data, const KeyEstimate& key,
+                         bool barNumbers = false);
 
 // MIDI 音号 -> 音名字符串 (60 -> "C4")
 std::string midiNoteName(int pitch);
