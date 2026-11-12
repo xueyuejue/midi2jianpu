@@ -3472,7 +3472,10 @@ def main():
               "%s 缺值明确报错" % opt, (rc, err[:160]))
     # 值被下一个选项顶替：更隐蔽，旧版 rc=0 还把谱写到怪文件里。
     weird = os.path.join(tmp, "--html")
-    p94 = subprocess.run([exe, "--output", "--html", "o.html", mid],
+    # CI 传进来的 exe 是相对路径 build/midi2jianpu，而这里必须换到 tmp 里
+    # 才能检查「有没有生成名为 --html 的文件」；不转绝对路径会 FileNotFoundError。
+    # 本地默认用绝对路径，这个坑只在 CI 上冒出来。
+    p94 = subprocess.run([os.path.abspath(exe), "--output", "--html", "o.html", mid],
                          cwd=tmp, capture_output=True, text=True,
                          encoding="utf-8", errors="replace", timeout=120)
     check(p94.returncode == 1 and "--output 需要一个值" in (p94.stderr or "")
