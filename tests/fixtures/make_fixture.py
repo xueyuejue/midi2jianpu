@@ -2,7 +2,7 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 94 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 97 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
@@ -15,7 +15,7 @@ sysex_gs_drum / sysex_xg_drum / sysex_gs_normal / sysex_gs_reset /
 sysex_gm_reset / sysex_xg_reset / sysex_conductor / sysex_ch9_normal /
 sysex_ch9_drum / sysex_unknown / sysex_port_drum / gate_gap / poly_gap / poly_gate /
 rest_split / rest_midbar / beam_levels / beam_hooks / staff_switch / xml_structure /
-grand_staff_wedge / utf8_marker（另配 3 份 LRC 歌词）。
+grand_staff_wedge / utf8_marker / legacy_gbk / legacy_sjis / legacy_utf8（另配 3 份 LRC 歌词）。
 xml_structure 把三连音 / 和弦 / 多声部 backup / 变拍号 / 跨小节长音
 叠进一份文件，供 check_xml_structure.py 审逐小节逐声部时值守恒。
 staff_switch 是大谱表的换谱表压力样本：同一个声部在四个小节里分别
@@ -121,6 +121,13 @@ BAR = DIV * 4
 MARK_SHORT_CN = "副歌第一段从这里开始进入主歌的过渡段落"
 MARK_LONG_CN = ("超长中文段落名称" * 10)[:50]
 MARK_LONG_ASCII = ("ABCDEFGHIJ" * 10)[:45]
+
+# 老编码素材：GBK / Shift-JIS / UTF-8 三份内容等价，只差文本字节编码。
+# GBK 歌词特意含「水」(CB AE) 与「平」(C6 BD) —— 这两对字节恰好也是
+# 合法的 2 字节 UTF-8，逐条探测会漏，必须整份文件一次判定。
+LEGACY_GBK = ("主旋律 钢琴", "副歌段落", "春江潮水连海平", "gbk")
+LEGACY_SJIS = ("主旋律 ピアノ", "サビ段落", "春の江潮水連海平", "shift_jis")
+LEGACY_UTF8 = ("主旋律 钢琴", "副歌段落", "春江潮水连海平", "utf-8")
 
 
 def vlq(n: int) -> bytes:
@@ -3399,6 +3406,17 @@ def main() -> None:
             f.write(blob)
         print(f"wrote {path} ({len(blob)} bytes)")
 
+    # 旧编码 MIDI：三端都不许出现非法 UTF-8 / U+FFFD
+    for name, spec in (
+        ("legacy_gbk", LEGACY_GBK),
+        ("legacy_sjis", LEGACY_SJIS),
+        ("legacy_utf8", LEGACY_UTF8),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = build_legacy_encoding(spec)
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
 
 def build_utf8_marker() -> bytes:
     """段落名截断必须落在 UTF-8 字符边界上（v1.79.0）。
@@ -3433,6 +3451,32 @@ def build_utf8_marker() -> bytes:
     header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
     return header + t0.render() + t1.render()
 
+
+def build_legacy_encoding(spec) -> bytes:
+    """旧编码 MIDI：轨名 / 段落名 / 歌词全是裸字节，没有编码声明。
+
+    legacy_gbk.mid  : GBK（老中文 MIDI 最常见）
+    legacy_sjis.mid : Shift-JIS（老日文 MIDI）
+    legacy_utf8.mid : 与 legacy_gbk 内容完全相同、只是文本用 UTF-8，
+                      作为「解码后应当逐字节一致」的对照基准。
+    """
+    name, mark, syl, codec = spec
+    enc = lambda text: text.encode(codec)
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+    t1 = Track()
+    t1.add(0, meta(0x03, enc(name)))
+    t1.add(0, meta(0x06, enc(mark)))
+    t1.program(0, 0, 0)
+    pitches = [60, 62, 64, 65, 67, 69, 71, 72]
+    for i in range(8):
+        t1.add(i * DIV, meta(0x05, enc(syl[i % len(syl)])))
+        t1.note(0, pitches[i], 88, i * DIV, DIV - 10)
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + t1.render()
 
 if __name__ == "__main__":
     main()

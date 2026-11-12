@@ -1,6 +1,8 @@
 // notation.cpp - 调性识别与简谱转换实现
 #include "midi2jianpu/notation.hpp"
 
+#include "text_encoding.hpp"
+
 #include <array>
 #include <algorithm>
 #include <cctype>
@@ -2150,8 +2152,11 @@ static std::vector<LyricLine> parseLrcTextImpl(const std::string& lrc,
 static std::string readTextFile(const std::string& path) {
     std::ifstream f(path);
     if (!f.is_open()) return {};
-    return std::string((std::istreambuf_iterator<char>(f)),
-                       std::istreambuf_iterator<char>());
+    const std::string raw((std::istreambuf_iterator<char>(f)),
+                          std::istreambuf_iterator<char>());
+    // 老 LRC 常见 GBK / Shift-JIS；归一后再交给按字节切行的解析器，
+    // 否则中文歌词会以非法 UTF-8 混进 HTML / MusicXML。
+    return textenc::normalize(raw);
 }
 
 std::vector<LyricLine> parseLrcText(const std::string& lrc, const MidiData& data) {

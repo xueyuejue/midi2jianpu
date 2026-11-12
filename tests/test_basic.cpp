@@ -10,6 +10,7 @@
 #include "midi2jianpu/notation.hpp"
 #include "midi2jianpu/musicxml_writer.hpp"
 #include "midi2jianpu/html_writer.hpp"
+#include "../src/text_encoding.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -6654,6 +6655,102 @@ int main() {
         const std::string tj = formatJianpu(trunc, key);
         check(utf8Valid(tj) && tj.find(cn19) == std::string::npos,
               "本身残缺的段落名整字丢弃，输出仍是合法 UTF-8");
+    }
+
+    // ---- v1.80.0：旧编码 MIDI 文本的编码归一 ----
+    // 0x03/0x05/0x06 等文本 meta 是裸字节：老中文 MIDI 用 GBK、老日文用
+    // Shift-JIS。原样输出会让 MusicXML 变成非法 UTF-8，MuseScore 拒绝打开。
+    {
+        using namespace m2j::textenc;
+        const std::string gbkName =
+            "\xD6\xF7\xD0\xFD\xC2\xC9" " " "\xB8\xD6\xC7\xD9";            // 主旋律 钢琴
+        const std::string sjisName =
+            "\x8E\xE5\x90\xF9\x97\xA5" " " "\x83\x73\x83\x41\x83\x6D";    // 主旋律 ピアノ
+        const std::string utf8Name = "主旋律 钢琴";
+        const std::string utf8SjisName = "主旋律 ピアノ";
+
+        // 严格 UTF-8 校验：过长编码 / 代理区 / 越界 / 截断 / 孤立续字节都要挡住
+        check(isValidUtf8(""), "空串是合法 UTF-8");
+        check(isValidUtf8("Piano Track"), "纯 ASCII 是合法 UTF-8");
+        check(isValidUtf8(utf8Name), "三字节中文是合法 UTF-8");
+        check(isValidUtf8("\xF0\x9F\x98\x80"), "四字节 emoji 是合法 UTF-8");
+        check(!isValidUtf8("\xC0\xAF"), "过长编码 C0 AF 判为非法");
+        check(!isValidUtf8("\xED\xA0\x80"), "UTF-16 代理区判为非法");
+        check(!isValidUtf8("\xF4\x90\x80\x80"), "超过 U+10FFFF 判为非法");
+        check(!isValidUtf8("\xE4\xB8"), "末尾只写了一半的序列判为非法");
+        check(!isValidUtf8("\x80"), "孤立续字节判为非法");
+
+        // 探测：合法 UTF-8 一个字节都不许动
+        check(detect("Piano Track") == Encoding::Utf8, "ASCII 判为 UTF-8（不进转码分支）");
+        check(detect(utf8Name) == Encoding::Utf8, "UTF-8 中文判为 UTF-8");
+        check(detect(gbkName) == Encoding::Gb2312, "GBK 中文判为 GB2312");
+        check(detect(sjisName) == Encoding::ShiftJis, "Shift-JIS 假名判为 Shift-JIS");
+        check(detect("it\x92s") == Encoding::Fold, "Windows-1252 弯引号判为折叠兜底");
+        check(normalize(utf8Name) == utf8Name, "合法 UTF-8 归一化后逐字节不变");
+
+        // 解码结果
+        check(normalize(gbkName) == utf8Name, "GBK 轨名解成 UTF-8 中文");
+        check(normalize(sjisName) == utf8SjisName, "Shift-JIS 假名解成 UTF-8 假名");
+        check(normalize("it\x92s") == "it\xE2\x80\x99s", "0x92 折叠成 U+2019 右单引号");
+        check(normalize("caf\xE9") == "caf\xC3\xA9", "Latin-1 的 café 折叠成 UTF-8 café");
+        check(foldByte(0x80) == 0x20ACu, "CP1252 0x80 -> 欧元符号 U+20AC");
+        check(foldByte(0x92) == 0x2019u, "CP1252 0x92 -> U+2019");
+
+        // 映射表本身：GB2312「啊」= B0A1，JIS「あ」= 0x82A0 -> 4 区 2 点
+        check(cellAt(kGb2312Hex, 0xB0 - 0xA0, 0xA1 - 0xA0) == 0x554Au,
+              "GB2312 表 B0A1 = 啊 U+554A");
+        int row = 0, col = 0;
+        check(sjisToJis(0x82, 0xA0, row, col) && row == 4 && col == 2,
+              "Shift-JIS 0x82A0 落在 JIS 4 区 2 点");
+        check(cellAt(kJis0208Hex, 4, 2) == 0x3042u, "JIS 表 4/2 = あ U+3042");
+
+        // 陷阱：GBK「水」= CB AE 恰好也是合法的 2 字节 UTF-8（U+02EE），
+        // 「平」= C6 BD 同理。单看一条永远判不出来，只能靠整份文件一次判定。
+        const std::string gbkWater = "\xCB\xAE";
+        const std::string utf8Water = "水";
+        check(isValidUtf8(gbkWater), "GBK「水」的字节对碰巧是合法 UTF-8（陷阱成立）");
+        check(normalize(gbkWater) != utf8Water, "单独一条无法分辨，正是文件级判定的理由");
+        check(decode(gbkWater, Encoding::Gb2312) == utf8Water,
+              "显式按 GB2312 解 CB AE 得到「水」");
+
+        // 端到端：同一份 SMF，文本分别用 GBK 与 UTF-8 写，解析结果必须一致
+        auto metaEv = [](uint8_t type, const std::string& s) {
+            std::vector<uint8_t> v = {0xFFu, type};
+            putVlq(v, (uint32_t)s.size());
+            v.insert(v.end(), s.begin(), s.end());
+            return v;
+        };
+        auto legacySmf = [&](const std::string& name, const std::string& mark,
+                             const std::string& lyric) {
+            SmfTrack t0, t1;
+            t0.at(0, ev({0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20}));
+            t0.at(0, ev({0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08}));
+            t1.at(0, metaEv(0x03, name));
+            t1.at(0, metaEv(0x06, mark));
+            t1.at(0, metaEv(0x05, lyric));   // 歌词就用「水」，压上面的陷阱
+            t1.at(0, ev({0x90, 60, 88}));
+            t1.at(470, ev({0x80, 60, 0x40}));
+            return buildSmf(2, 480, {t0, t1});
+        };
+        const auto gbkBytes = legacySmf(gbkName, "\xB8\xB1\xB8\xE8\xB6\xCE\xC2\xE4",
+                                        gbkWater);   // 副歌段落
+        const auto utf8Bytes = legacySmf(utf8Name, "副歌段落", utf8Water);
+        MidiData dg, du;
+        const bool okG = loadMidiFromMemory(gbkBytes.data(), gbkBytes.size(), dg);
+        const bool okU = loadMidiFromMemory(utf8Bytes.data(), utf8Bytes.size(), du);
+        check(okG && okU, "GBK / UTF-8 两份内存 SMF 都能解析");
+        check(dg.trackNames[1] == utf8Name, "解析层把 GBK 轨名归一成 UTF-8");
+        check(dg.markers.size() == 1 && dg.markers[0].text == "副歌段落",
+              "解析层把 GBK 段落名归一成 UTF-8");
+        check(dg.midiLyrics.size() == 1 && dg.midiLyrics[0].text == utf8Water,
+              "碰巧合法 UTF-8 的 GBK「水」也按文件级判定解对");
+        check(okG && okU && dg.markers.size() == du.markers.size() &&
+              dg.midiLyrics.size() == du.midiLyrics.size() &&
+              !dg.markers.empty() && !dg.midiLyrics.empty() &&
+              dg.trackNames[1] == du.trackNames[1] &&
+              dg.markers[0].text == du.markers[0].text &&
+              dg.midiLyrics[0].text == du.midiLyrics[0].text,
+              "GBK 与 UTF-8 两份同源 SMF 解析出的文本完全一致");
     }
 
     std::cout << "\n------------------------------------------------\n";

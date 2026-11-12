@@ -151,6 +151,16 @@ def self_test():
     ck(section_names(h) == ["前奏", "副歌"], "段落名提取: %r" % section_names(h))
     ck(section_names("<span class='chord'>C</span>") == [], "无段落名时为空")
 
+
+    # v1.80.0：源头就是旧编码时，裸字节同样绝不能流到三端。
+    # 这条闸门只看产物，所以它同时守住「工具切坏」与「文件本来就不是 UTF-8」。
+    ck(invalid_utf8("副歌段落".encode("gbk")) is not None,
+       "GBK 裸字节必须判为非法")
+    ck(invalid_utf8("サビ段落".encode("shift_jis")) is not None,
+       "Shift-JIS 裸字节必须判为非法")
+    ck(invalid_utf8(b"it\x92s Piano") is not None,
+       "Windows-1252 弯引号字节必须判为非法（折叠前）")
+
     print("check_utf8 self-test: %d 项，%d 失败" % (n, len(failed)))
     for f in failed:
         print("  [FAIL]", f)

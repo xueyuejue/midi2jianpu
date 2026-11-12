@@ -3339,6 +3339,115 @@ def main():
     except ET.ParseError as e:
         check(False, "MusicXML 能被严格解析", str(e))
 
+    group("[93] v1.80.0 旧编码 MIDI：GBK / Shift-JIS 不再让 MusicXML 变成非法 UTF-8")
+    # SMF 的文本 meta 是裸字节且没有编码声明。老中文 MIDI 用 GBK、老日文用
+    # Shift-JIS、欧美用 CP1252；旧版原样输出，XML 解析器在第一个非法字节就
+    # 报错，MuseScore 拒绝打开整份谱。三份素材内容同源，只差文本编码。
+    import xml.etree.ElementTree as ET
+
+    def _vlq2(n):
+        out = bytearray([n & 0x7F]); n >>= 7
+        while n:
+            out.append((n & 0x7F) | 0x80); n >>= 7
+        return bytes(reversed(out))
+
+    def _meta(kind, raw):
+        return b"\xFF" + bytes([kind]) + _vlq2(len(raw)) + raw
+
+    def _smf_with_name(name_bytes):
+        evs = [(0, _meta(0x03, name_bytes)), (0, b"\xC0\x00"),
+               (0, b"\x90\x3C\x50"), (470, b"\x80\x3C\x40")]
+        body = bytearray(); last = 0
+        for tick, raw in evs:
+            body += _vlq2(tick - last) + raw
+            last = tick
+        body += _vlq2(0) + _meta(0x2F, b"")
+        return (b"MThd" + struct.pack(">IHHH", 6, 0, 1, 480) +
+                b"MTrk" + struct.pack(">I", len(body)) + bytes(body))
+
+    legacy = {}
+    for stem in ("legacy_gbk", "legacy_sjis", "legacy_utf8"):
+        mid = os.path.join(FIXTURES, stem + ".mid")
+        for ext, flag in (("txt", "--output"), ("html", "--html"),
+                          ("xml", "--musicxml")):
+            p = os.path.join(tmp, stem + "." + ext)
+            rc, _, err = run(exe, mid, flag, p)
+            legacy[(stem, ext)] = p
+            check(rc == 0, f"{stem} 导出 {ext} 成功", err[-160:])
+
+    for stem in ("legacy_gbk", "legacy_sjis", "legacy_utf8"):
+        for ext in ("txt", "html", "xml"):
+            p = legacy[(stem, ext)]
+            blob = open(p, "rb").read() if os.path.exists(p) else b""
+            why = ""
+            try:
+                blob.decode("utf-8")
+            except UnicodeDecodeError as e:
+                why = "%s @%d" % (e.reason, e.start)
+            check(bool(blob) and not why, f"{stem}.{ext} 是合法 UTF-8", why)
+            check("\ufffd" not in blob.decode("utf-8", "replace"),
+                  f"{stem}.{ext} 没有替换字符 U+FFFD")
+        try:
+            ET.parse(legacy[(stem, "xml")])
+            check(True, f"{stem} 的 MusicXML 能被严格解析")
+        except Exception as e:
+            check(False, f"{stem} 的 MusicXML 能被严格解析", str(e))
+
+    def _rd(key):
+        return open(legacy[key], "rb").read()
+
+    gx = _rd(("legacy_gbk", "xml")).decode("utf-8", "replace")
+    sx = _rd(("legacy_sjis", "xml")).decode("utf-8", "replace")
+    g_lyric = "".join(re.findall(r"<text>([^<]*)</text>", gx))
+    s_lyric = "".join(re.findall(r"<text>([^<]*)</text>", sx))
+    check("副歌段落" in gx and "主旋律 钢琴" in gx,
+          "GBK 轨名与段落名都解成中文", gx[:160])
+    # 「水」= CB AE、「平」= C6 BD 恰好也是合法的 2 字节 UTF-8：逐条探测
+    # 会把它们当 U+02EE / U+01BD，只有整份文件一次判定才能解对。
+    check(g_lyric == "春江潮水连海平春",
+          "GBK 歌词逐字解码，含 CB AE「水」这个陷阱字", g_lyric)
+    check("サビ段落" in sx and "ピアノ" in sx and "の" in s_lyric,
+          "Shift-JIS 段落名 / 假名轨名 / 平假名歌词都解成日文", s_lyric)
+    check(_rd(("legacy_gbk", "txt")) == _rd(("legacy_utf8", "txt")) and
+          _rd(("legacy_gbk", "xml")) == _rd(("legacy_utf8", "xml")),
+          "GBK 与同源 UTF-8 素材的文本谱 / MusicXML 逐字节一致")
+    _gh = _rd(("legacy_gbk", "html")).decode("utf-8", "replace")
+    _uh = _rd(("legacy_utf8", "html")).decode("utf-8", "replace")
+    _norm = lambda s: s.replace("legacy_gbk", "X").replace("legacy_utf8", "X")
+    check(_gh and _norm(_gh) == _norm(_uh),
+          "HTML 除标题里的文件名外也逐字节一致")
+
+    # 外部 --lyrics 走同一条归一化：老 LRC 常见 GBK
+    lrc_text = "[00:00.00]春江潮水连海平\n[00:02.00]海上明月共潮生\n"
+    for enc, tag in (("gbk", "gbklrc"), ("utf-8", "utf8lrc")):
+        with open(os.path.join(tmp, tag + ".lrc"), "wb") as f:
+            f.write(lrc_text.encode(enc))
+    lx = {}
+    for tag in ("gbklrc", "utf8lrc"):
+        p = os.path.join(tmp, tag + ".xml")
+        rc, _, err = run(exe, os.path.join(FIXTURES, "sample.mid"),
+                         "--lyrics", os.path.join(tmp, tag + ".lrc"),
+                         "--musicxml", p)
+        check(rc == 0, f"{tag} 导出带外部歌词的 MusicXML 成功", err[-160:])
+        lx[tag] = open(p, "rb").read() if os.path.exists(p) else b""
+    check(bool(lx["gbklrc"]) and lx["gbklrc"] == lx["utf8lrc"],
+          "GBK LRC 与 UTF-8 LRC 产出的 MusicXML 逐字节一致")
+
+    # 第三分支：CP1252 / Latin-1 短串不猜 CJK，逐字节保真折叠
+    cp_mid = os.path.join(tmp, "cp1252.mid")
+    with open(cp_mid, "wb") as f:
+        f.write(_smf_with_name(b"it\x92s Piano"))
+    cp_xml = os.path.join(tmp, "cp1252.xml")
+    rc, _, err = run(exe, cp_mid, "--musicxml", cp_xml)
+    cp_blob = open(cp_xml, "rb").read() if os.path.exists(cp_xml) else b""
+    cp_ok = True
+    try:
+        cp_blob.decode("utf-8")
+    except UnicodeDecodeError:
+        cp_ok = False
+    check(rc == 0 and cp_ok and "\u2019" in cp_blob.decode("utf-8", "replace"),
+          "Windows-1252 弯引号折叠成 U+2019（没有被误猜成 CJK 汉字）", err[-160:])
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

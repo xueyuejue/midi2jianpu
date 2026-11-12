@@ -1971,6 +1971,33 @@ if (existsSync(gswPath)) {
     JSON.stringify(wstaffs));
 }
 
+// ---- 59. v1.80.0 旧编码 MIDI：WASM 与 CLI 走同一条 UTF-8 归一 ----
+// 文本 meta 是裸字节。网页端把 .mid 读成 Uint8Array 直接喂进 WASM，若解析层
+// 不归一，UTF8ToString 会把 GBK / Shift-JIS 字节变成 U+FFFD；MusicXML 更是
+// 整份打不开。三份素材同源，GBK 版与 UTF-8 版的 MusicXML 必须逐字节一致。
+const lgPath = path.join(FIXTURES, 'legacy_gbk.mid');
+const luPath = path.join(FIXTURES, 'legacy_utf8.mid');
+const lsPath = path.join(FIXTURES, 'legacy_sjis.mid');
+if (existsSync(lgPath) && existsSync(luPath) && existsSync(lsPath)) {
+  mod._midi2jianpu_set_track(-1);
+  const lc = makeCaller(mod);
+  lc.setLyrics('');
+  lc.setMidi(new Uint8Array(readFileSync(lgPath)));
+  const lcgXml = lc.call('midi2jianpu_musicxml', -1, 1) || '';
+  const lcgHtml = lc.call('midi2jianpu_html', -1, 1) || '';
+  lc.setMidi(new Uint8Array(readFileSync(luPath)));
+  const lcuXml = lc.call('midi2jianpu_musicxml', -1, 1) || '';
+  lc.setMidi(new Uint8Array(readFileSync(lsPath)));
+  const lcsXml = lc.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(lcgXml === lcuXml && lcgXml.includes('副歌段落'),
+    'WASM 把 GBK 文本 meta 归一后，与 UTF-8 对照素材的 MusicXML 逐字节一致');
+  check(lcgHtml.includes('主旋律 钢琴') && !lcgHtml.includes('\uFFFD'),
+    'WASM HTML 的中文轨名正常，没有替换字符');
+  check(lcsXml.includes('サビ段落') && lcsXml.includes('の') &&
+    !lcsXml.includes('\uFFFD'),
+    'WASM 也能解 Shift-JIS 的假名段落名与歌词');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

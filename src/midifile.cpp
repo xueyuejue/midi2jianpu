@@ -1,6 +1,9 @@
 // midifile.cpp - SMF 二进制解析实现
 #include "midi2jianpu/midifile.hpp"
 
+// 文本 meta 是裸字节：统一在这里归一成合法 UTF-8，三端下游只认 UTF-8。
+#include "text_encoding.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -1247,6 +1250,26 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
         // 位置收尾。
         while (!active.empty()) flushNote(active.begin()->first, absTick);
         trackIdx++;
+    }
+
+    // ---- 文本 meta 编码归一（必须做「整份文件」一次判定）----
+    // 逐条探测会漏：GBK「水」= CB AE 恰好也是合法 2 字节 UTF-8(U+02EE)，
+    // 「平」= C6 BD 同理。单看一条分不出来，但整份文件里总会有 D6/B4 这类
+    // 不可能当 UTF-8 起始的字节。所以先把全部文本拼起来判一次编码，再统一
+    // 解码；判成 Utf8 时一个字节都不碰（既有素材逐字节零回归）。
+    {
+        std::string joined;
+        for (const auto& kv : out.trackNames) { joined += kv.second; joined += ' '; }
+        for (const auto& e : out.midiLyrics) { joined += e.text;   joined += ' '; }
+        for (const auto& e : out.markers)    { joined += e.text;    joined += ' '; }
+        for (const auto& e : out.textEvents) { joined += e.text;    joined += ' '; }
+        const textenc::Encoding enc = textenc::detect(joined);
+        if (enc != textenc::Encoding::Utf8) {
+            for (auto& kv : out.trackNames) kv.second = textenc::decode(kv.second, enc);
+            for (auto& e : out.midiLyrics)  e.text    = textenc::decode(e.text, enc);
+            for (auto& e : out.markers)     e.text    = textenc::decode(e.text, enc);
+            for (auto& e : out.textEvents)  e.text    = textenc::decode(e.text, enc);
+        }
     }
 
     std::sort(out.notes.begin(), out.notes.end(),

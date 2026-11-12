@@ -16,7 +16,9 @@ import os
 
 # 与其在 8 个脚本里各写一份，不如集中一处；加新素材时只改这一行。
 NEW_FIXTURES = {
-    "utf8_marker.mid",     # v1.79.0：段落名按 UTF-8 字符边界截断
+    "legacy_gbk.mid",      # v1.80.0：GBK 裸字节文本 meta
+    "legacy_sjis.mid",     # v1.80.0：Shift-JIS 裸字节文本 meta
+    "legacy_utf8.mid",     # v1.80.0：GBK 的 UTF-8 对照基准
 }
 
 
