@@ -36,6 +36,7 @@ FIX = os.path.join(ROOT, "tests", "fixtures")
 # check_xml_staff.py 单独守护，这里的跨版本逐字节比对先把它摘掉。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from xml_norm import strip_direction_staff, strip_print_block
+import regress_skip
 
 # 与 src/html_writer.cpp::kExactRestSteps 同源：units = 拍数 * 16。
 # 只包含 durStyleOf() 能精确还原的档位，否则拆出来的列又会被取最近档。
@@ -284,8 +285,13 @@ def structural_regress(old_exe, new_exe):
     approx_before = 0
     approx_after = 0
     with tempfile.TemporaryDirectory() as td:
+        line = regress_skip.note()
+        if line:
+            print(line)
         for mid in fixtures():
             stem = os.path.splitext(os.path.basename(mid))[0]
+            if regress_skip.skip(mid):
+                continue        # 本轮新增素材：旧版没有它，不算回归
             a = render(old_exe, mid, td, "old")
             b = render(new_exe, mid, td, "new")
             for ext in ("txt", "xml"):

@@ -33,6 +33,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from xml_norm import strip_direction_staff  # noqa: E402
+import regress_skip  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIX = os.path.join(ROOT, "tests", "fixtures")
@@ -258,8 +259,13 @@ def structural_regress(old_exe, new_exe):
     errors, notes, changed = [], [], 0
     delta = 0
     with tempfile.TemporaryDirectory() as td:
+        line = regress_skip.note()
+        if line:
+            print(line)
         for mid in fixtures():
             name = os.path.basename(mid)
+            if regress_skip.skip(mid):
+                continue        # 本轮新增素材：旧版没有它，不算回归
             old_xml = run_xml(old_exe, mid, td, "old")
             new_xml = run_xml(new_exe, mid, td, "new")
             if old_xml is None or new_xml is None:

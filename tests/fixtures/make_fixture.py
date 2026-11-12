@@ -2,7 +2,7 @@
 """生成 midi2jianpu 的回归测试素材（标准 MIDI 文件，format 1）。
 
 不依赖任何第三方库，只输出很小的 .mid 和 .lrc，便于在 CI / 新机器上
-随时重建素材、复现问题。共生成 93 份 .mid 素材：sample / humanized / drums /
+随时重建素材、复现问题。共生成 94 份 .mid 素材：sample / humanized / drums /
 melisma / harmony / pickup / karaoke / meter / modulation / pentatonic /
 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony /
 smpte / format2 / aftertouch / retrigger / dangling / twolyrics /
@@ -15,7 +15,7 @@ sysex_gs_drum / sysex_xg_drum / sysex_gs_normal / sysex_gs_reset /
 sysex_gm_reset / sysex_xg_reset / sysex_conductor / sysex_ch9_normal /
 sysex_ch9_drum / sysex_unknown / sysex_port_drum / gate_gap / poly_gap / poly_gate /
 rest_split / rest_midbar / beam_levels / beam_hooks / staff_switch / xml_structure /
-grand_staff_wedge（另配 3 份 LRC 歌词）。
+grand_staff_wedge / utf8_marker（另配 3 份 LRC 歌词）。
 xml_structure 把三连音 / 和弦 / 多声部 backup / 变拍号 / 跨小节长音
 叠进一份文件，供 check_xml_structure.py 审逐小节逐声部时值守恒。
 staff_switch 是大谱表的换谱表压力样本：同一个声部在四个小节里分别
@@ -115,6 +115,12 @@ import sys
 
 DIV = 480
 BAR = DIV * 4
+
+# utf8_marker 用到的三个段落名：19 汉字（57B）/ 50 汉字（150B）/ 45 ASCII。
+# 单测与冒烟都按这个口径断言「40 个字符，不是 40 字节」。
+MARK_SHORT_CN = "副歌第一段从这里开始进入主歌的过渡段落"
+MARK_LONG_CN = ("超长中文段落名称" * 10)[:50]
+MARK_LONG_ASCII = ("ABCDEFGHIJ" * 10)[:45]
 
 
 def vlq(n: int) -> bytes:
@@ -3382,6 +3388,50 @@ def main() -> None:
             blob = builder()
             f.write(blob)
         print(f"wrote {path} ({len(blob)} bytes)")
+
+    # 段落名截断落在 UTF-8 字符边界上：三端都不许出现非法字节
+    for name, builder in (
+        ("utf8_marker", build_utf8_marker),
+    ):
+        path = os.path.join(here, name + ".mid")
+        with open(path, "wb") as f:
+            blob = builder()
+            f.write(blob)
+        print(f"wrote {path} ({len(blob)} bytes)")
+
+
+def build_utf8_marker() -> bytes:
+    """段落名截断必须落在 UTF-8 字符边界上（v1.79.0）。
+
+    三个 0x06 marker 放在 4/4 的 6 小节里（division=480，第 1/3/5 小节开头）：
+        第 1 小节  19 个汉字  57 字节 —— 旧版按字节切 40，只剩 13 个字 + 半个字
+        第 3 小节  50 个汉字 150 字节 —— 截到 40 个字符（不是 40 字节）
+        第 5 小节  45 个 ASCII 字符   —— 截到 40 个字符，与旧版一致
+
+    旧写法 `text.substr(0, 40)` 是**按字节**下刀，40 不是 3 的倍数，最后一个汉字
+    被劈成半截，剩下的孤立续字节（0x80..0xBF）让整份 HTML / MusicXML 变成非法
+    UTF-8。XML 更致命：解析器在第一个非法字节就报错，MuseScore 会拒绝打开整份
+    谱面，而不是只丢一个段落名。三份输出（文本谱 / HTML / MusicXML）都必须能
+    严格 UTF-8 解码，且第 1 小节那个 19 字段落名必须**一个字都不少**。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 500000us -> 120 BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Melody"))
+    t1.program(0, 0, 0)
+    t1.add(0, meta(0x06, MARK_SHORT_CN.encode("utf-8")))
+    t1.add(4 * DIV, meta(0x06, MARK_LONG_CN.encode("utf-8")))
+    t1.add(8 * DIV, meta(0x06, MARK_LONG_ASCII.encode("utf-8")))
+    # 24 个四分音符铺满 6 小节，末音收在小节线上（不会被误判成弱起）
+    for i in range(24):
+        t1.note(0, [60, 62, 64, 65, 67, 69][i % 6], 88, i * 480, 480)
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+    return header + t0.render() + t1.render()
 
 
 if __name__ == "__main__":

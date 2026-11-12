@@ -2832,7 +2832,7 @@ def main():
           out2[-200:])
     rc3, out3, _ = run(sys.executable, audit)
     check(rc3 == 0 and "0 处不一致" in out3,
-          "全部 93 份素材的 MusicXML 时值一致性校验通过", out3[-200:])
+          "全部 94 份素材的 MusicXML 时值一致性校验通过", out3[-200:])
 
     group("[80] v1.59.0 小节中间休止符精确拆段：文本谱拍数守恒")
     # rest_midbar.mid 把 1.75 / 1.25 拍两段非标准间隙夹在小节中间，后面
@@ -2873,7 +2873,7 @@ def main():
           out2[-200:])
     rc3, out3, _ = run(sys.executable, audit)
     check(rc3 == 0 and "0 处不守恒" in out3,
-          "全部 93 份素材的文本谱拍数守恒", out3[-200:])
+          "全部 94 份素材的文本谱拍数守恒", out3[-200:])
 
     group("[81] v1.60.0 HTML 谱面附点标记：文本谱 / MusicXML / HTML 三端一致")
     # DurStyle::dotted 与 CSS 的 .dotted .num::after 一直都在，noteColumn()
@@ -2915,7 +2915,7 @@ def main():
           out2[-200:])
     rc3, out3, _ = run(sys.executable, audit2)
     check(rc3 == 0 and "0 项问题" in out3,
-          "全部 93 份素材的 HTML 附点一致性通过", out3[-200:])
+          "全部 94 份素材的 HTML 附点一致性通过", out3[-200:])
 
     group("[82] v1.61.0 HTML 休止符精确拆列：三端拍数一致")
     # 文本谱 v1.59.0 与 MusicXML v1.58.0 都已把不规则间隙精确拆段，
@@ -2960,7 +2960,7 @@ def main():
           "HTML 休止符校验自测通过", out4[-200:])
     rc5, out5, _ = run(sys.executable, audit3)
     check(rc5 == 0 and "0 项问题" in out5,
-          "全部 93 份素材的 HTML 休止符精确性通过", out5[-200:])
+          "全部 94 份素材的 HTML 休止符精确性通过", out5[-200:])
 
     group("[83] v1.70.0 大谱表跨谱表楔形：crescendo 起止落同一谱表")
     # 旧实现每条 <direction> 的 <staff> 各自按拍位取：渐强起点在上行谱、
@@ -3288,6 +3288,56 @@ def main():
           [(c, round(_lum(c))) for c in cols])
     check(".barno{font-size:10px;color:#c9c9c9" in ph,
           "屏幕上的小节号配色保持不变（只改打印档位）")
+
+    group("[92] v1.79.0 段落名截断落在 UTF-8 字符边界（三端都不许有非法字节）")
+    # utf8_marker.mid 里有三个 0x06 段落名：19 字中文（57B）、50 字中文（150B）、
+    # 45 个 ASCII。旧版按字节 substr(0, 40) 切，40 不是 3 的倍数，最后一个汉字
+    # 被劈成半截——孤立的续字节让文本谱 / HTML / MusicXML 全是非法 UTF-8，
+    # MuseScore 拿到 XML 直接拒绝打开整份谱。
+    import xml.etree.ElementTree as ET
+
+    um = os.path.join(FIXTURES, "utf8_marker.mid")
+    cn19 = "副歌第一段从这里开始进入主歌的过渡段落"
+    cn40 = "超长中文段落名称" * 5                      # 40 字 = 120 字节
+    cn50 = cn40 + ("超长中文段落名称" * 5)[:10]        # 50 字，与素材一致
+    cn41 = cn50[:41]
+    ascii40 = "ABCDEFGHIJ" * 4
+    ascii45 = ascii40 + "ABCDE"
+    check(len(cn19.encode("utf-8")) == 57 and len(cn50) == 50 and
+          len(ascii45) == 45, "素材口径：19 字 / 50 字 / 45 个 ASCII")
+
+    ut = os.path.join(tmp, "utf8.txt")
+    uh = os.path.join(tmp, "utf8.html")
+    ux = os.path.join(tmp, "utf8.xml")
+    check(run(exe, um, "--output", ut)[0] == 0, "导出文本谱")
+    check(run(exe, um, "--html", uh)[0] == 0, "导出 HTML")
+    check(run(exe, um, "--musicxml", ux)[0] == 0, "导出 MusicXML")
+    for path, tag in ((ut, "文本谱"), (uh, "HTML"), (ux, "MusicXML")):
+        blob = open(path, "rb").read()
+        why = ""
+        try:
+            blob.decode("utf-8")
+        except UnicodeDecodeError as e:
+            why = "%s @%d" % (e.reason, e.start)
+        check(not why, f"{tag} 是合法 UTF-8", why)
+        check("\ufffd" not in blob.decode("utf-8", "replace"),
+              f"{tag} 里没有替换字符 U+FFFD", path)
+
+    # 用 errors="replace" 读：旧版这里本来就是非法字节，严格解码会在中途抛
+    # UnicodeDecodeError，把后面几条断言全带走，失败清单反而不完整。
+    jp = open(ut, encoding="utf-8", errors="replace").read()
+    xm = open(ux, encoding="utf-8", errors="replace").read()
+    check(cn19 in jp and cn19 in xm,
+          "19 字中文段落名一个字都不少（旧版只剩 13 字 + 半个字）")
+    check(cn40 in jp and cn41 not in jp,
+          "50 字中文名截到 40 个字符，不是 40 字节")
+    check(ascii40 in jp and ascii45 not in jp,
+          "45 个 ASCII 字符同样截到 40 个字符")
+    try:
+        ET.parse(ux)
+        check(True, "MusicXML 能被严格解析")
+    except ET.ParseError as e:
+        check(False, "MusicXML 能被严格解析", str(e))
 
     print("\n" + "-" * 48)
     if failures:

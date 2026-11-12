@@ -6548,6 +6548,114 @@ int main() {
               "不再跨谱表断裂（旧实现 stop 落 staff 2）");
     }
 
+    // -------------------------------------------------------------------
+    // 段落名截断必须落在 UTF-8 字符边界上（v1.79.0）
+    // 旧实现 text.substr(0, 40) 是**按字节**下刀：一个汉字 3 字节，40 不是 3 的
+    // 倍数，最后一个字被劈成半截，剩下的孤立续字节（0x80..0xBF）让三端全是
+    // 非法 UTF-8。MusicXML 更致命——解析器在第一个非法字节就报错，MuseScore
+    // 会拒绝打开整份谱，而不是只丢一个段落名。
+    // 新口径：上限 40 个字符（码点），截断点回退到序列首字节，半个字整个丢掉。
+    // -------------------------------------------------------------------
+    {
+        // 严格 UTF-8 校验：首字节声明的长度必须整段都在，续字节必须是 10xxxxxx。
+        auto utf8Valid = [](const std::string& s) {
+            size_t i = 0;
+            while (i < s.size()) {
+                const unsigned char c = (unsigned char)s[i];
+                size_t len = 0;
+                if (c < 0x80) { i++; continue; }
+                else if ((c & 0xE0) == 0xC0) len = 2;
+                else if ((c & 0xF0) == 0xE0) len = 3;
+                else if ((c & 0xF8) == 0xF0) len = 4;
+                else return false;            // 孤立续字节 / 非法首字节
+                if (i + len > s.size()) return false;
+                for (size_t k = 1; k < len; k++)
+                    if (((unsigned char)s[i + k] & 0xC0) != 0x80) return false;
+                i += len;
+            }
+            return true;
+        };
+        auto utf8Prefix = [](const std::string& s, size_t maxChars) {
+            size_t i = 0, c = 0;
+            while (i < s.size() && c < maxChars) {
+                const unsigned char b = (unsigned char)s[i];
+                size_t len = 1;
+                if ((b & 0xE0) == 0xC0) len = 2;
+                else if ((b & 0xF0) == 0xE0) len = 3;
+                else if ((b & 0xF8) == 0xF0) len = 4;
+                if (i + len > s.size()) break;
+                i += len;
+                c++;
+            }
+            return s.substr(0, i);
+        };
+
+        const std::string cn19 = "副歌第一段从这里开始进入主歌的过渡段落";  // 19 字 / 57 字节
+        std::string cn50;
+        while (cn50.size() < 150) cn50 += "超长中文段落名称";   // 8 字一轮，停在 56 字
+        const std::string ascii45 = "ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDE";
+
+        check(cn19.size() == 57 && cn50.size() > 150 && ascii45.size() == 45,
+              "素材字节长度符合预期（19 字 = 57B，长名 > 150B）");
+
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.tempoChanges.push_back({0, 120.0});
+        d.trackNames[0] = "Melody";
+        d.markers.push_back({0, cn19});
+        d.markers.push_back({1920, cn50});
+        d.markers.push_back({3840, ascii45});
+        NoteEvent n;
+        n.track = 0; n.channel = 0; n.velocity = 88;
+        n.startSeconds = 0; n.durationSeconds = 0.5;
+        n.durationTicks = 480;
+        for (int i = 0; i < 24; i++) {
+            n.pitch = 60 + (i % 6);
+            n.startTicks = i * 480;
+            d.notes.push_back(n);
+        }
+        const KeyEstimate key{0, true};
+        const std::string jp = formatJianpu(d, key);
+        const std::string htm = renderHtml(d, key, "t");
+        const std::string xml = renderMusicXml(d, key);
+
+        check(jp.find(cn19) != std::string::npos,
+              "19 字中文段落名一个字都不少（旧版只剩 13 字 + 半个字）");
+        check(htm.find("<span class='section'>" + cn19 + "</span>") != std::string::npos,
+              "HTML 里的中文段落名同样完整");
+        check(xml.find("<words>" + cn19 + "</words>") != std::string::npos,
+              "MusicXML 的 <words> 同样完整");
+
+        const std::string cn40 = utf8Prefix(cn50, 40);
+        const std::string cn41 = utf8Prefix(cn50, 41);
+        check(cn40.size() == 120 && cn41.size() == 123,
+              "40 个汉字 = 120 字节，第 41 个字的起点在 120");
+        check(jp.find(cn40) != std::string::npos &&
+              jp.find(cn41) == std::string::npos,
+              "超长中文段落名截到 40 个字符（不是 40 字节）");
+        check(jp.find(ascii45) == std::string::npos &&
+              jp.find(ascii45.substr(0, 40)) != std::string::npos,
+              "45 个 ASCII 字符同样截到 40 个字符，与旧版一致");
+
+        check(utf8Valid(jp), "文本谱输出是合法 UTF-8");
+        check(utf8Valid(htm), "HTML 输出是合法 UTF-8");
+        check(utf8Valid(xml), "MusicXML 输出是合法 UTF-8");
+        check(jp.find("\xEF\xBF\xBD") == std::string::npos,
+              "没有把非法字节悄悄替换成 U+FFFD（那是另一种隐瞒）");
+
+        // 直接喂一个被上游截过的残片：整个残字丢掉，不留下半截序列
+        MidiData trunc;
+        trunc.division = 480;
+        trunc.timeSig.valid = true;
+        trunc.trackNames[0] = "Melody";
+        trunc.markers.push_back({0, cn19.substr(0, cn19.size() - 1)});
+        trunc.notes.push_back(n);
+        const std::string tj = formatJianpu(trunc, key);
+        check(utf8Valid(tj) && tj.find(cn19) == std::string::npos,
+              "本身残缺的段落名整字丢弃，输出仍是合法 UTF-8");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

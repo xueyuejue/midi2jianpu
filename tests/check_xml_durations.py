@@ -31,6 +31,7 @@ FIX = os.path.join(ROOT, "tests", "fixtures")
 # check_xml_staff.py 单独守护，这里的跨版本逐字节比对先把它摘掉。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from xml_norm import strip_direction_staff
+import regress_skip
 
 TYPE_BEATS = {
     "whole": 4.0, "half": 2.0, "quarter": 1.0, "eighth": 0.5,
@@ -139,8 +140,13 @@ def structural_regress(old_exe):
     errors = []
     notes = []
     with tempfile.TemporaryDirectory() as td:
+        line = regress_skip.note()
+        if line:
+            print(line)
         for p in sorted(glob.glob(os.path.join(FIX, "*.mid"))):
             name = os.path.basename(p)
+            if regress_skip.skip(p):
+                continue        # 本轮新增素材：旧版没有它，不算回归
             new_txt, new_html, new_xml = render_all(new_exe, p, td, "new")
             old_txt, old_html, old_xml = render_all(old_exe, p, td, "old")
             if new_xml == old_xml:

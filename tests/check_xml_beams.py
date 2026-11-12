@@ -38,6 +38,7 @@ FIX = os.path.join(ROOT, "tests", "fixtures")
 # check_xml_staff.py 单独守护，这里的跨版本逐字节比对先把它摘掉。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from xml_norm import strip_direction_staff
+import regress_skip
 
 NOTE_RE = re.compile(r"<note>(.*?)</note>", re.S)
 MEASURE_RE = re.compile(r"<measure\b(.*?)</measure>", re.S)
@@ -301,8 +302,13 @@ def structural_regress(old_exe):
     added = 0
     changed = 0
     with tempfile.TemporaryDirectory() as td:
+        line = regress_skip.note()
+        if line:
+            print(line)
         for mid in fixtures():
             name = os.path.basename(mid)
+            if regress_skip.skip(mid):
+                continue        # 本轮新增素材：旧版没有它，不算回归
             # 两次产物落在不同目录，避免互相覆盖
             o1 = os.path.join(td, "old")
             o2 = os.path.join(td, "new")

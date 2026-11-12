@@ -2831,6 +2831,30 @@ static std::string trimSectionText(const std::string& s) {
     return s.substr(a, b - a);
 }
 
+// 段落名按「字符」截断，绝不在 UTF-8 序列中间下刀。
+//
+// 旧写法是 `text.substr(0, 40)` —— 按字节切。一个汉字占 3 字节，于是：
+//   1) 中文段落名只显示 13 个字（40/3），英文却是 40 个字，两种语言两种待遇；
+//   2) 40 不是 3 的倍数，最后一个字被劈成半截，剩下的孤立续字节（0x80..0xBF）
+//      让整份 HTML / MusicXML 变成**非法 UTF-8**。XML 尤其致命：解析器在第一
+//      个非法字节就报错，MuseScore 拒绝打开整份谱，而不是只丢一个段落名。
+// 所以上限取 40 个字符（码点），截断点回退到序列首字节，半个字整个丢掉。
+static std::string truncateUtf8Chars(const std::string& s, size_t maxChars) {
+    size_t i = 0, chars = 0;
+    while (i < s.size() && chars < maxChars) {
+        const unsigned char c = (unsigned char)s[i];
+        size_t len = 1;
+        if ((c & 0xE0) == 0xC0) len = 2;
+        else if ((c & 0xF0) == 0xE0) len = 3;
+        else if ((c & 0xF8) == 0xF0) len = 4;
+        // 尾部残缺的序列（上游数据本身被截过）也不留下来。
+        if (i + len > s.size()) break;
+        i += len;
+        chars++;
+    }
+    return s.substr(0, i);
+}
+
 // 从某个音的弯音事件序列里判断滑音 / 颤音。
 //
 // 现有三个输出层都把弯音「取平均后改音高」，那是给没有弯音记号时的兜底；
@@ -2949,7 +2973,7 @@ ExpressionMap::ExpressionMap(const MidiData& data) {
     for (const auto& mk : markers) {
         std::string text = trimSectionText(mk.text);
         if (text.empty()) continue;
-        if (text.size() > 40) text = text.substr(0, 40);
+        text = truncateUtf8Chars(text, 40);
         ExpressionMark m;
         m.tick = mk.tick;
         m.section = text;

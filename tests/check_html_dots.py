@@ -31,6 +31,7 @@ FIX = os.path.join(ROOT, "tests", "fixtures")
 # check_xml_staff.py 单独守护，这里的跨版本逐字节比对先把它摘掉。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from xml_norm import strip_direction_staff
+import regress_skip
 HTML_CPP = os.path.join(ROOT, "src", "html_writer.cpp")
 
 # 与 src/html_writer.cpp::durStyleOf 同源；dotted 语义是「要画一个点」。
@@ -53,7 +54,7 @@ DOT_CLASSES = ("sixteenth", "eighth", "quarter")
 NOTE_CLASS_RE = re.compile(r"<span class='note ([^']*)'")
 TONE_CLASS_RE = re.compile(r"<span class='tone([^']*)'")
 NOTE_RE = re.compile(r"<note>(.*?)</note>", re.S)
-# HTML 页脚内嵌 M2J_VERSION，跨版本比对必须先归一化，否则 93 份素材
+# HTML 页脚内嵌 M2J_VERSION，跨版本比对必须先归一化，否则 94 份素材
 # 都会因为版本号字符串变化而误报（与 regress.py 同一口径）。
 VER_RE = re.compile(r"midi2jianpu v\d+\.\d+\.\d+")
 
@@ -238,8 +239,13 @@ def structural_regress(old_exe, new_exe):
     added = 0
     mids = sorted(glob.glob(os.path.join(FIX, "*.mid")))
     with tempfile.TemporaryDirectory() as td:
+        line = regress_skip.note()
+        if line:
+            print(line)
         for mid in mids:
             stem = os.path.splitext(os.path.basename(mid))[0]
+            if regress_skip.skip(mid):
+                continue        # 本轮新增素材：旧版没有它，不算回归
             a = render(old_exe, mid, td, "old")
             b = render(new_exe, mid, td, "new")
             for ext in ("txt", "xml"):

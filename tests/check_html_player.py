@@ -344,7 +344,7 @@ def audit(exe):
                 stats["files"] += 1
                 stats["notes"] += len(data.get("notes") or [])
                 stats["data_t"] += len(TICK_RE.findall(html))
-                # 全量跑 node 太慢（93 份 × 启动 node），抽查前两份即可：
+                # 全量跑 node 太慢（94 份 × 启动 node），抽查前两份即可：
                 # 播放逻辑是同一段代码，素材差异只体现在 PLAY 数据里。
                 if stats["runtime"] < 2:
                     rerr = runtime_errors(html, len(data.get("notes") or []), td)

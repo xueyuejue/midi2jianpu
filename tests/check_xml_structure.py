@@ -36,6 +36,7 @@ from html.parser import HTMLParser
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from xml_norm import strip_direction_staff, strip_print_block  # noqa: E402
+import regress_skip  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIX = os.path.join(ROOT, "tests", "fixtures")
@@ -288,9 +289,14 @@ def structural_regress(old_exe, new_exe):
     结构一个字节都不许动。
     """
     errors, changed = [], []
+    line = regress_skip.note()
+    if line:
+        print(line)
     with tempfile.TemporaryDirectory() as td:
         for mid in fixtures():
             name = os.path.basename(mid)
+            if regress_skip.skip(mid):
+                continue        # 本轮新增素材：旧版没有它，不算回归
             o = render(old_exe, mid, td, "old")
             n = render(new_exe, mid, td, "new")
             for i, ext in enumerate(("txt", "html", "xml")):

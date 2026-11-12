@@ -27,6 +27,9 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIX = os.path.join(ROOT, "tests", "fixtures")
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import regress_skip  # noqa: E402
+
 SUF = {"": 1.0, "_": 0.5, ".": 1.5, "_.": 0.75,
        "=": 0.25, "=.": 0.375, "%%": 0.125}
 ART = "\u25bc\u00b7>\u2197\u2198tr,"
@@ -203,8 +206,13 @@ def audit_fixtures(exe):
 def structural_regress(old_exe, new_exe):
     changed, errors = [], []
     with tempfile.TemporaryDirectory() as td:
+        line = regress_skip.note()
+        if line:
+            print(line)
         for p in sorted(glob.glob(os.path.join(FIX, "*.mid"))):
             name = os.path.basename(p)
+            if regress_skip.skip(p):
+                continue        # 本轮新增素材：旧版没有它，不算回归
             new_lines = render_lines(new_exe, p, td, "new")
             old_lines = render_lines(old_exe, p, td, "old")
             nv = violations(new_lines)

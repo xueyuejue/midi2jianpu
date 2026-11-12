@@ -50,6 +50,7 @@ FIX = os.path.join(ROOT, "tests", "fixtures")
 # 避免重写漂移。
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 import check_bar_beats as cb  # noqa: E402
+import regress_skip  # noqa: E402
 
 
 def default_exe():
@@ -352,8 +353,13 @@ def _render_all(exe, mid, td, tag):
 def structural_regress(old_exe, new_exe):
     errors = []
     with tempfile.TemporaryDirectory() as td:
+        line = regress_skip.note()
+        if line:
+            print(line)
         for p in sorted(glob.glob(os.path.join(FIX, "*.mid"))):
             name = os.path.basename(p)
+            if regress_skip.skip(p):
+                continue        # 本轮新增素材：旧版没有它，不算回归
             ot, oh, ox = _render_all(old_exe, p, td, "old")
             nt, nh, nx = _render_all(new_exe, p, td, "new")
             # 新版自身结构必须合法
