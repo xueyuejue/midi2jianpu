@@ -3455,17 +3455,29 @@ def main() -> None:
         f.write(data)
     print(f"wrote {lpath} ({len(data)} bytes)")
 
-    # 空谱素材故意放 edge/ 子目录：它让 CLI 返回 3、不产出任何谱面文件，
-    # 而 10 个全量守卫都按「每份 .mid 必须能渲染三端」遍历顶层 fixtures。
-    # 放顶层会让其中 8 个脚本一起炸。冒烟 [101] 与 C++ 单测直接读这个
-    # 子目录，守护强度不打折；edge/ 仍受 CI 的 git status 零 diff 检查。
+    # edge/ 放的是「不参与全量守卫常规谱面假设」的边界素材：
+    #   * stray_lead.mid 是空谱，CLI 返回 3、不产出谱面文件，10 个全量守卫
+    #     按「每份 .mid 必须能渲染三端」遍历顶层，放顶层会让其中 8 个炸；
+    #   * short_meter.mid 的 1/16 首小节是空的，输出层跳过它、文本谱第 1
+    #     行直接打 [4/4] 标签，而拍数守卫按页眉认定第 1 小节应是 0.25 拍。
+    # 两者都由冒烟、WASM 冒烟与 C++ 单测直接读子目录守护，强度不打折；
+    # edge/ 仍受 CI 的 git status 零 diff 检查。
     edge = os.path.join(here, "edge")
     os.makedirs(edge, exist_ok=True)
-    epath = os.path.join(edge, "stray_lead.mid")
-    with open(epath, "wb") as f:
-        data = build_stray_lead()
+    for name, builder in (("stray_lead.mid", build_stray_lead),
+                          ("short_meter.mid", build_short_meter)):
+        epath = os.path.join(edge, name)
+        with open(epath, "wb") as f:
+            data = builder()
+            f.write(data)
+        print(f"wrote {epath} ({len(data)} bytes)")
+
+    # v1.89.0：离谱拍号放大（顶层，10 个全量守卫照常覆盖）
+    apath = os.path.join(here, "absurd_meter.mid")
+    with open(apath, "wb") as f:
+        data = build_absurd_meter()
         f.write(data)
-    print(f"wrote {epath} ({len(data)} bytes)")
+    print(f"wrote {apath} ({len(data)} bytes)")
 
 def build_utf8_marker() -> bytes:
     """段落名截断必须落在 UTF-8 字符边界上（v1.79.0）。
@@ -3770,6 +3782,61 @@ def build_stray_lead() -> bytes:
 
     t1 = Track()
     t1.add(0, meta(0x03, b"Vocal"))                    # 只有轨名，没有音符
+
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
+
+
+def build_short_meter() -> bytes:
+    """v1.89.0：曲首短拍号不再把正常 4/4 长曲砍掉一半。
+
+    delta-time 与 0x58 都完全合法：第 1 小节标 1/16，第 2 小节起回到 4/4，
+    后面是 40 小节共 160 个四分音符。v1.88 的 timelineCap() 用曲首拍号算
+    「512 小节」，1/16 下只有 61440 tick（32 个 4/4 小节），于是后面 8 小节
+    32 个正常音符被整条丢弃，页眉还谎报「疑似损坏的 delta-time」。
+    新版按 4/4 基准小节算 cap，160 个音一个不少。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120 BPM
+    t0.add(0, meta(0x58, bytes([1, 4, 24, 8])))        # 1/16，合法的短拍号
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调
+    t0.add(120, meta(0x58, bytes([4, 2, 24, 8])))      # 第 2 小节起 4/4
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    for b in range(40):
+        for i, p in enumerate((60, 62, 64, 65)):
+            # 从 120 tick（4/4 段起点）起唱：1/16 首小节留空，避免把一个
+            # 四分音符切成短附点，撞上 HTML 附点渲染的既有几何取舍。
+            t1.note(0, p, 90, 120 + b * BAR + i * DIV, DIV)  # 40 小节 × 4 个四分音符
+
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
+
+
+def build_absurd_meter() -> bytes:
+    """v1.89.0：离谱拍号不再让网页端铺出 49 MB 谱面。
+
+    0x58 的分子/分母指数各占 1 字节，坏文件能写出 255/1 与 1/256 这种
+    音乐上不存在的拍号。旧版：曲首 255/1 把 barLen 撑到 489600 tick
+    （每小节铺 15 列）、cap 拉到 2.5 亿 tick；再变 1/256 后每 8 tick 铺
+    一小节，撞上 20000 上限 → HTML 49.5 MB / XML 5.35 MB / 4.19s。
+    全部事件都是合法 VLQ，不是畸形 delta。
+
+    新版：两条离谱拍号都不进 timeSigChanges（回退 4/4），cap 固定按
+    4/4 基准小节算，长音夹到 256 小节 → 255 小节、约 211 KB。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([255, 0, 24, 8])))      # 255/1
+    t0.add(0, meta(0x59, bytes([0, 0])))
+    t0.add(489600, meta(0x58, bytes([1, 8, 24, 8])))   # 1/256
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    for i, p in enumerate((60, 62, 64, 65)):
+        t1.note(0, p, 90, i * DIV, DIV)                # 界内 4 个正常音
+    t1.note(0, 72, 90, 0, 250000000)                  # 合法 VLQ 的极长音
 
     return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
 

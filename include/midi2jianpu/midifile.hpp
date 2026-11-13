@@ -8,6 +8,21 @@
 
 namespace m2j {
 
+// ---- 时间轴护栏的节拍基准（v1.89）----
+// 解析层的「512 小节」上限与输出层 barGridOf() 的铺表范围必须共用同一口径。
+// 旧实现拿曲首拍号算 barLen，两个方向都会失配：
+//   * 曲首 1/16 -> 512 小节只有 61440 tick（32 个 4/4 小节），从第 2 小节
+//     起回到 4/4 的正常长曲会被整条丢弃，页眉还谎报「疑似损坏的 delta-time」；
+//   * 曲首 255/1 -> cap 高达 2.5 亿 tick，输出层按 489600 tick 的 barLen
+//     给每小节铺列，再变拍号到 1/256 就能铺出 20000 小节 / 49 MB HTML。
+// 护栏量的是「时间长度」，不该随拍号漂移：固定按 4/4 基准小节
+// （一小节 = division * 4 tick）计数。kMaxNoteBars = 256 仍是它的一半。
+constexpr long kMaxTimelineBars = 512;
+inline long timelineCapTicks(long division) {
+    const long base = (division > 0 ? (long)division : 480L) * 4;
+    return kMaxTimelineBars * base;
+}
+
 // 单个音符事件
 struct NoteEvent {
     double startSeconds;

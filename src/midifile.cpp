@@ -680,12 +680,11 @@ static void applySysExDrumMode(MidiData& out,
 // 铺出 6000 个空小节：HTML 2.46 MB / XML 888 KB，网页版跟着卡。
 // 简谱不会有几千小节的前奏，512 小节（4/4 @120BPM 约 17 分钟）已远超真实
 // 曲目，也把输出层的铺表量级压回几百 KB。kMaxNoteBars=256 仍是它的一半。
-// 抽成常量：boundTimeline() 反算 barLen 时也用它，别再散落字面量。
-static constexpr long kMaxTimelineBars = 512;
+// v1.89：常量与基准函数下沉到 midifile.hpp（kMaxTimelineBars /
+// timelineCapTicks），barGridOf() 也用同一份，解析层与输出层不再各算各的。
+// 曲首拍号不再参与 cap：合法短拍号会误杀、离谱长拍号会放大，详见头文件注释。
 static long timelineCap(const MidiData& out) {
-    long barLen = (long)std::llround(out.timeSig.barLengthTicks(out.division));
-    if (barLen <= 0) barLen = (out.division > 0 ? (long)out.division : 480L) * 4;
-    return kMaxTimelineBars * barLen;
+    return timelineCapTicks(out.division);
 }
 
 // channelProgram 存「最后一个 0xC0」，是解析循环里直接写的，不进任何事件表。
@@ -1220,8 +1219,20 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                     ts.numerator = d[pos];
                     ts.denomPow = d[pos+1];
                     ts.valid = true;
-                    // 分母指数 0..8（二分音符到 256 分音符），超范围多半是坏数据
-                    if (ts.numerator > 0 && ts.denomPow >= 0 && ts.denomPow <= 8) {
+                    // 分母指数 0..8（二分音符到 256 分音符），超范围多半是坏数据。
+                    // v1.89：光看范围不够。0x58 的分子/分母指数各占 1 字节，
+                    // 坏文件（或写歪的导出器）能写出 255/1、1/256 这种音乐上
+                    // 不存在的拍号：前者把 barLen 撑到 489600 tick，输出层给
+                    // 每小节铺 15 列；后者让 cap 只剩 4096 tick，正常 4/4 曲子
+                    // 大半被当成越界。只接受一小节落在 [一个十六分音符,
+                    // 32 个 4/4 小节] 的拍号；3/8、6/8、12/8、5/4 全部照常。
+                    const long minBar = out.division / 4;
+                    const long maxBar = (long)out.division * 4 * 32;
+                    const long meterBarLen =
+                        (long)std::llround(ts.barLengthTicks(out.division));
+                    if (ts.numerator > 0 && ts.numerator <= 32 &&
+                        ts.denomPow >= 0 && ts.denomPow <= 8 &&
+                        meterBarLen >= minBar && meterBarLen <= maxBar) {
                         out.timeSigChanges.push_back({absTick, ts});
                         if (!out.timeSig.valid) out.timeSig = ts;
                     }

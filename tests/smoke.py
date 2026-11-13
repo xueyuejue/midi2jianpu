@@ -3856,6 +3856,52 @@ def main():
     rc, out, err = run(exe, smid)
     check(rc == 3, "空谱常规转换如实返回 3（未提取到音符）", err)
 
+    group("[102] v1.89.0 时间轴护栏与曲首拍号解耦：短拍号不误杀、离谱拍号不放大")
+    # v1.88 的 timelineCap() 仍拿曲首拍号反算 barLen：曲首 1/16 时 512 小节
+    # 只有 61440 tick，40 小节 4/4 的正常文件后半被整条丢弃；曲首 255/1
+    # 时 cap 高达 2.5 亿 tick，再变 1/256 就铺出 20000 小节 / 49 MB HTML。
+    # 新版 cap 固定按 4/4 基准小节算，离谱拍号不进拍号表。
+    shmid = os.path.join(FIXTURES, "edge", "short_meter.mid")
+    abmid = os.path.join(FIXTURES, "absurd_meter.mid")
+    check(os.path.exists(shmid), "short_meter.mid 素材存在", shmid)
+    check(os.path.exists(abmid), "absurd_meter.mid 素材存在", abmid)
+
+    rc, out, err = run(exe, shmid)
+    check(rc == 0, "短拍号素材退出码 0", err)
+    check("共提取 160 个音符" in out, "160 个正常音符全部保留（旧版只剩 128）", out[:300])
+    check("已截断" not in out and "时间轴跨度异常" not in out,
+          "不再谎报时间轴异常 / 截断越界音符", out[:300])
+    check("1/16" in out and "4/4" in out, "合法的 1/16 → 4/4 变拍号照常显示", out[:300])
+
+    shhtml = os.path.join(tmp, "short_meter.html")
+    rc, _, err = run(exe, shmid, "--html", shhtml)
+    check(rc == 0 and os.path.exists(shhtml), "短拍号 HTML 正常生成", err)
+    shsz = os.path.getsize(shhtml)
+    check(shsz < 200000, "短拍号 HTML 体积有界，实际 %d 字节" % shsz)
+    shhtm = open(shhtml, encoding="utf-8").read()
+    check(shhtm.count("class='measure'") < 60,
+          "短拍号谱面小节数有界，实际 %d" % shhtm.count("class='measure'"))
+
+    rc, out, err = run(exe, abmid)
+    check(rc == 0, "离谱拍号素材退出码 0（不崩、不卡死）", err)
+    check("255/1" not in out and "1/256" not in out,
+          "音乐上不存在的拍号不再出现在页眉", out[:300])
+    check("拍号=4/4" in out, "无合法拍号时回退 4/4", out[:300])
+
+    abhtml = os.path.join(tmp, "absurd_meter.html")
+    rc, _, err = run(exe, abmid, "--html", abhtml)
+    check(rc == 0 and os.path.exists(abhtml), "离谱拍号 HTML 正常生成", err)
+    absz = os.path.getsize(abhtml)
+    check(absz < 300000, "HTML 体积有界（旧版约 49.5 MB），实际 %d 字节" % absz)
+    abhtm = open(abhtml, encoding="utf-8").read()
+    check(abhtm.count("class='measure'") < 600,
+          "HTML 小节数有界（旧版约 20000），实际 %d" % abhtm.count("class='measure'"))
+
+    abxml = os.path.join(tmp, "absurd_meter.xml")
+    rc, _, err = run(exe, abmid, "--musicxml", abxml)
+    check(rc == 0 and os.path.exists(abxml), "离谱拍号 MusicXML 正常生成", err)
+    axsz = os.path.getsize(abxml)
+    check(axsz < 150000, "MusicXML 体积有界（旧版约 5.35 MB），实际 %d 字节" % axsz)
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

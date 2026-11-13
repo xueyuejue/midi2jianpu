@@ -67,7 +67,7 @@
 - [x] **损坏 / 截断 MIDI 的安全解析**：`MTrk` 长度字段写着原值、文件却只下载到一半时，不再越过 buffer 末尾把堆里相邻内存当成新事件继续解析（那会凭空冒出幻影音符与乱码歌词）。所有事件统一按 `min(trkEnd, size)` 取硬边界，残缺事件整条丢弃，CLI / HTML / 网页文件面板写明「文件数据不完整」并按可用字节正常出谱；合法文件逐字节零回归
 - [x] **CC67 软踏板**：踩下期间起音的音符力度按 ×0.7 衰减，重音记号 / 力度分析 / 网页播放 JSON 同步变化，时值与 CC11 力度表不动（没有 CC67 的文件逐字节零回归）；系数经 `--soft-pedal-scale` / `--no-soft-pedal` 与网页强度下拉可配（0.3~1.0 或关闭），纯整数公式零漂移
 - [x] **SMF chunk 级边界重同步**：轨间夹 DAW 私有扩展块（`XFIH` 等）或某条 `MTrk` 长度字段写错时，不再停掉整个 chunk 循环把后续旋律轨整条丢掉（旧版直接报「未提取到音符」）；改为按 chunk 通用规则跳过非 `MTrk` 块，并用「EOT 锚定 + 长度可信」的下一个轨头校正偏长 / 偏短的边界。歌词 / SysEx 里恰好出现的字面 `MTrk` 不会被误判，合法文件逐字节零回归；CLI / HTML / 网页文件面板写明「文件结构提示」
-- [x] 1178 项单元测试 + 101 组端到端冒烟测试 + 28 项 CI 失败报告自测 + 18 项 MusicXML 时值自测 + 39 项 MusicXML 连梁自测 + 26 项文本谱拍数自测 + 35 项 HTML 附点自测 + 77 项 HTML 休止符自测 + 11 项三端结构守卫自测 + 32 项大谱表方向记号自测 + 34 项 XML 结构守卫自测 + 23 项 HTML 播放器自测 + 15 项 UTF-8 守卫自测 + 62 组 WASM 产物一致性检查（含产物版本号、源码一致性、「改了源码必须重编」与「重编了必须升版本」的双向纯 git 守护）
+- [x] 1203 项单元测试 + 102 组端到端冒烟测试 + 28 项 CI 失败报告自测 + 18 项 MusicXML 时值自测 + 39 项 MusicXML 连梁自测 + 26 项文本谱拍数自测 + 35 项 HTML 附点自测 + 77 项 HTML 休止符自测 + 11 项三端结构守卫自测 + 32 项大谱表方向记号自测 + 34 项 XML 结构守卫自测 + 23 项 HTML 播放器自测 + 15 项 UTF-8 守卫自测 + 63 组 WASM 产物一致性检查（含产物版本号、源码一致性、「改了源码必须重编」与「重编了必须升版本」的双向纯 git 守护）
 
 ## 在线 Demo 功能
 
@@ -807,7 +807,7 @@ XG 鼓组通道与中途换音色的通道，新导出 `_midi2jianpu_bank_info`�
 - 调性识别：**Krumhansl-Schmuckler** 算法（音乐信息检索标准）；无调号时再由**宫商角徵羽五声调式**判定校正宫音
 - 和弦检测：按和声窗（半小节 / 附点四分 / 整小节）统计音级频率，匹配 11 种和弦类型，低音决定转位
 - 输出：文本 + 自包含 HTML（内联 CSS）+ MusicXML 3.1
-- 测试：内置断言 1178 项单元测试，另有 `tests/smoke.py` 101 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`、声部乐器标注 + 倚音混合素材 `parts.mid`、和弦转位 + 七和弦素材 `chords.mid`、渐快渐慢素材 `tempo_ramp.mid`、长音跨小节素材 `long_tie.mid`、同轨复调素材 `polyphony.mid`、SMPTE 时间基准素材 `smpte.mid`、format 2 独立序列素材 `format2.mid`、复音触后素材 `aftertouch.mid`、同音重触发素材 `retrigger.mid`、轨尾悬挂音素材 `dangling.mid`、双歌词轨素材 `twolyrics.mid`、延音踏板素材 `pedal.mid`、强制清音素材 `allnotesoff.mid`、CC7 主音量素材 `cc7volume.mid`、踏板通道隔离素材 `pedal_channels.mid`、踏板迟滞素材 `pedal_hysteresis.mid`、持音踏板素材 `sostenuto.mid`、双通道力度素材 `dyn_channels.mid`、软踏板素材 `soft_pedal.mid`、诊断一致性素材 `diag_consistency.mid`、弯音范围按通道 / 按时间 / 跨轨三份素材 `bendrange_channels.mid` / `bendrange_timeline.mid` / `bendrange_crosstrack.mid`、省略状态字节四份素材 `running_meta.mid` / `running_sysex.mid` / `running_realtime.mid` / `running_standard.mid`、MIDI Port 五份素材 `port_pedal.mid` / `port_bend.mid` / `port_prefix.mid` / `port_prefix_base.mid` / `port_standard.mid`、SysEx 鼓模式 11 份 `sysex_*.mid` 素材、Bank Select 与音色时间轴 9 份 `bank_*.mid` / `program_timeline.mid` 素材、按轨隔离 7 份素材 `track_pedal.mid` / `track_rpn_setup.mid` / `track_conductor.mid` / `track_leak.mid` / `track_leak_base.mid` / `track_empty.mid` / `track_fmt2.mid`、截断文件素材 `truncated.mid`、chunk 边界素材 `chunk_resync.mid`、通道级楔形素材 `wedge_tracks.mid`、越界长度字段素材 `oversized_len.mid`、同轨三声部素材 `voice_trio.mid`、键盘大谱表素材 `grand_staff.mid`、小节中途变速素材 `midtempo.mid`、小节中途换力度档素材 `dyn_step.mid`、移调调号素材 `transpose_key.mid`、撑爆小节素材 `overfull.mid`、门限空档素材 `gate_gap.mid`、复调门限素材 `poly_gap.mid`、门限因子素材 `poly_gate.mid` / `rest_split.mid` / `rest_midbar.mid` / HTML 附点素材 `html_dots.mid` / HTML 休止符拆列素材 `html_rests.mid` / 连梁压力素材 `beam_levels.mid` / 钩形梁压力素材 `beam_hooks.mid` / 大谱表换谱表素材 `staff_switch.mid` / 结构压力素材 `xml_structure.mid` / 跨谱表楔形素材 `grand_staff_wedge.mid` / 段落名 UTF-8 截断素材 `utf8_marker.mid` / 旧编码素材 `legacy_gbk.mid` / `legacy_sjis.mid` / `legacy_utf8.mid` / `gbk_ext.mid` / `huge_delta.mid` / `stray_events.mid` / `stray_pedal.mid` / `stray_diag.mid` / `late_note.mid` / `edge/stray_lead.mid`）；另有 `tests/smoke.py --self-test` 28 项 CI 失败报告自测（注解转义 / 条数上限 / step summary / 非 CI 静默）、`tests/check_bar_beats.py --self-test` 26 项拍数守恒自测、`tests/check_html_dots.py --self-test` 35 项 HTML 附点自测、`tests/check_html_rests.py --self-test` 77 项 HTML 休止符自测、`tests/check_xml_beams.py --self-test` 39 项 MusicXML 连梁自测、`tests/check_xml_staff.py --self-test` 32 项大谱表方向记号自测、`tests/check_html_player.py --self-test` 23 项 HTML 播放器自测、`tests/check_utf8.py --self-test` 15 项三端 UTF-8 自测，不需编译即可运行
+- 测试：内置断言 1203 项单元测试，另有 `tests/smoke.py` 102 组端到端冒烟（含真实录音特征素材 `humanized.mid`、带打击乐轨的 `drums.mid`、一字多音的 `melisma.mid`、小节内换和弦的 `harmony.mid`、弱起的 `pickup.mid`、带内置歌词的 `karaoke.mid`、变拍号混合压力素材 `meter.mid`、转调混合压力素材 `modulation.mid`、五声各调式素材 `pentatonic.mid`、变速歌词素材 `tempolrc.mid` + 3 份 LRC、演奏表情混合素材 `expression.mid`、声部乐器标注 + 倚音混合素材 `parts.mid`、和弦转位 + 七和弦素材 `chords.mid`、渐快渐慢素材 `tempo_ramp.mid`、长音跨小节素材 `long_tie.mid`、同轨复调素材 `polyphony.mid`、SMPTE 时间基准素材 `smpte.mid`、format 2 独立序列素材 `format2.mid`、复音触后素材 `aftertouch.mid`、同音重触发素材 `retrigger.mid`、轨尾悬挂音素材 `dangling.mid`、双歌词轨素材 `twolyrics.mid`、延音踏板素材 `pedal.mid`、强制清音素材 `allnotesoff.mid`、CC7 主音量素材 `cc7volume.mid`、踏板通道隔离素材 `pedal_channels.mid`、踏板迟滞素材 `pedal_hysteresis.mid`、持音踏板素材 `sostenuto.mid`、双通道力度素材 `dyn_channels.mid`、软踏板素材 `soft_pedal.mid`、诊断一致性素材 `diag_consistency.mid`、弯音范围按通道 / 按时间 / 跨轨三份素材 `bendrange_channels.mid` / `bendrange_timeline.mid` / `bendrange_crosstrack.mid`、省略状态字节四份素材 `running_meta.mid` / `running_sysex.mid` / `running_realtime.mid` / `running_standard.mid`、MIDI Port 五份素材 `port_pedal.mid` / `port_bend.mid` / `port_prefix.mid` / `port_prefix_base.mid` / `port_standard.mid`、SysEx 鼓模式 11 份 `sysex_*.mid` 素材、Bank Select 与音色时间轴 9 份 `bank_*.mid` / `program_timeline.mid` 素材、按轨隔离 7 份素材 `track_pedal.mid` / `track_rpn_setup.mid` / `track_conductor.mid` / `track_leak.mid` / `track_leak_base.mid` / `track_empty.mid` / `track_fmt2.mid`、截断文件素材 `truncated.mid`、chunk 边界素材 `chunk_resync.mid`、通道级楔形素材 `wedge_tracks.mid`、越界长度字段素材 `oversized_len.mid`、同轨三声部素材 `voice_trio.mid`、键盘大谱表素材 `grand_staff.mid`、小节中途变速素材 `midtempo.mid`、小节中途换力度档素材 `dyn_step.mid`、移调调号素材 `transpose_key.mid`、撑爆小节素材 `overfull.mid`、门限空档素材 `gate_gap.mid`、复调门限素材 `poly_gap.mid`、门限因子素材 `poly_gate.mid` / `rest_split.mid` / `rest_midbar.mid` / HTML 附点素材 `html_dots.mid` / HTML 休止符拆列素材 `html_rests.mid` / 连梁压力素材 `beam_levels.mid` / 钩形梁压力素材 `beam_hooks.mid` / 大谱表换谱表素材 `staff_switch.mid` / 结构压力素材 `xml_structure.mid` / 跨谱表楔形素材 `grand_staff_wedge.mid` / 段落名 UTF-8 截断素材 `utf8_marker.mid` / 旧编码素材 `legacy_gbk.mid` / `legacy_sjis.mid` / `legacy_utf8.mid` / `gbk_ext.mid` / `huge_delta.mid` / `stray_events.mid` / `stray_pedal.mid` / `stray_diag.mid` / `late_note.mid` / `absurd_meter.mid` / `edge/stray_lead.mid` / `edge/short_meter.mid`）；另有 `tests/smoke.py --self-test` 28 项 CI 失败报告自测（注解转义 / 条数上限 / step summary / 非 CI 静默）、`tests/check_bar_beats.py --self-test` 26 项拍数守恒自测、`tests/check_html_dots.py --self-test` 35 项 HTML 附点自测、`tests/check_html_rests.py --self-test` 77 项 HTML 休止符自测、`tests/check_xml_beams.py --self-test` 39 项 MusicXML 连梁自测、`tests/check_xml_staff.py --self-test` 32 项大谱表方向记号自测、`tests/check_html_player.py --self-test` 23 项 HTML 播放器自测、`tests/check_utf8.py --self-test` 15 项三端 UTF-8 自测，不需编译即可运行
 
 ## 路线图
 
@@ -934,6 +934,8 @@ XG 鼓组通道与中途换音色的通道，新导出 `_midi2jianpu_bank_info`�
 
 - [x] **时间轴护栏收口：一个完全合法的极晚长音不再铺出 2.46 MB 谱面**：① 缺陷：v1.85~1.87 的三道闸都盯住「坏 delta 造成的巨额 tick」，却留下三个收口问题。`timelineCap()` 定成 6000 小节（4/4 @120 约 3.3 小时），而 `barGridOf()` 按 `songEnd` 逐小节铺边界表——一份 delta 完全合法（单条 VLQ 可表示）、只有 5 个音、130 B 的 MIDI，只要把其中一个长音放在第 5900 小节，三端就会铺出 6000 个空小节：HTML **2.46 MB** / MusicXML 888 KB / 文本谱 72 KB，网页版跟着卡。同一个音还会先命中「时值超 256 小节」再命中「尾巴越轴」，`timelineClamped` 加两次，页眉谎报「已截断 2 个越界音符」而谱里只有 1 个音。另外 `boundTimeline()` 一见 `out.notes.empty()` 就整函数早退，空谱文件的点事件不过闸，`--list-tracks`（在「未提取到音符」return 3 之前执行）会凭空报出「歌词 1 字」。② 实现：抽 `kMaxTimelineBars = 512`（约 17 分钟，仍是 `kMaxNoteBars=256` 的两倍）给 `timelineCap()` 与 `boundTimeline()` 反算 `barLen` 共用，极晚音按既有「起点越界整条丢弃」处理；夹取循环改按「音符」计数（局部 `clamped` 标志、末尾一次 `++`）；删掉 `notes.empty()` 早退——循环在空表上天然不做事，点事件清理与 `rebuildChannelProgram()` 对所有文件生效，正常文件一个字节都不动。③ 守护：单测 1156 → **1178** 项（上限收紧 / 双重夹取只计一次 / 空谱点事件清理 / 正常文件零变化）；CLI 冒烟第 **[101]** 组、WASM 冒烟第 **[62]** 组端到端守住网页端体积与页眉；`.probe/regress_v188.py` 做负向验证（旧版必然 2.46 MB + 「2 个」，新版 10.9 KB + 「1 个」）。④ 素材：新增 `late_note.mid`（130 B，顶层参与全量审计）与 `edge/stray_lead.mid`（114 B，故意不含音符、放子目录以免 8 个「每份 .mid 必须能渲染三端」的全量守卫被 rc=3 炸掉，由冒烟与单测单独守护）。⑤ 零回归：102 份既有素材 × 三端，升版本前同版本逐字节 **0 差异**、升版本后归一化页脚再比仍 0 差异；10 个全量守卫（103 份）+ 8 个 `--regress` 全绿（v1.88.0）
 
+- [x] **时间轴护栏与曲首拍号解耦：短拍号不再误杀、离谱拍号不再铺出 49 MB 谱面**：① 缺陷：v1.88 把上限收到 512 小节，却仍用 `out.timeSig`（曲首拍号）反算 `barLen`。上一轮只判断「曲首拍号偏大 → cap 偏大 → 保守无害」，实测反向更严重：曲首 `1/16` 时 512 小节只有 61440 tick（32 个 4/4 小节），一份从第 2 小节回到 4/4、共 40 小节 160 个音的**完全合法** MIDI 被丢掉 33 个音，页眉还谎报「时间轴跨度异常（疑似损坏的 delta-time）」；曲首 `255/1` 时 cap 被拉到 2.5 亿 tick，输出层按 489600 tick 的 `barLen` 给每小节铺 15 列，再变拍号到 `1/256` 就每 8 tick 铺一小节，撞上 20000 上限 → HTML **49.5 MB** / MusicXML 5.35 MB / 20007 小节 / 4.19s，比 v1.88 修掉的 2.46 MB 还大 20 倍，且同样不依赖畸形 delta。② 实现：`kMaxTimelineBars` 与 `timelineCapTicks(division)` 下沉到 `midifile.hpp`，解析层 `timelineCap()` 与输出层 `barGridOf()` 共用同一个「按 4/4 基准小节计数」的上限；`barGridOf()` 的 `horizon` 钳到该 cap；`0x58` 加合理性校验（一小节须落在 [一个十六分音符, 32 个 4/4 小节]），`255/1` / `1/256` 不进 `timeSigChanges`，`1/16` / `3/8` / `6/8` / `12/8` / `5/4` 全部照常。正常文件一个字节都不动。③ 守护：单测 1178 → **1203** 项（cap 与拍号解耦 / 160 音全保留 / 离谱拍号回退 4/4 / 铺表有界 / 5 种真实拍号不误伤）；CLI 冒烟第 **[102]** 组、WASM 冒烟第 **[63]** 组端到端守住网页端；`.probe/regress_v189.py` 负向验证（旧版必然 128 音 + 49.5 MB，新版 160 音 + 212 KB）。④ 素材：新增 `absurd_meter.mid`（138 B，顶层参与全量审计）与 `edge/short_meter.mid`（1529 B；空的 1/16 首小节会撞上文本谱拍数守卫的既有几何取舍，按 v1.88 约定放 `edge/`，由冒烟 / WASM / 单测单独守护）。⑤ 零回归：103 份既有素材 × 三端，升版本前同版本逐字节 **0 差异**、升版本后归一化页脚再比仍 0 差异；10 个全量守卫（104 份）+ 8 个 `--regress` 全绿（v1.89.0）
+
 ## 为什么开源
 
 中文简谱是中国特有的记谱体系，国外打谱软件（MuseScore、Finale）对它支持很差，国内又一直缺少一个干净的、可二次开发的基础库。这个项目想把「MIDI → 简谱」这层地基打好，让后来的人不用重复造轮子。
@@ -970,35 +972,35 @@ Issue / PR 都欢迎。尤其欢迎：
 提交前请跑一遍：
 
 ```bash
-cd build && ctest --output-on-failure                  # 1178 项单元测试
+cd build && ctest --output-on-failure                  # 1203 项单元测试
 python tests/smoke.py build/Release/midi2jianpu.exe    # 端到端冒烟（含鼓轨场景）
 node tests/wasm_smoke.mjs                              # WASM 产物与源码是否同步（含版本号）
 python tests/check_wasm_exports.py                     # WASM 导出清单五处一致性
 python tests/check_wasm_sync.py --self-test             # WASM 产物同步守护自测
 python tests/smoke.py --self-test                       # 28 项 CI 失败报告自测
 python tests/check_xml_durations.py --self-test       # 18 项 MusicXML 时值自测
-python tests/check_xml_durations.py                    # 全部 103 份素材时值一致性
+python tests/check_xml_durations.py                    # 全部 104 份素材时值一致性
 python tests/check_xml_beams.py --self-test           # 39 项 MusicXML 连梁自测
-python tests/check_xml_beams.py                        # 全部 103 份素材 <beam> 结构审计
+python tests/check_xml_beams.py                        # 全部 104 份素材 <beam> 结构审计
 python tests/check_xml_staff.py --self-test           # 32 项大谱表方向记号自测
-python tests/check_xml_staff.py                        # 全部 103 份素材方向记号谱表归属
+python tests/check_xml_staff.py                        # 全部 104 份素材方向记号谱表归属
 python tests/check_bar_beats.py --self-test             # 26 项拍数守恒自测
-python tests/check_bar_beats.py                        # 全部 103 份素材拍数守恒
+python tests/check_bar_beats.py                        # 全部 104 份素材拍数守恒
 python tests/check_html_dots.py --self-test            # 35 项 HTML 附点自测
-python tests/check_html_dots.py                       # 全部 103 份素材 HTML 附点一致性
+python tests/check_html_dots.py                       # 全部 104 份素材 HTML 附点一致性
 python tests/check_html_rests.py --self-test           # 77 项 HTML 休止符自测
-python tests/check_html_rests.py                      # 全部 103 份素材 HTML 休止符精确性
+python tests/check_html_rests.py                      # 全部 104 份素材 HTML 休止符精确性
 python tests/check_three_way.py --self-test            # 11 项三端结构守卫自测
-python tests/check_three_way.py                       # 全部 103 份素材三端结构一致性
+python tests/check_three_way.py                       # 全部 104 份素材三端结构一致性
 python tests/check_xml_structure.py --self-test       # 34 项 XML 结构守卫自测
-python tests/check_xml_structure.py                   # 全部 103 份素材严格解析 / 时值守恒 / 元素顺序 / HTML 配对
+python tests/check_xml_structure.py                   # 全部 104 份素材严格解析 / 时值守恒 / 元素顺序 / HTML 配对
 python tests/check_html_player.py --self-test          # 23 项 HTML 播放器自测
-python tests/check_html_player.py                     # 全部 103 份素材播放数据 / 高亮锚点 / 默认零痕迹
+python tests/check_html_player.py                     # 全部 104 份素材播放数据 / 高亮锚点 / 默认零痕迹
 python tests/check_utf8.py --self-test               # 15 项三端 UTF-8 自测
-python tests/check_utf8.py                           # 全部 103 份素材三端严格解码 + MusicXML 严格解析
+python tests/check_utf8.py                           # 全部 104 份素材三端严格解码 + MusicXML 严格解析
 ```
 
-推送后 `.github/workflows/ci.yml` 还会在 Ubuntu 上再跑一遍两个 job：CMake 编译 + 1178 项单测 + 28 项 CI 失败报告自测 + 18 项 MusicXML 时值自测 + 39 项 MusicXML 连梁自测 + 26 项文本谱拍数自测 + 35 项 HTML 附点自测 + 77 项 HTML 休止符自测 + 11 项三端结构守卫自测 + 32 项大谱表方向记号自测 + 23 项 HTML 播放器自测 + 15 项 UTF-8 守卫自测 + 101 组 CLI 冒烟 + 103 份素材可复现校验，以及 62 组 WASM 冒烟 + 导出清单守护 + 产物同步守护。`docs/wasm/` 漏重编会让 CI 直接变红。
+推送后 `.github/workflows/ci.yml` 还会在 Ubuntu 上再跑一遍两个 job：CMake 编译 + 1203 项单测 + 28 项 CI 失败报告自测 + 18 项 MusicXML 时值自测 + 39 项 MusicXML 连梁自测 + 26 项文本谱拍数自测 + 35 项 HTML 附点自测 + 77 项 HTML 休止符自测 + 11 项三端结构守卫自测 + 32 项大谱表方向记号自测 + 23 项 HTML 播放器自测 + 15 项 UTF-8 守卫自测 + 102 组 CLI 冒烟 + 104 份素材可复现校验，以及 63 组 WASM 冒烟 + 导出清单守护 + 产物同步守护。`docs/wasm/` 漏重编会让 CI 直接变红。
 
 产物同步守护是纯 git 检查（`tests/check_wasm_sync.py`）：`wasm_smoke.mjs` 第 34 组只比对 `version.hpp` 与 wasm 页脚版本，若有人**改了 `src/` 却不升版本、也不重编**，页脚仍然「一致」，那道守护会静默放过。同步守护直接看本次提交动了哪些文件：`src/**`、`include/**`、`cmake/**`、`CMakeLists.txt`、`build/build_wasm.cmd` 里只要有一个变更，`docs/wasm/midi2jianpu.wasm` 就必须一起变；胶水层 `.js` 单独变也不行。只改测试 / 文档 / CI 配置不要求重编。
 自 v1.41.0 起还加了一条**反向规则**：`.wasm` 变了（说明重编过）却没动

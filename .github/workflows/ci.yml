@@ -30,12 +30,12 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 2
 
-      - name: 单元测试（1178 项）
+      - name: 单元测试（1203 项）
         working-directory: build
         run: ctest --output-on-failure
 
       - name: 素材生成器可复现
-        # 全量重生成 103 份 .mid 后不得有字节差异，也不得多出未跟踪素材。
+        # 全量重生成 104 份 .mid 后不得有字节差异，也不得多出未跟踪素材。
         # 只比二进制素材：.lrc 是文本，交给 git 的行尾归一化处理。
         run: |
           python3 tests/fixtures/make_fixture.py > /dev/null
@@ -48,14 +48,14 @@ jobs:
         # 这条通道自己先自测，避免「诊断工具坏了却没人知道」。
         run: python3 tests/smoke.py --self-test
 
-      - name: MusicXML 时值一致性（18 项自测 + 103 份素材）
+      - name: MusicXML 时值一致性（18 项自测 + 104 份素材）
         # 逐个 <note> 核对 <duration> 与 <type>/<dot/>；休止符间隙必须拆成
         # 标准时值之和，<rest measure="yes"/> 全小节休止按惯例豁免。
         run: |
           python3 tests/check_xml_durations.py --self-test
           python3 tests/check_xml_durations.py
 
-      - name: MusicXML 连梁结构（39 项自测 + 103 份素材）
+      - name: MusicXML 连梁结构（39 项自测 + 104 份素材）
         # <beam> 必须按 begin/continue/end 闭合、只出现在短于四分的音符上、
         # 子元素顺序为 type/dot/time-modification -> staff -> beam -> notations。
         # 顺序错或悬挂的梁会让 MuseScore 丢掉整条音符，比不写梁更糟。
@@ -65,7 +65,7 @@ jobs:
           python3 tests/check_xml_beams.py --self-test
           python3 tests/check_xml_beams.py
 
-      - name: 大谱表方向记号谱表归属（32 项自测 + 103 份素材）
+      - name: 大谱表方向记号谱表归属（32 项自测 + 104 份素材）
         # <direction> 的 <staff> 必须落在同小节同声部实际有音符的那行谱；
         # 旧实现按全曲多数侧算，声部换谱表时力度记号会印到空白谱行。
         # 覆盖硬约束：大谱表素材、换谱表素材、staff=2 与带 <offset> 的
@@ -74,28 +74,28 @@ jobs:
           python3 tests/check_xml_staff.py --self-test
           python3 tests/check_xml_staff.py
 
-      - name: 文本谱拍数守恒（26 项自测 + 103 份素材）
+      - name: 文本谱拍数守恒（26 项自测 + 104 份素材）
         # 一小节印出来的拍数必须等于拍号；休止符按最近档吸附会让谱面少拍。
         # --regress <旧版exe> 在本地做结构性零回归，CI 只需跑全量校验。
         run: |
           python3 tests/check_bar_beats.py --self-test
           python3 tests/check_bar_beats.py
 
-      - name: HTML 附点一致性（35 项自测 + 103 份素材）
+      - name: HTML 附点一致性（35 项自测 + 104 份素材）
         # 文本谱 / MusicXML 的附点必须在 HTML 里也画出来；3 拍 / 6 拍靠
         # 延音线表达不画点。--regress 在本地做结构性零回归，CI 跑全量。
         run: |
           python3 tests/check_html_dots.py --self-test
           python3 tests/check_html_dots.py
 
-      - name: HTML 休止符精确性（77 项自测 + 103 份素材）
+      - name: HTML 休止符精确性（77 项自测 + 104 份素材）
         # 文本谱 / MusicXML 已精确拆段，HTML 也必须拆成标准时值之和；
         # 精确档不碎片化、拆不干净保留旧兜底。--regress 在本地做结构回归。
         run: |
           python3 tests/check_html_rests.py --self-test
           python3 tests/check_html_rests.py
 
-      - name: 三端结构一致性（11 项自测 + 103 份素材）
+      - name: 三端结构一致性（11 项自测 + 104 份素材）
         # 文本谱↔HTML 轨数与逐轨小节数、三端名义拍号、文本谱↔MusicXML
         # 按对齐下标逐轨小节数与逐小节拍号（首/末小节豁免）。比逐音符时值
         # 求和更稳健：和弦并发/多谱表<backup>/三连音编码都会让时值累加失真。
@@ -103,19 +103,19 @@ jobs:
           python3 tests/check_three_way.py --self-test
           python3 tests/check_three_way.py
 
-      - name: MusicXML 结构一致性（34 项自测 + 103 份素材）
+      - name: MusicXML 结构一致性（34 项自测 + 104 份素材）
         run: |
           python3 tests/check_xml_structure.py --self-test
           python3 tests/check_xml_structure.py
 
-      - name: HTML 试听播放器（23 项自测 + 103 份素材）
+      - name: HTML 试听播放器（23 项自测 + 104 份素材）
         # --player 必须只加播放数据与高亮锚点，不改谱面本身；不带开关时
         # 输出里不得残留 script / data-t / playerbar 任何痕迹。
         run: |
           python3 tests/check_html_player.py --self-test
           python3 tests/check_html_player.py
 
-      - name: 三端 UTF-8 完整性（15 项自测 + 103 份素材）
+      - name: 三端 UTF-8 完整性（15 项自测 + 104 份素材）
         # MIDI 里的段落名 / 轨名 / 歌词是裸字节，任何一处按字节截断都会留下
         # 孤立续字节：文本谱变乱码、HTML 出替换字符、MusicXML 被解析器整份
         # 拒绝（MuseScore 直接打不开）。这里逐份严格解码三端产物。
@@ -123,7 +123,7 @@ jobs:
           python3 tests/check_utf8.py --self-test
           python3 tests/check_utf8.py
 
-      - name: CLI 端到端冒烟（101 组）
+      - name: CLI 端到端冒烟（102 组）
         # 失败项由 tests/ci_report.py 同步写进 annotations 与 step summary。
         run: python3 tests/smoke.py build/midi2jianpu
 
@@ -155,5 +155,5 @@ jobs:
         # 五处导出符号没有漂移，不编译、不加载 wasm。
         run: python3 tests/check_wasm_exports.py
 
-      - name: WASM 产物冒烟（62 组，含版本号守护）
+      - name: WASM 产物冒烟（63 组，含版本号守护）
         run: node tests/wasm_smoke.mjs

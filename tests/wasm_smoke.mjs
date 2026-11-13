@@ -2072,6 +2072,37 @@ if (existsSync(v88LatePath)) {
     'WASM 仍照常输出 4 个界内音符', v88Html.slice(0, 300));
 }
 
+// ---- 63. v1.89.0 护栏与拍号解耦：网页端同样不误杀、不放大 ----
+// CLI 冒烟 [102] 覆盖三端，这里端到端确认 docs/wasm/ 里的 .wasm 确实带上
+// 「固定 4/4 基准 cap + 离谱拍号校验」（漏重编就会是 128 音 / 49 MB HTML）。
+const v89ShortPath = path.join(FIXTURES, 'edge', 'short_meter.mid');
+const v89AbsurdPath = path.join(FIXTURES, 'absurd_meter.mid');
+if (existsSync(v89ShortPath) && existsSync(v89AbsurdPath)) {
+  mod._midi2jianpu_set_track(-1);
+  const v89Caller = makeCaller(mod);
+  v89Caller.setLyrics('');
+  v89Caller.setMidi(new Uint8Array(readFileSync(v89ShortPath)));
+  const v89ShortHtml = v89Caller.call('midi2jianpu_html', -1, 1) || '';
+  check(!v89ShortHtml.includes('已截断') &&
+        !v89ShortHtml.includes('时间轴跨度异常'),
+    'WASM 短拍号长曲不再谎报截断 / 时间轴异常', v89ShortHtml.slice(0, 300));
+  check(v89ShortHtml.includes('1/16') && v89ShortHtml.includes('4/4'),
+    'WASM 仍照常显示合法的 1/16 → 4/4 变拍号', v89ShortHtml.slice(0, 300));
+  check((v89ShortHtml.match(/class='note/g) || []).length > 100,
+    'WASM 短拍号长曲的 160 个音照常出谱',
+    (v89ShortHtml.match(/class='note/g) || []).length);
+
+  v89Caller.setMidi(new Uint8Array(readFileSync(v89AbsurdPath)));
+  const v89AbsurdHtml = v89Caller.call('midi2jianpu_html', -1, 1) || '';
+  const v89AbsurdXml = v89Caller.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(!v89AbsurdHtml.includes('255/1') && !v89AbsurdHtml.includes('1/256'),
+    'WASM 页眉不再出现离谱拍号', v89AbsurdHtml.slice(0, 300));
+  check(v89AbsurdHtml.length < 300000 && v89AbsurdXml.length < 150000,
+    'WASM HTML / MusicXML 体积有界（旧版 49.5 MB / 5.35 MB）',
+    v89AbsurdHtml.length + ' / ' + v89AbsurdXml.length);
+  check(v89AbsurdHtml.includes('已截断 1 个越界音符'),
+    'WASM 仍如实提示极长音被截断', v89AbsurdHtml.slice(0, 300));
+}
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

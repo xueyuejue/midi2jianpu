@@ -7424,6 +7424,114 @@ int main() {
               "正常文件提示不含时间轴字样");
     }
 
+    // ---- v1.89.0 时间轴护栏与曲首拍号解耦 ----
+    //
+    // v1.88 把上限收到 512 小节，却仍拿「曲首拍号」反算 barLen：
+    //   * 曲首 1/16 -> cap 只有 61440 tick（32 个 4/4 小节），从第 2 小节
+    //     回到 4/4 的正常长曲后半被整条丢弃，页眉谎报「疑似损坏的 delta-time」；
+    //   * 曲首 255/1 -> cap 2.5 亿 tick，输出层按 489600 tick 的 barLen
+    //     给每小节铺列，再变 1/256 就铺出 20000 小节 / 49 MB HTML。
+    // 现在 cap 固定按 4/4 基准小节算（解析层与 barGridOf() 共用），
+    // 0x58 里音乐上不存在的拍号不再进 timeSigChanges。
+    std::cout << "\n测试时间轴护栏与拍号解耦（v1.89）\n";
+    {
+        // 1) 基准函数只认 division，不认拍号。
+        check(timelineCapTicks(480) == 512L * 1920L,
+              "480 tpqn 的 cap = 512 个 4/4 小节");
+        check(timelineCapTicks(240) == 512L * 960L,
+              "240 tpqn 的 cap 按 division 等比缩放");
+        check(timelineCapTicks(0) == 512L * 1920L,
+              "非法 division 回退 480 后再算 cap");
+    }
+    {
+        // 2) 曲首 1/16 + 第 2 小节回 4/4：40 小节 160 个音一个不少。
+        SmfTrack cond;
+        cond.at(0, ev({0xFF, 0x58, 0x04, 0x01, 0x04, 0x18, 0x08}));   // 1/16
+        cond.at(120, ev({0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08})); // 4/4
+        SmfTrack mel;
+        for (int b = 0; b < 40; b++)
+            for (int i = 0; i < 4; i++) {
+                long t = b * 1920L + i * 480L;
+                mel.at(t, ev({0x90, (uint8_t)(60 + i), 90}));
+                mel.at(t + 480, ev({0x80, (uint8_t)(60 + i), 0}));
+            }
+        auto bytes = buildSmf(2, 480, {cond, mel});
+        MidiData d;
+        check(loadMidiFromMemory(bytes.data(), bytes.size(), d),
+              "短拍号长曲 SMF 解析成功");
+        check(d.notes.size() == 160,
+              "160 个正常音符全保留（旧版只剩 128）, 实际: " +
+              std::to_string(d.notes.size()));
+        check(d.timelineClamped == 0 && d.timelineEventsDropped == 0,
+              "短拍号长曲不计任何截断 / 丢弃");
+        check(d.timeSigChanges.size() == 2 && d.timeSig.toString() == "1/16",
+              "合法的 1/16 与 4/4 变拍号都照常保留");
+        check(truncationLabel(d).find("时间轴") == std::string::npos,
+              "不再谎报「时间轴跨度异常 / 疑似损坏的 delta-time」: " +
+              truncationLabel(d));
+    }
+    {
+        // 3) 255/1 与 1/256 都被挡掉，长音夹到 256 小节，铺表有界。
+        SmfTrack cond;
+        cond.at(0, ev({0xFF, 0x58, 0x04, 0xFF, 0x00, 0x18, 0x08}));      // 255/1
+        cond.at(489600L, ev({0xFF, 0x58, 0x04, 0x01, 0x08, 0x18, 0x08}));// 1/256
+        SmfTrack mel;
+        mel.at(0, ev({0x90, 60, 90}));
+        mel.at(250000000L, ev({0x80, 60, 0}));
+        auto bytes = buildSmf(2, 480, {cond, mel});
+        MidiData d;
+        check(loadMidiFromMemory(bytes.data(), bytes.size(), d),
+              "离谱拍号 SMF 解析成功");
+        check(d.timeSigChanges.empty(),
+              "255/1 与 1/256 都不进拍号表, 实际: " +
+              std::to_string(d.timeSigChanges.size()));
+        check(d.timeSig.toString() == "4/4",
+              "无合法拍号时回退 4/4, 实际: " + d.timeSig.toString());
+        long maxDur = 0;
+        for (const auto& n : d.notes) maxDur = std::max(maxDur, n.durationTicks);
+        check(maxDur <= 512L * 1920L,
+              "长音夹在固定 cap 内, 实际: " + std::to_string(maxDur));
+        check(barGridOf(d).starts.size() < 600,
+              "输出层铺表有界（旧版撞 20000 上限）, 实际: " +
+              std::to_string(barGridOf(d).starts.size()));
+    }
+    {
+        // 4) 真实拍号一个都不许误伤：1/16 是下界，3/8 / 6/8 / 12/8 / 5/4 照常。
+        const uint8_t meters[][2] = {{1, 4}, {3, 3}, {6, 3}, {12, 3}, {5, 2}};
+        const char* labels[] = {"1/16", "3/8", "6/8", "12/8", "5/4"};
+        for (int i = 0; i < 5; i++) {
+            SmfTrack cond;
+            cond.at(0, ev({0xFF, 0x58, 0x04, meters[i][0], meters[i][1],
+                           0x18, 0x08}));
+            SmfTrack mel;
+            mel.at(0, ev({0x90, 60, 90}));
+            mel.at(480, ev({0x80, 60, 0}));
+            auto bytes = buildSmf(2, 480, {cond, mel});
+            MidiData d;
+            check(loadMidiFromMemory(bytes.data(), bytes.size(), d),
+                  std::string("拍号 ") + labels[i] + " 样本解析成功");
+            check(d.timeSigChanges.size() == 1 &&
+                  d.timeSig.toString() == labels[i],
+                  std::string("拍号 ") + labels[i] + " 被保留, 实际: " +
+                  d.timeSig.toString());
+        }
+    }
+    {
+        // 5) 全程 3/8 的短拍号曲目也不误杀（cap 与拍号无关的直接体现）。
+        SmfTrack cond;
+        cond.at(0, ev({0xFF, 0x58, 0x04, 0x03, 0x03, 0x18, 0x08}));
+        SmfTrack mel;
+        for (int i = 0; i < 24; i++) {
+            mel.at(i * 240L, ev({0x90, 60, 90}));
+            mel.at(i * 240L + 240, ev({0x80, 60, 0}));
+        }
+        auto bytes = buildSmf(2, 480, {cond, mel});
+        MidiData d;
+        check(loadMidiFromMemory(bytes.data(), bytes.size(), d),
+              "全程 3/8 曲目解析成功");
+        check(d.notes.size() == 24 && d.timelineClamped == 0,
+              "3/8 曲目 24 个音全保留, 实际: " + std::to_string(d.notes.size()));
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

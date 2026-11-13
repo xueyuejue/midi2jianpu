@@ -1075,11 +1075,14 @@ BarGrid barGridOf(const MidiData& data) {
 
     const auto changes = meterChangesOf(data);
 
-    // 边界表要铺到最后一个音之后再多一节，延长段才不会跨出表尾
+    // 边界表要铺到最后一个音之后再多一节，延长段才不会跨出表尾。
+    // v1.89：与解析层共用同一个时间轴上限。只按 songEnd 铺表时，极小的
+    // curLen 能把 horizon 里每一节压到 8 tick，撞上 20000 的硬保险就产出
+    // 几十 MB 空谱；钳到 cap 之后两端口径一致，正常文件 songEnd 远小于 cap。
     long songEnd = 0;
     for (const auto& n : data.notes)
         songEnd = std::max(songEnd, n.startTicks + std::max<long>(n.durationTicks, 1));
-    const long horizon = songEnd + bl;
+    const long horizon = std::min(songEnd + bl, timelineCapTicks(data.division));
 
     long cur = 0;
     size_t ci = 0;
