@@ -123,6 +123,15 @@ jobs:
           python3 tests/check_utf8.py --self-test
           python3 tests/check_utf8.py
 
+      - name: CLI 参数矩阵 × 全素材（21 项自测 + 105 份素材）
+        # 其余闸门都在默认参数下遍历素材；fuzz 是字节级突变、从不组合 CLI 开关。
+        # 这里对每份素材跑一组开关（--no-quantize / --no-dynamics / --no-key-changes /
+        # --bar-numbers / --transpose），断言 rc ∈ {0,1,2,3,4}、rc==0 的 MusicXML 可解析、
+        # HTML 合法且无裸 <script>；并校验 --track 全轨 / 越界与移调八度 / 调号不变量。
+        run: |
+          python3 tests/check_cli_matrix.py --self-test
+          python3 tests/check_cli_matrix.py
+
       - name: CLI 端到端冒烟（103 组）
         # 失败项由 tests/ci_report.py 同步写进 annotations 与 step summary。
         run: python3 tests/smoke.py build/midi2jianpu

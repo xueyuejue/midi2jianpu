@@ -88,6 +88,8 @@ python tests/check_xml_structure.py --self-test    # 34 项 XML 结构守卫自�
 python tests/check_xml_structure.py                # 全部 105 份素材严格解析 / 时值守恒 / 元素顺序 / HTML 配对
 python tests/check_utf8.py --self-test             # 15 项 UTF-8 守卫自测
 python tests/check_utf8.py                         # 三端产物逐份严格 UTF-8 解码 + MusicXML 严格解析
+python tests/check_cli_matrix.py --self-test       # 21 项 CLI 参数矩阵自测
+python tests/check_cli_matrix.py                   # 全部 105 份素材参数矩阵 / 轨扫描 / 移调八度与调号不变量
 python tests/check_bar_beats.py --regress <旧版exe>  # 结构性零回归
 ```
 

@@ -15,11 +15,10 @@ exe 去跑它，产出的是「旧版对新文件的第一次渲染」，不是�
 import os
 
 # 与其在 8 个脚本里各写一份，不如集中一处；加新素材时只改这一行。
-# v1.90.0 顶层新增 html_meta_inject.mid（页眉转义）：旧版渲染它是
-# 「第一次见」，不参与逐字节零回归，但要被 10 个全量守卫、冒烟 [103]、
-# WASM [64] 与 C++ 单测守护。
-# v1.89.0 的 absurd_meter.mid 与更早素材对本轮基线都已是「旧版见过」，移出。
-NEW_FIXTURES = {"html_meta_inject.mid"}
+# v1.92.0 只新增一道参数矩阵守卫（tests/check_cli_matrix.py），未加任何
+# 素材；基线 _baseline_v1911.exe 已含 v1.90 的 html_meta_inject.mid，故本轮
+# 无需跳过任何素材——它连同其余 105 份一起参与逐字节零回归比对。
+NEW_FIXTURES = set()
 
 
 def skip(path):
