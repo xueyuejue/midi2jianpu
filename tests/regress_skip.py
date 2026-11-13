@@ -18,6 +18,8 @@ import os
 # v1.92.0 只新增一道参数矩阵守卫（tests/check_cli_matrix.py），未加任何
 # 素材；基线 _baseline_v1911.exe 已含 v1.90 的 html_meta_inject.mid，故本轮
 # 无需跳过任何素材——它连同其余 105 份一起参与逐字节零回归比对。
+# v1.93.0 只把 fuzz 的突变算子从 7 个扩到 12 个（含多种子），同样未加素材；
+# 基线 _baseline_v1920.exe 已含全部 105 份，故仍无需跳过。
 NEW_FIXTURES = set()
 
 

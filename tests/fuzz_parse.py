@@ -1,16 +1,27 @@
 #!/usr/bin/env python3
-"""解析层模糊测试：用合法 MIDI 种子做字节级突变，逼出崩溃 / 越界 / 注入。
+"""解析层模糊测试：用合法 MIDI 种子做突变，逼出崩溃 / 越界 / 注入。
 
 设计目标
 --------
 - 不依赖仓库里任何 .mid 文件（fixtures 由 make_fixture 在 CI 生成、不入库）；
   所有种子直接 `import make_fixture` 调纯函数 `build_xxx()` 在内存里拿，
   自包含、可复现。
-- 字节级突变：翻转比特 / 翻转字节 / 插入 / 删除 / 复制块 / 截断 / 改写头。
+- **两层突变**：
+    * 7 个通用算子（字节级）：翻转比特 / 翻转字节 / 插入 / 删除 / 复制块 /
+      截断 / 改写文件头；
+    * 5 个**语法感知**算子（字段级）：改写 SysEx 长度字段 / 删或提前插 F7
+      终结符 / 改写 RPN(NRPN) 数据字节 / 在 meta 事件处插入超长 VarLen /
+      改写 MTrk chunk 长度。随机翻字节的命中率约为 1/文件长度，这 5 类
+      「解析层有专门代码」的字段几乎打不中（103 份种子里含 SysEx 仅 18 份、
+      含 RPN/CC64-65 仅 6 份），必须定点打。
+- **定点选种子**：语法感知算子优先从含对应字段的种子池里挑（`MUT_SEED_HINTS`），
+  找不到才退回全体，避免「打空气」。
 - 覆盖参数组合：--html / --musicxml / --output / --player / --track /
   --bars / --key / --transpose / --gong 等，含若干「必定失败但不该崩」的
   边界值（--bars 9、--key ZZ、--track 99）。
-- 固定随机种子，跑 ≥500 次，过程可复现。
+- **多种子**：`--seed 0x5EED`（单种子）或 `--seeds 0x5EED,1,42`（逗号分隔，
+  每个种子各跑 `--count` 次）；每个种子独立 `random.Random(seed)` 实例，
+  逐种子完全可复现。
 - 不变量断言：
     * 退出码必须 ∈ {0,1,2,3,4}（负数 = 信号崩、>4 = 未知崩、超时 = 卡死）；
     * rc==0 且不开 --player 的 HTML 必须不含 `<script`、不含 U+FFFD；
@@ -21,7 +32,8 @@
 
 用法
 ----
-    python tests/fuzz_parse.py [可执行文件] [--count N] [--seed S]
+    python tests/fuzz_parse.py [可执行文件] [--count N] [--seed S | --seeds a,b,c]
+    python tests/fuzz_parse.py --self-test
 
 默认可执行文件路径与 smoke.py 一致：build/midi2jianpu.exe（Windows）
 或 build/midi2jianpu。
@@ -46,9 +58,20 @@ if FIXTURES not in sys.path:
 # 解析层允许的退出码集合（见 src/main.cpp）
 VALID_RC = {0, 1, 2, 3, 4}
 
-# 突变算子集合
+# 突变算子集合（前 7 个通用，后 5 个语法感知）
 MUTATORS = ["flip_bit", "flip_byte", "insert", "delete",
-            "duplicate", "truncate", "header"]
+            "duplicate", "truncate", "header",
+            "sysex_len", "sysex_term", "rpn_param", "varlen_meta",
+            "chunk_len"]
+
+# 语法感知算子优先挑选含对应字段的种子，避免「打空气」
+MUT_SEED_HINTS = {
+    "sysex_len": b"\xf0",
+    "sysex_term": b"\xf0",
+    "rpn_param": b"\xb0\x65",
+    "varlen_meta": b"\xff\x51",   # FF 51 = set tempo，绝大多数种子都有
+    "chunk_len": b"MTrk",
+}
 
 
 def load_make_fixture():
@@ -76,6 +99,41 @@ def collect_seeds(mod):
         if isinstance(data, (bytes, bytearray)) and data[:4] == b"MThd":
             seeds[name] = bytes(data)
     return seeds
+
+
+# ---------------- 结构化定位（语法感知突变的底座） ----------------
+def _read_vlq(b, pos):
+    """读一个 VarLen 值，返回 (value, next_pos)；超 4 字节视为非法返回 (None, pos)。"""
+    val = 0
+    start = pos
+    while pos < len(b) and pos - start < 4:
+        c = b[pos]
+        val = (val << 7) | (c & 0x7F)
+        pos += 1
+        if not c & 0x80:
+            return val, pos
+    return None, start
+
+
+def _write_vlq(v):
+    """把数值写成 VarLen（最多 4 字节，超出按 28 位截断）。"""
+    v &= 0x0FFFFFFF
+    out = [v & 0x7F]
+    v >>= 7
+    while v:
+        out.append((v & 0x7F) | 0x80)
+        v >>= 7
+    return bytes(reversed(out))
+
+
+def _positions(b, needle):
+    """返回 needle 在 b 中出现的全部位置。"""
+    hits = []
+    i = b.find(needle)
+    while i >= 0:
+        hits.append(i)
+        i = b.find(needle, i + 1)
+    return hits
 
 
 # ---------------- 突变算子 ----------------
@@ -130,11 +188,98 @@ def header(b, rng):
     return b[:i] + bytes([rng.randrange(256)]) + b[i + 1:]
 
 
+def sysex_len(b, rng):
+    """改写 SysEx 长度字段：0 / 极端大值 / 与实际 payload 不符。
+
+    解析层要为 SysEx 预留缓冲区并按长度推进，长度撒谎是它的直接输入。
+    """
+    hits = _positions(b, b"\xf0")
+    if not hits:
+        return flip_byte(b, rng)
+    i = rng.choice(hits) + 1
+    val, nxt = _read_vlq(b, i)
+    if val is None:
+        return flip_byte(b, rng)
+    pick = rng.randrange(3)
+    if pick == 0:
+        new = b"\x00"
+    elif pick == 1:
+        new = b"\x7f\x7f\x7f\x7f"            # 0x0FFFFFFF，远超文件长度
+    else:
+        new = _write_vlq(max(0, len(b) - nxt + rng.randint(-4, 8)))
+    return b[:i] + new + b[nxt:]
+
+
+def sysex_term(b, rng):
+    """删掉 F7 终结符，或提前插一个 F7 把 payload 截断。"""
+    spans = []
+    for s in _positions(b, b"\xf0"):
+        e = b.find(b"\xf7", s + 1)
+        if e > s:
+            spans.append((s, e))
+    if not spans:
+        return flip_byte(b, rng)
+    s, e = rng.choice(spans)
+    if rng.randrange(2):
+        return b[:e] + b[e + 1:]              # SysEx 无终结符，拖到轨尾
+    mid = rng.randint(s + 1, e) if e > s + 1 else e
+    return b[:mid] + b"\xf7" + b[mid:]        # 提前终结，多余字节留轨内
+
+
+def rpn_param(b, rng):
+    """改写 RPN/NRPN 参数号与 Data Entry 数据字节（含非法 0xFF 数据字节）。"""
+    hits = []
+    for i in range(len(b) - 2):
+        if 0xB0 <= b[i] <= 0xBF and b[i + 1] in (0x64, 0x65, 0x06, 0x26):
+            hits.append(i + 2)
+    if not hits:
+        return flip_byte(b, rng)
+    i = rng.choice(hits)
+    return b[:i] + bytes([rng.choice([0x00, 0x7F, 0xFF, 0x40])]) + b[i + 1:]
+
+
+def varlen_meta(b, rng):
+    """在 meta 事件类型字节后插入超长 / 溢出 VarLen 长度字段。"""
+    hits = []
+    for i in _positions(b, b"\xff"):
+        if i + 1 < len(b):
+            hits.append(i + 1)
+    if not hits:
+        return flip_byte(b, rng)
+    i = rng.choice(hits)
+    if rng.randrange(2):
+        return b[:i] + b"\x80\x80\x80\x80\x80" + b[i:]   # 5 字节 VLQ，超 int32 位移
+    return b[:i] + b"\xff\xff\xff\xff" + b[i:]           # 4 字节但值巨大
+
+
+def chunk_len(b, rng):
+    """改写 MTrk 的 4 字节长度：0 / 巨大 / 与实际不符，逼边界校正逻辑。"""
+    hits = _positions(b, b"MTrk")
+    if not hits:
+        return flip_byte(b, rng)
+    i = rng.choice(hits) + 4
+    if i + 4 > len(b):
+        return flip_byte(b, rng)
+    val = rng.choice([0, 0xFFFFFFFF, max(0, len(b) - i - 4), 12, 0x7FFFFFFF])
+    return b[:i] + val.to_bytes(4, "big") + b[i + 4:]
+
+
 MUT_FUNCS = {
     "flip_bit": flip_bit, "flip_byte": flip_byte, "insert": insert,
     "delete": delete, "duplicate": duplicate, "truncate": truncate,
-    "header": header,
+    "header": header, "sysex_len": sysex_len, "sysex_term": sysex_term,
+    "rpn_param": rpn_param, "varlen_meta": varlen_meta, "chunk_len": chunk_len,
 }
+
+
+def pick_seed(rng, seeds, mut):
+    """语法感知算子优先从含对应字段的种子池里挑，避免「打空气」。"""
+    hint = MUT_SEED_HINTS.get(mut)
+    if hint:
+        cand = [k for k, v in seeds.items() if hint in v]
+        if cand:
+            return rng.choice(cand)
+    return rng.choice(list(seeds.keys()))
 
 
 # ---------------- 参数组合 ----------------
@@ -265,20 +410,113 @@ def targeted_xss(exe, seed_bytes, out_dir):
     return fails
 
 
+# ---------------- 种子列表解析 ----------------
+def parse_seeds(s):
+    """解析 `0x5EED,1,42` 这类逗号分隔的种子列表（支持 0x 前缀）。"""
+    out = []
+    for part in s.replace(" ", "").split(","):
+        if part:
+            out.append(int(part, 0))
+    return out
+
+
+# ---------------- 自测（不依赖 exe） ----------------
+SAMPLE = (b"MThd\x00\x00\x00\x06\x00\x00\x01\x00\x01\xe0"
+          b"MTrk\x00\x00\x00\x1e"
+          b"\x00\xff\x51\x03\x07\xa1\x20"
+          b"\x00\xf0\x05\x7e\x7f\x09\x01\xf7"
+          b"\x00\xb0\x65\x00\xb0\x64\x00\xb0\x06\x0c"
+          b"\x00\x90\x3c\x64\x83\x60\x80\x3c\x00")
+
+
+def self_test():
+    fails = []
+    items = []
+
+    def st(cond, name):
+        items.append(name)
+        if not cond:
+            fails.append(name)
+
+    st(VALID_RC == {0, 1, 2, 3, 4}, "合法退出码集合为 {0,1,2,3,4}")
+    st(MUTATORS == list(MUT_FUNCS.keys()), "算子清单与实现表一一对应（12 个）")
+    st(len(MUTATORS) == 12, "算子总数为 12（7 通用 + 5 语法感知）")
+
+    # VarLen 编解码
+    for v in (0x00, 0x40, 0x7F, 0x80, 0x3FFF, 0x0FFFFFFF):
+        enc = _write_vlq(v)
+        dec, nxt = _read_vlq(enc, 0)
+        st(dec == v and nxt == len(enc), f"VarLen 往返 {v:#x}")
+    dec, nxt = _read_vlq(b"\x80\x80\x80\x80\x01", 0)
+    st(dec is None and nxt == 0, "5 字节 VarLen 判为非法")
+    st(_write_vlq(0x0FFFFFFF) == b"\xff\xff\xff\x7f", "最大 VarLen 编码为 FF FF FF 7F")
+
+    # 定位函数
+    st(_positions(SAMPLE, b"\xf0") and len(_positions(SAMPLE, b"\xf0")) == 1,
+       "F0 定位命中 1 处")
+    st(len(_positions(SAMPLE, b"MTrk")) == 1, "MTrk 定位命中 1 处")
+
+    # 每个算子对样例数据都能产出 bytes，且固定种子下完全可复现
+    for name in MUTATORS:
+        fn = MUT_FUNCS[name]
+        a = fn(SAMPLE, random.Random(7))
+        b = fn(SAMPLE, random.Random(7))
+        st(isinstance(a, bytes) and a == b, f"算子 {name} 可复现且返回 bytes")
+
+    # 5 个语法感知算子必须真的改到目标字段（多次尝试中至少一次生效）
+    for name in ("sysex_len", "sysex_term", "rpn_param",
+                 "varlen_meta", "chunk_len"):
+        fn = MUT_FUNCS[name]
+        hit = any(fn(SAMPLE, random.Random(k)) != SAMPLE for k in range(1, 21))
+        st(hit, f"语法感知算子 {name} 在样例上确实改动字节")
+
+    # 找不到目标时退回通用突变，不得抛异常
+    plain = b"MThd\x00\x00\x00\x06\x00\x00\x01\x00\x60"
+    st(all(isinstance(MUT_FUNCS[n](plain, random.Random(3)), bytes)
+           for n in ("sysex_len", "sysex_term", "rpn_param",
+                     "varlen_meta", "chunk_len")),
+       "无目标字段时 5 个算子均安全退回")
+
+    # 种子列表解析
+    st(parse_seeds("0x5EED,1,42") == [0x5EED, 1, 42], "种子列表解析 0x5EED,1,42")
+    st(parse_seeds(" 7 , 8 ") == [7, 8], "种子列表容错空格")
+    st(parse_seeds("") == [], "空种子串解析为空列表")
+
+    # 定点选种子：语法感知算子必须挑到含对应字段的种子
+    pool = {"a": b"MThd" + b"\x00" * 8, "b": SAMPLE}
+    picked = {pick_seed(random.Random(k), pool, "sysex_len") for k in range(1, 21)}
+    st(picked == {"b"}, "sysex_len 只从含 F0 的种子池里挑")
+    st(pick_seed(random.Random(1), pool, "flip_bit") in ("a", "b"),
+       "通用算子不受种子池限制")
+
+    total = len(items)
+    print(f"自测：共 {total} 项，失败 {len(fails)} 项")
+    for name in fails:
+        print(f"  [FAIL] {name}")
+    if not fails:
+        print("自测全部通过。")
+        return 0
+    return 1
+
+
 def main():
     args = sys.argv[1:]
     exe = None
     count = 600
-    seed = 0x5EED
+    seed_list = [0x5EED]
     i = 0
     while i < len(args):
         a = args[i]
-        if a in ("--count", "--seed"):
+        if a == "--self-test":
+            return self_test()
+        if a in ("--count", "--seed", "--seeds"):
             val = args[i + 1] if i + 1 < len(args) else ""
             if a == "--count":
                 count = int(val)
+            elif a == "--seed":
+                seed_list = [int(val, 0)]      # 支持 0x 前缀
             else:
-                seed = int(val, 0)  # 支持 0x 前缀
+                seed_list = parse_seeds(val)
             i += 2
         elif not a.startswith("-"):
             exe = a
@@ -286,6 +524,8 @@ def main():
         else:
             i += 1
 
+    if not seed_list:
+        raise SystemExit("--seeds 至少给一个种子")
     if exe is None:
         exe = os.path.join(ROOT, "build",
                            "midi2jianpu.exe" if os.name == "nt" else "midi2jianpu")
@@ -298,35 +538,42 @@ def main():
     seeds = collect_seeds(mod)
     if not seeds:
         raise SystemExit("未收集到任何 MIDI 种子，检查 make_fixture.py")
-    print(f"收集到 {len(seeds)} 份 MIDI 种子；计划跑 {count} 次（seed={seed:#x}）")
+    total_plan = count * len(seed_list)
+    seeds_desc = ",".join(f"{s:#x}" for s in seed_list)
+    print(f"收集到 {len(seeds)} 份 MIDI 种子；计划跑 {total_plan} 次"
+          f"（{len(seed_list)} 个种子 × {count}：{seeds_desc}）")
 
-    rng = random.Random(seed)
     out_dir = tempfile.mkdtemp(prefix="m2j-fuzz-")
     crashes = []          # rc 越界 / 超时（解析层崩或卡死）
     invariants = []       # rc==0 但不变量被破坏
     rc_hist = {}
-    n = 0
-    for n in range(1, count + 1):
-        seed_name = rng.choice(list(seeds.keys()))
-        base = seeds[seed_name]
-        mut = rng.choice(MUTATORS)
-        data = MUT_FUNCS[mut](base, rng)
-        mode, cargs = pick_args(rng, out_dir)
-        rc, out, err, to = run_once(exe, data, cargs, 20)
-        if to or rc is None:
-            crashes.append((seed_name, mut, mode, cargs, "TIMEOUT"))
-            continue
-        rc_hist[rc] = rc_hist.get(rc, 0) + 1
-        if rc not in VALID_RC:
-            crashes.append((seed_name, mut, mode, cargs, f"rc={rc}"))
-            continue
-        probs = []
-        check_outputs(rc, mode, out_dir, out, probs)
-        if probs:
-            invariants.append((seed_name, mut, mode, cargs, rc, probs))
+    mut_stats = {}
+    done = 0
+    for sv in seed_list:
+        rng = random.Random(sv)
+        for _ in range(count):
+            done += 1
+            mut = rng.choice(MUTATORS)
+            seed_name = pick_seed(rng, seeds, mut)
+            data = MUT_FUNCS[mut](seeds[seed_name], rng)
+            mode, cargs = pick_args(rng, out_dir)
+            mut_stats[mut] = mut_stats.get(mut, 0) + 1
+            rc, out, err, to = run_once(exe, data, cargs, 20)
+            if to or rc is None:
+                crashes.append((sv, seed_name, mut, mode, cargs, "TIMEOUT"))
+                continue
+            rc_hist[rc] = rc_hist.get(rc, 0) + 1
+            if rc not in VALID_RC:
+                crashes.append((sv, seed_name, mut, mode, cargs, f"rc={rc}"))
+                continue
+            probs = []
+            check_outputs(rc, mode, out_dir, out, probs)
+            if probs:
+                invariants.append((sv, seed_name, mut, mode, cargs, rc, probs))
 
-        if n % 100 == 0:
-            print(f"  ... 已完成 {n} 次（崩溃 {len(crashes)} / 不变量 {len(invariants)}）")
+            if done % 100 == 0:
+                print(f"  ... 已完成 {done}/{total_plan} 次"
+                      f"（崩溃 {len(crashes)} / 不变量 {len(invariants)}）")
 
     # 定向 XSS 用例
     xss_fails = []
@@ -337,7 +584,9 @@ def main():
 
     # ---- 汇总 ----
     print("\n===== 模糊测试汇总 =====")
-    print(f"总运行次数 : {count}")
+    print(f"总运行次数 : {total_plan}")
+    print(f"种子       : {seeds_desc}")
+    print(f"算子分布   : {dict(sorted(mut_stats.items()))}")
     print(f"退出码分布 : {dict(sorted(rc_hist.items()))}")
     print(f"崩溃/卡死  : {len(crashes)}")
     print(f"不变量破坏 : {len(invariants)}")
@@ -350,10 +599,11 @@ def main():
 
     print("\n--- 异常明细（最多 20 条）---")
     for c in crashes[:20]:
-        print(f"  [CRASH] seed={c[0]} mut={c[1]} mode={c[2]} args={c[3]} -> {c[4]}")
+        print(f"  [CRASH] seed={c[0]:#x} fixture={c[1]} mut={c[2]} "
+              f"mode={c[3]} args={c[4]} -> {c[5]}")
     for inv in invariants[:20]:
-        print(f"  [INV] seed={inv[0]} mut={inv[1]} mode={inv[2]} rc={inv[4]} "
-              f"args={inv[3]} :: {inv[5]}")
+        print(f"  [INV] seed={inv[0]:#x} fixture={inv[1]} mut={inv[2]} "
+              f"mode={inv[3]} rc={inv[5]} args={inv[4]} :: {inv[6]}")
     for x in xss_fails:
         print(f"  [XSS] {x}")
     return 1

@@ -124,8 +124,8 @@ jobs:
           python3 tests/check_utf8.py
 
       - name: CLI 参数矩阵 × 全素材（21 项自测 + 105 份素材）
-        # 其余闸门都在默认参数下遍历素材；fuzz 是字节级突变、从不组合 CLI 开关。
-        # 这里对每份素材跑一组开关（--no-quantize / --no-dynamics / --no-key-changes /
+        # fuzz 侧重「畸形输入下的健壮性」、只在随机开关下抽查；这里逐份素材
+        # 覆盖一组开关（--no-quantize / --no-dynamics / --no-key-changes /
         # --bar-numbers / --transpose），断言 rc ∈ {0,1,2,3,4}、rc==0 的 MusicXML 可解析、
         # HTML 合法且无裸 <script>；并校验 --track 全轨 / 越界与移调八度 / 调号不变量。
         run: |
@@ -136,10 +136,14 @@ jobs:
         # 失败项由 tests/ci_report.py 同步写进 annotations 与 step summary。
         run: python3 tests/smoke.py build/midi2jianpu
 
-      - name: 解析层模糊测试（≥500 次字节突变，零崩溃）
-        # 用合法 MIDI 种子做字节级突变，断言退出码 ∈ {0,1,2,3,4}、rc==0 不开
-        # --player 的 HTML 不含 <script>、无 U+FFFD、--musicxml 可被解析。
-        run: python3 tests/fuzz_parse.py build/midi2jianpu --count 500
+      - name: 解析层模糊测试（12 类突变 × 3 种子 × 200 次，零崩溃）
+        # 7 个通用字节算子 + 5 个语法感知算子（SysEx 长度字段 / F7 终结符 /
+        # RPN(NRPN) 数据字节 / meta 超长 VarLen / MTrk 长度字段），后者优先挑
+        # 含对应字段的种子；断言退出码 ∈ {0,1,2,3,4}、rc==0 不开 --player 的
+        # HTML 不含 <script>、无 U+FFFD、--musicxml 可被解析。
+        run: |
+          python3 tests/fuzz_parse.py --self-test
+          python3 tests/fuzz_parse.py build/midi2jianpu --count 200 --seeds 0x5EED,1,42
 
   wasm:
     name: WASM 产物与导出清单
