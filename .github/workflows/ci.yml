@@ -127,6 +127,11 @@ jobs:
         # 失败项由 tests/ci_report.py 同步写进 annotations 与 step summary。
         run: python3 tests/smoke.py build/midi2jianpu
 
+      - name: 解析层模糊测试（≥500 次字节突变，零崩溃）
+        # 用合法 MIDI 种子做字节级突变，断言退出码 ∈ {0,1,2,3,4}、rc==0 不开
+        # --player 的 HTML 不含 <script>、无 U+FFFD、--musicxml 可被解析。
+        run: python3 tests/fuzz_parse.py build/midi2jianpu --count 500
+
   wasm:
     name: WASM 产物与导出清单
     runs-on: ubuntu-latest

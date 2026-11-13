@@ -251,7 +251,7 @@ python3 tests/check_wasm_sync.py --changed docs/wasm/midi2jianpu.wasm \
 
 | job | 步骤 |
 | --- | --- |
-| `cpp` | CMake 编译 CLI 与单测 → `ctest`（1215 项）→ 全量重生成 105 份 `.mid` 并要求零 diff、无未跟踪素材 → `smoke.py --self-test` 28 项 → `check_xml_durations.py` 18 项自测 + 105 份素材 → `check_xml_beams.py` 39 项自测 + 105 份素材 → `check_xml_staff.py` 32 项自测 + 105 份素材 → `check_bar_beats.py` 26 项自测 + 105 份素材 → `check_html_dots.py` 35 项自测 + 105 份素材 → `check_html_rests.py` 77 项自测 + 105 份素材 → `check_three_way.py` 11 项自测 + 105 份素材 → `check_xml_structure.py` 34 项自测 + 105 份素材 → `check_html_player.py` 23 项自测 + 105 份素材 → `check_utf8.py` 15 项自测 + 105 份素材 → `smoke.py` 103 组 |
+| `cpp` | CMake 编译 CLI 与单测 → `ctest`（1215 项）→ 全量重生成 105 份 `.mid` 并要求零 diff、无未跟踪素材 → `smoke.py --self-test` 28 项 → `check_xml_durations.py` 18 项自测 + 105 份素材 → `check_xml_beams.py` 39 项自测 + 105 份素材 → `check_xml_staff.py` 32 项自测 + 105 份素材 → `check_bar_beats.py` 26 项自测 + 105 份素材 → `check_html_dots.py` 35 项自测 + 105 份素材 → `check_html_rests.py` 77 项自测 + 105 份素材 → `check_three_way.py` 11 项自测 + 105 份素材 → `check_xml_structure.py` 34 项自测 + 105 份素材 → `check_html_player.py` 23 项自测 + 105 份素材 → `check_utf8.py` 15 项自测 + 105 份素材 → `smoke.py` 103 组 → `fuzz_parse.py` 解析层模糊测试（≥500 次字节突变） |
 | `wasm` | `check_wasm_sync.py --self-test`（16 组）+ 实跑（含反向版本守护）→ `check_wasm_exports.py` → `wasm_smoke.mjs` 64 组（含产物版本号与 `version.hpp` 比对） |
 
 客户端可以忘了跑测试，这里在服务端兜底；**升过版本号却忘了重编 `docs/wasm/`，
