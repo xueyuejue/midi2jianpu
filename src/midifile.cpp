@@ -673,6 +673,30 @@ static void applySysExDrumMode(MidiData& out,
 //   2) format 1 文件的 set_tempo 通常在独立的 conductor 轨（track 0），
 //      如果它排在音符轨之后被解析，整份谱子的秒数全部错位。
 // 现在与 LRC 歌词共用同一张 TempoTimeline，不会再出现「音符对、歌词错」。
+// 时间轴上限：解析期临时向量、out 里的事件表、音符三处过闸共用这一个口径，
+// 免得哪天只改了一处又漏掉另一处。6000 小节在 4/4 @120BPM 下约 3.3 小时，
+// 远超任何真实曲目。
+static long timelineCap(const MidiData& out) {
+    long barLen = (long)std::llround(out.timeSig.barLengthTicks(out.division));
+    if (barLen <= 0) barLen = (out.division > 0 ? (long)out.division : 480L) * 4;
+    return 6000L * barLen;
+}
+
+// channelProgram 存「最后一个 0xC0」，是解析循环里直接写的，不进任何事件表。
+// 越界换音色被丢掉后，这个末值仍停在世界尽头：programAt() 在界内时间轴
+// 查不到点时会回退到它，把整首曲子标成越界处的乐器。按界内 programTimeline
+// 重建（界内根本没设过就删条目）；只在真丢过点时才调，正常文件零改动。
+static void rebuildChannelProgram(MidiData& out) {
+    std::map<int, int> liveLast;
+    for (const auto& p : out.programTimeline)
+        liveLast[p.channel] = p.program;   // 表按 tick 升序，后写覆盖
+    for (auto it = out.channelProgram.begin(); it != out.channelProgram.end(); ) {
+        auto jt = liveLast.find(it->first);
+        if (jt == liveLast.end()) it = out.channelProgram.erase(it);
+        else { it->second = jt->second; ++it; }
+    }
+}
+
 // 点事件的统一清理：凡是 tick 越过 6000 小节上限的，整条丢弃。
 // 用模板而不是给 10 张表各写一遍循环，是为了让它们共用同一个口径——
 // v1.85 只夹 notes 就漏掉了余下 10 张表，以后再加事件表也容易漏。
@@ -711,19 +735,7 @@ static int dropStrayEvents(MidiData& out, long cap) {
     const size_t progBefore = out.programTimeline.size();
     dropBeyond(out.programTimeline, cap, dropped);
     if (out.programTimeline.size() != progBefore) {
-        // channelProgram 存的是「最后一个 0xC0」。越界的换音色被丢掉后，
-        // 这个末值仍停在世界尽头：programAt() 在界内时间轴查不到点时会
-        // 回退到它，把整首曲子标成越界处的乐器（探针里 1 小节的钢琴谱
-        // 被标成小提琴）。只在真丢过 0xC0 时重建，正常文件一个字节不动：
-        // 界内有设定就取界内最后一个，界内根本没设过就把条目删掉。
-        std::map<int, int> liveLast;
-        for (const auto& p : out.programTimeline)
-            liveLast[p.channel] = p.program;   // 表按 tick 升序，后写覆盖
-        for (auto it = out.channelProgram.begin(); it != out.channelProgram.end(); ) {
-            auto jt = liveLast.find(it->first);
-            if (jt == liveLast.end()) it = out.channelProgram.erase(it);
-            else { it->second = jt->second; ++it; }
-        }
+        rebuildChannelProgram(out);
         // bankLabel() 里的计数来自同一批 0xC0 / Bank Select。丢完点之后
         // 必须跟着重算，否则页眉会写「1 处 Bank Select，1 次 Program Change」
         // 而这两件事其实都在被丢弃的世界尽头。界内一个设定都不剩时整行
@@ -755,11 +767,9 @@ static int dropStrayEvents(MidiData& out, long cap) {
 // (第11小节)」「♩=120 → 256」「1=C → 1=D」，还凭空统计出段落和转调，
 // HTML 播放器的 tempo 表也混入巨额 tick。现在一并丢弃并如实提示。
 static void boundTimeline(MidiData& out) {
-    long barLen = (long)std::llround(out.timeSig.barLengthTicks(out.division));
-    if (barLen <= 0) barLen = (out.division > 0 ? (long)out.division : 480L) * 4;
-    const long kMaxBars = 6000;   // 远超任何真实曲目（4/4 @120BPM 约 3.3 小时）
+    const long cap = timelineCap(out);
+    const long barLen = cap / 6000L;
     const long kMaxNoteBars = 256;// 单个 MIDI 音最长 256 小节（真实单音远短于此）
-    const long cap = kMaxBars * barLen;
     const long maxDur = kMaxNoteBars * barLen;
     if (out.notes.empty()) return;
     long maxEnd = 0;
@@ -782,7 +792,14 @@ static void boundTimeline(MidiData& out) {
     }
     // 不管音符有没有被夹，点事件都要过同一道闸：只夹音符的那版会让
     // 「音符全在正常范围、但末尾有一个坏 delta」的文件带着谎报出谱。
-    out.timelineEventsDropped = dropStrayEvents(out, cap);
+    // 解析期临时向量已先在 parseBuffer 里过过一次闸（v1.87），这里累加
+    // 而不是覆盖，两端丢掉的事件合起来才是「已丢弃 N 个越界事件」的 N。
+    out.timelineEventsDropped += dropStrayEvents(out, cap);
+    // 解析循环直接把越界 0xC0 写进 channelProgram，不进任何事件表；
+    // 提前过滤 rawProgramEvents 后 programTimeline 不会「变小」，v1.86
+    // 那个按差值重建的分支不再触发，得在这里按界内末值收口一次。
+    if (out.timelineEventsDropped > 0 || out.timelineClamped > 0)
+        rebuildChannelProgram(out);
 }
 
 static void recomputeSeconds(MidiData& out) {
@@ -936,6 +953,11 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
     // 按文件里的真实顺序正确重放。
     std::vector<RawProgramEvent> rawProgramEvents;
     int modeSeq = 0;
+    // 解析期直接 ++、不进任何事件表的诊断计数：把 tick 记下来，末尾统一
+    // 过时间轴闸。否则巨额 tick 上的一条 SysEx / FF21 / CC0 会让页眉凭空
+    // 多出「1 处 GS/XG 设定」「共 2 个端口」「1 处 Bank Select」。
+    std::vector<long> sysExTicks, bankSelectTicks, channelPrefixTicks;
+    std::vector<std::pair<long, int>> midiPortDecls;   // (tick, 端口号)
     // 旧实现在解析阶段直接丢掉通道 9 的音符并累加 drumNotesSkipped。现在鼓
     // 判定统一延后（GS/XG 可以把通道 10 改回普通乐器），这里只照抄「通道 9
     // 的 note-on 个数」，让既有曲目的谱面页眉计数逐字节不变。
@@ -1166,12 +1188,14 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                     currentPort = (int)d[pos];
                     portsUsed.insert(currentPort);
                     out.midiPortEvents++;
+                    midiPortDecls.push_back({absTick, currentPort});
                 } else if (metaType == 0x20u && metaLen >= 1) {  // Channel Prefix
                     // SMF 规范：它只决定**其后 meta / SysEx** 关联到哪个通道，
                     // 不重定向通道消息。当前 meta 一律按 trackIdx 归属，所以
                     // 这里只记数并在页眉如实说明，不能拿它改写 channel——
                     // 那会把 port 0 ch0 的旋律错记成 ch2 的乐器。
                     out.channelPrefixEvents++;
+                    channelPrefixTicks.push_back(absTick);
                 } else if (metaType == 0x51u && metaLen >= 3) {  // set_tempo
                     // 只记下 tick 与 BPM，秒数在全部事件解析完后统一换算
                     long us = (long)((d[pos] << 16) | (d[pos+1] << 8) | d[pos+2]);
@@ -1247,6 +1271,7 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                 // 时间轴重放（setup 轨常排在文件末尾而 tick 是 0）。
                 if (ctrl == 0x00u || ctrl == 0x20u) {
                     out.bankSelectEvents++;
+                    bankSelectTicks.push_back(absTick);
                     RawProgramEvent r;
                     r.tick = absTick;
                     r.channel = (int)channel;
@@ -1296,6 +1321,7 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                 }
                 if (status == 0xF0u && sxLen > 0) {
                     out.sysExEvents++;
+                    sysExTicks.push_back(absTick);
                     int sxCh = 0;
                     bool sxDrum = false, sxReset = false;
                     if (parseSysExDrum(d + pos, sxLen, sxCh, sxDrum, sxReset)) {
@@ -1427,6 +1453,57 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
     // notes 再统一删，若让 format 2 先按轨统计，一条只有鼓的轨会被当成
     // 「第一段」，整首曲子被判成只有打击乐。先删鼓音，段判定看到的音符
     // 集合就与旧实现完全一致。
+    // ---- 解析期消费的事件统一过时间轴闸（v1.87）----
+    // boundTimeline() 只看得见 out 里的事件表；踏板 / CC7 / SysEx 鼓模式 /
+    // Bank / Program 先攒在局部变量里，在上面的语义阶段就消费掉，只留下
+    // 一个 int 计数器。畸形 delta 把「抬踏板」推到 5 亿 tick 时，它会和界
+    // 内的「踩下」配出横跨全曲的区间，把 1 小节的谱补成 256 小节幽灵长音
+    // （HTML 60 万字节、满谱空小节）；boundTimeline() 事后再夹只能截断音
+    // 符，补出来的空小节收不回去。越界 SysEx / FF21 / CC7 则让页眉凭空
+    // 报出 GS/XG 设定、端口数与力度点。所以必须在语义消费**之前**用同一
+    // 个 cap 过滤，正常文件一个字节都不动。
+    {
+        const long cap = timelineCap(out);
+        int dropped = 0;
+        dropBeyond(pedalEvents, cap, dropped);
+        dropBeyond(sostenutoEvents, cap, dropped);
+        dropBeyond(softPedalEvents, cap, dropped);
+        dropBeyond(allOffEvents, cap, dropped);
+        dropBeyond(volumeCc7, cap, dropped);
+        dropBeyond(drumModeEvents, cap, dropped);
+        dropBeyond(rawProgramEvents, cap, dropped);
+        // countDrop=false 的两类在同一个事件上还有对应的结构向量
+        // （SysEx→drumModeEvents、CC0/CC32→rawProgramEvents），结构向量
+        // 已经计过一次，这里只重算计数，别把同一条报成两条。
+        auto countWithin = [cap, &dropped](const std::vector<long>& ticks,
+                                           bool countDrop) {
+            int kept = 0;
+            for (long t : ticks) {
+                if (t < cap) ++kept;
+                else if (countDrop) ++dropped;
+            }
+            return kept;
+        };
+        out.sysExEvents = countWithin(sysExTicks, false);
+        out.bankSelectEvents = countWithin(bankSelectTicks, false);
+        out.channelPrefixEvents = countWithin(channelPrefixTicks, true);
+        int portKept = 0, portDropped = 0;
+        for (const auto& pd : midiPortDecls) {
+            if (pd.first < cap) ++portKept; else ++portDropped;
+        }
+        out.midiPortEvents = portKept;
+        if (portDropped > 0) {
+            // 端口集合同样按界内声明重建：否则一个落在世界尽头的 FF21
+            // 会让 portLabel() 报「共 2 个端口（0～1）」。
+            portsUsed.clear();
+            portsUsed.insert(0);
+            for (const auto& pd : midiPortDecls)
+                if (pd.first < cap) portsUsed.insert(pd.second);
+        }
+        dropped += portDropped;
+        out.timelineEventsDropped += dropped;
+    }
+
     // 先重放 Bank/Program（会往 drumModeEvents 里补 XG 鼓组切换），
     // 再统一套用鼓判定；两者共用 (tick, seq) 时间轴。
     resolveProgramTimeline(out, rawProgramEvents, drumModeEvents);

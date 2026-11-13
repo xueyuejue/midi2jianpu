@@ -2022,6 +2022,34 @@ if (existsSync(sePath)) {
     'WASM HTML / MusicXML 体积有界');
 }
 
+// ---- 61. v1.87.0 解析期事件过闸：网页端也不铺幽灵长音、不报幽灵诊断 ----
+// 踏板 / SysEx / FF21 / CC7 在解析循环里就被消费掉，漏重编 WASM 就会让
+// 网页端继续铺 256 个空小节、页眉凭空报出「SysEx 鼓模式」「MIDI Port」等。
+const v87PedPath = path.join(FIXTURES, 'stray_pedal.mid');
+const v87DiagPath = path.join(FIXTURES, 'stray_diag.mid');
+if (existsSync(v87PedPath) && existsSync(v87DiagPath)) {
+  mod._midi2jianpu_set_track(-1);
+  const v87Caller = makeCaller(mod);
+  v87Caller.setLyrics('');
+  v87Caller.setMidi(new Uint8Array(readFileSync(v87PedPath)));
+  const v87PedHtml = v87Caller.call('midi2jianpu_html', -1, 1) || '';
+  check(v87PedHtml.includes('已丢弃') && v87PedHtml.includes('时间轴跨度异常'),
+    'WASM 页眉如实提示已丢弃越界抬踏板', v87PedHtml.slice(0, 300));
+  check(!v87PedHtml.includes('已截断') && !v87PedHtml.includes('弱起 3 拍'),
+    'WASM 不再把音符夹成幽灵长音、也不谎报弱起', v87PedHtml.slice(0, 300));
+  check(v87PedHtml.length < 30000,
+    'WASM HTML 体积有界（旧版约 615 KB）', v87PedHtml.length);
+  v87Caller.setMidi(new Uint8Array(readFileSync(v87DiagPath)));
+  const v87DiagHtml = v87Caller.call('midi2jianpu_html', -1, 1) || '';
+  for (const ghost of ['SysEx 鼓模式', 'MIDI Port', '通道前缀',
+                       'CC7 主音量', '音色库/音色设定', '小提琴']) {
+    check(!v87DiagHtml.includes(ghost), `WASM 页眉不再凭空报出 ${ghost}`,
+      v87DiagHtml.slice(0, 300));
+  }
+  check(v87DiagHtml.includes('已丢弃') && v87DiagHtml.includes('钢琴'),
+    'WASM 诊断素材仍保留界内钢琴音色并如实提示', v87DiagHtml.slice(0, 300));
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

@@ -3439,6 +3439,15 @@ def main() -> None:
         f.write(sdata)
     print(f"wrote {smid} ({len(sdata)} bytes)")
 
+    # v1.87.0：解析期消费的事件（踏板 / SysEx / FF21 / CC7 / Bank）
+    for name, builder in (("stray_pedal.mid", build_stray_pedal),
+                          ("stray_diag.mid", build_stray_diag)):
+        path = os.path.join(here, name)
+        with open(path, "wb") as f:
+            data = builder()
+            f.write(data)
+        print(f"wrote {path} ({len(data)} bytes)")
+
 def build_utf8_marker() -> bytes:
     """段落名截断必须落在 UTF-8 字符边界上（v1.79.0）。
 
@@ -3612,6 +3621,78 @@ def build_stray_events() -> bytes:
     t0.bend_range(0, 12, far)                          # bendRanges（RPN 四个 CC）
     t0.cc(0, 0, 0, far)                                # programTimeline（Bank MSB）
     t0.program(0, 40, far)                             # programTimeline + channelProgram 末值
+
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
+
+
+def build_stray_pedal() -> bytes:
+    """v1.87.0：巨额 tick 上的「抬踏板」把 1 小节补成幽灵长音。
+
+    CC64 在 tick 0 踩下、在 3000 万 tick 抬起。applyControllerSemantics()
+    跑在 boundTimeline() 之前，buildPedalRanges() 会把这一对配成横跨
+    15625 小节的区间，4 个四分音符全被补长到世界尽头；boundTimeline()
+    事后再夹只能夹到 256 小节，HTML 仍要铺 256 个空小节（约 615 KB），
+    页眉还谎报「已截断 4 个越界音符」「弱起 3 拍」。
+
+    新版在语义消费之前就把越界的抬起丢掉：踩下按「到曲尾没抬」收束到
+    最后一个音符的结尾，谱面仍是 1 小节 4 个音，HTML 约 12 KB。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120 BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调
+    t0.cc(0, 64, 127, 0)                              # 界内真实踩下
+    far = 30000000
+    t0.cc(0, 64, 0, far)                               # 坏 delta 把抬起推到世界尽头
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Melody"))
+    for i, b in enumerate((0, 480, 960, 1440)):
+        t1.note(0, 60 + i, 90, b, 480)
+
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
+
+
+def build_stray_diag() -> bytes:
+    """v1.87.0：解析期直接 ++ 的诊断计数同样要过时间轴闸。
+
+    v1.86 的 dropStrayEvents() 只清理 out 里的事件表；SysEx 鼓模式、
+    FF21 MIDI Port、FF20 通道前缀、CC7 与 CC0/CC32 却在解析循环里就被
+    消费掉，只留下一个 int 计数器或 parseBuffer 的局部 vector。把她们
+    全推到 3000 万 tick，旧版页眉会凭空报出：
+
+        SysEx 鼓模式：1 处 GS/XG 设定，1 条鼓通道
+        MIDI Port：1 处声明，共 2 个端口（0～1）
+        通道前缀：1 处
+        CC7 主音量：补入 1 个力度点
+        音色库/音色设定：2 处 Bank Select，1 次 Program Change
+
+    界内还写了一次 0xC0 0（钢琴），越界的 0xC0 40 用于守住
+    channelProgram 末值重建：提前过滤 rawProgramEvents 后 programTimeline
+    不再「变小」，v1.86 那个按差值重建的分支不触发，得由 boundTimeline()
+    末尾补一次，否则声部会被越界处标成小提琴。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Melody"))
+    t1.program(0, 0, 0)                                # 界内：钢琴
+    for i, b in enumerate((0, 480, 960, 1440)):
+        t1.note(0, 60 + i, 90, b, 480)
+
+    far = 30000000
+    t0.add(far, gs_part_mode(1, 1))                    # 通道 1 设鼓（无音符）
+    t0.cc(0, 7, 100, far)                              # CC7 幽灵力度点
+    t0.cc(0, 0, 0, far)                                # Bank MSB
+    t0.cc(0, 32, 0, far)                               # Bank LSB
+    t0.program(0, 40, far)                             # 越界换成小提琴
+    t0.add(far, meta(0x20, bytes([3])))                # Channel Prefix
+    t0.add(far, meta(0x21, bytes([1])))                # MIDI Port（放最后，不改前面事件的端口）
 
     return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
 

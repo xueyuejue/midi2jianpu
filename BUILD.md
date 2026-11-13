@@ -50,7 +50,7 @@ Emscripten 的 sanity 检查误判配置变化，清掉 sysroot 缓存并重编�
 
 ## 测试
 
-### 单元测试（1131 项）
+### 单元测试（1156 项）
 
 ```bash
 cd build && ctest --output-on-failure
@@ -58,7 +58,7 @@ cd build && ctest --output-on-failure
 ./build/test_basic
 ```
 
-成功时输出 `共 1131 项，失败 0 项 -> 全部通过`。
+成功时输出 `共 1156 项，失败 0 项 -> 全部通过`。
 
 覆盖范围：调性识别、各调八度基准、升降号书写（含降号调）、时值后缀、三连音、同音合并、和弦检测、移调、MusicXML 小节时长与 `<chord/>`，以及二十组解析层回归——**鼓轨过滤**、**旋律轨判定**、**变速 tempo map 秒数换算**、**弱起小节网格**、**歌词分配与一字多音区间**、**MIDI 内置歌词规整与精确对齐**、**拍号 map 与逐小节网格**、**调号 map（中途转调 / KeyMap）**、**五声调式宫音判定**、**TempoTimeline 与 LRC 变速对齐（tick/秒往返、乱序去重、offset、多时间戳、旧签名对照）**、**ExpressionMap 演奏表情（力度六档 / 渐变 / 断奏 / 重音 / 滑音 / 颤音 / 段落 / 通道隔离 / 开关 / 节奏混合时不误判）与解析层 velocity、原始时值、多轨事件排序**、**GM 音色名（英文全名 / 中文译名覆盖）、`0xC0` 解析（通道 → GM 音色号）、声部乐器标注 `listParts` / `partSummary`、倚音检测与通道隔离、无 0xC0 / 等间隔流零标注回归**、**和弦转位（低音非根音才写斜杠 / 和弦外音不写）、`Bm7b5` 与 `G7sus4` 的类型扩充、`ChordMark` 的结构化字段（rootPc / kind / kindText / bassPc）**、**速度曲线折叠（`tempoMarksOf`：渐变 / 阶跃 / 抖动退化 / 5% 跨度阈值 / 一拍聚簇阈值 / 曲首独立阶跃 / 页眉文案）**、**长音跨小节（6 拍 / 10 拍时值不被截断、延音段写成 `-` 而非休止符、复调轨 4 拍和弦不被门限放大、断奏轨门限还原仍生效）**、**同轨复调（`splitVoices`：同拍同值算和弦 / 同拍不同值拆声部 / 重叠拆声部 / 超上限退化并截短 / 倚音 skip）、复调 MusicXML 的 `<backup>` 与逐小节时值守恒、单声部零 `<backup>` 回归**、**RPN 弯音范围（按通道隔离 / 中途改范围不倒灌 / 跨轨设定 / CC38 音分微调 / 同 tick 后写覆盖 / 非法值兜底 / 提示文案）**、**running status 生命周期（歌词 meta / SysEx / System Common 之后取消、0xF8 与 0xFE 实时消息不改变、省略状态字节按最后一条通道状态补回、补回 CC 的两字节数据、通道归属不变、规范写法零回归、提示文案）**、**MIDI Port / Channel Prefix（端口隔离踏板 / 弯音范围 / RPN 状态表、端口不跨轨继承、同轨中途改端口、FF 20 不重定向通道消息、端口 255 逻辑通道不越界、鼓轨按低 4 位、GM 音色与 CC11 归逻辑通道、无端口声明零回归、提示文案）**、**SysEx 鼓模式（GS/XG 把任意 part 设为鼓 / mode=0 普通乐器对照 / 三种 Reset 按时间撤销 / 末轨 SysEx / 通道 10 改回钢琴 / 无关 SysEx 零回归 / 同 tick 后写覆盖 / 端口隔离 / 提示文案）**、**Bank Select 与音色时间轴（CC0=127 指定 XG 鼓组 / 普通音色库对照 / CC0 改回 0 后恢复旋律 / 末轨 setup / GM Reset 撤销 / 端口隔离 / 缺 0xC0 不切鼓 / 通道 10 普通音色设定不改回旋律 / programAt 按 tick 取音色 / channelProgram 兼容回退 / 普通 GM 文件无提示）`、`--track` 全事件表隔离（默认不隔离 / 选中轨只留该轨音符 / 别轨歌词·CC11·CC7·CC64 踏板·弯音不串入 / 别轨踏板不给选中轨补长时值 / 全局速度·拍号·调号·Marker·RPN 弯音仍保留 / 空轨与越界报错 / format 2 选段 / 提示文案）**、**CC66 持音踏板（只保持踩下瞬间正按着的键 / 与 CC64 叠加 / 迟滞死区 / 通道隔离 / 同键重击 / 强制清音 / 未抬踏板收束 / --track 隔离 / 诊断文案）**、**渐强渐弱的通道归属（同 tick 相反渐变分列 / inRange 按通道过滤 / 全局段落名可见 / 不传通道保留全量 / 全局标记排序 / 力度档位与渐变一致）**、**CC67 软踏板（只衰减踩下区间内起音的 velocity / 时值不动 / CC11 力度表不动 / 通道隔离 / 迟滞死区 / 未抬踏板收束 / 别轨事件与 --track 隔离 / 与 CC64 同曲叠加 / 力度下限 / 诊断文案 / 无 CC67 零回归 / 系数可配：默认 0.7、scale=1.0 不衰减、scale=0.0 关闭、纯整数公式零漂移、CLI 与网页共用同一字段）**、**SMF chunk 边界重同步（轨前 / 轨间私有块按长度跳过、长度少写 / 多写靠 EOT 锚点校正、歌词与 SysEx 里字面 MTrk 不误判、真截断与 chunk 修复的提示合并）**、**MusicXML 键盘大谱表（宽音域键盘声部声明两行谱、上下谱号各一、音符带 `<staff>` 归属、谱表间 `<backup>` 切游标、净时值守恒、非键盘音色与窄音域不误判）**、**MusicXML 小节中途变速（同小节多个阶跃全部保留、`<offset>` 标回小节内拍位、小节线上的速度不多写 `<offset>`、渐慢落定点带 offset）**、**MusicXML 小节中途换力度档（`dynamicStepsInside` 取小节内孤立换档、`<offset>` 标回拍位、小节线换档不写 offset、渐变段内部中间档位不重复印、被顶掉的档位不再整条丢失）**、**文本谱 / HTML 的同一处换档（`lastDynTick` 游标逐个音头印 `[p]`、HTML 浮标 `dynx` 挂到音头、CSS 仅在用到时随页输出、渐变段内部不逐点印）**、**文本谱同拍和弦并格（同拍三音印成 `1,+3,+5,`、时值只写一次、先后发音不并格、各音保留自己的八度记号、旧写法 `3, - - -` 不再出现）**、**时值折算（3.75 拍拆成 `0 - -` + `-_.`、音符与休止同口径、不越过小节线、未顶到小节线的零头仍记最近档不碎片化、倚音前面的休止照常印出）**、**门限空档并进前一个音（`restGateTicks()` 与三端共用同一门槛、400/480 的四分音符补成整拍、真四分休止不被并掉、16 分击打不被拉长、MusicXML 不再补出 16 分休止）**、**复调轨按声部补空档（贪心 lane 分组求本声部下一音头、左手全音符不被截断、复调轨里的真休止与 16 分击打仍守住、三端都是 4 拍）**、**复调轨门限因子按声部估（整轨音头切短 ioi 导致门限样本被丢、`laneGate` 只对被误丢的音生效、全局 `gate` 保持旧值、连奏声部与末音不虚增、单声部轨零影响、三端都是整拍）**、**MusicXML 休止符时值一致性（不规则间隙拆成标准时值之和、每个休止符 duration 与 type/dot 严格一致、小节总时长守恒、精确档逐字节不变、不足 64 分音符的余量保留旧兜底、全小节休止 measure=yes 豁免、10 tick 间隙不丢时长）**、**文本谱休止符精确拆段（小节中间 1.75 / 1.25 拍拆成 `0. -=` / `0 -=`、两小节各守恒 4 拍、小节末旧写法与精确档逐字节不变、0.958 拍零头保留兜底、末小节也不再少拍）**（都在内存里现构造最小 SMF，不依赖 fixture 文件）。
 
@@ -67,25 +67,25 @@ cd build && ctest --output-on-failure
 需要 Python 3（只用标准库）：
 
 ```bash
-python tests/fixtures/make_fixture.py     # 生成 100 份 .mid 素材（含 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony / smpte / format2 / aftertouch / retrigger / dangling / twolyrics / pedal / allnotesoff / cc7volume / pedal_channels / pedal_hysteresis / bendrange_channels / bendrange_timeline / bendrange_crosstrack / running_meta / running_sysex / running_realtime / running_standard / port_pedal / port_bend / port_prefix / port_prefix_base / port_standard / sysex_gs_drum / sysex_xg_drum / sysex_gs_normal / sysex_gs_reset / sysex_gm_reset / sysex_xg_reset / sysex_conductor / sysex_ch9_normal / sysex_ch9_drum / sysex_unknown / sysex_port_drum / bank_xg_drum / bank_normal / bank_switch_back / bank_conductor / bank_port / bank_reset / bank_ch9_plain / bank_no_program / program_timeline / diag_consistency / track_pedal / track_rpn_setup / track_conductor / track_leak / track_leak_base / track_empty / track_fmt2 / truncated / sostenuto / dyn_channels / soft_pedal / chunk_resync / wedge_tracks / oversized_len / voice_trio / grand_staff / midtempo / dyn_step / transpose_key / overfull / gate_gap / poly_gap / poly_gate / rest_split / rest_midbar / html_dots / html_rests / beam_levels / beam_hooks / staff_switch / grand_staff_wedge / utf8_marker / legacy_gbk / legacy_sjis / legacy_utf8 / gbk_ext / huge_delta / stray_events）+ 3 份变速 LRC
+python tests/fixtures/make_fixture.py     # 生成 102 份 .mid 素材（含 tempolrc / expression / parts / chords / tempo_ramp / long_tie / polyphony / smpte / format2 / aftertouch / retrigger / dangling / twolyrics / pedal / allnotesoff / cc7volume / pedal_channels / pedal_hysteresis / bendrange_channels / bendrange_timeline / bendrange_crosstrack / running_meta / running_sysex / running_realtime / running_standard / port_pedal / port_bend / port_prefix / port_prefix_base / port_standard / sysex_gs_drum / sysex_xg_drum / sysex_gs_normal / sysex_gs_reset / sysex_gm_reset / sysex_xg_reset / sysex_conductor / sysex_ch9_normal / sysex_ch9_drum / sysex_unknown / sysex_port_drum / bank_xg_drum / bank_normal / bank_switch_back / bank_conductor / bank_port / bank_reset / bank_ch9_plain / bank_no_program / program_timeline / diag_consistency / track_pedal / track_rpn_setup / track_conductor / track_leak / track_leak_base / track_empty / track_fmt2 / truncated / sostenuto / dyn_channels / soft_pedal / chunk_resync / wedge_tracks / oversized_len / voice_trio / grand_staff / midtempo / dyn_step / transpose_key / overfull / gate_gap / poly_gap / poly_gate / rest_split / rest_midbar / html_dots / html_rests / beam_levels / beam_hooks / staff_switch / grand_staff_wedge / utf8_marker / legacy_gbk / legacy_sjis / legacy_utf8 / gbk_ext / huge_delta / stray_events / stray_pedal / stray_diag）+ 3 份变速 LRC
 python tests/smoke.py build/midi2jianpu   # Windows 换成 build\Release\midi2jianpu.exe
 python tests/smoke.py --self-test        # 28 项 CI 失败报告自测（不编译也能跑）
 python tests/check_xml_durations.py --self-test   # 18 项 MusicXML 时值自测（不编译也能跑）
-python tests/check_xml_durations.py               # 全部 100 份素材逐个 note 校验
+python tests/check_xml_durations.py               # 全部 102 份素材逐个 note 校验
 python tests/check_xml_beams.py --self-test       # 39 项 MusicXML 连梁自测
-python tests/check_xml_beams.py                   # 全部 100 份素材 <beam> 结构审计
+python tests/check_xml_beams.py                   # 全部 102 份素材 <beam> 结构审计
 python tests/check_xml_staff.py --self-test      # 32 项大谱表方向记号自测
-python tests/check_xml_staff.py                  # 全部 100 份素材方向记号谱表归属
+python tests/check_xml_staff.py                  # 全部 102 份素材方向记号谱表归属
 python tests/check_bar_beats.py --self-test        # 26 项文本谱拍数自测（不编译也能跑）
-python tests/check_bar_beats.py                    # 全部 100 份素材拍数守恒
+python tests/check_bar_beats.py                    # 全部 102 份素材拍数守恒
 python tests/check_html_dots.py --self-test         # 35 项 HTML 附点自测
-python tests/check_html_dots.py                    # 全部 100 份素材 HTML 附点一致性
+python tests/check_html_dots.py                    # 全部 102 份素材 HTML 附点一致性
 python tests/check_html_rests.py --self-test        # 77 项 HTML 休止符自测
-python tests/check_html_rests.py                   # 全部 100 份素材 HTML 休止符精确性
+python tests/check_html_rests.py                   # 全部 102 份素材 HTML 休止符精确性
 python tests/check_three_way.py --self-test         # 11 项三端结构守卫自测
-python tests/check_three_way.py                    # 全部 100 份素材三端结构一致性
+python tests/check_three_way.py                    # 全部 102 份素材三端结构一致性
 python tests/check_xml_structure.py --self-test    # 34 项 XML 结构守卫自测
-python tests/check_xml_structure.py                # 全部 100 份素材严格解析 / 时值守恒 / 元素顺序 / HTML 配对
+python tests/check_xml_structure.py                # 全部 102 份素材严格解析 / 时值守恒 / 元素顺序 / HTML 配对
 python tests/check_utf8.py --self-test             # 15 项 UTF-8 守卫自测
 python tests/check_utf8.py                         # 三端产物逐份严格 UTF-8 解码 + MusicXML 严格解析
 python tests/check_bar_beats.py --regress <旧版exe>  # 结构性零回归
@@ -197,9 +197,9 @@ node tests/wasm_smoke.mjs build-wasm/midi2jianpu.js        # 或测新编的
 
 需要 Node 18+。它走的是 `docs/index.html` 里 `callWasm()` 的同一条调用路径，
 逐项检查网页每个按钮背后的导出符号是否存在、返回内容是否合法、坏数据会不会崩。
-共 60 组，其中第 34 组直接比对 `version.hpp` 的 `M2J_VERSION` 与 WASM 生成的页脚版本号，第 35 组用 `pedal_hysteresis.mid` 校验网页端也带上了 CC64 迟滞修复，第 36 组用 `truncated.mid` 校验网页端遇到下载到一半的 MIDI 不会冒出幻影音符、且文件面板会报告数据被截断，第 37 组用 `sostenuto.mid` 校验网页端 CC66 只保持三个和弦音、`controller_info` 也会说明，第 38 组用 `dyn_channels.mid` 校验网页端 HTML 两个声部各印自己的渐变、MusicXML 按 `<voice>` 各写一份 dim. / cresc.（v1.45.0 起），第 39 组用 `soft_pedal.mid` 校验网页播放 JSON 的 velocity 已按软踏板衰减、MusicXML 只剩 1 个重音记号，`controller_info` 也会说明，第 40 组用 `chunk_resync.mid` 校验网页端遇到私有 chunk + 长度字段失准时仍读出 4 个音，`file_header_info` / HTML 页眉也会报告「文件结构提示」，合法 SMF 不误报；第 41 组用 `wedge_tracks.mid` 校验网页端两条轨各写自己的渐强渐弱（MusicXML 两个 part、HTML 两行谱），全局段落名 `Verse` 仍只出现一次；第 42 组用 `oversized_len.mid` 校验网页端遇到越过文件末尾的坏长度字段时仍按 EOT 锚点切开两轨、读出 4 个音、段落 #1 能选中旋律轨，`file_header_info` 与 HTML 页眉只报「重同步」而不误报「数据不完整」，真·截断文件的告警保持原样；第 43 组用 `voice_trio.mid` 校验网页端同轨三声部各写自己的力度与楔形、direction 带 `<voice>3</voice>`、wedge number 递增到 3，单声部不写多余的 `<voice>`。第 39 组另含 sub-block 39b：用 `_midi2jianpu_set_soft_pedal_scale` 把系数依次设成 1.0 / 0.0 / 0.5，校验网页播放 JSON 的 velocity 随系数还原（1.0 还原成 110/60、0.0 仍不衰减、0.5 半衰减成 55/30）且 `controller_info` 在 1.0 时不报软踏板，结束后复位成默认 0.7 以免污染后续测试。
+共 61 组，其中第 34 组直接比对 `version.hpp` 的 `M2J_VERSION` 与 WASM 生成的页脚版本号，第 35 组用 `pedal_hysteresis.mid` 校验网页端也带上了 CC64 迟滞修复，第 36 组用 `truncated.mid` 校验网页端遇到下载到一半的 MIDI 不会冒出幻影音符、且文件面板会报告数据被截断，第 37 组用 `sostenuto.mid` 校验网页端 CC66 只保持三个和弦音、`controller_info` 也会说明，第 38 组用 `dyn_channels.mid` 校验网页端 HTML 两个声部各印自己的渐变、MusicXML 按 `<voice>` 各写一份 dim. / cresc.（v1.45.0 起），第 39 组用 `soft_pedal.mid` 校验网页播放 JSON 的 velocity 已按软踏板衰减、MusicXML 只剩 1 个重音记号，`controller_info` 也会说明，第 40 组用 `chunk_resync.mid` 校验网页端遇到私有 chunk + 长度字段失准时仍读出 4 个音，`file_header_info` / HTML 页眉也会报告「文件结构提示」，合法 SMF 不误报；第 41 组用 `wedge_tracks.mid` 校验网页端两条轨各写自己的渐强渐弱（MusicXML 两个 part、HTML 两行谱），全局段落名 `Verse` 仍只出现一次；第 42 组用 `oversized_len.mid` 校验网页端遇到越过文件末尾的坏长度字段时仍按 EOT 锚点切开两轨、读出 4 个音、段落 #1 能选中旋律轨，`file_header_info` 与 HTML 页眉只报「重同步」而不误报「数据不完整」，真·截断文件的告警保持原样；第 43 组用 `voice_trio.mid` 校验网页端同轨三声部各写自己的力度与楔形、direction 带 `<voice>3</voice>`、wedge number 递增到 3，单声部不写多余的 `<voice>`。第 39 组另含 sub-block 39b：用 `_midi2jianpu_set_soft_pedal_scale` 把系数依次设成 1.0 / 0.0 / 0.5，校验网页播放 JSON 的 velocity 随系数还原（1.0 还原成 110/60、0.0 仍不衰减、0.5 半衰减成 55/30）且 `controller_info` 在 1.0 时不报软踏板，结束后复位成默认 0.7 以免污染后续测试。
 
-第 44~58 组依次覆盖 v1.47.0~v1.70.0 的键盘大谱表、小节中途变速 / 换力度档、文本谱换档落位、调号链路、文本谱和弦并格、时值折算不撑爆小节、门限空档并进前一个音、复调轨按声部补空档、复调轨门限因子按声部估、MusicXML 休止符时值拆分、文本谱休止符精确拆段、HTML 附点标记、HTML 休止符精确拆列、大谱表跨谱表楔形起止同谱表——都是校验网页端与 CLI 共用同一份 core（详见 `tests/wasm_smoke.mjs`）。第 59 组用三份同源、只差文本编码的 `legacy_*.mid` 校验 WASM 也把 GBK / Shift-JIS 归一成 UTF-8，GBK 版与 UTF-8 版的 MusicXML 逐字节一致。第 60 组用 `stray_events.mid` 校验网页端也不再被越界点事件骗出变拍号 / 变速 / 转调：页眉如实报告「已丢弃 N 个越界事件」，4 个界内音符照常出谱。
+第 44~58 组依次覆盖 v1.47.0~v1.70.0 的键盘大谱表、小节中途变速 / 换力度档、文本谱换档落位、调号链路、文本谱和弦并格、时值折算不撑爆小节、门限空档并进前一个音、复调轨按声部补空档、复调轨门限因子按声部估、MusicXML 休止符时值拆分、文本谱休止符精确拆段、HTML 附点标记、HTML 休止符精确拆列、大谱表跨谱表楔形起止同谱表——都是校验网页端与 CLI 共用同一份 core（详见 `tests/wasm_smoke.mjs`）。第 59 组用三份同源、只差文本编码的 `legacy_*.mid` 校验 WASM 也把 GBK / Shift-JIS 归一成 UTF-8，GBK 版与 UTF-8 版的 MusicXML 逐字节一致。第 60 组用 `stray_events.mid` 校验网页端也不再被越界点事件骗出变拍号 / 变速 / 转调：页眉如实报告「已丢弃 N 个越界事件」，4 个界内音符照常出谱。第 61 组用 `stray_pedal.mid` / `stray_diag.mid` 校验网页端也不再铺幽灵长音、不报幽灵诊断：HTML 从 615 KB 收到 12 KB，页眉的 SysEx / MIDI Port / CC7 / 音色库四行凭空统计全部消失。
 
 **这个测试的存在理由**：仓库曾出现「源码加了 `_midi2jianpu_musicxml`，但
 `docs/wasm/` 里还是旧产物」的静默回归——CLI 测试全绿，网页按钮点了没反应。
@@ -251,8 +251,8 @@ python3 tests/check_wasm_sync.py --changed docs/wasm/midi2jianpu.wasm \
 
 | job | 步骤 |
 | --- | --- |
-| `cpp` | CMake 编译 CLI 与单测 → `ctest`（1131 项）→ 全量重生成 100 份 `.mid` 并要求零 diff、无未跟踪素材 → `smoke.py --self-test` 28 项 → `check_xml_durations.py` 18 项自测 + 100 份素材 → `check_xml_beams.py` 39 项自测 + 100 份素材 → `check_xml_staff.py` 32 项自测 + 100 份素材 → `check_bar_beats.py` 26 项自测 + 100 份素材 → `check_html_dots.py` 35 项自测 + 100 份素材 → `check_html_rests.py` 77 项自测 + 100 份素材 → `check_three_way.py` 11 项自测 + 100 份素材 → `check_xml_structure.py` 34 项自测 + 100 份素材 → `check_html_player.py` 23 项自测 + 100 份素材 → `check_utf8.py` 15 项自测 + 100 份素材 → `smoke.py` 99 组 |
-| `wasm` | `check_wasm_sync.py --self-test`（16 组）+ 实跑（含反向版本守护）→ `check_wasm_exports.py` → `wasm_smoke.mjs` 60 组（含产物版本号与 `version.hpp` 比对） |
+| `cpp` | CMake 编译 CLI 与单测 → `ctest`（1156 项）→ 全量重生成 102 份 `.mid` 并要求零 diff、无未跟踪素材 → `smoke.py --self-test` 28 项 → `check_xml_durations.py` 18 项自测 + 102 份素材 → `check_xml_beams.py` 39 项自测 + 102 份素材 → `check_xml_staff.py` 32 项自测 + 102 份素材 → `check_bar_beats.py` 26 项自测 + 102 份素材 → `check_html_dots.py` 35 项自测 + 102 份素材 → `check_html_rests.py` 77 项自测 + 102 份素材 → `check_three_way.py` 11 项自测 + 102 份素材 → `check_xml_structure.py` 34 项自测 + 102 份素材 → `check_html_player.py` 23 项自测 + 102 份素材 → `check_utf8.py` 15 项自测 + 102 份素材 → `smoke.py` 100 组 |
+| `wasm` | `check_wasm_sync.py --self-test`（16 组）+ 实跑（含反向版本守护）→ `check_wasm_exports.py` → `wasm_smoke.mjs` 61 组（含产物版本号与 `version.hpp` 比对） |
 
 客户端可以忘了跑测试，这里在服务端兜底；**升过版本号却忘了重编 `docs/wasm/`，
 第 34 组会红；连版本号都没升、只改了源码却没重编，产物同步守护会红**。两个 job 只依赖 runner 预装的 cmake / g++ / python 和

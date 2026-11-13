@@ -7191,6 +7191,130 @@ int main() {
               "正常文件提示不含时间轴字样");
     }
 
+    // ---- v1.87.0 解析期消费的事件也要过同一道时间轴闸 ----
+    //
+    // v1.86 的 dropStrayEvents() 只看得见 out 里的事件表。踏板 / CC7 /
+    // SysEx 鼓模式 / Bank / FF21 却在解析循环里就被消费掉：有的只留下一个
+    // int 计数器，有的只存在于 parseBuffer 的局部 vector。畸形 delta 把
+    // 「抬踏板」推到 3000 万 tick 时，buildPedalRanges() 会拿界内的「踩下」
+    // 配出横跨全曲的区间，把 1 小节 4 个音补成幽灵长音（HTML 铺 256 个
+    // 空小节）；boundTimeline() 事后再夹也收不回补出来的空小节。
+    std::cout << "\n测试解析期事件过时间轴闸\n";
+    {
+        const long kFar = 30000000L;
+        SmfTrack cond;
+        cond.at(0, ev({0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08}));
+        cond.at(0, ev({0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20}));
+        cond.at(0, ev({0xB0, 0x40, 127}));       // 界内真实踩下
+        cond.at(kFar, ev({0xB0, 0x40, 0}));     // 坏 delta 把抬起推到世界尽头
+        SmfTrack mel;
+        for (int i = 0; i < 4; i++) {
+            mel.at(i * 480L, ev({0x90, 60 + i, 90}));
+            mel.at(i * 480L + 480, ev({0x80, 60 + i, 0}));
+        }
+        auto bytes = buildSmf(2, 480, {cond, mel});
+        MidiData d;
+        check(loadMidiFromMemory(bytes.data(), bytes.size(), d),
+              "含越界抬踏板的 SMF 仍能解析");
+        check(d.notes.size() == 4, "4 个界内音符一个不少, 实际: " +
+              std::to_string(d.notes.size()));
+        check(d.timelineClamped == 0,
+              "踏板不再造出需要截断的幽灵长音, 实际: " +
+              std::to_string(d.timelineClamped));
+        long maxEnd = 0;
+        for (const auto& n : d.notes)
+            maxEnd = std::max(maxEnd, n.startTicks + n.durationTicks);
+        check(maxEnd <= 1920L,
+              "音符末端仍收在 1 小节内, 实际: " + std::to_string(maxEnd));
+        check(d.timelineEventsDropped >= 1, "越界抬起被如实丢弃");
+        check(d.pedalEvents == 1, "踏板计数按界内重算, 实际: " +
+              std::to_string(d.pedalEvents));
+        check(controllerLabel(d).find("1 个踏板事件") != std::string::npos,
+              "延音踏板诊断只报界内那一次踩下: " + controllerLabel(d));
+        const std::string lab = truncationLabel(d);
+        check(lab.find("已丢弃") != std::string::npos &&
+              lab.find("已截断") == std::string::npos,
+              "只提示丢弃越界事件、不误报截断音符: " + lab);
+    }
+    {
+        // 解析期直接 ++ 的 5 类诊断计数：全部落在世界尽头时不能留痕。
+        const long kFar = 30000000L;
+        SmfTrack cond;
+        cond.at(0, ev({0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08}));
+        cond.at(0, ev({0xC0, 0}));                            // 界内：钢琴
+        cond.at(kFar, ev({0xF0, 0x0B, 0xF0, 0x41, 0x10, 0x42, 0x12,
+                          0x40, 0x11, 0x15, 0x01, 0x41, 0xF7}));  // GS part mode
+        cond.at(kFar, ev({0xB0, 0x07, 100}));                // CC7
+        cond.at(kFar, ev({0xB0, 0x00, 0}));                  // Bank MSB
+        cond.at(kFar, ev({0xB0, 0x20, 0}));                  // Bank LSB
+        cond.at(kFar, ev({0xC0, 40}));                        // 越界：小提琴
+        cond.at(kFar, ev({0xFF, 0x20, 0x01, 0x03}));         // Channel Prefix
+        cond.at(kFar, ev({0xFF, 0x21, 0x01, 0x01}));         // MIDI Port
+        SmfTrack mel;
+        for (int i = 0; i < 4; i++) {
+            mel.at(i * 480L, ev({0x90, 60 + i, 90}));
+            mel.at(i * 480L + 480, ev({0x80, 60 + i, 0}));
+        }
+        auto bytes = buildSmf(2, 480, {cond, mel});
+        MidiData d;
+        check(loadMidiFromMemory(bytes.data(), bytes.size(), d),
+              "含越界解析期事件的 SMF 仍能解析");
+        check(d.notes.size() == 4, "4 个界内音符一个不少");
+        check(d.sysExEvents == 0 && d.sysExModeEvents == 0 &&
+              d.sysExDrumChannels == 0, "SysEx 计数不含幽灵设定");
+        check(sysExLabel(d).empty(), "页眉不出现「SysEx 鼓模式」幽灵行: " +
+              sysExLabel(d));
+        check(d.midiPortEvents == 0 && d.midiPortCount <= 1 &&
+              d.channelPrefixEvents == 0, "端口 / 通道前缀计数不含幽灵声明");
+        check(portLabel(d).empty(), "页眉不出现「MIDI Port」幽灵行: " +
+              portLabel(d));
+        check(d.cc7Dynamics == 0 &&
+              controllerLabel(d).find("CC7") == std::string::npos,
+              "CC7 力度点不凭空补入");
+        check(d.bankSelectEvents == 0 && bankLabel(d).empty(),
+              "音色库诊断计数不含越界 Bank Select");
+        check(d.channelProgram.count(0) == 1 && d.channelProgram.at(0) == 0,
+              "channelProgram 末值没被越界 0xC0 污染成小提琴");
+        check(d.timelineEventsDropped >= 5,
+              "记录到多类越界解析期事件, 实际: " +
+              std::to_string(d.timelineEventsDropped));
+    }
+    {
+        // 同一批事件全放在界内：一个都不能丢，这是零回归的守护。
+        SmfTrack cond;
+        cond.at(0, ev({0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08}));
+        cond.at(0, ev({0xC0, 0}));
+        cond.at(0, ev({0xF0, 0x0B, 0xF0, 0x41, 0x10, 0x42, 0x12,
+                       0x40, 0x11, 0x15, 0x01, 0x41, 0xF7}));
+        cond.at(0, ev({0xB0, 0x07, 100}));
+        cond.at(0, ev({0xB0, 0x00, 0}));
+        cond.at(0, ev({0xB0, 0x20, 0}));
+        cond.at(0, ev({0xB0, 0x40, 127}));
+        cond.at(960, ev({0xB0, 0x40, 0}));
+        cond.at(0, ev({0xFF, 0x20, 0x01, 0x03}));
+        cond.at(0, ev({0xFF, 0x21, 0x01, 0x01}));
+        SmfTrack mel;
+        for (int i = 0; i < 4; i++) {
+            mel.at(i * 480L, ev({0x90, 60 + i, 90}));
+            mel.at(i * 480L + 480, ev({0x80, 60 + i, 0}));
+        }
+        auto bytes = buildSmf(2, 480, {cond, mel});
+        MidiData d;
+        check(loadMidiFromMemory(bytes.data(), bytes.size(), d),
+              "界内解析期事件 SMF 解析成功");
+        check(d.timelineEventsDropped == 0 && d.timelineClamped == 0,
+              "界内事件一个都不丢");
+        check(d.sysExEvents == 1 && d.sysExModeEvents == 1,
+              "界内 SysEx 鼓模式仍被统计");
+        check(d.midiPortEvents == 1 && d.channelPrefixEvents == 1,
+              "界内端口 / 通道前缀仍被统计");
+        check(d.bankSelectEvents == 2 && d.cc7Dynamics == 1,
+              "界内 Bank Select / CC7 仍被统计");
+        check(d.pedalEvents == 2, "界内踏板事件仍被统计");
+        check(truncationLabel(d).find("时间轴") == std::string::npos,
+              "界内事件不误报时间轴异常");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

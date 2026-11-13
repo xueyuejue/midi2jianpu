@@ -3768,6 +3768,50 @@ def main():
     check("→ 3/4" not in stm and "小提琴" not in stm,
           "写出的文本谱同样没有谎报", stm[:300])
 
+    group("[100] v1.87.0 解析期事件过闸：越界抬踏板不再把 1 小节补成幽灵长音")
+    # v1.86 的 dropStrayEvents() 只看得见 out 里的事件表。踏板 / CC7 /
+    # SysEx 鼓模式 / Bank / FF21 在解析循环里就被消费掉，只留下一个 int
+    # 计数器或 parseBuffer 的局部 vector。越界的「抬踏板」会和界内的
+    # 「踩下」配出横跨全曲的区间，旧版 HTML 铺 256 个空小节（615 KB），
+    # 页眉还谎报「已截断 4 个越界音符」「弱起 3 拍」与 4 行幽灵诊断。
+    pmid = os.path.join(FIXTURES, "stray_pedal.mid")
+    dmid = os.path.join(FIXTURES, "stray_diag.mid")
+    check(os.path.exists(pmid), "stray_pedal.mid 素材存在", pmid)
+    check(os.path.exists(dmid), "stray_diag.mid 素材存在", dmid)
+
+    rc, out, err = run(exe, pmid)
+    check(rc == 0, "踏板素材退出码 0（不崩、不卡死）", err)
+    check("共提取 4 个音符" in out, "4 个正常音一个不少", out[:300])
+    check("时间轴跨度异常" in out and "已丢弃" in out,
+          "页眉如实提示已丢弃越界事件", out[:300])
+    check("已截断" not in out and "弱起 3 拍" not in out,
+          "不再把音符夹成幽灵长音、也不再谎报弱起", out[:300])
+    check("1 个踏板事件" in out, "踏板诊断只报界内那一次踩下", out[:300])
+
+    vhtml = os.path.join(tmp, "stray_pedal.html")
+    rc, _, err = run(exe, pmid, "--html", vhtml)
+    check(rc == 0 and os.path.exists(vhtml), "踏板 HTML 退出码 0 且生成文件", err)
+    vsz = os.path.getsize(vhtml)
+    check(vsz < 30000, "踏板 HTML 体积有界（< 30KB），实际 %d 字节" % vsz)
+    vhtm = open(vhtml, encoding="utf-8").read()
+    check(vhtm.count("class='measure'") < 10,
+          "踏板 HTML 小节数有界，实际 %d" % vhtm.count("class='measure'"))
+    check("已丢弃" in vhtm, "踏板 HTML 页眉同样提示已丢弃越界事件", vhtm[:300])
+
+    rc, out, err = run(exe, dmid)
+    check(rc == 0, "诊断素材退出码 0（不崩、不卡死）", err)
+    check("共提取 4 个音符" in out and "钢琴" in out,
+          "4 个正常音与界内钢琴音色都还在", out[:300])
+    check("已丢弃" in out, "诊断素材页眉如实提示已丢弃越界事件", out[:300])
+    for ghost in ("SysEx 鼓模式", "MIDI Port", "通道前缀",
+                  "CC7 主音量", "音色库/音色设定", "小提琴"):
+        check(ghost not in out, "页眉不再凭空报出 %s" % ghost, out[:300])
+
+    dxml = os.path.join(tmp, "stray_diag.xml")
+    rc, _, err = run(exe, dmid, "--musicxml", dxml)
+    check(rc == 0 and os.path.exists(dxml), "诊断素材 MusicXML 退出码 0", err)
+    check(os.path.getsize(dxml) < 1024 * 1024, "诊断素材 MusicXML 体积有界")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

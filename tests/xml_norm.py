@@ -12,6 +12,13 @@ import re
 PRINT_B = re.compile(rb"@media print\{.*?\n\}", re.S)
 PRINT_S = re.compile(r"@media print\{.*?\n\}", re.S)
 
+# 页眉「已丢弃 N 个越界事件 / 已截断 N 个越界音符」里的 N 是诊断计数，
+# 不是谱面结构。v1.87 把解析期消费的事件也计入之后，stray_events.mid 的
+# 页眉由 10 修正为 12（v1.86 漏数 2 个）；结构零回归不该被这个数字打断。
+# 数字本身由 .probe/regress_v187.py 精确断言，其余字节仍逐字节比对。
+NOTICE_B = re.compile("(已丢弃|已截断)\\s*\\d+\\s*(个越界(?:事件|音符))".encode("utf-8"))
+NOTICE_S = re.compile(r"(已丢弃|已截断)\s*\d+\s*(个越界(?:事件|音符))")
+
 DIR_B = re.compile(rb"<direction\b.*?</direction>", re.S)
 DIR_S = re.compile(r"<direction\b.*?</direction>", re.S)
 STAFF_LINE_B = re.compile(rb"[ \t]*<staff>\d+</staff>\r?\n")
@@ -23,6 +30,17 @@ def strip_direction_staff(xml):
     if isinstance(xml, bytes):
         return DIR_B.sub(lambda m: STAFF_LINE_B.sub(b"", m.group(0)), xml)
     return DIR_S.sub(lambda m: STAFF_LINE_S.sub("", m.group(0)), xml)
+
+
+def normalize_timeline_notice(html):
+    """把页眉时间轴诊断的数字归一成 N，支持 str / bytes（v1.87.0）。
+
+    只动「已丢弃 / 已截断」后面那个计数。诊断数字随解析口径变准是好事，
+    但结构零回归比的是谱面，不该被页眉一行 unrelated 的数字打断。
+    """
+    if isinstance(html, bytes):
+        return NOTICE_B.sub(lambda m: m.group(1) + b" N " + m.group(2), html)
+    return NOTICE_S.sub(lambda m: m.group(1) + " N " + m.group(2), html)
 
 
 def strip_print_block(html):

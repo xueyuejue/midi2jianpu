@@ -35,7 +35,8 @@ import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from xml_norm import strip_direction_staff, strip_print_block  # noqa: E402
+from xml_norm import (strip_direction_staff, strip_print_block,  # noqa: E402
+                      normalize_timeline_notice)
 import regress_skip  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -304,8 +305,10 @@ def structural_regress(old_exe, new_exe):
                 if ext != "xml":
                     # 打印块只决定纸面观感，跨版本比对时摘掉（v1.78.0
                     # 压深了 .barno/.footer 的打印色，由 smoke [91] 守）。
-                    a = strip_print_block(normalize_footer(a))
-                    b = strip_print_block(normalize_footer(b))
+                    a = normalize_timeline_notice(
+                        strip_print_block(normalize_footer(a)))
+                    b = normalize_timeline_notice(
+                        strip_print_block(normalize_footer(b)))
                 else:
                     a, b = strip_direction_staff(a), strip_direction_staff(b)
                 if a != b:
