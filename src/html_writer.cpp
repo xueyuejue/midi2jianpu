@@ -1348,28 +1348,33 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
     // 播放器必须紧跟在 <body> 之后：position:sticky 只有在元素位于文档流前部
     // 时才「粘」得住，放到页尾就变成一个只能滚到底才看得见的按钮。
     if (player) html << playerBlock(playJson);
+    // v1.90.0: meta line is assembled from MIDI text (track names,
+    // lyric source). Escape every fragment: a legal 0x03 track name
+    // <script>alert(1)</script> used to inject executable JS into the
+    // generated HTML (the Pages web build was directly exposed).
+    // keys.summary() already escaped once - do not double-escape it.
     html << R"(<h1>)" << htmlEscape(displayTitle) << R"(</h1>
 <div class="meta">)"
          << htmlEscape(keys.summary(grid))
-         << " ｜ " << meterSummary(data)
+         << " ｜ " << htmlEscape(meterSummary(data))
          << " ｜ " << (data.keySig.valid ? "MIDI调号"
                        : (key.scaleLabel.empty() ? "自动猜测" : "五声宫音校正"))
-         << (tempoSummary(data).empty() ? "" : " ｜ " + tempoSummary(data))
-         << (partSummary(data).empty() ? "" : " ｜ " + partSummary(data))
-         << (pickupLabel(data).empty() ? "" : " ｜ " + pickupLabel(data))
-         << (truncationLabel(data).empty() ? "" : " ｜ " + truncationLabel(data))
-         << (timeBaseLabel(data).empty() ? "" : " ｜ " + timeBaseLabel(data))
-         << (formatLabel(data).empty() ? "" : " ｜ " + formatLabel(data))
-         << (controllerLabel(data).empty() ? "" : " ｜ " + controllerLabel(data))
-         << (bendRangeLabel(data).empty() ? "" : " ｜ " + bendRangeLabel(data))
-         << (runningStatusLabel(data).empty() ? "" : " ｜ " + runningStatusLabel(data))
-         << (portLabel(data).empty() ? "" : " ｜ " + portLabel(data))
-         << (sysExLabel(data).empty() ? "" : " ｜ " + sysExLabel(data))
-         << (bankLabel(data).empty() ? "" : " ｜ " + bankLabel(data))
-         << (trackLabel(data).empty() ? "" : " ｜ " + trackLabel(data))
+         << (tempoSummary(data).empty() ? "" : " ｜ " + htmlEscape(tempoSummary(data)))
+         << (partSummary(data).empty() ? "" : " ｜ " + htmlEscape(partSummary(data)))
+         << (pickupLabel(data).empty() ? "" : " ｜ " + htmlEscape(pickupLabel(data)))
+         << (truncationLabel(data).empty() ? "" : " ｜ " + htmlEscape(truncationLabel(data)))
+         << (timeBaseLabel(data).empty() ? "" : " ｜ " + htmlEscape(timeBaseLabel(data)))
+         << (formatLabel(data).empty() ? "" : " ｜ " + htmlEscape(formatLabel(data)))
+         << (controllerLabel(data).empty() ? "" : " ｜ " + htmlEscape(controllerLabel(data)))
+         << (bendRangeLabel(data).empty() ? "" : " ｜ " + htmlEscape(bendRangeLabel(data)))
+         << (runningStatusLabel(data).empty() ? "" : " ｜ " + htmlEscape(runningStatusLabel(data)))
+         << (portLabel(data).empty() ? "" : " ｜ " + htmlEscape(portLabel(data)))
+         << (sysExLabel(data).empty() ? "" : " ｜ " + htmlEscape(sysExLabel(data)))
+         << (bankLabel(data).empty() ? "" : " ｜ " + htmlEscape(bankLabel(data)))
+         << (trackLabel(data).empty() ? "" : " ｜ " + htmlEscape(trackLabel(data)))
          << (data.drumNotesSkipped > 0 ? " ｜ 已跳过鼓轨" : "")
-         << (lyricLabel.empty() ? "" : " ｜ " + lyricLabel)
-         << (expr.summary().empty() ? "" : " ｜ " + expr.summary())
+         << (lyricLabel.empty() ? "" : " ｜ " + htmlEscape(lyricLabel))
+         << (expr.summary().empty() ? "" : " ｜ " + htmlEscape(expr.summary()))
          << "</div>" << body.str()
          << "<footer class='footer'>由 midi2jianpu v" M2J_VERSION " 生成</footer>"
          << "</body></html>";

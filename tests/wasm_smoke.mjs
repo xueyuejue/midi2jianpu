@@ -2103,6 +2103,28 @@ if (existsSync(v89ShortPath) && existsSync(v89AbsurdPath)) {
   check(v89AbsurdHtml.includes('已截断 1 个越界音符'),
     'WASM 仍如实提示极长音被截断', v89AbsurdHtml.slice(0, 300));
 }
+// ---- 64. v1.90.0 页眉转义：网页端同样不注入可执行脚本 ----
+// 网页端走同一个 html_writer.cpp；漏重编 docs/wasm/ 时旧 .wasm 仍会
+// 把 0x03 轨名原样拼进 <div class="meta">，这一组能直接抓到。
+const v90InjectPath = path.join(FIXTURES, 'html_meta_inject.mid');
+if (existsSync(v90InjectPath)) {
+  mod._midi2jianpu_set_track(-1);
+  const v90Caller = makeCaller(mod);
+  v90Caller.setLyrics('');
+  v90Caller.setMidi(new Uint8Array(readFileSync(v90InjectPath)));
+  const v90Html = v90Caller.call('midi2jianpu_html', -1, 1) || '';
+  check(!v90Html.includes('<script>alert(1)</script>'),
+    'WASM HTML 不含可执行的注入脚本', v90Html.slice(0, 300));
+  check(v90Html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'),
+    'WASM 页眉轨名转义成实体', v90Html.slice(0, 300));
+  check(v90Html.includes('A&amp;B') && !v90Html.includes('A&amp;amp;B'),
+    'WASM 的 & 只转义一次，没有双重转义', v90Html.slice(0, 300));
+  check((v90Html.match(/<script/g) || []).length === 0,
+    'WASM 未开播放器时整份页面没有 script 标签', v90Html.slice(0, 300));
+  check(v90Html.includes('class=\'note'),
+    'WASM 转义后谱面音符照常出谱', v90Html.slice(0, 300));
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

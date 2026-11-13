@@ -3479,6 +3479,13 @@ def main() -> None:
         f.write(data)
     print(f"wrote {apath} ({len(data)} bytes)")
 
+    # v1.90.0：HTML 页眉转义（顶层，10 个全量守卫照常覆盖）
+    ipath = os.path.join(here, "html_meta_inject.mid")
+    with open(ipath, "wb") as f:
+        data = build_html_meta_inject()
+        f.write(data)
+    print(f"wrote {ipath} ({len(data)} bytes)")
+
 def build_utf8_marker() -> bytes:
     """段落名截断必须落在 UTF-8 字符边界上（v1.79.0）。
 
@@ -3837,6 +3844,38 @@ def build_absurd_meter() -> bytes:
     for i, p in enumerate((60, 62, 64, 65)):
         t1.note(0, p, 90, i * DIV, DIV)                # 界内 4 个正常音
     t1.note(0, 72, 90, 0, 250000000)                  # 合法 VLQ 的极长音
+
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
+
+
+def build_html_meta_inject() -> bytes:
+    """v1.90.0：合法的 0x03 轨名不能再往 HTML 页眉注入可执行脚本。
+
+    MIDI 的 track name / marker / text / lyric 都是文件内容，不是可信
+    字面量。旧版 html_writer.cpp 的页眉 meta 行只给 keys.summary() 单独
+    转义，其余片段（partSummary / trackLabel / lyricLabel / expr.summary）
+    全裸拼进 <div class="meta">：把轨名写成 <script>alert(1)</script>
+    就能让生成的 HTML 多出一个可执行 <script>（Pages 在线版直接受影响）；
+    轨名里的 A&B、<C> 还会把页眉文字吞掉一段。谱面主体（<h1> / <h3> /
+    <span class='section'> / <span class='lyric'>）本来就有 htmlEscape，
+    只有页眉这一行漏了。
+
+    新版逐段转义：页眉与 <h3> 完全一致，文本谱（纯文本）保留原文，
+    MusicXML 仍可被严格解析。全部事件合法，谱面是 4/4 八个四分音符。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+    t0.add(0, meta(0x06, b"MARK <b>&</b>"))
+    t0.add(0, meta(0x01, b"TEXT & <tag>"))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b'<script>alert(1)</script> A&B <C> "Q"'))
+    for i, p in enumerate((60, 62, 64, 65, 67, 69, 71, 72)):
+        t1.add(i * DIV, meta(0x05, b"LY & <x>"))
+        t1.note(0, p, 90, i * DIV, DIV)
 
     return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
 

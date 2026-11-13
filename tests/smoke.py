@@ -3902,6 +3902,49 @@ def main():
     check(rc == 0 and os.path.exists(abxml), "离谱拍号 MusicXML 正常生成", err)
     axsz = os.path.getsize(abxml)
     check(axsz < 150000, "MusicXML 体积有界（旧版约 5.35 MB），实际 %d 字节" % axsz)
+    group("[103] v1.90.0 HTML 页眉转义：合法轨名不能注入可执行脚本")
+    # html_writer.cpp 的 meta 行由 20 个片段拼成，旧版只有 keys.summary()
+    # 转义，partSummary / trackLabel / lyricLabel 都裸拼。轨名是 0x03 文件
+    # 内容，写成 <script>alert(1)</script> 就能往 HTML 注入可执行 JS。
+    injmid = os.path.join(FIXTURES, "html_meta_inject.mid")
+    check(os.path.exists(injmid), "html_meta_inject.mid 素材存在", injmid)
+    injhtml = os.path.join(tmp, "html_meta_inject.html")
+    injxml = os.path.join(tmp, "html_meta_inject.xml")
+    injtxt = os.path.join(tmp, "html_meta_inject.txt")
+    rc, out, err = run(exe, injmid, "--html", injhtml,
+                       "--musicxml", injxml, "--output", injtxt)
+    check(rc == 0, "特殊字符素材退出码 0", err)
+    injhtm = open(injhtml, encoding="utf-8").read()
+    check("<script>alert(1)</script>" not in injhtm,
+          "HTML 不含可执行的注入脚本")
+    check("&lt;script&gt;alert(1)&lt;/script&gt;" in injhtm,
+          "页眉轨名已转义成实体")
+    ms = injhtm.find('<div class="meta">')
+    me = injhtm.find("</div>", ms)
+    meta = injhtm[ms:me] if ms >= 0 and me >= 0 else ""
+    check(bool(meta), "页眉 meta 段存在且闭合")
+    check("<script" not in meta and "<C>" not in meta and "<b>" not in meta,
+          "meta 段里没有任何裸 HTML 标签")
+    check("A&amp;B" in meta, "页眉里的 & 被转义")
+    check("&amp;amp;" not in meta, "没有对 keys.summary() 双重转义")
+    check(injhtm.count("<script") == 0,
+          "未开 --player 时整份页面没有 script 标签")
+    import xml.etree.ElementTree as ET
+    ET.fromstring(open(injxml, "rb").read())
+    check(True, "MusicXML 仍可被 ElementTree 严格解析")
+    injt = open(injtxt, encoding="utf-8").read()
+    check("<script>alert(1)</script>" in injt,
+          "文本谱是纯文本，保留原始轨名不转义")
+    injph = os.path.join(tmp, "html_meta_inject_player.html")
+    rc, _, err = run(exe, injmid, "--html", injph, "--player")
+    check(rc == 0, "--player 组合退出码 0", err)
+    injphtm = open(injph, encoding="utf-8").read()
+    check(injphtm.count("<script") == 1,
+          "--player 时只有播放器自己的那一段 script，实际 %d"
+          % injphtm.count("<script"))
+    check("<script>alert(1)</script>" not in injphtm,
+          "--player 组合下也没有注入脚本")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

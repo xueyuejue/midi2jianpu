@@ -7532,6 +7532,56 @@ int main() {
         check(d.notes.size() == 24 && d.timelineClamped == 0,
               "3/8 曲目 24 个音全保留, 实际: " + std::to_string(d.notes.size()));
     }
+    {
+        // ---- v1.90.0：HTML 页眉 meta 行逐段转义 ----
+        // 轨名 / marker / 歌词来源都是 MIDI 文件内容。旧版页眉只给
+        // keys.summary() 转义，其余片段裸拼，一份 0x03 轨名写成
+        // <script>alert(1)</script> 的合法 SMF 就能注入可执行 JS。
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.trackNames[1] = "<script>alert(1)</script> A&B <C>";
+        for (int i = 0; i < 4; i++) {
+            NoteEvent e;
+            e.track = 1; e.channel = 0; e.startTicks = i * 480L;
+            e.durationTicks = 480; e.pitch = 60 + i * 2; e.velocity = 90;
+            d.notes.push_back(e);
+        }
+        const KeyEstimate k = estimateKey(d);
+        const std::string h = renderHtml(d, k, "<title>&</title>");
+        check(h.find("<script>alert(1)</script>") == std::string::npos,
+              "页眉不再出现可执行的裸 <script> 注入");
+        check(h.find("&lt;script&gt;alert(1)&lt;/script&gt;")
+              != std::string::npos,
+              "轨名在页眉被转义成实体");
+        const size_t ms = h.find("<div class=\"meta\">");
+        check(ms != std::string::npos, "页眉 meta 段存在");
+        const size_t me = h.find("</div>", ms);
+        check(me != std::string::npos, "页眉 meta 段闭合");
+        const std::string meta = h.substr(ms, me - ms);
+        check(meta.find("<script") == std::string::npos &&
+              meta.find("<C>") == std::string::npos &&
+              meta.find("<b>") == std::string::npos,
+              "meta 段里没有任何裸 HTML 标签");
+        check(meta.find("A&amp;B") != std::string::npos,
+              "页眉里的 & 被转义");
+        check(meta.find("&amp;amp;") == std::string::npos,
+              "keys.summary() 没有被双重转义");
+        check(h.find("<h1>&lt;title&gt;&amp;&lt;/title&gt;</h1>")
+              != std::string::npos,
+              "title 参数仍走既有的 <h1> 转义");
+        check(h.find("<h3>&lt;script&gt;alert(1)&lt;/script&gt;")
+              != std::string::npos,
+              "谱面主体 <h3> 的转义口径与页眉一致");
+        check(h.find("<script") == std::string::npos,
+              "未开 --player 时整份页面没有 script 标签");
+        const std::string txt = formatJianpu(d, k, false);
+        check(txt.find("<script>alert(1)</script>") != std::string::npos,
+              "文本谱是纯文本，保留原始轨名不转义");
+        const std::string ph = renderHtml(d, k, "t", nullptr, true);
+        check(occurrences(ph, "<script") == 1,
+              "--player 时页面只有播放器自己的那一段 script");
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";
