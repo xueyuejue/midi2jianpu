@@ -15,12 +15,12 @@ exe 去跑它，产出的是「旧版对新文件的第一次渲染」，不是�
 import os
 
 # 与其在 8 个脚本里各写一份，不如集中一处；加新素材时只改这一行。
-# v1.87.0 新增 stray_pedal.mid（解析期踏板过闸）与 stray_diag.mid
-# （解析期诊断计数过闸）：旧版渲染它们是「第一次见」，不参与逐字节零回归，
-# 但要被常规审计守护。v1.86.0 的 stray_events.mid 对本轮基线已是「旧版见过」，
-# 移出跳过清单，让它重新参与逐字节回归——它的页眉丢弃计数由 10 修正为 12
-# （v1.86 漏数了 2 个解析期消费的事件），由 .probe/regress_v187.py 精确豁免。
-NEW_FIXTURES = {"stray_pedal.mid", "stray_diag.mid"}
+# v1.88.0 新增 late_note.mid（合法极晚长音）：旧版渲染它是「第一次见」，
+# 不参与逐字节零回归，但要被常规审计守护。同轮的 edge/stray_lead.mid 是
+# 故意不含音符的空谱素材，放在 fixtures/edge/ 子目录，不进全量遍历，
+# 由冒烟 [101] 与 C++ 单测单独守护。v1.87.0 的 stray_pedal.mid /
+# stray_diag.mid 与更早素材对本轮基线都已是「旧版见过」，全部移出。
+NEW_FIXTURES = {"late_note.mid"}
 
 
 def skip(path):

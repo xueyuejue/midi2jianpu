@@ -7026,7 +7026,7 @@ int main() {
             mel.at(t, ev({0x90, 60 + i, 90}));
             mel.at(t + 480, ev({0x80, 60 + i, 0}));
         }
-        // 坏 delta：note-on 落在 3000 万 tick（远超 6000 小节 = 1152 万 tick 上限）
+        // 坏 delta：note-on 落在 3000 万 tick（远超 512 小节 = 98.3 万 tick 上限）
         const long kJump = 30000000L;
         mel.at(1920 + kJump, ev({0x90, 72, 90}));
         mel.at(1920 + kJump + 480, ev({0x80, 72, 0}));
@@ -7038,11 +7038,11 @@ int main() {
               "越界幽灵音被丢弃，只剩 4 个正常音, 实际: " + std::to_string(d.notes.size()));
         check(d.timelineClamped >= 1,
               "记录到越界音符, 实际: " + std::to_string(d.timelineClamped));
-        const long cap = 6000L * 1920L;
+        const long cap = 512L * 1920L;
         long maxEnd = 0;
         for (const auto& n : d.notes)
             maxEnd = std::max(maxEnd, n.startTicks + n.durationTicks);
-        check(maxEnd <= cap, "所有音符落在 6000 小节内, 实际末端: " + std::to_string(maxEnd));
+        check(maxEnd <= cap, "所有音符落在 512 小节内, 实际末端: " + std::to_string(maxEnd));
         check(truncationLabel(d).find("时间轴跨度异常") != std::string::npos,
               "页眉提示时间轴跨度异常: " + truncationLabel(d));
     }
@@ -7084,7 +7084,7 @@ int main() {
     std::cout << "\n测试越界点事件截断\n";
     {
         const long kFar = 30000000L;
-        const long cap = 6000L * 1920L;
+        const long cap = 512L * 1920L;
         SmfTrack cond;
         cond.at(0, ev({0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08}));   // 4/4
         cond.at(0, ev({0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20}));          // 120 BPM
@@ -7313,6 +7313,115 @@ int main() {
         check(d.pedalEvents == 2, "界内踏板事件仍被统计");
         check(truncationLabel(d).find("时间轴") == std::string::npos,
               "界内事件不误报时间轴异常");
+    }
+
+    // ---- v1.88.0 时间轴护栏收口 ----
+    //
+    // v1.85~1.87 的三道闸都盯住「畸形 delta 造成的巨额 tick」，却留下三个
+    // 收口问题：① cap 定成 6000 小节本身太大，一个完全合法的极晚长音能让
+    // barGridOf() 铺 6000 个空小节（HTML 2.46 MB）；② 同一个音符命中两处
+    // 夹取时 timelineClamped 加两次，页眉写「已截断 2 个」但谱里只有 1 音；
+    // ③ boundTimeline() 在 notes.empty() 时整函数早退，空谱文件的点事件
+    // 不过闸，--list-tracks 会数出幽灵歌词。
+    std::cout << "\n测试时间轴护栏收口（v1.88）\n";
+    {
+        // 1) 上限收紧：极晚的合法长音整条丢弃，4 个正常音照常出谱。
+        const long kCap = 512L * 1920L;
+        SmfTrack cond;
+        cond.at(0, ev({0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08}));
+        SmfTrack mel;
+        for (int i = 0; i < 4; i++) {
+            mel.at(i * 480L, ev({0x90, 60 + i, 90}));
+            mel.at(i * 480L + 480, ev({0x80, 60 + i, 0}));
+        }
+        const long late = 5900L * 1920L;   // 旧 cap 内、新 cap 外，且 VLQ 完全合法
+        mel.at(late, ev({0x90, 72, 90}));
+        mel.at(late + 480, ev({0x80, 72, 0}));
+        auto bytes = buildSmf(2, 480, {cond, mel});
+        MidiData d;
+        check(loadMidiFromMemory(bytes.data(), bytes.size(), d),
+              "极晚长音 SMF 仍能解析");
+        check(d.notes.size() == 4,
+              "极晚长音被丢弃，4 个正常音照常出谱, 实际: " + std::to_string(d.notes.size()));
+        long maxEnd = 0;
+        for (const auto& n : d.notes)
+            maxEnd = std::max(maxEnd, n.startTicks + n.durationTicks);
+        check(maxEnd < kCap,
+              "谱面末端收在 512 小节内（输出层不再铺几千空小节）, 实际: " +
+              std::to_string(maxEnd));
+        check(d.timelineClamped == 1,
+              "极晚长音只计一次截断, 实际: " + std::to_string(d.timelineClamped));
+        check(truncationLabel(d).find("已截断 1 个越界音符") != std::string::npos,
+              "页眉如实提示已截断 1 个: " + truncationLabel(d));
+    }
+    {
+        // 2) 一个音符同时命中「时长 > 256 小节」与「尾巴越轴」两处夹取。
+        const long kCap = 512L * 1920L;
+        const long start = 500L * 1920L;
+        SmfTrack cond;
+        cond.at(0, ev({0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08}));
+        SmfTrack mel;
+        mel.at(start, ev({0x90, 60, 90}));
+        mel.at(start + 300L * 1920L, ev({0x80, 60, 0}));
+        auto bytes = buildSmf(2, 480, {cond, mel});
+        MidiData d;
+        check(loadMidiFromMemory(bytes.data(), bytes.size(), d),
+              "双重夹取样本 SMF 解析成功");
+        check(d.notes.size() == 1,
+              "两处夹取命中的仍是同一个音, 实际: " + std::to_string(d.notes.size()));
+        check(d.timelineClamped == 1,
+              "按音符计一次截断（旧版计 2）, 实际: " + std::to_string(d.timelineClamped));
+        check(d.notes[0].durationTicks == kCap - start,
+              "尾巴夹到时间轴上限, 实际: " + std::to_string(d.notes[0].durationTicks));
+        check(truncationLabel(d).find("已截断 1 个越界音符") != std::string::npos,
+              "页眉不再谎报 2 个越界音符: " + truncationLabel(d));
+    }
+    {
+        // 3) 空谱文件：三道闸照样要跑。--list-tracks 在「未提取到音符」
+        //    return 3 之前执行，读的正是这些事件表。
+        SmfTrack cond;
+        cond.at(0, ev({0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08}));
+        cond.at(0, ev({0xFF, 0x06, 0x05, 'I', 'n', 't', 'r', 'o'}));      // 界内 marker
+        cond.at(30000000L, ev({0xFF, 0x05, 0x01, 'x'}));                  // 越界歌词
+        cond.at(30000000L, ev({0xFF, 0x06, 0x05, 'G', 'h', 'o', 's', 't'}));// 越界 marker
+        cond.at(30000000L, ev({0xC0, 40}));                                // 越界换音色
+        cond.at(30000000L, ev({0xB0, 0x0B, 100}));                         // 越界 CC11
+        SmfTrack emptyTrack;
+        emptyTrack.at(0, ev({0xFF, 0x03, 0x05, 'V', 'o', 'c', 'a', 'l'}));
+        auto bytes = buildSmf(2, 480, {cond, emptyTrack});
+        MidiData d;
+        check(loadMidiFromMemory(bytes.data(), bytes.size(), d), "空谱 SMF 解析成功");
+        check(d.notes.empty(), "样本确实不含音符");
+        check(d.midiLyrics.empty(),
+              "越界歌词被清掉（--list-tracks 不再报幽灵歌词）, 实际 " +
+              std::to_string(d.midiLyrics.size()) + " 条");
+        check(d.markers.size() == 1,
+              "只剩界内 Intro 段落, 实际: " + std::to_string(d.markers.size()));
+        check(d.dynamics.empty(), "越界 CC11 力度点被清掉");
+        check(d.channelProgram.empty(),
+              "空谱里越界 0xC0 的末值也被重建清掉");
+        check(d.timelineEventsDropped >= 3,
+              "空谱的点事件丢弃也计入, 实际: " + std::to_string(d.timelineEventsDropped));
+        check(truncationLabel(d).find("已丢弃") != std::string::npos,
+              "空谱也如实提示已丢弃: " + truncationLabel(d));
+    }
+    {
+        // 4) 正常文件零变化：这道闸一个字节都不该动。
+        SmfTrack cond;
+        cond.at(0, ev({0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08}));
+        cond.at(960, ev({0xFF, 0x06, 0x05, 'V', 'e', 'r', 's', 'e'}));
+        SmfTrack mel;
+        mel.at(0, ev({0x90, 60, 90}));
+        mel.at(480, ev({0x80, 60, 0}));
+        auto bytes = buildSmf(2, 480, {cond, mel});
+        MidiData d;
+        check(loadMidiFromMemory(bytes.data(), bytes.size(), d), "正常 SMF 解析成功");
+        check(d.timelineClamped == 0 && d.timelineEventsDropped == 0,
+              "正常文件不计任何截断 / 丢弃（零回归）");
+        check(d.markers.size() == 1 && d.notes.size() == 1,
+              "正常文件的 marker 与音符一个不少");
+        check(truncationLabel(d).find("时间轴") == std::string::npos,
+              "正常文件提示不含时间轴字样");
     }
 
     std::cout << "\n------------------------------------------------\n";

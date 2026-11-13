@@ -3697,7 +3697,7 @@ def main():
     group("[98] v1.85.0 时间轴跨度保护：坏 delta-time 不再卡死 HTML 生成")
     # 一条 delta=3000 万 tick 的坏跳变把 note-on 拉到 15625 小节之外。旧版
     # 按小节切分 / 补空小节是 O(小节数)，HTML 会膨胀到数 MB 甚至卡死；新版
-    # 在解析末尾按 6000 小节截断，幽灵音丢弃、页眉提示，剩余正常音照常出谱。
+    # 在解析末尾按 512 小节截断，幽灵音丢弃、页眉提示，剩余正常音照常出谱。
     hmid = os.path.join(FIXTURES, "huge_delta.mid")
     check(os.path.exists(hmid), "huge_delta.mid 素材存在", hmid)
     rc, out, err = run(exe, hmid)
@@ -3723,7 +3723,7 @@ def main():
     # 但一条坏 delta 把 marker / 歌词 / CC11 / 0x51 / 0x58 / 0x59 / 0xE0 /
     # RPN / 0xC0 推到 3000 万 tick，旧版于是把「1 小节 4 个音」写成
     # 「4/4 → 3/4(第11小节)」「♩=120 → 256」「1=C → 1=D」「·小提琴」。
-    # 新版按同一道 6000 小节闸把 10 张点事件表一并丢弃并如实提示。
+    # 新版按同一道 512 小节闸把 10 张点事件表一并丢弃并如实提示。
     smid = os.path.join(FIXTURES, "stray_events.mid")
     check(os.path.exists(smid), "stray_events.mid 素材存在", smid)
     rc, out, err = run(exe, smid)
@@ -3811,6 +3811,50 @@ def main():
     rc, _, err = run(exe, dmid, "--musicxml", dxml)
     check(rc == 0 and os.path.exists(dxml), "诊断素材 MusicXML 退出码 0", err)
     check(os.path.getsize(dxml) < 1024 * 1024, "诊断素材 MusicXML 体积有界")
+
+    group("[101] v1.88.0 时间轴护栏收口：合法极晚长音不再铺出 MB 级谱面")
+    # v1.87 的时间轴上限是 6000 小节，一个 delta 完全合法（单条 VLQ 可表示）
+    # 的「第 5900 小节长音」会被当成正常音符保留，barGridOf() 按 songEnd
+    # 逐小节铺边界表 → HTML 2.46 MB / XML 888 KB；同一个音命中两处夹取还让
+    # timelineClamped 加了两次，页眉写「已截断 2 个越界音符」。
+    # 新版把上限收到 512 小节、按「音符」计数、空谱也不跳过点事件清理。
+    lmid = os.path.join(FIXTURES, "late_note.mid")
+    smid = os.path.join(FIXTURES, "edge", "stray_lead.mid")
+    check(os.path.exists(lmid), "late_note.mid 素材存在", lmid)
+    check(os.path.exists(smid), "stray_lead.mid 素材存在", smid)
+
+    rc, out, err = run(exe, lmid)
+    check(rc == 0, "极晚长音素材退出码 0（不崩、不卡死）", err)
+    check("共提取 4 个音符" in out, "极晚音被丢弃，4 个界内音照常出谱", out[:300])
+    check("时间轴跨度异常" in out and "已截断 1 个越界音符" in out,
+          "页眉如实提示已截断 1 个越界音符", out[:300])
+    check("已截断 2 个" not in out, "不再把同一个音重复计成 2 个", out[:300])
+
+    lhtml = os.path.join(tmp, "late_note.html")
+    rc, _, err = run(exe, lmid, "--html", lhtml)
+    check(rc == 0 and os.path.exists(lhtml), "HTML 退出码 0 且生成文件", err)
+    lsz = os.path.getsize(lhtml)
+    check(lsz < 30000, "HTML 体积有界（旧版约 2.46 MB），实际 %d 字节" % lsz)
+    lhtm = open(lhtml, encoding="utf-8").read()
+    check(lhtm.count("class='measure'") < 10,
+          "HTML 小节数有界（旧版约 6000 小节），实际 %d" % lhtm.count("class='measure'"))
+    check("已截断 1 个越界音符" in lhtm, "HTML 页眉同样如实提示", lhtm[:300])
+
+    lxml = os.path.join(tmp, "late_note.xml")
+    rc, _, err = run(exe, lmid, "--musicxml", lxml)
+    check(rc == 0 and os.path.exists(lxml), "MusicXML 退出码 0 且生成文件", err)
+    xsz = os.path.getsize(lxml)
+    check(xsz < 30000, "MusicXML 体积有界（旧版约 888 KB），实际 %d 字节" % xsz)
+
+    # 空谱文件：常规转换 return 3，但 --list-tracks 在 return 3 之前执行，
+    # 旧版会因 boundTimeline() 的 notes.empty() 早退数出越界的幽灵歌词。
+    rc, out, err = run(exe, smid, "--list-tracks")
+    check(rc == 0, "--list-tracks 对空谱仍可正常列出轨道", err)
+    check("旋律 0 音" in out, "轨道列表如实显示两条空轨", out[:300])
+    check("歌词 1 字" not in out, "空谱不再报出越界的幽灵歌词", out[:300])
+    check("Ghost" not in out, "空谱不带出越界段落名", out[:300])
+    rc, out, err = run(exe, smid)
+    check(rc == 3, "空谱常规转换如实返回 3（未提取到音符）", err)
 
     print("\n" + "-" * 48)
     if failures:

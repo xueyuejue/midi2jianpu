@@ -673,13 +673,19 @@ static void applySysExDrumMode(MidiData& out,
 //   2) format 1 文件的 set_tempo 通常在独立的 conductor 轨（track 0），
 //      如果它排在音符轨之后被解析，整份谱子的秒数全部错位。
 // 现在与 LRC 歌词共用同一张 TempoTimeline，不会再出现「音符对、歌词错」。
-// 时间轴上限：解析期临时向量、out 里的事件表、音符三处过闸共用这一个口径，
-// 免得哪天只改了一处又漏掉另一处。6000 小节在 4/4 @120BPM 下约 3.3 小时，
-// 远超任何真实曲目。
+// 时间轴上限：解析期临时向量、out 里的事件表、音符三处过闸共用这一个口径。
+// v1.85 最初定 6000 小节（4/4 @120BPM 约 3.3 小时），只为拦住畸形 delta 的
+// 千万级小节号；但 barGridOf() 会按 songEnd 逐小节铺边界表，于是「起点落在
+// 5900 小节」的一个完全合法的长音（delta 没坏、VLQ 也没坏）就足以让三端
+// 铺出 6000 个空小节：HTML 2.46 MB / XML 888 KB，网页版跟着卡。
+// 简谱不会有几千小节的前奏，512 小节（4/4 @120BPM 约 17 分钟）已远超真实
+// 曲目，也把输出层的铺表量级压回几百 KB。kMaxNoteBars=256 仍是它的一半。
+// 抽成常量：boundTimeline() 反算 barLen 时也用它，别再散落字面量。
+static constexpr long kMaxTimelineBars = 512;
 static long timelineCap(const MidiData& out) {
     long barLen = (long)std::llround(out.timeSig.barLengthTicks(out.division));
     if (barLen <= 0) barLen = (out.division > 0 ? (long)out.division : 480L) * 4;
-    return 6000L * barLen;
+    return kMaxTimelineBars * barLen;
 }
 
 // channelProgram 存「最后一个 0xC0」，是解析循环里直接写的，不进任何事件表。
@@ -697,7 +703,7 @@ static void rebuildChannelProgram(MidiData& out) {
     }
 }
 
-// 点事件的统一清理：凡是 tick 越过 6000 小节上限的，整条丢弃。
+// 点事件的统一清理：凡是 tick 越过时间轴上限的，整条丢弃。
 // 用模板而不是给 10 张表各写一遍循环，是为了让它们共用同一个口径——
 // v1.85 只夹 notes 就漏掉了余下 10 张表，以后再加事件表也容易漏。
 template <class Vec>
@@ -759,7 +765,7 @@ static int dropStrayEvents(MidiData& out, long cap) {
 // 放在 recomputeSeconds 之前：先把 tick 夹到合理范围，秒数 / LRC 时间轴 /
 // 下游按小节切分才不会跟着天文数字一起爆炸。越界音符多半是 note-on 与
 // note-off 被一段坏 delta 拉到两端拼出来的「幽灵长音」，整条丢弃比夹在
-// 末尾更贴近真实意图（真实简谱里不会有 6000 小节长、横跨三小时的单音）。
+// 末尾更贴近真实意图（真实简谱里不会有几百小节长、横跨十几分钟的单音）。
 //
 // v1.86：非音符事件同样要过这道闸。v1.85 只夹 notes，于是 marker / 歌词 /
 // CC11 / 变速 / 变拍号 / 转调 / 换音色等落在数亿 tick 上的点事件仍被当成
@@ -768,10 +774,13 @@ static int dropStrayEvents(MidiData& out, long cap) {
 // HTML 播放器的 tempo 表也混入巨额 tick。现在一并丢弃并如实提示。
 static void boundTimeline(MidiData& out) {
     const long cap = timelineCap(out);
-    const long barLen = cap / 6000L;
+    const long barLen = cap / kMaxTimelineBars;
     const long kMaxNoteBars = 256;// 单个 MIDI 音最长 256 小节（真实单音远短于此）
     const long maxDur = kMaxNoteBars * barLen;
-    if (out.notes.empty()) return;
+    // v1.88：不能因为「没有音符」就整函数早退。空谱文件仍会走 --list-tracks，
+    // 它读 out.midiLyrics / programTimeline；点事件不过闸就会数出幽灵歌词、
+    // 把越界 0xC0 的末值当成乐器名。下面的循环在空表上天然不做事，删掉
+    // 早退即可让三道闸对所有文件生效。
     long maxEnd = 0;
     bool needs = false;
     for (const auto& n : out.notes) {
@@ -783,9 +792,15 @@ static void boundTimeline(MidiData& out) {
         kept.reserve(out.notes.size());
         for (auto& n : out.notes) {
             if (n.startTicks >= cap) { out.timelineClamped++; continue; }   // 起点越界：整条丢弃
-            if (n.durationTicks > maxDur) { n.durationTicks = maxDur; out.timelineClamped++; }  // 幽灵长音：夹到上限
+            // v1.88：一个音符可能同时命中「时长超 256 小节」和「尾巴越出
+            // 时间轴上限」两处夹取，旧版各 ++ 一次，页眉于是写「已截断 2
+            // 个越界音符」而谱里只有 1 个音。按「音符」计数，不是按「夹取
+            // 次数」计数。
+            bool clamped = false;
+            if (n.durationTicks > maxDur) { n.durationTicks = maxDur; clamped = true; }
             long end = n.startTicks + std::max<long>(n.durationTicks, 1);
-            if (end > cap) { n.durationTicks = cap - n.startTicks; out.timelineClamped++; }      // 尾巴越界：夹住
+            if (end > cap) { n.durationTicks = cap - n.startTicks; clamped = true; }
+            if (clamped) out.timelineClamped++;
             kept.push_back(n);
         }
         out.notes.swap(kept);

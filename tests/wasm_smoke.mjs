@@ -2050,6 +2050,28 @@ if (existsSync(v87PedPath) && existsSync(v87DiagPath)) {
     'WASM 诊断素材仍保留界内钢琴音色并如实提示', v87DiagHtml.slice(0, 300));
 }
 
+// ---- 62. v1.88.0 护栏收口：网页端不再因合法极晚长音铺 6000 个空小节 ----
+// CLI 冒烟 [101] 覆盖三端，这里端到端确认 docs/wasm/ 里的 .wasm 确实带上
+// 512 小节上限（漏重编就会是 2.46 MB HTML + 「已截断 2 个」）。
+const v88LatePath = path.join(FIXTURES, 'late_note.mid');
+if (existsSync(v88LatePath)) {
+  mod._midi2jianpu_set_track(-1);
+  const v88Caller = makeCaller(mod);
+  v88Caller.setLyrics('');
+  v88Caller.setMidi(new Uint8Array(readFileSync(v88LatePath)));
+  const v88Html = v88Caller.call('midi2jianpu_html', -1, 1) || '';
+  const v88Xml = v88Caller.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(v88Html.includes('已截断 1 个越界音符') && v88Html.includes('时间轴跨度异常'),
+    'WASM 页眉如实提示已截断 1 个越界音符', v88Html.slice(0, 300));
+  check(!v88Html.includes('已截断 2 个'),
+    'WASM 不再把同一个音重复计成 2 个', v88Html.slice(0, 300));
+  check(v88Html.length < 30000 && v88Xml.length < 30000,
+    'WASM HTML / MusicXML 体积有界（旧版 2.46 MB / 888 KB）',
+    v88Html.length + ' / ' + v88Xml.length);
+  check(v88Html.includes('1 2 3 4') || v88Html.includes('1</span>'),
+    'WASM 仍照常输出 4 个界内音符', v88Html.slice(0, 300));
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

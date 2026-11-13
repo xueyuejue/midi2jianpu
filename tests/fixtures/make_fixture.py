@@ -3448,6 +3448,25 @@ def main() -> None:
             f.write(data)
         print(f"wrote {path} ({len(data)} bytes)")
 
+    # v1.88.0：时间轴护栏收口（合法极晚长音 / 空谱点事件）
+    lpath = os.path.join(here, "late_note.mid")
+    with open(lpath, "wb") as f:
+        data = build_late_note()
+        f.write(data)
+    print(f"wrote {lpath} ({len(data)} bytes)")
+
+    # 空谱素材故意放 edge/ 子目录：它让 CLI 返回 3、不产出任何谱面文件，
+    # 而 10 个全量守卫都按「每份 .mid 必须能渲染三端」遍历顶层 fixtures。
+    # 放顶层会让其中 8 个脚本一起炸。冒烟 [101] 与 C++ 单测直接读这个
+    # 子目录，守护强度不打折；edge/ 仍受 CI 的 git status 零 diff 检查。
+    edge = os.path.join(here, "edge")
+    os.makedirs(edge, exist_ok=True)
+    epath = os.path.join(edge, "stray_lead.mid")
+    with open(epath, "wb") as f:
+        data = build_stray_lead()
+        f.write(data)
+    print(f"wrote {epath} ({len(data)} bytes)")
+
 def build_utf8_marker() -> bytes:
     """段落名截断必须落在 UTF-8 字符边界上（v1.79.0）。
 
@@ -3547,8 +3566,8 @@ def build_huge_delta() -> bytes:
     本素材 4/4、division=480：
       * 第 1 小节 4 个四分音符 —— 正常音，截断后应保留；
       * 第 2 小节之后一条 delta = 3000 万 tick 的坏跳变，note-on 落在 3000 万
-        tick（约 15625 小节，远超 6000 小节上限），其 note-off 再 +480。
-    新版在解析末尾按「6000 小节」截断：越界幽灵音丢弃、页眉提示
+        tick（约 15625 小节，远超 512 小节上限），其 note-off 再 +480。
+    新版在解析末尾按「512 小节」截断：越界幽灵音丢弃、页眉提示
     「时间轴跨度异常」，剩余 4 个正常音照常出谱，且 HTML 体积有界。
     """
     t0 = Track()
@@ -3591,7 +3610,7 @@ def build_stray_events() -> bytes:
       * conductor 轨 tick 3000 万（一条坏 delta）：11 类点事件各放一份，
         覆盖 MidiData 里全部 10 张非音符事件表。
 
-    新版按同一个 6000 小节上限把这些点事件一并丢弃：页眉回到
+    新版按同一个 512 小节上限把这些点事件一并丢弃：页眉回到
     「拍号=4/4 / ♩=120 / 1=C 大调 / 声部：Melody」，并如实提示
     「已丢弃 N 个越界事件」，4 个正常音一个不少。
     """
@@ -3607,7 +3626,7 @@ def build_stray_events() -> bytes:
     for i, b in enumerate((0, 480, 960, 1440)):
         t1.note(0, 60 + i, 90, b, 480)
 
-    # 一条合法但荒谬的 delta：3000 万 tick ≈ 15625 小节，远超 6000 小节闸。
+    # 一条合法但荒谬的 delta：3000 万 tick ≈ 15625 小节，远超 512 小节闸。
     far = 30000000
     t0.add(far, meta(0x06, b"Ghost Verse"))            # markers
     t0.add(far, meta(0x01, b"Ghost text"))             # textEvents
@@ -3693,6 +3712,64 @@ def build_stray_diag() -> bytes:
     t0.program(0, 40, far)                             # 越界换成小提琴
     t0.add(far, meta(0x20, bytes([3])))                # Channel Prefix
     t0.add(far, meta(0x21, bytes([1])))                # MIDI Port（放最后，不改前面事件的端口）
+
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
+
+
+def build_late_note() -> bytes:
+    """v1.88.0：一个「完全合法」的极晚长音不再让三端铺出 6000 个空小节。
+
+    delta-time 是单条 VLQ 就能表示的 5900 小节，既不是坏 delta 也不是
+    损坏文件。v1.87 的时间轴上限是 6000 小节，于是这个音被当作本曲内容
+    保留（时值夹到 256 小节）；barGridOf() 按 songEnd 逐小节铺边界表，
+    HTML 立刻涨到 2.46 MB / XML 888 KB，网页版跟着卡。而且旧版
+    timelineClamped 对同一个音加两次，页眉写「已截断 2 个越界音符」。
+
+    新版把上限收到 512 小节：极晚音整条丢弃、如实提示「已截断 1 个」，
+    4 个界内四分音符照常出谱（HTML 约 11 KB）。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120 BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    for i, b in enumerate((0, 480, 960, 1440)):
+        t1.note(0, 60 + i, 90, b, 480)
+
+    late = 5900 * BAR                                  # 旧 6000 小节闸之内
+    t1.note(0, 72, 90, late, 400 * BAR)                # 合法 VLQ，无畸形 delta
+
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
+
+
+def build_stray_lead() -> bytes:
+    """v1.88.0：空谱文件的点事件同样要过时间轴闸。
+
+    整份文件一个音符都没有，只有 conductor 设定与落在 3000 万 tick 的
+    歌词 / marker / CC11 / 0xC0。空谱会在 main.cpp 里 return 3 不出谱，
+    但 --list-tracks 在 return 3 之前执行，读的正是 out.midiLyrics 等表。
+    旧版 boundTimeline() 一见 notes.empty() 就整函数早退，于是
+    --list-tracks 凭空报出「歌词 1 字」；新版点事件照常清理，只留下
+    界内那条 Intro 段落。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+    t0.add(0, meta(0x06, b"Intro"))                    # 界内 marker，不许误丢
+
+    far = 30000000
+    t0.add(far, meta(0x05, b"A"))                      # 越界歌词 -> 幽灵「歌词 1 字」
+    t0.add(far, meta(0x06, b"Ghost"))                  # 越界 marker
+    t0.cc(0, 11, 100, far)                            # 越界 CC11 力度点
+    t0.program(0, 40, far)                            # 越界换音色
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))                    # 只有轨名，没有音符
 
     return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
 
