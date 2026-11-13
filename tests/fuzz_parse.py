@@ -79,52 +79,55 @@ def collect_seeds(mod):
 
 
 # ---------------- 突变算子 ----------------
-def flip_bit(b):
-    i = random.randrange(len(b))
-    bit = 1 << random.randrange(8)
+# 注意：所有算子都用调用方传入的「已用固定种子初始化的 rng」取随机数，
+# 不能碰全局 random 模块——否则每次进程启动的全局种子不同，突变结果不可复现，
+# CI 会随机红绿。固定 seed 才能让「≥500 次零崩溃」这个断言稳定成立。
+def flip_bit(b, rng):
+    i = rng.randrange(len(b))
+    bit = 1 << rng.randrange(8)
     return b[:i] + bytes([b[i] ^ bit]) + b[i + 1:]
 
 
-def flip_byte(b):
-    i = random.randrange(len(b))
-    return b[:i] + bytes([random.randrange(256)]) + b[i + 1:]
+def flip_byte(b, rng):
+    i = rng.randrange(len(b))
+    return b[:i] + bytes([rng.randrange(256)]) + b[i + 1:]
 
 
-def insert(b):
-    i = random.randrange(len(b) + 1)
-    n = random.randint(1, 4)
-    return b[:i] + bytes(random.randrange(256) for _ in range(n)) + b[i:]
+def insert(b, rng):
+    i = rng.randrange(len(b) + 1)
+    n = rng.randint(1, 4)
+    return b[:i] + bytes(rng.randrange(256) for _ in range(n)) + b[i:]
 
 
-def delete(b):
+def delete(b, rng):
     if len(b) <= 4:
         return b
-    i = random.randrange(len(b))
-    n = min(random.randint(1, 4), len(b) - i)
+    i = rng.randrange(len(b))
+    n = min(rng.randint(1, 4), len(b) - i)
     return b[:i] + b[i + n:]
 
 
-def duplicate(b):
+def duplicate(b, rng):
     if len(b) < 2:
         return b
-    i = random.randrange(len(b))
-    n = random.randint(1, min(8, len(b) - i))
+    i = rng.randrange(len(b))
+    n = rng.randint(1, min(8, len(b) - i))
     return b[:i] + b[i:i + n] * 2 + b[i + n:]
 
 
-def truncate(b):
+def truncate(b, rng):
     if len(b) <= 4:
         return b
-    i = random.randrange(1, len(b))
+    i = rng.randrange(1, len(b))
     return b[:i]
 
 
-def header(b):
+def header(b, rng):
     """只动前 14 字节（MThd + 头长 + 格式/轨数/division），逼出头解析崩溃。"""
     if len(b) < 14:
         return b
-    i = random.randrange(4, 14)
-    return b[:i] + bytes([random.randrange(256)]) + b[i + 1:]
+    i = rng.randrange(4, 14)
+    return b[:i] + bytes([rng.randrange(256)]) + b[i + 1:]
 
 
 MUT_FUNCS = {
@@ -307,7 +310,7 @@ def main():
         seed_name = rng.choice(list(seeds.keys()))
         base = seeds[seed_name]
         mut = rng.choice(MUTATORS)
-        data = MUT_FUNCS[mut](base)
+        data = MUT_FUNCS[mut](base, rng)
         mode, cargs = pick_args(rng, out_dir)
         rc, out, err, to = run_once(exe, data, cargs, 20)
         if to or rc is None:

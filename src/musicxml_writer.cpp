@@ -19,16 +19,22 @@
 
 namespace m2j {
 
-// 歌词是用户贴进来的任意文本，'&' 或 '<' 会直接把 XML 打坏
+// 歌词 / 轨名 / 乐器名是用户贴进来的任意文本，'&' 或 '<' 会直接把 XML 打坏；
+// 此外 MIDI 文本事件里偶尔夹带 0x01–0x1F 的噪声控制字节（例如 0x03），
+// XML 1.0 连字符引用都禁止它们出现在文本里，必须丢弃，否则整份 MusicXML
+// 非良构、MuseScore 直接打不开。HTML 写入器容忍这些字节，但严格的 XML
+// 解析器不容忍，所以这里是 MusicXML 专属的清理。
 static std::string xmlEscape(const std::string& s) {
     std::string out;
-    for (char c : s) {
+    for (unsigned char c : s) {
         if (c == '&') out += "&amp;";
         else if (c == '<') out += "&lt;";
         else if (c == '>') out += "&gt;";
         else if (c == '"') out += "&quot;";
         else if (c == '\'') out += "&apos;";
-        else out += c;
+        else if (c < 0x20 && c != '\t' && c != '\n' && c != '\r')
+            ;  // XML 1.0 禁止 C0 控制字符，丢弃
+        else out += (char)c;
     }
     return out;
 }
@@ -656,7 +662,8 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                     if (!key.scaleLabel.empty()) {
                         xml << "      <direction placement=\"above\">\n"
                             << "        <direction-type><words>"
-                            << key.scaleLabel << "</words></direction-type>\n"
+                            << xmlEscape(key.scaleLabel)
+                            << "</words></direction-type>\n"
                             << "      </direction>\n";
                     }
                 }
