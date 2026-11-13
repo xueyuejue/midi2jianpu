@@ -673,12 +673,87 @@ static void applySysExDrumMode(MidiData& out,
 //   2) format 1 文件的 set_tempo 通常在独立的 conductor 轨（track 0），
 //      如果它排在音符轨之后被解析，整份谱子的秒数全部错位。
 // 现在与 LRC 歌词共用同一张 TempoTimeline，不会再出现「音符对、歌词错」。
+// 点事件的统一清理：凡是 tick 越过 6000 小节上限的，整条丢弃。
+// 用模板而不是给 10 张表各写一遍循环，是为了让它们共用同一个口径——
+// v1.85 只夹 notes 就漏掉了余下 10 张表，以后再加事件表也容易漏。
+template <class Vec>
+static void dropBeyond(Vec& v, long cap, int& dropped) {
+    auto it = std::remove_if(v.begin(), v.end(),
+        [cap, &dropped](const auto& e) {
+            if (e.tick < cap) return false;
+            ++dropped;
+            return true;
+        });
+    v.erase(it, v.end());
+}
+
+static int dropStrayEvents(MidiData& out, long cap) {
+    int dropped = 0;
+    dropBeyond(out.dynamics, cap, dropped);
+    dropBeyond(out.tempoChanges, cap, dropped);
+    dropBeyond(out.timeSigChanges, cap, dropped);
+    dropBeyond(out.keySigChanges, cap, dropped);
+    dropBeyond(out.pitchBends, cap, dropped);
+    const size_t bendBefore = out.bendRanges.size();
+    dropBeyond(out.bendRanges, cap, dropped);
+    if (out.bendRanges.size() != bendBefore) {
+        // bendRangeLabel() 用 bendRangeEvents 判断要不要打印、却从
+        // bendRanges 里取半音值。只丢表不重算计数会打出「弯音范围： 半音」
+        // 这种空值行。两处都按界内剩余重算；正常文件不进这个分支。
+        out.bendRangeEvents = (int)out.bendRanges.size();
+        std::set<int> chans;
+        for (const auto& p : out.bendRanges) chans.insert(p.channel);
+        out.bendRangeChannels = (int)chans.size();
+    }
+    dropBeyond(out.midiLyrics, cap, dropped);
+    dropBeyond(out.textEvents, cap, dropped);
+    dropBeyond(out.markers, cap, dropped);
+    const size_t progBefore = out.programTimeline.size();
+    dropBeyond(out.programTimeline, cap, dropped);
+    if (out.programTimeline.size() != progBefore) {
+        // channelProgram 存的是「最后一个 0xC0」。越界的换音色被丢掉后，
+        // 这个末值仍停在世界尽头：programAt() 在界内时间轴查不到点时会
+        // 回退到它，把整首曲子标成越界处的乐器（探针里 1 小节的钢琴谱
+        // 被标成小提琴）。只在真丢过 0xC0 时重建，正常文件一个字节不动：
+        // 界内有设定就取界内最后一个，界内根本没设过就把条目删掉。
+        std::map<int, int> liveLast;
+        for (const auto& p : out.programTimeline)
+            liveLast[p.channel] = p.program;   // 表按 tick 升序，后写覆盖
+        for (auto it = out.channelProgram.begin(); it != out.channelProgram.end(); ) {
+            auto jt = liveLast.find(it->first);
+            if (jt == liveLast.end()) it = out.channelProgram.erase(it);
+            else { it->second = jt->second; ++it; }
+        }
+        // bankLabel() 里的计数来自同一批 0xC0 / Bank Select。丢完点之后
+        // 必须跟着重算，否则页眉会写「1 处 Bank Select，1 次 Program Change」
+        // 而这两件事其实都在被丢弃的世界尽头。界内一个设定都不剩时整行
+        // 诊断自然消失（bankLabel 的开关就是这两个计数）。
+        out.programChangeEvents = (int)out.programTimeline.size();
+        std::map<int, int> perCh;
+        for (const auto& p : out.programTimeline) perCh[p.channel]++;
+        out.programSwitchChannels = 0;
+        for (const auto& kv : perCh) if (kv.second > 1) out.programSwitchChannels++;
+        if (out.programTimeline.empty()) {
+            out.bankSelectEvents = 0;
+            out.bankModeEvents = 0;
+            out.bankDrumChannels = 0;
+        }
+    }
+    return dropped;
+}
+
 // 时间轴跨度保护（动机见 MidiData::timelineClamped 的注释）。
 //
 // 放在 recomputeSeconds 之前：先把 tick 夹到合理范围，秒数 / LRC 时间轴 /
 // 下游按小节切分才不会跟着天文数字一起爆炸。越界音符多半是 note-on 与
 // note-off 被一段坏 delta 拉到两端拼出来的「幽灵长音」，整条丢弃比夹在
 // 末尾更贴近真实意图（真实简谱里不会有 6000 小节长、横跨三小时的单音）。
+//
+// v1.86：非音符事件同样要过这道闸。v1.85 只夹 notes，于是 marker / 歌词 /
+// CC11 / 变速 / 变拍号 / 转调 / 换音色等落在数亿 tick 上的点事件仍被当成
+// 本曲的一部分：一份只有 1 小节 4 个音的正常谱，页眉却谎报「4/4 → 3/4
+// (第11小节)」「♩=120 → 256」「1=C → 1=D」，还凭空统计出段落和转调，
+// HTML 播放器的 tempo 表也混入巨额 tick。现在一并丢弃并如实提示。
 static void boundTimeline(MidiData& out) {
     long barLen = (long)std::llround(out.timeSig.barLengthTicks(out.division));
     if (barLen <= 0) barLen = (out.division > 0 ? (long)out.division : 480L) * 4;
@@ -693,18 +768,21 @@ static void boundTimeline(MidiData& out) {
         maxEnd = std::max(maxEnd, n.startTicks + std::max<long>(n.durationTicks, 1));
         if (n.startTicks >= cap || n.durationTicks > maxDur) needs = true;
     }
-    if (maxEnd <= cap && !needs) return;   // 正常文件：一个字节都不动
-
-    std::vector<NoteEvent> kept;
-    kept.reserve(out.notes.size());
-    for (auto& n : out.notes) {
-        if (n.startTicks >= cap) { out.timelineClamped++; continue; }   // 起点越界：整条丢弃
-        if (n.durationTicks > maxDur) { n.durationTicks = maxDur; out.timelineClamped++; }  // 幽灵长音：夹到上限
-        long end = n.startTicks + std::max<long>(n.durationTicks, 1);
-        if (end > cap) { n.durationTicks = cap - n.startTicks; out.timelineClamped++; }      // 尾巴越界：夹住
-        kept.push_back(n);
+    if (maxEnd > cap || needs) {   // 正常文件不进这里：一个字节都不动
+        std::vector<NoteEvent> kept;
+        kept.reserve(out.notes.size());
+        for (auto& n : out.notes) {
+            if (n.startTicks >= cap) { out.timelineClamped++; continue; }   // 起点越界：整条丢弃
+            if (n.durationTicks > maxDur) { n.durationTicks = maxDur; out.timelineClamped++; }  // 幽灵长音：夹到上限
+            long end = n.startTicks + std::max<long>(n.durationTicks, 1);
+            if (end > cap) { n.durationTicks = cap - n.startTicks; out.timelineClamped++; }      // 尾巴越界：夹住
+            kept.push_back(n);
+        }
+        out.notes.swap(kept);
     }
-    out.notes.swap(kept);
+    // 不管音符有没有被夹，点事件都要过同一道闸：只夹音符的那版会让
+    // 「音符全在正常范围、但末尾有一个坏 delta」的文件带着谎报出谱。
+    out.timelineEventsDropped = dropStrayEvents(out, cap);
 }
 
 static void recomputeSeconds(MidiData& out) {
@@ -1536,7 +1614,8 @@ std::string truncationLabel(const MidiData& data) {
     const bool damaged = data.truncatedTracks > 0 || data.truncatedEvents > 0;
     const bool repaired = data.skippedChunks > 0 || data.resyncedTracks > 0;
     const bool timeline = data.timelineClamped > 0;
-    if (!damaged && !repaired && !timeline) return "";
+    const bool stray = data.timelineEventsDropped > 0;
+    if (!damaged && !repaired && !timeline && !stray) return "";
     std::ostringstream os;
     if (damaged) {
         os << "文件数据不完整：";
@@ -1548,7 +1627,7 @@ std::string truncationLabel(const MidiData& data) {
         if (data.truncatedEvents > 0)
             os << "（丢弃 " << data.truncatedEvents << " 个不完整事件）";
     }
-    if (repaired || timeline) {
+    if (repaired || timeline || stray) {
         if (damaged) os << "；";
         os << "文件结构提示：";
         bool first = true;
@@ -1565,6 +1644,14 @@ std::string truncationLabel(const MidiData& data) {
             if (!first) os << "、";
             os << "时间轴跨度异常（疑似损坏的 delta-time），已截断 "
                << data.timelineClamped << " 个越界音符";
+            // 两种越界同时出现时并成一句；只有越界音符时这一句与 v1.85
+            // 逐字节相同，huge_delta.mid 等既有素材零回归。
+            if (stray) os << "、丢弃 " << data.timelineEventsDropped << " 个越界事件";
+            first = false;
+        } else if (stray) {
+            if (!first) os << "、";
+            os << "时间轴跨度异常（疑似损坏的 delta-time），已丢弃 "
+               << data.timelineEventsDropped << " 个越界事件";
             first = false;
         }
         os << "，谱面按真实轨数据生成";

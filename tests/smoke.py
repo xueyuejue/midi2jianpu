@@ -3718,6 +3718,56 @@ def main():
     check(rc == 0 and os.path.exists(hxml), "MusicXML 退出码 0 且生成文件", err)
     check(os.path.getsize(hxml) < 1024 * 1024, "MusicXML 体积有界（< 1MB）")
 
+    group("[99] v1.86.0 越界点事件截断：1 小节的谱不再谎报变拍号 / 变速 / 转调")
+    # v1.85 的 boundTimeline() 只夹 notes。这份素材的 4 个音符全在界内，
+    # 但一条坏 delta 把 marker / 歌词 / CC11 / 0x51 / 0x58 / 0x59 / 0xE0 /
+    # RPN / 0xC0 推到 3000 万 tick，旧版于是把「1 小节 4 个音」写成
+    # 「4/4 → 3/4(第11小节)」「♩=120 → 256」「1=C → 1=D」「·小提琴」。
+    # 新版按同一道 6000 小节闸把 10 张点事件表一并丢弃并如实提示。
+    smid = os.path.join(FIXTURES, "stray_events.mid")
+    check(os.path.exists(smid), "stray_events.mid 素材存在", smid)
+    rc, out, err = run(exe, smid)
+    check(rc == 0, "文本谱退出码 0（不崩、不卡死）", err)
+    check("共提取 4 个音符" in out, "4 个正常音一个不少", out[:300])
+    check("时间轴跨度异常" in out and "已丢弃" in out,
+          "页眉如实提示已丢弃越界事件", out[:300])
+    check("拍号=4/4)" in out, "拍号摘要回到 4/4", out[:300])
+    for lie in ("→ 3/4", "→ 256", "→ 1=D", "小提琴", "段落 2", "力度 1"):
+        check(lie not in out, "页眉不再谎报 %s" % lie, out[:300])
+    check("弯音范围： 半音" not in out, "不打印空值的弯音范围诊断行", out[:300])
+
+    shtml = os.path.join(tmp, "stray_events.html")
+    rc, _, err = run(exe, smid, "--html", shtml)
+    check(rc == 0 and os.path.exists(shtml), "HTML 退出码 0 且生成文件", err)
+    shsz = os.path.getsize(shtml)
+    check(shsz < 1024 * 1024, "HTML 体积有界（< 1MB），实际 %d 字节" % shsz)
+    htm = open(shtml, encoding="utf-8").read()
+    check("已丢弃" in htm, "HTML 页眉同样提示已丢弃越界事件", htm[:300])
+    check("→ 3/4" not in htm and "小提琴" not in htm,
+          "HTML 页眉也不再谎报变拍号 / 乐器名", htm[:300])
+    check(htm.count("class='measure'") < 100,
+          "HTML 小节数有界，实际 %d" % htm.count("class='measure'"))
+
+    phtml = os.path.join(tmp, "stray_events_player.html")
+    rc, _, err = run(exe, smid, "--player", "--html", phtml)
+    check(rc == 0 and os.path.exists(phtml), "播放器 HTML 退出码 0", err)
+    phtm = open(phtml, encoding="utf-8").read()
+    check('"tempo":[[0,500000]]' in phtm,
+          "播放器 tempo 表只剩界内的 120BPM", phtm[-500:])
+    check("30000000" not in phtm, "播放器数据不混入巨额 tick", phtm[-500:])
+
+    sxml = os.path.join(tmp, "stray_events.xml")
+    rc, _, err = run(exe, smid, "--musicxml", sxml)
+    check(rc == 0 and os.path.exists(sxml), "MusicXML 退出码 0 且生成文件", err)
+    check(os.path.getsize(sxml) < 1024 * 1024, "MusicXML 体积有界（< 1MB）")
+
+    stxt = os.path.join(tmp, "stray_events.txt")
+    rc, _, err = run(exe, smid, "--output", stxt)
+    check(rc == 0 and os.path.exists(stxt), "--output 退出码 0 且生成文件", err)
+    stm = open(stxt, encoding="utf-8").read()
+    check("→ 3/4" not in stm and "小提琴" not in stm,
+          "写出的文本谱同样没有谎报", stm[:300])
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

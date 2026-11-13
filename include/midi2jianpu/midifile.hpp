@@ -265,6 +265,14 @@ struct MidiData {
     // 合法文件此项恒为 0，输出逐字节不变。
     int timelineClamped = 0;          // 因时间轴跨度异常被丢弃 / 截断的音符数
 
+    // v1.86：同一道闸还要管住「非音符事件」。v1.85 只夹 notes，于是
+    // marker / 歌词 / CC11 / 变速 / 变拍号 / 转调等落在数亿 tick 上的事件
+    // 会原样留在事件表里：一份只有 1 小节 4 个音的正常谱，页眉却谎报
+    // 「拍号 4/4 → 3/4(第11小节)」「♩=120 → 256」「1=C → 1=D」，还凭空
+    // 统计出段落 / 力度 / 转调，HTML 播放器的 tempo 表也混入巨额 tick。
+    // 现在按同一个 6000 小节上限把这些点事件一并丢弃并如实提示。
+    int timelineEventsDropped = 0;    // 因时间轴跨度异常被丢弃的非音符事件数
+
     // SMF 的 FF 21 01 pp（MIDI Port / Cable Number）与 FF 20 01 cc（Channel
     // Prefix）。端口是「(port, channel) 二元组」的一部分：port 0 ch0 和
     // port 1 ch0 是两台设备上的两件乐器，踏板 / 弯音范围 / 力度 / 音色都

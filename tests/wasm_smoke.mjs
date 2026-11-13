@@ -1998,6 +1998,30 @@ if (existsSync(lgPath) && existsSync(luPath) && existsSync(lsPath)) {
     'WASM 也能解 Shift-JIS 的假名段落名与歌词');
 }
 
+// ---- 60. v1.86.0 越界点事件：网页端也不再谎报变拍号 / 变速 / 转调 ----
+// CLI 冒烟 [99] 覆盖三端，但网页跑的是 WASM 编译出来的同一份 midifile.cpp。
+// 这里端到端确认 docs/wasm/ 里的产物确实带上了修复（漏重编就会红）：
+// 1 小节 4 个音的谱面页眉必须如实提示「已丢弃 N 个越界事件」，而不是
+// 「4/4 → 3/4(第11小节)」「♩=120 → 256」「1=C → 1=D」「·小提琴」。
+const sePath = path.join(FIXTURES, 'stray_events.mid');
+if (existsSync(sePath)) {
+  mod._midi2jianpu_set_track(-1);
+  const sc = makeCaller(mod);
+  sc.setLyrics('');
+  sc.setMidi(new Uint8Array(readFileSync(sePath)));
+  const seHtml = sc.call('midi2jianpu_html', -1, 1) || '';
+  const seXml = sc.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(seHtml.includes('已丢弃') && seHtml.includes('时间轴跨度异常'),
+    'WASM HTML 页眉如实提示已丢弃越界事件', seHtml.slice(0, 300));
+  check(!seHtml.includes('→ 3/4') && !seHtml.includes('→ 256') &&
+        !seHtml.includes('→ 1=D') && !seHtml.includes('小提琴'),
+    'WASM HTML 不再谎报变拍号 / 变速 / 转调 / 乐器名', seHtml.slice(0, 300));
+  check(seHtml.includes('1 2 3 4') || seHtml.includes('1</span>'),
+    'WASM 仍照常输出 4 个界内音符', seHtml.slice(0, 300));
+  check(seHtml.length < 1024 * 1024 && seXml.length < 1024 * 1024,
+    'WASM HTML / MusicXML 体积有界');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

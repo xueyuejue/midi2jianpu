@@ -7075,6 +7075,122 @@ int main() {
               "正常文件的截断提示不含时间轴字样（零回归）");
     }
 
+    // ---- v1.86.0 越界「点事件」也要过同一道时间轴闸 ----
+    //
+    // v1.85 只夹 notes，于是 marker / 歌词 / CC11 / 变速 / 变拍号 / 转调 /
+    // 换音色等落在 3000 万 tick 的事件仍被当成本曲的一部分：一份 1 小节
+    // 4 个音的谱子会被谎报成「4/4 → 3/4(第11小节)」「♩=120 → 256」
+    // 「1=C → 1=D」「声部：·小提琴」。这里逐张事件表验证统一丢弃。
+    std::cout << "\n测试越界点事件截断\n";
+    {
+        const long kFar = 30000000L;
+        const long cap = 6000L * 1920L;
+        SmfTrack cond;
+        cond.at(0, ev({0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08}));   // 4/4
+        cond.at(0, ev({0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20}));          // 120 BPM
+        cond.at(0, ev({0xFF, 0x59, 0x02, 0x00, 0x00}));                 // C 大调
+        cond.at(0, ev({0xFF, 0x06, 0x05, 'I', 'n', 't', 'r', 'o'}));    // 界内段落
+        cond.at(kFar, ev({0xFF, 0x06, 0x05, 'G', 'h', 'o', 's', 't'})); // markers
+        cond.at(kFar, ev({0xFF, 0x01, 0x03, 'a', 'b', 'c'}));           // textEvents
+        cond.at(kFar, ev({0xFF, 0x05, 0x01, 'x'}));                     // midiLyrics
+        cond.at(kFar, ev({0xFF, 0x51, 0x03, 0x03, 0x93, 0x87}));        // tempoChanges
+        cond.at(kFar, ev({0xFF, 0x58, 0x04, 0x03, 0x02, 0x18, 0x08}));  // timeSigChanges
+        cond.at(kFar, ev({0xFF, 0x59, 0x02, 0x02, 0x00}));              // keySigChanges
+        cond.at(kFar, ev({0xB0, 0x0B, 100}));                           // dynamics (CC11)
+        cond.at(kFar, ev({0xE0, 0x7F, 0x7F}));                          // pitchBends
+        cond.at(kFar, ev({0xB0, 101, 0}));                               // bendRanges (RPN)
+        cond.at(kFar, ev({0xB0, 100, 0}));
+        cond.at(kFar, ev({0xB0, 6, 12}));
+        cond.at(kFar, ev({0xB0, 101, 127}));
+        cond.at(kFar, ev({0xB0, 100, 127}));
+        cond.at(kFar, ev({0xB0, 0, 0}));                                 // Bank MSB
+        cond.at(kFar, ev({0xC0, 40}));                                   // programTimeline
+        cond.at(kFar, ev({0xB0, 0x40, 127}));                            // 踏板（解析期消费）
+
+        SmfTrack mel;
+        for (int i = 0; i < 4; i++) {
+            mel.at(i * 480L, ev({0x90, 60 + i, 90}));
+            mel.at(i * 480L + 480, ev({0x80, 60 + i, 0}));
+        }
+        auto bytes = buildSmf(2, 480, {cond, mel});
+        MidiData d;
+        check(loadMidiFromMemory(bytes.data(), bytes.size(), d),
+              "含越界点事件的 SMF 仍能解析（不崩、不卡死）");
+        check(d.notes.size() == 4,
+              "4 个界内音符一个不少, 实际: " + std::to_string(d.notes.size()));
+        check(d.timelineClamped == 0,
+              "没有越界音符时不计音符截断, 实际: " + std::to_string(d.timelineClamped));
+        check(d.timelineEventsDropped >= 10,
+              "记录到 10 类越界点事件, 实际: " + std::to_string(d.timelineEventsDropped));
+
+        auto noneBeyond = [cap](const auto& v) {
+            for (const auto& e : v) if (e.tick >= cap) return false;
+            return true;
+        };
+        check(noneBeyond(d.dynamics), "dynamics 无越界点");
+        check(noneBeyond(d.tempoChanges), "tempoChanges 无越界点");
+        check(noneBeyond(d.timeSigChanges), "timeSigChanges 无越界点");
+        check(noneBeyond(d.keySigChanges), "keySigChanges 无越界点");
+        check(noneBeyond(d.pitchBends), "pitchBends 无越界点");
+        check(noneBeyond(d.bendRanges), "bendRanges 无越界点");
+        check(noneBeyond(d.midiLyrics), "midiLyrics 无越界点");
+        check(noneBeyond(d.textEvents), "textEvents 无越界点");
+        check(noneBeyond(d.markers), "markers 无越界点");
+        check(noneBeyond(d.programTimeline), "programTimeline 无越界点");
+        check(d.markers.size() == 1, "只剩界内那条 Intro 段落, 实际: " +
+              std::to_string(d.markers.size()));
+        check(d.channelProgram.empty(),
+              "越界 0xC0 的末值已从 channelProgram 清掉（不再谎报乐器名）");
+        check(d.bendRangeEvents == 0 && d.bendRangeChannels == 0,
+              "弯音范围诊断计数按界内重算，不打印「 半音」空值行");
+        check(d.programChangeEvents == 0 && d.bankSelectEvents == 0,
+              "音色库诊断计数按界内重算");
+        check(bendRangeLabel(d).empty() && bankLabel(d).empty(),
+              "没有界内设定时两条残缺诊断行都不出现");
+        const std::string lab = truncationLabel(d);
+        check(lab.find("时间轴跨度异常") != std::string::npos &&
+              lab.find("已丢弃") != std::string::npos,
+              "页眉如实提示已丢弃越界事件: " + lab);
+        check(lab.find("已截断") == std::string::npos,
+              "没有越界音符时不误报已截断音符: " + lab);
+    }
+    {
+        // 只有越界音符、没有越界点事件：提示必须与 v1.85 逐字节一致
+        // （huge_delta.mid 等既有素材零回归的守护）。
+        SmfTrack cond;
+        cond.at(0, ev({0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08}));
+        SmfTrack mel;
+        mel.at(0, ev({0x90, 60, 90}));
+        mel.at(480, ev({0x80, 60, 0}));
+        mel.at(30000000L, ev({0x90, 72, 90}));
+        mel.at(30000480L, ev({0x80, 72, 0}));
+        auto bytes = buildSmf(2, 480, {cond, mel});
+        MidiData d;
+        check(loadMidiFromMemory(bytes.data(), bytes.size(), d), "纯越界音符 SMF 解析成功");
+        check(d.timelineClamped >= 1 && d.timelineEventsDropped == 0,
+              "纯音符越界不计点事件丢弃");
+        const std::string lab = truncationLabel(d);
+        check(lab.find("已截断") != std::string::npos &&
+              lab.find("丢弃") == std::string::npos,
+              "纯音符越界的提示与 v1.85 一致: " + lab);
+    }
+    {
+        // 正常文件：点事件一个都不丢，提示里没有时间轴字样。
+        SmfTrack cond;
+        cond.at(0, ev({0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08}));
+        cond.at(960, ev({0xFF, 0x06, 0x05, 'V', 'e', 'r', 's', 'e'}));
+        SmfTrack mel;
+        mel.at(0, ev({0x90, 60, 90}));
+        mel.at(480, ev({0x80, 60, 0}));
+        auto bytes = buildSmf(2, 480, {cond, mel});
+        MidiData d;
+        check(loadMidiFromMemory(bytes.data(), bytes.size(), d), "正常段落 SMF 解析成功");
+        check(d.timelineEventsDropped == 0 && d.markers.size() == 1,
+              "正常文件的界内 marker 不被误丢");
+        check(truncationLabel(d).find("时间轴") == std::string::npos,
+              "正常文件提示不含时间轴字样");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

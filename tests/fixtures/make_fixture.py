@@ -3432,6 +3432,13 @@ def main() -> None:
         f.write(hdata)
     print(f"wrote {hmid} ({len(hdata)} bytes)")
 
+    # v1.86.0：越界的非音符事件（点事件也必须过时间轴闸）
+    smid = os.path.join(here, "stray_events.mid")
+    with open(smid, "wb") as f:
+        sdata = build_stray_events()
+        f.write(sdata)
+    print(f"wrote {smid} ({len(sdata)} bytes)")
+
 def build_utf8_marker() -> bytes:
     """段落名截断必须落在 UTF-8 字符边界上（v1.79.0）。
 
@@ -3549,6 +3556,63 @@ def build_huge_delta() -> bytes:
     jump = 30000000
     t1.add(1920 + jump, bytes([0x90, 72, 90]))
     t1.add(1920 + jump + 480, bytes([0x80, 72, 0x40]))
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
+
+
+def build_stray_events() -> bytes:
+    """v1.86.0：音符全在正常范围，但点事件被坏 delta 推到 3000 万 tick。
+
+    v1.85 的 boundTimeline() 只夹 out.notes，marker / 歌词 / 文本 / CC11 /
+    变速 / 变拍号 / 转调 / 弯音 / RPN / 0xC0 这 10 张事件表里的巨额 tick
+    原样留着。于是这份「1 小节 4 个音」的谱子被旧版谎报成：
+
+        拍号=4/4 → 3/4(第11小节)
+        ♩=120 → 256(第11小节)
+        1=C 大调 → 1=D(第11小节)
+        声部：Melody·小提琴      （越界 0xC0 的末值污染 channelProgram）
+        段落 2 / 力度 1          （越界 marker / CC11 被统计进谱面）
+
+    barIndex 的 8 格外推封顶把 3000 万 tick 伪装成「第 11 小节」，比显示
+    真实小节号更容易骗过人。HTML 播放器的 tempo 表也会混入巨额 tick。
+
+    素材结构（4/4、division=480、2 轨）：
+      * conductor 轨 tick 0：120BPM / 4/4 / C 大调 / 段落 Intro；
+      * melody 轨：4 个四分音符，**故意不写 0xC0**，逼出 channelProgram
+        末值回退这条路径；
+      * conductor 轨 tick 3000 万（一条坏 delta）：11 类点事件各放一份，
+        覆盖 MidiData 里全部 10 张非音符事件表。
+
+    新版按同一个 6000 小节上限把这些点事件一并丢弃：页眉回到
+    「拍号=4/4 / ♩=120 / 1=C 大调 / 声部：Melody」，并如实提示
+    「已丢弃 N 个越界事件」，4 个正常音一个不少。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120 BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调
+    t0.add(0, meta(0x06, b"Intro"))                    # 界内的正常段落名
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Melody"))
+    for i, b in enumerate((0, 480, 960, 1440)):
+        t1.note(0, 60 + i, 90, b, 480)
+
+    # 一条合法但荒谬的 delta：3000 万 tick ≈ 15625 小节，远超 6000 小节闸。
+    far = 30000000
+    t0.add(far, meta(0x06, b"Ghost Verse"))            # markers
+    t0.add(far, meta(0x01, b"Ghost text"))             # textEvents
+    t0.add(far, meta(0x05, "幽".encode("utf-8")))       # midiLyrics
+    t0.add(far, meta(0x51, bytes([0x03, 0x93, 0x87])))  # tempoChanges -> 256 BPM
+    t0.add(far, meta(0x58, bytes([3, 2, 24, 8])))       # timeSigChanges -> 3/4
+    t0.add(far, meta(0x59, bytes([2, 0])))              # keySigChanges -> D 大调
+    t0.cc(0, 11, 100, far)                             # dynamics（CC11 -> ff）
+    t0.cc(0, 64, 127, far)                             # 踏板（解析期消费，不留存）
+    t0.bend(0, 16383, far)                             # pitchBends
+    t0.bend_range(0, 12, far)                          # bendRanges（RPN 四个 CC）
+    t0.cc(0, 0, 0, far)                                # programTimeline（Bank MSB）
+    t0.program(0, 40, far)                             # programTimeline + channelProgram 末值
+
     return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
 
 
