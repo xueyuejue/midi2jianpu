@@ -1988,46 +1988,138 @@ int pickMelodyTrack(const MidiData& data, const std::vector<LyricLine>* lyrics) 
     return best;
 }
 
-// 简单JSON歌词解析: 找"start_beat"和"text"字段
+// ---- 外部 JSON 歌词（v1.101.0：有界对象扫描，不再"找字面量"）----
 // 宽松数字解析（定义见文件下方）。WASM 版默认关闭 C++ 异常，
 // std::stoi / std::stod 遇到畸形输入会直接 abort 整个页面，故统一用它。
 static double parseNum(const std::string& s, size_t from, size_t to);
 
-std::vector<LyricSyllable> parseLyrics(const std::string& jsonPath, int division,
-                                       size_t* dropped) {
-    // dropped 是输出参数：调用方不必先清零，也不该把上一次的计数带进来。
-    if (dropped) *dropped = 0;
-    std::vector<LyricSyllable> result;
-    std::ifstream f(jsonPath);
-    if (!f.is_open()) return result;
-    std::string content((std::istreambuf_iterator<char>(f)),
-                         std::istreambuf_iterator<char>());
+// 读一个 JSON 字符串字面量：q 必须指向起始 '"'，返回结束引号位置；out 非空时
+// 写入解码后的内容。没有闭合引号一律返回 npos——旧版在 npos 上继续做 +1，
+// 回绕成 0 后 pos 不再前进，形成无限循环并把整份文件逐字塞进谱面。
+static size_t skipJsonString(const std::string& c, size_t q, std::string* out) {
+    if (out) out->clear();
+    if (q >= c.size() || c[q] != '"') return std::string::npos;
+    for (size_t i = q + 1; i < c.size(); ++i) {
+        const char ch = c[i];
+        if (ch == '"') return i;
+        if (ch == '\\' && i + 1 < c.size()) {
+            const char e = c[++i];
+            if (!out) continue;
+            switch (e) {
+                case '"':  out->push_back('"');  break;
+                case '\\': out->push_back('\\'); break;
+                case '/':  out->push_back('/');  break;
+                case 'n':  out->push_back('\n'); break;
+                case 'r':  out->push_back('\r'); break;
+                case 't':  out->push_back('\t'); break;
+                case 'b':  out->push_back('\b'); break;
+                case 'f':  out->push_back('\f'); break;
+                default:   out->push_back(e);   break;  // 未知转义按字面收下
+            }
+        } else if (out) {
+            out->push_back(ch);
+        }
+    }
+    return std::string::npos;
+}
 
-    // 简单解析: 找每个{"start_beat":N,"text":"..."}
+// 在 [from, to) 内找 JSON key 字面量，跳过所有字符串值。单纯 find() 会把歌词
+// 正文里出现的 "start_beat" 当成下一个字段，进而把词挂错位置。
+static size_t findJsonKey(const std::string& c, const char* name,
+                          size_t from, size_t to) {
+    if (to > c.size()) to = c.size();
+    for (size_t i = from; i < to;) {
+        if (c[i] != '"') { ++i; continue; }
+        std::string s;
+        const size_t e = skipJsonString(c, i, &s);
+        if (e == std::string::npos) return std::string::npos;
+        if (s == name) return i;
+        i = e + 1;
+        if (i >= to) break;
+    }
+    return std::string::npos;
+}
+
+// 找对象的结束 '}'，跳过字符串里的花括号（歌词 "世}界" 不该切断对象）。
+static size_t findObjectEnd(const std::string& c, size_t objStart) {
+    for (size_t i = objStart + 1; i < c.size();) {
+        if (c[i] == '"') {
+            const size_t e = skipJsonString(c, i, nullptr);
+            if (e == std::string::npos) return c.size();
+            i = e + 1;
+            continue;
+        }
+        if (c[i] == '}') return i;
+        ++i;
+    }
+    return c.size();
+}
+
+// 解析 JSON 歌词文本本身（纯逻辑，便于单测）。文件入口 parseLyrics 只负责读盘。
+std::vector<LyricSyllable> parseLyricsText(const std::string& content, int division,
+                                            size_t* dropped) {
+    if (dropped) *dropped = 0;       // 输出参数，入口清零
+    std::vector<LyricSyllable> result;
+
+    // start_beat 是用户给的外部数字。判据沿用 v1.100.1 的平台无关 512 小节
+    // cap（Linux 的 long 是 64 位，绝不能拿 LONG_MAX 当业务上界）。
+    const int safeDiv = std::max(std::abs(division), 1);
+    const double unit = (double)safeDiv;
+    const double capTicks = (double)timelineCapTicks(safeDiv);
+    const double maxBeat = capTicks / unit;
+
     size_t pos = 0;
-    while ((pos = content.find("\"start_beat\"", pos)) != std::string::npos) {
-        // 提取数字
-        size_t colon = content.find(":", pos);
-        size_t end = content.find_first_of(",}", colon);
+    while (pos < content.size()) {
+        const size_t objStart = content.find('{', pos);
+        if (objStart == std::string::npos) break;
+        const size_t objEnd = findObjectEnd(content, objStart);
+        // 每轮严格前进：objEnd 可能是 content.size()（未闭合对象），也不能让
+        // 下一轮又命中同一个 '{'。这是 P0「畸形 JSON 挂起」的硬保障。
+        size_t nextPos = (objEnd < content.size()) ? objEnd + 1 : content.size();
+        if (nextPos <= objStart) nextPos = objStart + 1;
+
+        const size_t key = findJsonKey(content, "start_beat", objStart, objEnd);
+        const size_t textPos = findJsonKey(content, "text", objStart, objEnd);
+        // 没有这两个字段的对象不是歌词行（例如外层元数据），静默跳过。
+        if (key == std::string::npos || textPos == std::string::npos) {
+            pos = nextPos;
+            continue;
+        }
+        auto dropOne = [&]() {
+            if (dropped) ++*dropped;
+            pos = nextPos;
+        };
+
+        // "start_beat" 后面必须是冒号 + 数字，数字只在该对象内取。
+        const size_t colon = content.find(':', key + 12);
+        if (colon == std::string::npos || colon >= objEnd) { dropOne(); continue; }
+        size_t end = content.find_first_of(",}", colon + 1);
+        if (end == std::string::npos || end > objEnd) end = objEnd;
         const double beatNum = parseNum(content, colon + 1, end);
 
-        // 找对应的text
-        size_t textPos = content.find("\"text\"", end);
-        if (textPos == std::string::npos) break;
-        size_t q1 = content.find("\"", textPos + 6);
-        size_t q2 = content.find("\"", q1 + 1);
-        std::string line = content.substr(q1 + 1, q2 - q1 - 1);
+        // "text" 后面只允许「空白 + 恰好一个冒号」再跟一个字符串字面量。
+        // 旧版直接 find('"')，遇到 "text":123 会抓到下一个对象里的引号，
+        // 把 JSON 源码字符 s/t/a/r/t 当歌词印进谱面。
+        const size_t q1 = content.find('"', textPos + 6);
+        bool shapeOk = (q1 != std::string::npos && q1 < objEnd);
+        int colons = 0;
+        if (shapeOk) {
+            for (size_t j = textPos + 6; j < q1; ++j) {
+                const char ch = content[j];
+                if (ch == ':') ++colons;
+                else if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n') {
+                    shapeOk = false; break;
+                }
+            }
+            if (colons != 1) shapeOk = false;
+        }
+        std::string line;
+        const size_t q2 = shapeOk ? skipJsonString(content, q1, &line)
+                                  : std::string::npos;
+        if (q2 == std::string::npos || q2 >= objEnd) { dropOne(); continue; }
 
-        // start_beat 是用户给的外部数字。旧版直接 (int) 强转再乘 division，
-        // 离谱值会 UB / 32 位溢出，把歌词静默挂到曲首。判据与 LRC 一样用
-        // 平台无关的 512 小节 cap（Linux 的 long 是 64 位，不能拿 LONG_MAX）。
-        const int safeDiv = std::max(std::abs(division), 1);
-        const double unit = (double)safeDiv;
-        const double capTicks = (double)timelineCapTicks(safeDiv);
-        const double maxBeat = capTicks / unit;
         if (!std::isfinite(beatNum) || beatNum < -maxBeat || beatNum > maxBeat) {
-            if (dropped) ++*dropped;
-            pos = q2;
+            dropOne();
             continue;
         }
         const long beat = (long)beatNum;
@@ -2035,39 +2127,53 @@ std::vector<LyricSyllable> parseLyrics(const std::string& jsonPath, int division
         if (startD > capTicks) startD = capTicks;
         if (startD < -capTicks) startD = -capTicks;
 
-        // 按字拆分, 每个字分配一个tick (均匀分布在该行的beat范围内)
+        // 按字拆分，每个字分配一个 tick（均匀分布在该行的 beat 范围内）。
         const long startTick = (long)startD;
-        // 找下一行的start_beat来确定该行长度
-        size_t nextStart = content.find("\"start_beat\"", q2);
-        long lineLenTicks = division * 4;  // 默认4拍
+        const size_t nextStart = findJsonKey(content, "start_beat",
+                                             objEnd, content.size());
+        long lineLenTicks = division * 4;  // 默认 4 拍
         if (nextStart != std::string::npos) {
-            size_t nc = content.find(":", nextStart);
-            size_t ne = content.find_first_of(",}", nc);
-            const double nextNum = parseNum(content, nc + 1, ne);
-            // 下一行 beat 离谱 / 倒序时退回默认 4 拍，不做溢出减法。
-            const double spanD = (nextNum - beatNum) * division;
-            if (std::isfinite(spanD) && spanD >= 0 && spanD <= capTicks)
-                lineLenTicks = (long)spanD;
+            const size_t nc = content.find(':', nextStart + 12);
+            if (nc != std::string::npos) {
+                size_t ne = content.find_first_of(",}", nc + 1);
+                if (ne == std::string::npos) ne = content.size();
+                const double nextNum = parseNum(content, nc + 1, ne);
+                // 下一行 beat 离谱 / 倒序时退回默认 4 拍，不做溢出减法。
+                const double spanD = (nextNum - beatNum) * division;
+                if (std::isfinite(spanD) && spanD >= 0 && spanD <= capTicks)
+                    lineLenTicks = (long)spanD;
+            }
         }
         if (lineLenTicks < 0) lineLenTicks = 0;
         const long maxSpan = LONG_MAX - startTick;
         if (lineLenTicks > maxSpan) lineLenTicks = maxSpan;
-        long perChar = lineLenTicks / std::max((int)line.size(), 1);
+        const long perChar = lineLenTicks / std::max((int)line.size(), 1);
         for (size_t i = 0; i < line.size(); i++) {
-            // UTF-8中文字符: 每个字3字节
+            // UTF-8 中文字符：每个字 3 字节
             size_t charLen = 1;
-            unsigned char c = line[i];
+            const unsigned char c = (unsigned char)line[i];
             if ((c & 0xE0) == 0xC0) charLen = 2;
             else if ((c & 0xF0) == 0xE0) charLen = 3;
             else if ((c & 0xF8) == 0xF0) charLen = 4;
             if (i + charLen > line.size()) break;
-            std::string ch = line.substr(i, charLen);
-            result.push_back({startTick + (long)i * perChar, ch});
+            result.push_back({startTick + (long)i * perChar, line.substr(i, charLen)});
             i += charLen - 1;
         }
-        pos = q2;
+        pos = nextPos;
     }
     return result;
+}
+
+std::vector<LyricSyllable> parseLyrics(const std::string& jsonPath, int division,
+                                       size_t* dropped) {
+    std::ifstream f(jsonPath);
+    if (!f.is_open()) {
+        if (dropped) *dropped = 0;
+        return {};
+    }
+    std::string content((std::istreambuf_iterator<char>(f)),
+                        std::istreambuf_iterator<char>());
+    return parseLyricsText(content, division, dropped);
 }
 
 // 解析LRC歌词文件: [mm:ss.xx]歌词

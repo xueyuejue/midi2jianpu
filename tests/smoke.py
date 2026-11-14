@@ -4046,6 +4046,109 @@ def main():
     check(open(v100mid, "rb").read() == open(injmid, "rb").read(),
           "越界歌词全程不改动输入 MIDI")
 
+    group("[106] v1.101.0 畸形 JSON 外部歌词：不再挂起 / 错挂 / 吞源码")
+    v101mid = os.path.join(tmp, "v101_in.mid")
+    shutil.copyfile(injmid, v101mid)
+    v101html = os.path.join(tmp, "v101.html")
+
+    def v101_write(text, name):
+        p = os.path.join(tmp, "v101_" + name + ".json")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return p
+
+    def v101_lyrics(path):
+        body = open(path, encoding="utf-8").read()
+        return "".join(s.strip() for s in
+                       re.findall(r"<span class='lyric'>(.*?)</span>", body, re.S)
+                       if s.strip())
+
+    def v101_run_fast(args):
+        # 畸形 JSON 若还会无限循环，8 秒内必须返回；超时直接判失败，
+        # 不让 run() 的 120s 超时把整个冒烟拖死。
+        try:
+            p = subprocess.run([exe, *args], capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=8)
+            return p.returncode, p.stdout or "", p.stderr or ""
+        except subprocess.TimeoutExpired:
+            return None, "", "TIMEOUT"
+
+    ok101 = v101_write('[{"start_beat":0,"text":"你好"},'
+                       '{"start_beat":4,"text":"世界"}]', "ok")
+    rc, out, err = v101_run_fast([v101mid, "--lyrics", ok101,
+                                  "--html", v101html])
+    check(rc == 0 and "LY" not in v101_lyrics(v101html)
+          and "你好世界" in v101_lyrics(v101html),
+          "正常 JSON 两个词完整出谱（零回归基准）", err)
+    check("已忽略" not in err, "正常 JSON 不误报忽略警告", err)
+
+    # P0：旧版这里 pos 回绕成 0，无限循环 + 内存暴涨。
+    f101 = v101_write('[{"start_beat":0,"text":', "noquote")
+    rc, out, err = v101_run_fast([v101mid, "--lyrics", f101,
+                                  "--html", v101html])
+    check(rc is not None, "text 后无引号：8 秒内必须返回（旧版无限挂起）", err)
+    check(rc == 0 and "已忽略 1 行歌词" in err,
+          "text 后无引号：明确报告丢弃 1 行", err)
+    check("start_beat" not in v101_lyrics(v101html),
+          "text 后无引号：整份 JSON 源码不再被塞进谱面", err)
+
+    u101 = v101_write('[{"start_beat":0,"text":"你好', "unclosed")
+    rc, out, err = v101_run_fast([v101mid, "--lyrics", u101,
+                                  "--html", v101html])
+    check(rc == 0 and "已忽略 1 行歌词" in err,
+          "字符串未闭合：丢弃该对象并报告", err)
+
+    n101 = v101_write('[{"start_beat":0,"text":123},'
+                      '{"start_beat":4,"text":"世界"}]', "numtext")
+    rc, out, err = v101_run_fast([v101mid, "--lyrics", n101,
+                                  "--html", v101html])
+    check(rc == 0 and "已忽略 1 行歌词" in err,
+          "text 是数字：畸形对象计入忽略警告", err)
+    check("世界" in v101_lyrics(v101html)
+          and all(ch not in v101_lyrics(v101html) for ch in "{}:_"),
+          "text 是数字：不再把 JSON 源码字符当歌词，正常行照常保留", err)
+
+    e101 = v101_write('[{"start_beat":0,"text":"你\\"好"}]', "escape")
+    rc, out, err = v101_run_fast([v101mid, "--lyrics", e101,
+                                  "--html", v101html])
+    check(rc == 0 and "已忽略" not in err and "好" in v101_lyrics(v101html),
+          "转义引号按 JSON 语义解码，「好」不再丢失", err)
+
+    j101 = v101_write('[{"text":"你好","start_beat":0},'
+                      '{"text":"世界","start_beat":4}]', "textfirst")
+    rc, out, err = v101_run_fast([v101mid, "--lyrics", j101,
+                                  "--html", v101html])
+    check(rc == 0 and "你好" in v101_lyrics(v101html)
+          and "世界" in v101_lyrics(v101html),
+          "text 在 start_beat 之前：两行都保留，不再静默丢「你好」", err)
+
+    g101 = v101_write('[{"start_beat":0,"text":"唱词"},'
+                      '{"start_beat":4,"text":"含\\"start_beat\\"字样"}]',
+                      "keyintext")
+    rc, out, err = v101_run_fast([v101mid, "--lyrics", g101,
+                                  "--html", v101html])
+    # 素材只有 8 个音符列，长行后半段音节铺不下是输出层既有设计；这里只验
+    # 前半段没被字段名冒充、不泄漏反斜杠、不误报忽略。
+    check(rc == 0 and "已忽略" not in err and "唱词" in v101_lyrics(v101html)
+          and "含" in v101_lyrics(v101html) and "字" in v101_lyrics(v101html)
+          and "\\" not in v101_lyrics(v101html),
+          "歌词里的 \"start_beat\" 不冒充字段名", err)
+
+    i101 = v101_write('[{"start_beat":0,"text":"世}界"}]', "brace")
+    rc, out, err = v101_run_fast([v101mid, "--lyrics", i101,
+                                  "--html", v101html])
+    check(rc == 0 and "界" in v101_lyrics(v101html),
+          "歌词里的 } 不切断对象，「界」完整保留", err)
+
+    h101 = v101_write('[{"start_beat":999999999999,"text":"世界"}]', "huge")
+    rc, out, err = v101_run_fast([v101mid, "--lyrics", h101,
+                                  "--html", v101html])
+    check(rc == 0 and "已忽略 1 行歌词" in err,
+          "v1.100.1 的 512 小节 cap 未被本轮改动破坏", err)
+
+    check(open(v101mid, "rb").read() == open(injmid, "rb").read(),
+          "畸形 JSON 全程不改动输入 MIDI")
+
     check(open(v199mid, "rb").read() == open(injmid, "rb").read(),
           "输入 MIDI 一个字节都没被改")
 

@@ -7823,6 +7823,88 @@ int main() {
         check(validateOutputPaths(in, {{"--html", "a.html"}}).empty(),
               "源文件保护：两参重载保持 v1.82 口径");
     }
+    std::cout << "\n测试 JSON 歌词畸形输入防护（v1.101.0）\n";
+    {
+        const int d = 480;
+        size_t dropped = 99;   // 输出参数：入口必须清零
+        const auto normal = parseLyricsText(
+            "[{\"start_beat\":0,\"text\":\"你好\"},"
+            "{\"start_beat\":4,\"text\":\"世界\"}]", d, &dropped);
+        check(dropped == 0,
+              "JSON 正常 2 行：dropped 入口清零且一行不丢");
+        check(normal.size() == 4,
+              "JSON 正常 2 行拆成 4 个音节");
+        check(normal.size() == 4 && normal[0].text == "你" && normal[0].tick == 0,
+              "第 1 字「你」在 tick 0");
+        check(normal.size() == 4 && normal[1].text == "好" && normal[1].tick == 960,
+              "第 2 字「好」在 tick 960（1920 / 6 字节）");
+        check(normal.size() == 4 && normal[2].text == "世" && normal[2].tick == 1920,
+              "第 3 字「世」在 tick 1920");
+        check(normal.size() == 4 && normal[3].text == "界" && normal[3].tick == 2880,
+              "第 4 字「界」在 tick 2880（正常口径零回归）");
+
+        // P0：无闭合引号绝不能让 pos 回绕成 0 形成无限循环。
+        const auto noQuote = parseLyricsText(
+            "[{\"start_beat\":0,\"text\":", d, &dropped);
+        check(noQuote.empty() && dropped == 1,
+              "text 后无引号：立刻结束循环，不挂起也不吞整份文件");
+        const auto unclosed = parseLyricsText(
+            "[{\"start_beat\":0,\"text\":\"你好", d, &dropped);
+        check(unclosed.empty() && dropped == 1,
+              "字符串未闭合：丢弃该对象而不是静默截断");
+
+        const auto numText = parseLyricsText(
+            "[{\"start_beat\":0,\"text\":123},"
+            "{\"start_beat\":4,\"text\":\"世界\"}]", d, &dropped);
+        check(dropped == 1, "text 是数字：畸形对象计入 dropped");
+        bool noLeak = true;
+        for (const auto& s : numText)
+            if (s.text == "{" || s.text == "}" || s.text == ":" ||
+                s.text == "a" || s.text == "_" || s.text == "e") noLeak = false;
+        check(noLeak, "text 是数字：JSON 源码字符不再被当成歌词");
+        check(numText.size() == 2 && numText[0].text == "世"
+              && numText[1].text == "界",
+              "text 是数字：下一个正常对象两字照常保留");
+
+        const auto escaped = parseLyricsText(
+            "[{\"start_beat\":0,\"text\":\"你\\\"好\"}]", d, &dropped);
+        check(dropped == 0, "转义引号不误丢行");
+        check(escaped.size() == 3 && escaped[0].text == "你"
+              && escaped[1].text == "\"" && escaped[2].text == "好",
+              "转义引号按 JSON 解成字面引号，「好」不再消失");
+
+        const auto textFirst = parseLyricsText(
+            "[{\"text\":\"你好\",\"start_beat\":0},"
+            "{\"text\":\"世界\",\"start_beat\":4}]", d, &dropped);
+        check(dropped == 0 && textFirst.size() == 4
+              && textFirst[0].text == "你" && textFirst[2].text == "世",
+              "text 在 start_beat 之前：两行都保留，不再静默丢「你好」");
+
+        const auto keyInText = parseLyricsText(
+            "[{\"start_beat\":0,\"text\":\"含\\\"start_beat\\\"字样\"}]",
+            d, &dropped);
+        bool keyOk = (dropped == 0 && keyInText.size() >= 8
+                      && !keyInText.empty() && keyInText.front().text == "含");
+        for (const auto& s : keyInText) if (s.text == "\\") keyOk = false;
+        check(keyOk, "歌词正文里的 \"start_beat\" 不冒充字段名");
+
+        const auto braceInText = parseLyricsText(
+            "[{\"start_beat\":0,\"text\":\"世}界\"}]", d, &dropped);
+        check(dropped == 0 && braceInText.size() == 3
+              && braceInText[0].text == "世" && braceInText[2].text == "界",
+              "歌词正文里的 } 不切断对象，「界」完整保留");
+
+        const auto noStart = parseLyricsText(
+            "[{\"text\":\"你好\"}]", d, &dropped);
+        check(noStart.empty() && dropped == 0,
+              "没有 start_beat 的对象不是歌词行，静默跳过");
+
+        const auto hugeBeat = parseLyricsText(
+            "[{\"start_beat\":999999999999,\"text\":\"世界\"}]",
+            d, &dropped);
+        check(hugeBeat.empty() && dropped == 1,
+              "start_beat 越界沿用 v1.100.1 的 512 小节 cap");
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

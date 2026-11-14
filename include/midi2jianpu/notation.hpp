@@ -193,8 +193,12 @@ struct LyricLine {
 
 // 所有外部歌词入口都带可选的 dropped：时间字段换算成 32 位 tick 会越界的
 // 行被显式丢弃（v1.100.0），计数由调用方决定要不要提示用户。默认 nullptr，
-// 旧的调用点（含 WASM 的 parseLrcText）无需改动。
-// 解析歌词JSON文件，返回按tick排序的歌词字列表
+// 旧的调用点（含 WASM 的 parseLrcText）无需改动。v1.101.0 起 JSON 里格式
+// 错误的对象（缺字段 / 非字符串 / 未闭合引号）也计入同一个 dropped。
+// 解析歌词 JSON 文本本身：纯逻辑，不碰文件系统，便于单测与复用。
+std::vector<LyricSyllable> parseLyricsText(const std::string& content, int division,
+                                            size_t* dropped = nullptr);
+// 解析歌词 JSON 文件，返回按 tick 排序的歌词字列表（读盘后转调 parseLyricsText）
 std::vector<LyricSyllable> parseLyrics(const std::string& jsonPath, int division,
                                        size_t* dropped = nullptr);
 

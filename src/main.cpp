@@ -631,7 +631,7 @@ int main(int argc, char** argv) {
         if (droppedLyricLines)
             std::cerr << "警告: 已忽略 " << droppedLyricLines
                       << " 行歌词（时间戳 / [offset:] / start_beat 数值"
-                         "超出谱面时间轴可表示范围）\n";
+                         "超出谱面时间轴范围，或 JSON 歌词行格式错误）\n";
         std::cout << "歌词已加载: " << lyricLines.size() << " 行\n";
         // 文件读到了却一行都没解析出来，通常是时间戳格式不对（[mm:ss] 写成
         // 了 mm:ss，或者整篇是纯文本）。这不是正常状态，得说出来——否则页眉
