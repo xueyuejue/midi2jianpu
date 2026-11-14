@@ -33,7 +33,9 @@
     * rc==0 的 --musicxml 输出必须能被 ElementTree 解析；
     * rc==0 的文本 / HTML 输出不得含 U+FFFD（编码器不应产出替换字符）。
 - 另设一组「定向」用例，直接用 html_meta_inject 种子（含注入脚本的轨名）
-  复跑 smoke 层已守死的 XSS 不变量，确保即便随机没选中也能守住。
+  复跑 smoke 层已守死的 XSS 不变量，覆盖 HTML(不开/开 player) 与
+  MusicXML 三条通道——确保即便随机突变没命中注入路径，这三条输出也
+  绝不会把恶意轨名原样写出（v1.95.0 起 MusicXML 通道也纳入）。
 
 用法
 ----
@@ -406,7 +408,13 @@ def check_outputs(rc, mode, out_dir, stdout, problems):
 
 
 def targeted_xss(exe, seed_bytes, out_dir):
-    """定向复跑 XSS 不变量（与 smoke.py 同口径，但走 fuzz 通道）。"""
+    """定向复跑 XSS 不变量（与 smoke.py 同口径，但走 fuzz 通道）。
+
+    v1.95.0 起覆盖三条输出通道：HTML(不开 player) / HTML(--player) /
+    MusicXML。每条通道独立校验，任一通道超时即终止（读不到产物），其余
+    通道的失败只记账不中断——这样 MusicXML 的转义守护不会被 HTML 的
+    偶发异常静默跳过。
+    """
     fails = []
     # 不开 --player：整页不得有 <script
     h = os.path.join(out_dir, "xss.html")
@@ -416,13 +424,13 @@ def targeted_xss(exe, seed_bytes, out_dir):
         return fails
     if rc != 0:
         fails.append(f"XSS 定向用例 rc={rc}")
-        return fails
-    with open(h, "r", encoding="utf-8", errors="replace") as f:
-        html = f.read()
-    if html.count("<script") != 0:
-        fails.append(f"不开 --player 时存在 {html.count('<script')} 个 script 标签")
-    if "<script>alert(1)</script>" in html:
-        fails.append("注入脚本原样出现在页面")
+    else:
+        with open(h, "r", encoding="utf-8", errors="replace") as f:
+            html = f.read()
+        if html.count("<script") != 0:
+            fails.append(f"不开 --player 时存在 {html.count('<script')} 个 script 标签")
+        if "<script>alert(1)</script>" in html:
+            fails.append("注入脚本原样出现在页面")
     # 开 --player：恰好 1 段 script，且注入脚本不出现
     hp = os.path.join(out_dir, "xss_p.html")
     rc, _, _, to = run_once(exe, seed_bytes, ["--html", hp, "--player"], 30)
@@ -431,12 +439,31 @@ def targeted_xss(exe, seed_bytes, out_dir):
         return fails
     if rc != 0:
         fails.append(f"XSS 定向用例(--player) rc={rc}")
+    else:
+        with open(hp, "r", encoding="utf-8", errors="replace") as f:
+            phtml = f.read()
+        ok, msg = _player_script_ok(phtml)
+        if not ok:
+            fails.append(msg)
+    # MusicXML 通道：恶意轨名同样必须转义，不得出现裸 <script>，且整份良构
+    xm = os.path.join(out_dir, "xss.musicxml")
+    rc, _, _, to = run_once(exe, seed_bytes, ["--musicxml", xm], 30)
+    if to:
+        fails.append("XSS 定向用例(--musicxml)超时")
         return fails
-    with open(hp, "r", encoding="utf-8", errors="replace") as f:
-        phtml = f.read()
-    ok, msg = _player_script_ok(phtml)
-    if not ok:
-        fails.append(msg)
+    if rc != 0:
+        fails.append(f"XSS 定向用例(--musicxml) rc={rc}")
+        return fails
+    try:
+        import xml.etree.ElementTree as ET
+        with open(xm, "r", encoding="utf-8") as f:
+            raw = f.read()
+        ET.fromstring(raw)          # 非良构会抛异常
+    except Exception as e:          # noqa: BLE001 - 良构性是断言目标
+        fails.append("XSS 定向用例 MusicXML 非良构: %s" % e)
+        return fails
+    if "<script>alert(1)</script>" in raw:
+        fails.append("注入脚本原样出现在 MusicXML")
     return fails
 
 

@@ -7582,6 +7582,49 @@ int main() {
         check(occurrences(ph, "<script") == 1,
               "--player 时页面只有播放器自己的那一段 script");
     }
+    {
+        // ---- v1.95.0：MusicXML 同样必须逐段转义恶意轨名/歌词 ----
+        // HTML 页眉的注入转义在 v1.90.0 已锁死（上面那段），但 MusicXML 的
+        // <part-name> / 歌词 <text> 是另一条输出通道，历史上没有确定性单测，
+        // 只有 fuzz 的「XML 能解析」顺带兜住。若哪天 xmlEscape 被改坏，裸
+        // <script> 进 <part-name> 会让整份 MusicXML 非良构（MuseScore 打不开）。
+        // 这里把同一条恶意轨名 + 恶意歌词喂进 renderMusicXml（歌词走 MIDI
+        // 内置通道，lyricLines 传 nullptr 回落到 data.midiLyrics），断言：
+        //   · 原始 <script>alert(1)</script> / <script>x</script> 在整份 XML 里绝不可见；
+        //   · 转义后实体 (&lt; &gt; &amp;) 出现，裸标签一个都不留；
+        //   · <part-name> 段内没有任何裸 HTML 标签，口径与 HTML 页眉一致。
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.trackNames[1] = "<script>alert(1)</script> A&B <C>";
+        for (int i = 0; i < 4; i++) {
+            NoteEvent e;
+            e.track = 1; e.channel = 0; e.startTicks = i * 480L;
+            e.durationTicks = 480; e.pitch = 60 + i * 2; e.velocity = 90;
+            d.notes.push_back(e);
+        }
+        const KeyEstimate k = estimateKey(d);
+        const std::string x = renderMusicXml(d, k);
+        check(x.find("<script>alert(1)</script>") == std::string::npos,
+              "MusicXML 里不得出现裸 <script> 注入（轨名）");
+        check(x.find("&lt;script&gt;alert(1)&lt;/script&gt;") != std::string::npos,
+              "轨名在 <part-name> 被转义成实体");
+        check(x.find("A&amp;B") != std::string::npos,
+              "MusicXML 里的 & 被转义");
+        check(x.find("&amp;amp;") == std::string::npos,
+              "MusicXML 没有被双重转义");
+        check(x.find("&lt;C&gt;") != std::string::npos,
+              "MusicXML 里的 <C> 被转义");
+        const size_t pn = x.find("<part-name>");
+        check(pn != std::string::npos, "MusicXML <part-name> 存在");
+        const size_t pne = x.find("</part-name>", pn);
+        check(pne != std::string::npos, "MusicXML <part-name> 闭合");
+        const std::string name = x.substr(pn, pne - pn);
+        check(name.find("<script") == std::string::npos &&
+              name.find("<C>") == std::string::npos &&
+              name.find("<b>") == std::string::npos,
+              "part-name 段内没有任何裸 HTML 标签");
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";
