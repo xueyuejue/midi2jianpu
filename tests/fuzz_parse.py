@@ -16,9 +16,14 @@
       含 RPN/CC64-65 仅 6 份），必须定点打。
 - **定点选种子**：语法感知算子优先从含对应字段的种子池里挑（`MUT_SEED_HINTS`），
   找不到才退回全体，避免「打空气」。
-- 覆盖参数组合：--html / --musicxml / --output / --player / --track /
-  --bars / --key / --transpose / --gong 等，含若干「必定失败但不该崩」的
-  边界值（--bars 9、--key ZZ、--track 99）。
+- **边界选项矩阵（HOSTILE_ARGS）**：每个突变**强制**跑 `--track 99` /
+  `--bars 9` / `--key ZZ` 等「必定失败但不该崩」的组合，断言 rc ∈
+  {0,1,2,3,4}（不崩、不卡死）；这比 v1.93 纯概率式 `pick_args` 抽修饰更
+  能确定性地守住选项校验路径（一个回归会立刻在第一例突变上暴露，而非等
+  概率抽中）。
+- 随机配置（pick_args）：--html / --musicxml / --output / --player / --track /
+  --bars / --key / --transpose / --gong 等，再叠加 0~2 个修饰，保证输出
+  形态广度；`--player` 运行时额外校验整页恰好 1 段 `<script>`、注入脚本不出现。
 - **多种子**：`--seed 0x5EED`（单种子）或 `--seeds 0x5EED,1,42`（逗号分隔，
   每个种子各跑 `--count` 次）；每个种子独立 `random.Random(seed)` 实例，
   逐种子完全可复现。
@@ -72,6 +77,14 @@ MUT_SEED_HINTS = {
     "varlen_meta": b"\xff\x51",   # FF 51 = set tempo，绝大多数种子都有
     "chunk_len": b"MTrk",
 }
+
+# 强制敌对边界选项矩阵：每个突变都跑这组，确定性地覆盖「应报错但不该崩」的
+# 选项校验路径（v1.93 之前只是 pick_args 里概率式抽到，覆盖率不稳）。
+HOSTILE_ARGS = [
+    ["--track", "99"],                      # 越界轨 → 期望 rc=4（若解析成功）
+    ["--bars", "9"],                        # 越界小节数 → 期望 rc=1
+    ["--key", "ZZ"],                        # 非法调名 → 期望 rc=1
+]
 
 
 def load_make_fixture():
@@ -335,6 +348,20 @@ def run_once(exe, data, args, timeout):
             pass
 
 
+def _player_script_ok(html):
+    """--player 时整页必须恰好 1 段 <script>（播放器本体），且注入脚本不得原样出现。
+
+    返回 (ok, msg)：ok 为 False 时 msg 描述问题。供 check_outputs 与
+    targeted_xss 共用，确保随机 player 运行与定向用例守同一道口。
+    """
+    n = html.count("<script")
+    if n != 1:
+        return False, f"--player 时 script 段数={n}（应为 1）"
+    if "<script>alert(1)</script>" in html:
+        return False, "--player 时注入脚本原样出现"
+    return True, ""
+
+
 def check_outputs(rc, mode, out_dir, stdout, problems):
     """rc==0 时的输出不变量校验，把问题追加进 problems。"""
     if rc != 0:
@@ -351,6 +378,10 @@ def check_outputs(rc, mode, out_dir, stdout, problems):
             problems.append("HTML 含 U+FFFD 替换字符")
         if mode == "html" and "<script" in html:
             problems.append("不开 --player 的 HTML 竟含 <script 标签")
+        if mode == "html_player":
+            ok, msg = _player_script_ok(html)
+            if not ok:
+                problems.append(msg)
     elif mode == "xml":
         xml_path = os.path.join(out_dir, "out.musicxml")
         if not os.path.exists(xml_path):
@@ -403,10 +434,9 @@ def targeted_xss(exe, seed_bytes, out_dir):
         return fails
     with open(hp, "r", encoding="utf-8", errors="replace") as f:
         phtml = f.read()
-    if phtml.count("<script") != 1:
-        fails.append(f"--player 时 script 段数={phtml.count('<script')}（应为 1）")
-    if "<script>alert(1)</script>" in phtml:
-        fails.append("--player 时注入脚本原样出现")
+    ok, msg = _player_script_ok(phtml)
+    if not ok:
+        fails.append(msg)
     return fails
 
 
@@ -489,6 +519,18 @@ def self_test():
     st(pick_seed(random.Random(1), pool, "flip_bit") in ("a", "b"),
        "通用算子不受种子池限制")
 
+    # player 脚本不变量辅助函数
+    ok, _ = _player_script_ok("<html><script src=x></script></html>")
+    st(ok, "player 单段 script 视为合法")
+    bad0, m0 = _player_script_ok("<html>no script</html>")
+    st((not bad0) and "1" in m0, "player 0 段 script 判非法")
+    bad2, _ = _player_script_ok("<s></s><script></script><script></script>")
+    st(not bad2, "player 2 段 script 判非法")
+    inj, _ = _player_script_ok("<script>alert(1)</script>")
+    st(not inj, "player 注入脚本判非法")
+    st(bool(HOSTILE_ARGS) and all(a for a in HOSTILE_ARGS),
+       "敌对矩阵非空且每项有内容")
+
     total = len(items)
     print(f"自测：共 {total} 项，失败 {len(fails)} 项")
     for name in fails:
@@ -549,6 +591,7 @@ def main():
     rc_hist = {}
     mut_stats = {}
     done = 0
+    hostile_done = 0
     for sv in seed_list:
         rng = random.Random(sv)
         for _ in range(count):
@@ -571,6 +614,15 @@ def main():
             if probs:
                 invariants.append((sv, seed_name, mut, mode, cargs, rc, probs))
 
+            # 强制敌对边界选项矩阵：每个突变都踩一遍「应报错但不该崩」路径，
+            # 确定性地守住选项校验（不再依赖 pick_args 的概率式抽修饰）。
+            for hargs in HOSTILE_ARGS:
+                hrc, _, _, hto = run_once(exe, data, hargs, 20)
+                hostile_done += 1
+                if hto or hrc is None or hrc not in VALID_RC:
+                    crashes.append((sv, seed_name, mut, "hostile", hargs,
+                                    "TIMEOUT" if hto else f"rc={hrc}"))
+
             if done % 100 == 0:
                 print(f"  ... 已完成 {done}/{total_plan} 次"
                       f"（崩溃 {len(crashes)} / 不变量 {len(invariants)}）")
@@ -588,6 +640,7 @@ def main():
     print(f"种子       : {seeds_desc}")
     print(f"算子分布   : {dict(sorted(mut_stats.items()))}")
     print(f"退出码分布 : {dict(sorted(rc_hist.items()))}")
+    print(f"敌对矩阵运行 : {hostile_done}")
     print(f"崩溃/卡死  : {len(crashes)}")
     print(f"不变量破坏 : {len(invariants)}")
     print(f"XSS 定向   : {len(xss_fails)} 项失败")

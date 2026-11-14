@@ -136,11 +136,15 @@ jobs:
         # 失败项由 tests/ci_report.py 同步写进 annotations 与 step summary。
         run: python3 tests/smoke.py build/midi2jianpu
 
-      - name: 解析层模糊测试（12 类突变 × 3 种子 × 200 次，零崩溃）
+      - name: 解析层模糊测试（12 类突变 × 3 种子 × 200 次 + 强制边界矩阵，零崩溃）
         # 7 个通用字节算子 + 5 个语法感知算子（SysEx 长度字段 / F7 终结符 /
         # RPN(NRPN) 数据字节 / meta 超长 VarLen / MTrk 长度字段），后者优先挑
         # 含对应字段的种子；断言退出码 ∈ {0,1,2,3,4}、rc==0 不开 --player 的
-        # HTML 不含 <script>、无 U+FFFD、--musicxml 可被解析。
+        # HTML 不含 <script>、--player 恰 1 段 script、无 U+FFFD、--musicxml
+        # 可被解析。
+        # 每个突变额外强制跑 HOSTILE_ARGS 边界矩阵（--track 99 / --bars 9 /
+        # --key ZZ），确定性覆盖「应报错但不该崩」的选项校验路径（不再依赖
+        # 概率式抽修饰）。自测 41 项（含 player 脚本不变量与敌对矩阵结构）。
         run: |
           python3 tests/fuzz_parse.py --self-test
           python3 tests/fuzz_parse.py build/midi2jianpu --count 200 --seeds 0x5EED,1,42

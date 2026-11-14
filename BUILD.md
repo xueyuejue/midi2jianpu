@@ -90,8 +90,8 @@ python tests/check_utf8.py --self-test             # 15 项 UTF-8 守卫自测
 python tests/check_utf8.py                         # 三端产物逐份严格 UTF-8 解码 + MusicXML 严格解析
 python tests/check_cli_matrix.py --self-test       # 21 项 CLI 参数矩阵自测
 python tests/check_cli_matrix.py                   # 全部 105 份素材参数矩阵 / 轨扫描 / 移调八度与调号不变量
-python tests/fuzz_parse.py --self-test              # 36 项 fuzz 突变算子自测
-python tests/fuzz_parse.py                          # 12 类突变 × 600 次（种子 0x5EED），零崩溃 / 零不变量
+python tests/fuzz_parse.py --self-test              # 41 项 fuzz 突变算子自测（含 player 脚本不变量与敌对矩阵结构）
+python tests/fuzz_parse.py                          # 12 类突变 × 600 次（3 种子）+ 每个突变强制边界矩阵，零崩溃 / 零不变量
 python tests/check_bar_beats.py --regress <旧版exe>  # 结构性零回归
 ```
 
