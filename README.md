@@ -950,6 +950,8 @@ XG 鼓组通道与中途换音色的通道，新导出 `_midi2jianpu_bank_info`�
 
 - [x] **MusicXML 注入转义确定性守护（纵深防御）**：① 动机：HTML 页眉 / 文本谱 / `--player` 的注入转义不变量（轨名写成 `<script>alert(1)</script>` 不得变成可执行脚本）早在 v1.90.0 就有 C++ 单测锁死，但 MusicXML 的 `<part-name>` 是另一条输出通道，历史上只有 fuzz 的「XML 能解析」顺带兜住，没有确定性单测——一旦 `xmlEscape` 被改坏，裸 `<script>` 进 `<part-name>` 会让整份 MusicXML 非良构（MuseScore 打不开）。② 实现：`tests/test_basic.cpp` 新增一组渲染 MusicXML 的单测，把同一条恶意轨名喂进 `renderMusicXml`，断言：裸 `<script>alert(1)</script>` 在整份 XML 绝不可见、`<part-name>` 段内无任何裸 HTML 标签、`<`/`>`/`&` 统一转义成实体且未双重转义（口径与 HTML 页眉一致）。③ fuzz：`targeted_xss` 定向用例从 HTML(不开/开 player) 两通道扩展到 **HTML + MusicXML 三通道**，每条通道独立校验（任一通道超时即终止，其余通道的失败只记账不中断），MusicXML 通道额外断言整份能被 ElementTree 解析、无裸注入。④ 守护：单测 1215 → 1223 项（新增 8 项 MusicXML 转义断言）；fuzz `--self-test` 维持 41 项。⑤ 验证：单测 1223 / 11 道全量守卫 / 103 冒烟 / 64 WASM / wasm 同步 16 组全绿；零回归两遍各 0 差异（v1.95.0）
 
+- [x] **`--transpose` 范围校验（CLI 数值越界即拒）**：① 动机：逐个排查 CLI 数值参数的校验口径，发现 `--transpose` 是**唯一**没有范围上限的参数——`--bars`(1~8)、`--pickup`(短于小节)、`--soft-pedal-scale`(0~1)、`--track`(非负) 都已「语义越界即拒」，唯独 `--transpose 999` 被静默接受并产出退化谱面（音符被抬到约 80+ 个八度，MusicXML 里 octave 远超 MIDI/乐理合法范围，MuseScore 等下游可能拒绝或产出垃圾）。② 实现：`src/main.cpp` 在解析期加入硬上限 `±60 半音（±5 个八度）`，越界即 `rc=1` 并给出明确报错，与既有口径一致；`--help` 同步注明「±60 内」。③ 守护：`tests/check_cli_matrix.py` 新增确定性的「边界契约」校验（`999/-999/61/-61` 一律 `rc=1`；`±60/±24/0` 一律 `rc=0`），`tests/fuzz_parse.py` 的 `HOSTILE_ARGS` 加入 `--transpose 999`，让每个突变的强制敌对矩阵都踩到新校验路径（期望 `rc=1` 不应崩）。④ 验证：单测 1223 / 11 道全量守卫 / 103 冒烟 / 64 WASM / wasm 同步 16 组全绿；fuzz `12 类突变 × 3 种子 × 200 次 = 600 突变 + 2400 强制矩阵 run`（新增 600 来自第 4 个敌对参数）零崩溃 / 零卡死 / 零不变量破坏；零回归两遍各 0 差异（v1.96.0）
+
 ## 为什么开源
 
 中文简谱是中国特有的记谱体系，国外打谱软件（MuseScore、Finale）对它支持很差，国内又一直缺少一个干净的、可二次开发的基础库。这个项目想把「MIDI → 简谱」这层地基打好，让后来的人不用重复造轮子。

@@ -123,6 +123,31 @@ def run(exe, args, timeout=120):
         return None
 
 
+def check_transpose_range(exe):
+    """v1.96.0: --transpose 必须在 ±60 半音内，越界即拒（rc=1）。
+
+    此前无上限，--transpose 999 被静默接受并产出八度远超 MIDI/乐理范围的退化谱面
+    （音符被抬到约 80+ 个八度）。这里用一份素材做确定性的「边界契约」校验：
+    越界值（999/-999/61/-61）一律 rc=1；边界内（含 ±60、±24、0）rc=0。
+    """
+    mids = sorted(glob.glob(os.path.join(FIX, "*.mid")))
+    if not mids:
+        return ["transpose 范围校验：找不到任何 fixture"]
+    f = mids[0]
+    cases = [("999", 1), ("-999", 1), ("61", 1), ("-61", 1),
+             ("60", 0), ("-60", 0), ("24", 0), ("-24", 0), ("0", 0)]
+    errs = []
+    for val, want in cases:
+        r = run(exe, [f, "--transpose", val])
+        if r is None:
+            errs.append("--transpose %s: 超时" % val)
+            continue
+        if r.returncode != want:
+            errs.append("--transpose %s: 期望 rc=%d 实得 rc=%d"
+                        % (val, want, r.returncode))
+    return errs
+
+
 def check_one(exe, mid, td):
     """对单个素材做参数矩阵 / 轨扫描 / 移调不变量，返回问题列表。"""
     name = os.path.basename(mid)
@@ -289,6 +314,8 @@ def main():
         print("找不到 CLI：", exe)
         return 2
     errs = audit_fixtures(exe)
+    terrs = check_transpose_range(exe)
+    errs.extend(terrs)
     if errs:
         print("CLI 参数矩阵校验失败：%d 处" % len(errs))
         for e in errs[:30]:

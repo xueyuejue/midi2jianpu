@@ -12,6 +12,12 @@
 #include <string>
 #include <vector>
 
+// v1.96.0: 移调合理上限（半音）。--transpose 此前无任何范围校验，
+// --transpose 999 会被静默接受并产出八度远超 MIDI/乐理范围的退化谱面
+// （音符被抬到约 80+ 个八度）。±60 半音（±5 个八度）已覆盖一切真实移调需求，
+// 与 --bars(1~8)/--pickup(短于小节)/--soft-pedal-scale(0~1) 的「语义越界即拒」口径一致。
+static const int kMaxTransposeSemis = 60;
+
 // 三端写文件共用：打开 / 写入 / flush / close 每一步都要检查。
 // 旧版只管 << 完就打印「已写入」：目录不存在、路径是目录、磁盘满时
 // 用户拿到的是 rc=0 加一句假成功，回头才发现谱子根本没生成。
@@ -51,7 +57,7 @@ static void printHelp() {
         "  midi2jianpu <input.mid> --output out.txt  文本简谱输出到文件\n"
         "  midi2jianpu <input.mid> --track 0         只输出指定轨道（轨号从 0 起）\n"
         "  midi2jianpu <input.mid> --list-tracks     列出所有轨道（选 --track 前先看清）\n"
-        "  midi2jianpu <input.mid> --transpose +2     移调(半音, 正负都可)\n"
+        "  midi2jianpu <input.mid> --transpose +2     移调(半音, 正负都可, ±60 内)\n"
         "  midi2jianpu <input.mid> --lyrics lyrics.lrc  加载歌词(优先于 MIDI 内置歌词)\n"
         "  midi2jianpu <input.mid> --no-midi-lyrics  忽略 MIDI 文件自带的歌词\n"
         "  midi2jianpu <input.mid> --pickup 1       手动指定弱起小节长度(拍, 须短于小节)\n"
@@ -264,6 +270,13 @@ int main(int argc, char** argv) {
         else if (a == "--transpose" && i + 1 < argc) {
             if (!parseInt(argv[++i], transpose)) {
                 std::cerr << "错误: --transpose 需要整数（半音数，可为负）\n"; return 1;
+            }
+            // v1.96.0: 拒绝明显超出合理范围的移调值——此前无上限，
+            // --transpose 999 会被静默接受并产出退化谱面。±60 半音（±5 个八度）
+            // 已覆盖一切真实移调需求，±12/±24（check_cli_matrix 不变量）仍合法。
+            if (transpose < -kMaxTransposeSemis || transpose > kMaxTransposeSemis) {
+                std::cerr << "错误: --transpose 超出合理范围（须在 -60~+60 半音，即 ±5 个八度内）\n";
+                return 1;
             }
         }
         else if (a.substr(0, 2) == "--") {
