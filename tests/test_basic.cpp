@@ -1397,8 +1397,12 @@ int main() {
               "1 秒有界换算成 960 tick");
         check(tl.secondsToTickChecked(-1.0, tick) && tick == -960,
               "负秒有界换算成 -960 tick");
+        check(tl.secondsToTickChecked(1024.0, tick) && tick == 983040,
+              "512 小节 cap 内的边界秒数保留（平台无关）");
+        check(!tl.secondsToTickChecked(1025.0, tick),
+              "超过 512 小节 cap 即判越界（不看 long 位宽）");
         check(!tl.secondsToTickChecked(1e12, tick),
-              "1e12 秒超出 long 值域时返回 false（旧版会绕成负数）");
+              "1e12 秒超出时间轴 cap 时返回 false（旧版会绕成负数）");
         check(!tl.secondsToTickChecked(-1e12, tick),
               "负 1e12 秒同样被判越界");
         check(tl.secondsToTick(1e12) > 0 && tl.secondsToTick(-1e12) < 0,

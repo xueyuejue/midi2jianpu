@@ -92,17 +92,23 @@ bool TempoTimeline::secondsToTickChecked(double seconds, long& out) const {
     const TempoSegment& s = segments_[lo];
     const double t = (double)s.tick
                    + (seconds - s.seconds) * 1e6 * division_ / s.usPerQuarter;
-    // llround 对超出 long long 的输入是未定义行为；而 Windows / WASM 的 long
-    // 只有 32 位，即便 llround 正常，(long) 强转也会把 1e12 tick 绕成负数。
-    if (!std::isfinite(t) || t < (double)LONG_MIN || t > (double)LONG_MAX)
-        return false;
+    // 上界取项目时间轴护栏的 512 小节 cap，而不是 long 的值域：MSVC / WASM
+    // 的 long 是 32 位、Linux GCC 是 64 位，若拿 LONG_MAX 当判据，同一份
+    // 离谱 LRC 在本机被丢弃、在 Ubuntu 却被当成合法 tick（v1.100.0 的
+    // ctest 就是这么红的）。cap 与平台位宽无关，且本来就是谱面能表达的
+    // 最大跨度，超过它的歌词行没有任何音符可挂。
+    const double bound = (double)timelineCapTicks(division_);
+    if (!std::isfinite(t) || t < -bound || t > bound) return false;
+    // 再兜一次值域：llround 对超出 long long 的输入是未定义行为，且 32 位
+    // 平台上的 (long) 强转必须保证不环绕。
+    if (t < (double)LONG_MIN || t > (double)LONG_MAX) return false;
     out = (long)std::llround(t);
     return true;
 }
 
 long TempoTimeline::secondsToTick(double seconds) const {
     // 饱和到值域端点：溢出只可能来自畸形输入，保持「很大/很小」的语义，
-    // 不让 32 位截断把时间轴前后颠倒。
+    // 不让 32 位截断把时间轴前后颠倒。判据与 checked 共用平台无关的 cap。
     long tick = 0;
     if (secondsToTickChecked(seconds, tick)) return tick;
     return seconds < 0 ? LONG_MIN : LONG_MAX;

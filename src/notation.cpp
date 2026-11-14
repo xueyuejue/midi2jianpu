@@ -2019,9 +2019,12 @@ std::vector<LyricSyllable> parseLyrics(const std::string& jsonPath, int division
         std::string line = content.substr(q1 + 1, q2 - q1 - 1);
 
         // start_beat 是用户给的外部数字。旧版直接 (int) 强转再乘 division，
-        // 离谱值会 UB / 32 位溢出，把歌词静默挂到曲首。先按 long 值域判一次。
-        const double unit = (double)std::max(std::abs(division), 1);
-        const double maxBeat = (double)LONG_MAX / unit;
+        // 离谱值会 UB / 32 位溢出，把歌词静默挂到曲首。判据与 LRC 一样用
+        // 平台无关的 512 小节 cap（Linux 的 long 是 64 位，不能拿 LONG_MAX）。
+        const int safeDiv = std::max(std::abs(division), 1);
+        const double unit = (double)safeDiv;
+        const double capTicks = (double)timelineCapTicks(safeDiv);
+        const double maxBeat = capTicks / unit;
         if (!std::isfinite(beatNum) || beatNum < -maxBeat || beatNum > maxBeat) {
             if (dropped) ++*dropped;
             pos = q2;
@@ -2029,8 +2032,8 @@ std::vector<LyricSyllable> parseLyrics(const std::string& jsonPath, int division
         }
         const long beat = (long)beatNum;
         double startD = (double)beat * division;
-        if (startD > (double)LONG_MAX) startD = (double)LONG_MAX;
-        if (startD < (double)LONG_MIN) startD = (double)LONG_MIN;
+        if (startD > capTicks) startD = capTicks;
+        if (startD < -capTicks) startD = -capTicks;
 
         // 按字拆分, 每个字分配一个tick (均匀分布在该行的beat范围内)
         const long startTick = (long)startD;
@@ -2043,7 +2046,7 @@ std::vector<LyricSyllable> parseLyrics(const std::string& jsonPath, int division
             const double nextNum = parseNum(content, nc + 1, ne);
             // 下一行 beat 离谱 / 倒序时退回默认 4 拍，不做溢出减法。
             const double spanD = (nextNum - beatNum) * division;
-            if (std::isfinite(spanD) && spanD >= 0 && spanD <= (double)LONG_MAX)
+            if (std::isfinite(spanD) && spanD >= 0 && spanD <= capTicks)
                 lineLenTicks = (long)spanD;
         }
         if (lineLenTicks < 0) lineLenTicks = 0;
