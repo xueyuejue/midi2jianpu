@@ -49,6 +49,45 @@ FLAGSETS = [
     ["--transpose", "2"],
 ]
 
+# CLI 边界契约表（v1.97.0）：(附加参数, 期望 rc, 说明)。
+# 起因：v1.96 只给 --transpose 补了边界契约，其余数值参数的边界散落在
+# fuzz 的 HOSTILE_ARGS 里（且 --pickup / --soft-pedal-scale 根本没进矩阵），
+# 而「--pickup N 与 --no-pickup」这类语义矛盾组合此前完全没有确定性守护。
+# 这里把全部数值边界 + 矛盾组合收成一张表，逐条跑 CLI 锁死退出码。
+# 期望 rc 可为 int 或集合（--track 0 在空轨素材上合法地返回 4）。
+CLI_CONTRACTS = [
+    # ---- 数值参数：语义越界即拒 rc=1 ----
+    (["--bars", "0"], 1, "--bars 下界外"),
+    (["--bars", "9"], 1, "--bars 上界外"),
+    (["--pickup", "0"], 1, "--pickup 必须正数"),
+    (["--pickup", "99"], 1, "--pickup 不短于小节"),
+    (["--soft-pedal-scale", "-1"], 1, "--soft-pedal-scale 下界外"),
+    (["--soft-pedal-scale", "5"], 1, "--soft-pedal-scale 上界外"),
+    (["--track", "-1"], 1, "--track 负数"),
+    (["--transpose", "999"], 1, "--transpose 上界外"),
+    (["--transpose", "-999"], 1, "--transpose 下界外"),
+    (["--transpose", "61"], 1, "--transpose 恰好越上界"),
+    (["--transpose", "-61"], 1, "--transpose 恰好越下界"),
+    (["--key", "ZZ"], 1, "--key 非法调名"),
+    # ---- 语义矛盾组合：明确拒绝 rc=1（v1.97.0） ----
+    (["--pickup", "1", "--no-pickup"], 1, "--pickup 与 --no-pickup 冲突"),
+    (["--no-pickup", "--pickup", "99"], 1, "冲突组合不得绕过越界校验"),
+    (["--key", "C", "--gong", "D"], 1, "--key 与 --gong 冲突"),
+    # ---- 合法边界内：rc=0（--track 0 允许空轨的 4） ----
+    (["--bars", "1"], 0, "--bars 下界内"),
+    (["--bars", "8"], 0, "--bars 上界内"),
+    (["--pickup", "1"], 0, "--pickup 合法"),
+    (["--soft-pedal-scale", "0"], 0, "--soft-pedal-scale 下界内"),
+    (["--soft-pedal-scale", "1"], 0, "--soft-pedal-scale 上界内"),
+    (["--track", "0"], {0, 4}, "--track 首轨"),
+    (["--transpose", "0"], 0, "--transpose 零移调"),
+    (["--transpose", "24"], 0, "--transpose 两个八度"),
+    (["--transpose", "60"], 0, "--transpose 恰好上界"),
+    (["--transpose", "-60"], 0, "--transpose 恰好下界"),
+    (["--key", "C"], 0, "--key 合法调名"),
+    (["--no-pickup"], 0, "--no-pickup 单独使用"),
+]
+
 TRACKS_RE = re.compile(r"共\s*(\d+)\s*轨")
 
 
@@ -123,28 +162,30 @@ def run(exe, args, timeout=120):
         return None
 
 
-def check_transpose_range(exe):
-    """v1.96.0: --transpose 必须在 ±60 半音内，越界即拒（rc=1）。
+def check_cli_contracts(exe):
+    """逐条跑 CLI_CONTRACTS，锁死全部数值参数边界与矛盾组合的退出码。
 
-    此前无上限，--transpose 999 被静默接受并产出八度远超 MIDI/乐理范围的退化谱面
-    （音符被抬到约 80+ 个八度）。这里用一份素材做确定性的「边界契约」校验：
-    越界值（999/-999/61/-61）一律 rc=1；边界内（含 ±60、±24、0）rc=0。
+    v1.96 只有 --transpose 一张边界契约；v1.97 推广成表驱动，把
+    --bars / --pickup / --soft-pedal-scale / --track / --key 的边界，
+    以及 --pickup+--no-pickup、--key+--gong 这类语义冲突一并守死。
+    固定用 4/4 的 html_meta_inject.mid，避免拍号差异让 --pickup 用例飘。
     """
-    mids = sorted(glob.glob(os.path.join(FIX, "*.mid")))
-    if not mids:
-        return ["transpose 范围校验：找不到任何 fixture"]
-    f = mids[0]
-    cases = [("999", 1), ("-999", 1), ("61", 1), ("-61", 1),
-             ("60", 0), ("-60", 0), ("24", 0), ("-24", 0), ("0", 0)]
+    f = os.path.join(FIX, "html_meta_inject.mid")
+    if not os.path.exists(f):
+        mids = sorted(glob.glob(os.path.join(FIX, "*.mid")))
+        if not mids:
+            return ["CLI 边界契约：找不到任何 fixture"]
+        f = mids[0]
     errs = []
-    for val, want in cases:
-        r = run(exe, [f, "--transpose", val])
+    for args, want, desc in CLI_CONTRACTS:
+        wants = {want} if isinstance(want, int) else set(want)
+        r = run(exe, [f] + args)
         if r is None:
-            errs.append("--transpose %s: 超时" % val)
+            errs.append("%s（%s）: 超时" % (desc, " ".join(args)))
             continue
-        if r.returncode != want:
-            errs.append("--transpose %s: 期望 rc=%d 实得 rc=%d"
-                        % (val, want, r.returncode))
+        if r.returncode not in wants:
+            errs.append("%s（%s）: 期望 rc∈%s 实得 rc=%d"
+                        % (desc, " ".join(args), sorted(wants), r.returncode))
     return errs
 
 
@@ -293,6 +334,27 @@ def self_test():
     ck(TRACKS_RE.search("共 12 轨") is not None, "轨数解析 12")
     ck(TRACKS_RE.search("没有轨数") is None, "无轨数时应返回 None")
 
+    # CLI 边界契约表结构（v1.97.0）
+    def wants_of(w):
+        return {w} if isinstance(w, int) else set(w)
+
+    ck(bool(CLI_CONTRACTS), "CLI 边界契约表非空")
+    ck(all(a and a[0].startswith("--") for a, w, d in CLI_CONTRACTS),
+       "契约表每项参数都以 -- 开头")
+    ck(all(wants_of(w) <= VALID_RC for a, w, d in CLI_CONTRACTS),
+       "契约表期望退出码都在合法集合内")
+    ck(any(wants_of(w) == {0} for a, w, d in CLI_CONTRACTS) and
+       any(wants_of(w) == {1} for a, w, d in CLI_CONTRACTS),
+       "契约表同时含放行与拒绝用例")
+    covered = {x for a, w, d in CLI_CONTRACTS for x in a if x.startswith("--")}
+    ck(all(o in covered for o in ("--bars", "--pickup", "--soft-pedal-scale",
+                                  "--track", "--transpose", "--key",
+                                  "--no-pickup", "--gong")),
+       "契约表覆盖全部数值 / 弱起 / 调性参数")
+    ck(any("--no-pickup" in a and "--pickup" in a
+           for a, w, d in CLI_CONTRACTS),
+       "契约表含 --pickup / --no-pickup 矛盾组合")
+
     print("check_cli_matrix self-test: %d 项，%d 失败" % (n, len(failed)))
     for f in failed:
         print("  [FAIL]", f)
@@ -314,7 +376,7 @@ def main():
         print("找不到 CLI：", exe)
         return 2
     errs = audit_fixtures(exe)
-    terrs = check_transpose_range(exe)
+    terrs = check_cli_contracts(exe)
     errs.extend(terrs)
     if errs:
         print("CLI 参数矩阵校验失败：%d 处" % len(errs))

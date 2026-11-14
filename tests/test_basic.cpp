@@ -7625,6 +7625,32 @@ int main() {
               name.find("<b>") == std::string::npos,
               "part-name 段内没有任何裸 HTML 标签");
     }
+
+    // ---- v1.97.0 弱起矛盾选项（纯函数，与 validateKeyOptions 同口径） ----
+    {
+        using m2j::cli::validatePickupOptions;
+
+        check(validatePickupOptions(false, -1).empty(),
+              "两个弱起开关都不给：放行（走自动判定）");
+        check(validatePickupOptions(true, -1).empty(),
+              "只给 --no-pickup：放行");
+        check(validatePickupOptions(false, 1).empty(),
+              "只给 --pickup 1：放行");
+        check(validatePickupOptions(false, 0).empty(),
+              "只给 --pickup 0：放行（正数校验在 parseBeats 另拒）");
+        check(!validatePickupOptions(true, 1).empty(),
+              "--pickup 1 + --no-pickup 必须拒绝");
+        check(!validatePickupOptions(true, 99).empty(),
+              "--pickup 99 + --no-pickup 必须拒绝（不得绕过越界校验）");
+        check(!validatePickupOptions(true, 1.5).empty(),
+              "小数拍数的矛盾组合同样拒绝");
+        const std::string e = validatePickupOptions(true, 1);
+        check(e.find("--pickup") != std::string::npos &&
+              e.find("--no-pickup") != std::string::npos,
+              "报错文案点名两个冲突选项");
+        check(e.find("只保留一个") != std::string::npos,
+              "报错文案给出修复指引");
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

@@ -236,6 +236,20 @@ inline std::string validateKeyOptions(const std::string& keyArg,
                "--gong 会覆盖 --key）；请只保留一个";
     return {};
 }
+
+// ---- 两个「弱起」入口不能同时给（v1.97.0） ----
+// --pickup N 手动指定弱起、--no-pickup 明确关闭弱起，语义直接冲突。
+// 旧版 noPickup 优先、pickupBeats 被静默丢掉，命令行零提示；更糟的是
+// 「弱起须短于小节」的越界校验只在 !noPickup 分支里跑，于是
+// `--no-pickup --pickup 99` 还能顺带把一个单独会被 rc=1 拒绝的非法值放行。
+// 与 validateKeyOptions 同口径：解析后、读 MIDI 前就明确拒绝。
+inline std::string validatePickupOptions(bool noPickup, double pickupBeats) {
+    if (noPickup && pickupBeats >= 0)
+        return "--pickup 与 --no-pickup 不能同时使用（一个手动指定弱起、"
+               "一个明确关闭弱起，--no-pickup 会静默覆盖 --pickup，"
+               "且会绕过弱起越界校验）；请只保留一个";
+    return {};
+}
 }  // namespace cli
 }  // namespace m2j
 #endif  // M2J_CLI_ARGS_HPP

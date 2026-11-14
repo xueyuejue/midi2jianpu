@@ -317,6 +317,14 @@ int main(int argc, char** argv) {
         std::cerr << "错误: " << ke << "\n";
         return 1;
     }
+    // --pickup N 与 --no-pickup 语义冲突：旧版静默忽略 --pickup（用户以为
+    // 手动指定了弱起，谱面却完全没有），还顺带绕过「弱起须短于小节」的
+    // 越界校验。与 --key/--gong 同口径，解析后、读 MIDI 前就明确拒绝。
+    const std::string pue = m2j::cli::validatePickupOptions(noPickup, pickupBeats);
+    if (!pue.empty()) {
+        std::cerr << "错误: " << pue << "\n";
+        return 1;
+    }
     // 输出路径预检：与输入 .mid 同路径会毁掉源文件，三端互相撞路径
     // 会静默覆盖先写的那份。放在读 MIDI 之前，越界一律不干活。
     {
