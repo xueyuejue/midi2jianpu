@@ -7651,6 +7651,47 @@ int main() {
         check(e.find("只保留一个") != std::string::npos,
               "报错文案给出修复指引");
     }
+
+    // ---- v1.98.0：排版/显示类开关不得改变 PLAY JSON（C++ 层钉死） ----
+    // 播放数据取自「谱面上真正画出来的那份音符」+ tempo 表，与每行几小节、
+    // 要不要画力度记号、歌词来自哪里都无关。此前 check_html_player.py 只审
+    // 「--html --player」一种 flagset，--bars / --no-dynamics 叠加时的页面从
+    // 没被确定性验证过。这里把 barsPerRow 的全边界逐页提取 PLAY JSON 比对，
+    // 一旦有人把排版状态渗进播放数据（例如让 withTick 改写时长），立刻变红。
+    // 注意 --no-quantize 不在此契约内：它改的就是音符时值，PLAY 必须跟着变。
+    {
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.trackNames[1] = "Piano";
+        for (int i = 0; i < 4; i++) {
+            NoteEvent e;
+            e.track = 1; e.channel = 0; e.startTicks = i * 480L;
+            e.durationTicks = 480; e.pitch = 60 + i * 2; e.velocity = 90;
+            d.notes.push_back(e);
+        }
+        const KeyEstimate k = estimateKey(d);
+        auto playOf = [](const std::string& h) -> std::string {
+            const std::string tag = "var M2J_PLAY = ";
+            const size_t s = h.find(tag);
+            if (s == std::string::npos) return {};
+            const size_t e = h.find(";\n", s);
+            if (e == std::string::npos) return {};
+            return h.substr(s + tag.size(), e - s - tag.size());
+        };
+        const std::string ref = playOf(renderHtml(d, k, "t", nullptr, true, 0));
+        check(!ref.empty() && ref.find("\"notes\"") != std::string::npos,
+              "--player 页面含可提取的 PLAY JSON（notes 段）");
+        const int barsList[] = {1, 2, 4, 8};
+        for (int bars : barsList) {
+            const std::string h = renderHtml(d, k, "t", nullptr, true, bars);
+            check(playOf(h) == ref,
+                  "--bars N 不得改变 PLAY JSON（N=" + std::to_string(bars) + "）");
+        }
+        const std::string plain = renderHtml(d, k, "t", nullptr, false, 0);
+        check(plain.find("M2J_PLAY") == std::string::npos,
+              "不开 --player 时整页没有 M2J_PLAY");
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

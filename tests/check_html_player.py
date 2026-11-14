@@ -11,16 +11,29 @@ r"""HTML 试听播放器校验（v1.72.0）。
   3. JS 能解析但跑不起来（选中了不存在的 DOM、少写一个变量）——同样点了没反应；
   4. 不带 `--player` 的页面被顺手改了——既有素材的零回归就没了。
 
-所以这里做四层校验：
+所以这里做五层校验：
   A. 结构：playerbar / script / PLAY JSON / CSS 齐全且自洽；
   B. 语义：notes 的时长 > 0、音高 0~127、tick ≥ 0、力度 1~127 且真的导出
     了（v1.73.0 起第 5 位）；tempo 段升序且 us > 0；每个 `data-t` 都能在
     某条 note 的起点里找到（否则高亮永远不亮）；
   C. 运行时：用假的 DOM + 假 AudioContext 在 node 里真跑一遍那段 JS，断言
-     ①「排出去的振荡器个数 == PLAY 里的音符数」，②峰值增益集合恰好等于各音
-     力度换算出的集合（力度没有真正影响音量就会红），③点击某个音符后从该
-     tick 起播、第一个排出的音正是它；
-  D. 反向：不带 `--player` 时必须没有 data-t / script / playerbar。
+    ①「排出去的振荡器个数 == PLAY 里的音符数」，②峰值增益集合恰好等于各音
+    力度换算出的集合（力度没有真正影响音量就会红），③点击某个音符后从该
+    tick 起播、第一个排出的音正是它；
+  D. 反向：不带 `--player` 时必须没有 data-t / script / playerbar；
+  E. 组合（v1.98.0）：此前 audit 只跑 `--html` / `--html --player` 两种
+     flagset，`--bars N` / `--no-dynamics` / `--no-midi-lyrics` 与 `--player`
+     叠加后的页面从没有常驻守护。组合页一律要过 A/B 两层结构校验，且
+     playerbar 照样在 `<h1>` 之前（sticky 依赖文档流位置）；PLAY 数据按开关
+     分两类守：
+       · 纯排版/显示开关（`--bars` / `--no-midi-lyrics`）：PLAY JSON 必须与
+         基准**逐字节一致**——播放数据只取决于音符与速度；
+       · 会改谱面结构的开关：不要求逐字节一致，但要求 **division / tempo
+         不变且音符 multiset 守恒**（不许悄悄掉音或多音）。
+     `--no-dynamics` 属于后者：它关掉整个 ExpressionMap，倚音不再被识别合并
+     （`parts.mid` 的音符列 50 → 55），声部拆分顺序随之改变，PLAY 里的音符
+     顺序也变，但音符集合一个不少。`--no-quantize` 同理（改的是时值），
+     两者都有意不进「逐字节不变」契约，否则会把合理行为误判成缺陷。
 
 用法：
   python tests/check_html_player.py                # 校验全部 fixture
@@ -41,6 +54,34 @@ FIX = os.path.join(ROOT, "tests", "fixtures")
 PLAY_RE = re.compile(r"var M2J_PLAY = (\{.*?\});", re.S)
 TICK_RE = re.compile(r"data-t='(\d+)'")
 SCRIPT_RE = re.compile(r"<script>\r?\n(.*?)</script>", re.S)
+
+# v1.98.0 组合矩阵。分两类：纯排版/显示开关要求 PLAY JSON 逐字节不变；
+# 会改谱面结构的开关只要求「音符集合守恒」（见 combo_errors）。
+# 不放 --track（会换掉整份音符集，集合守恒不适用）。
+COMBOS = [
+    ["--bars", "1"], ["--bars", "2"], ["--bars", "3"], ["--bars", "4"],
+    ["--bars", "5"], ["--bars", "6"], ["--bars", "7"], ["--bars", "8"],
+    ["--no-dynamics"],
+    ["--no-midi-lyrics"],
+    ["--bars", "4", "--no-dynamics"],
+    ["--bars", "4", "--no-midi-lyrics"],
+]
+# 全素材只跑这三个核心组合，--bars 1..8 全边界交给代表子集跑，控制 CI 时长。
+CORE_COMBOS = [
+    ["--bars", "4"],
+    ["--no-dynamics"],
+    ["--bars", "4", "--no-dynamics"],
+]
+
+# 会改谱面结构的开关：--no-dynamics 关掉整个 ExpressionMap，倚音不再合并、
+# 声部拆分顺序随之变；--no-quantize 改音符时值。两者都允许 PLAY 的排列/时值
+# 变化，但仍必须守住音符集合守恒。
+PLAY_MUTABLE_FLAGS = ("--no-dynamics", "--no-quantize")
+
+
+def play_is_mutable(combo):
+    """该组合是否允许 PLAY JSON 与基准不同（改用「音符集合守恒」口径）。"""
+    return any(f in combo for f in PLAY_MUTABLE_FLAGS)
 
 # 用假 DOM / 假 AudioContext 跑那段内嵌 JS，数「排了几个音」。
 # 断言点：恰好排 N 个振荡器（N = PLAY.notes 的长度），否则就是播放逻辑坏了。
@@ -174,10 +215,12 @@ def fixtures():
     return sorted(glob.glob(os.path.join(FIX, "*.mid")))
 
 
-def render(exe, mid, out, player):
+def render(exe, mid, out, player, extra=None):
     args = [exe, mid, "--html", out]
     if player:
         args.append("--player")
+    if extra:
+        args.extend(extra)
     r = subprocess.run(args, capture_output=True)
     if r.returncode != 0 or not os.path.exists(out):
         return None
@@ -275,6 +318,47 @@ def plain_errors(html):
     return errs
 
 
+def combo_errors(base_html, combo_html, label, expect_same_play=True):
+    """v1.98.0 纯函数：组合渲染相对 `--player` 基准必须满足三件事。
+
+    1. 结构照样合法（scan 的 A/B 两层）；
+    2. PLAY 数据守契约：
+       - expect_same_play=True（纯排版/显示开关）：逐字节不变；
+       - expect_same_play=False（会改谱面结构的开关）：division / tempo
+         不变，且音符 multiset 守恒——顺序与时值可变，但不许掉音或多音；
+    3. playerbar 仍在 `<h1>` 之前（position:sticky 依赖文档流位置）。
+    """
+    errs = []
+    _, e = scan(combo_html)
+    errs.extend("%s: %s" % (label, x) for x in e)
+    if not isinstance(base_html, str) or not isinstance(combo_html, str):
+        return errs + ["%s: 页面不是字符串" % label]
+    a = PLAY_RE.search(base_html)
+    b = PLAY_RE.search(combo_html)
+    if not a or not b:
+        errs.append("%s: 基准或组合页缺 M2J_PLAY" % label)
+    elif expect_same_play:
+        if a.group(1) != b.group(1):
+            errs.append("%s: 排版/显示开关改变了 PLAY JSON" % label)
+    else:
+        try:
+            da = json.loads(a.group(1))
+            db = json.loads(b.group(1))
+        except ValueError as ex:
+            errs.append("%s: PLAY JSON 解析失败: %s" % (label, ex))
+        else:
+            if (da.get("division") != db.get("division")
+                    or da.get("tempo") != db.get("tempo")):
+                errs.append("%s: 结构开关改了 division/tempo" % label)
+            if sorted(da.get("notes") or []) != sorted(db.get("notes") or []):
+                errs.append("%s: 音符集合不守恒（掉音或多音）" % label)
+    pb = combo_html.find("id='playerbar'")
+    h1 = combo_html.find("<h1>")
+    if pb < 0 or h1 < 0 or pb > h1:
+        errs.append("%s: playerbar 不在 <h1> 之前" % label)
+    return errs
+
+
 def runtime_errors(html, expect, td):
     """在 node 里真跑一遍内嵌 JS，返回问题列表。"""
     node = None
@@ -321,11 +405,22 @@ def runtime_errors(html, expect, td):
     return errs
 
 
+def combo_fixtures(mids):
+    """代表子集：前 8 份 + 拍号/弱起/声部/大谱表等特殊素材，跑 --bars 全边界。"""
+    keys = ("meter", "pickup", "voice", "grand", "poly", "modulation", "tempo")
+    picked = mids[:8] + [m for m in mids
+                         if any(k in os.path.basename(m) for k in keys)][:6]
+    return set(picked)
+
+
 def audit(exe):
     bad = []
-    stats = dict(files=0, notes=0, data_t=0, runtime=0)
+    stats = dict(files=0, notes=0, data_t=0, runtime=0, combos=0)
+    mids = fixtures()
+    combo_mids = combo_fixtures(mids)
+    extra_combos = [c for c in COMBOS if c not in CORE_COMBOS]
     with tempfile.TemporaryDirectory() as td:
-        for mid in fixtures():
+        for mid in mids:
             name = os.path.basename(mid)
             plain = render(exe, mid, os.path.join(td, "p.html"), False)
             if plain is None:
@@ -340,6 +435,23 @@ def audit(exe):
             data, errs = scan(html)
             for e in errs:
                 bad.append("%s: %s" % (name, e))
+
+            # v1.98.0：组合矩阵。全素材跑核心 3 组，代表子集再跑 --bars 1..8
+            # 全边界与其余组合；每组都要过结构 + PLAY 不变量 + playerbar 位置。
+            combos = list(CORE_COMBOS)
+            if mid in combo_mids:
+                combos.extend(extra_combos)
+            for combo in combos:
+                tag = "%s %s" % (name, " ".join(combo))
+                ch = render(exe, mid, os.path.join(td, "c.html"), True, combo)
+                if ch is None:
+                    bad.append(tag + ": 组合渲染失败")
+                    continue
+                for e in combo_errors(html, ch, tag,
+                                      expect_same_play=not play_is_mutable(combo)):
+                    bad.append(e)
+                stats["combos"] += 1
+
             if data:
                 stats["files"] += 1
                 stats["notes"] += len(data.get("notes") or [])
@@ -370,8 +482,10 @@ def main():
             print("  -", b)
         return 1
     rt = "已跑" if stats["runtime"] > 0 else "跳过（无 node）"
-    print("试听播放器校验通过：%d 份素材 / %d 个音 / %d 个 data-t 高亮锚点，"
-          "运行时检查%s" % (stats["files"], stats["notes"], stats["data_t"], rt))
+    print("试听播放器校验通过：%d 份素材 / %d 个音 / %d 个 data-t 高亮锚点 / "
+          "%d 组组合参数（逐字节不变 + 音符集合守恒两类契约），运行时检查%s"
+          % (stats["files"], stats["notes"], stats["data_t"],
+             stats["combos"], rt))
     return 0
 
 
@@ -468,6 +582,68 @@ def self_test():
        "反向：默认输出出现 script 必须报错")
     ok(plain_errors("<img data-t='1'>") != [],
        "反向：默认输出出现 data-t 必须报错")
+
+    # ---- v1.98.0：组合矩阵 / PLAY JSON 排版不变量的纯逻辑自测 ----
+    def combo_page(json_text=good, extra=""):
+        return page(json_text, extra="<h1>谱面</h1>" + extra)
+
+    base = combo_page()
+    ok(combo_errors(base, base, "same") == [],
+       "组合：与基准同页应无问题，实际 %s" % combo_errors(base, base, "same"))
+
+    changed = combo_page(good.replace("500000", "400000"))
+    ok(any("PLAY JSON" in x for x in combo_errors(base, changed, "tempo")),
+       "组合：PLAY JSON 被排版开关改掉必须报错")
+
+    no_h1 = page(good)
+    ok(any("<h1>" in x for x in combo_errors(base, no_h1, "noh1")),
+       "组合：缺 <h1> 必须报 playerbar 位置问题")
+
+    moved = base.replace("<div id='playerbar'><button id='pp'></button></div>", "")
+    moved += "<div id='playerbar'><button id='pp'></button></div>"
+    ok(any("<h1>" in x for x in combo_errors(base, moved, "moved")),
+       "组合：playerbar 被挪到 <h1> 之后必须报错")
+
+    broken = combo_page().replace("<script>", "<scriptx>")
+    ok(any("broken: " in x and "script" in x
+           for x in combo_errors(base, broken, "broken")),
+       "组合：结构被破坏必须带 label 报错，实际 %s"
+       % combo_errors(base, broken, "broken"))
+
+    bar_vals = {c[1] for c in COMBOS if c[0] == "--bars"}
+    ok(bar_vals == set("12345678"),
+       "组合矩阵覆盖 --bars 1~8 全边界，实际 %s" % sorted(bar_vals))
+    ok(any("--no-dynamics" in c for c in COMBOS)
+       and any("--no-midi-lyrics" in c for c in COMBOS),
+       "组合矩阵覆盖 --no-dynamics 与 --no-midi-lyrics")
+    ok(all(c in COMBOS for c in CORE_COMBOS)
+       and all("--player" not in c and "--track" not in c for c in COMBOS),
+       "核心组合是全矩阵子集，且矩阵不含 --player / --track")
+
+    # 会改谱面结构的开关走「音符集合守恒」而非逐字节一致。
+    ok(play_is_mutable(["--no-dynamics"])
+       and play_is_mutable(["--bars", "4", "--no-dynamics"])
+       and play_is_mutable(["--no-quantize"])
+       and not play_is_mutable(["--bars", "4"])
+       and not play_is_mutable(["--no-midi-lyrics"]),
+       "PLAY 可变分类：--no-dynamics / --no-quantize 放行，纯排版开关不放行")
+
+    ok(any("division/tempo" in x
+           for x in combo_errors(base, changed, "tempo", expect_same_play=False)),
+       "集合守恒口径下改 tempo 仍必须报错")
+
+    reordered = combo_page('{"division":480,"tempo":[[0,500000]],'
+                           '"notes":[[480,480,62,0,40],[0,480,60,0,96]]}')
+    ok(combo_errors(base, reordered, "order", expect_same_play=False) == []
+       and any("PLAY JSON" in x
+               for x in combo_errors(base, reordered, "order")),
+       "音符仅换序：集合守恒口径放行，逐字节口径报错")
+
+    dropped = combo_page('{"division":480,"tempo":[[0,500000]],'
+                         '"notes":[[0,480,60,0,96]]}')
+    ok(any("音符集合" in x
+           for x in combo_errors(base, dropped, "drop", expect_same_play=False)),
+       "集合守恒口径下掉一个音必须报错")
 
     print("check_html_player self-test: %d 项，%d 失败" % (n, len(failed)))
     for f in failed:

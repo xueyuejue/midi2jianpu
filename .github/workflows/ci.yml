@@ -30,7 +30,7 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 2
 
-      - name: 单元测试（1232 项）
+      - name: 单元测试（1238 项）
         working-directory: build
         run: ctest --output-on-failure
 
@@ -108,9 +108,12 @@ jobs:
           python3 tests/check_xml_structure.py --self-test
           python3 tests/check_xml_structure.py
 
-      - name: HTML 试听播放器（23 项自测 + 105 份素材）
+      - name: HTML 试听播放器（35 项自测 + 105 份素材 + 组合矩阵）
         # --player 必须只加播放数据与高亮锚点，不改谱面本身；不带开关时
         # 输出里不得残留 script / data-t / playerbar 任何痕迹。
+        # v1.98.0 起叠加 --bars 1~8 / --no-dynamics / --no-midi-lyrics：
+        # 纯排版开关要求 PLAY JSON 逐字节不变；--no-dynamics 关掉倚音识别、
+        # 改声部拆分顺序（--no-quantize 改时值），这两类改守「音符集合守恒」。
         run: |
           python3 tests/check_html_player.py --self-test
           python3 tests/check_html_player.py
