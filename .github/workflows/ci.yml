@@ -30,7 +30,7 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 2
 
-      - name: 单元测试（1263 项）
+      - name: 单元测试（1279 项）
         working-directory: build
         run: ctest --output-on-failure
 
@@ -135,7 +135,7 @@ jobs:
           python3 tests/check_cli_matrix.py --self-test
           python3 tests/check_cli_matrix.py
 
-      - name: CLI 端到端冒烟（104 组）
+      - name: CLI 端到端冒烟（105 组）
         # 失败项由 tests/ci_report.py 同步写进 annotations 与 step summary。
         run: python3 tests/smoke.py build/midi2jianpu
 
@@ -181,5 +181,5 @@ jobs:
         # 五处导出符号没有漂移，不编译、不加载 wasm。
         run: python3 tests/check_wasm_exports.py
 
-      - name: WASM 产物冒烟（64 组，含版本号守护）
+      - name: WASM 产物冒烟（65 组，含版本号守护）
         run: node tests/wasm_smoke.mjs

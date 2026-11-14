@@ -614,15 +614,24 @@ int main(int argc, char** argv) {
     if (!lyricsPath.empty() && (!htmlOut.empty() || !xmlOut.empty())) {
         size_t dot = lyricsPath.find_last_of(".");
         std::string ext = (dot != std::string::npos) ? lyricsPath.substr(dot) : "";
+        size_t droppedLyricLines = 0;
         if (ext == ".lrc" || ext == ".LRC") {
             // LRC 时间戳是真实秒，必须按 tempo map 分段反解成 tick；
             // 用曲首 BPM 一把梭会让变速后的歌词整体错位。
-            lyricLines = m2j::parseLrcLines(lyricsPath, data);
+            lyricLines = m2j::parseLrcLines(lyricsPath, data, &droppedLyricLines);
         } else {
             // JSON 格式：每个字自成一行
-            auto syls = m2j::parseLyrics(lyricsPath, data.division);
+            auto syls = m2j::parseLyrics(lyricsPath, data.division,
+                                         &droppedLyricLines);
             for (const auto& s : syls) lyricLines.push_back({s.tick, s.text});
         }
+        // 离谱的时间戳 / [offset:] / start_beat 换算成 32 位 tick 会溢出，
+        // 旧版把环绕后的假 tick 当真，歌词被静默挂到曲首。现在显式丢弃并
+        // 告诉用户，而不是让控制台继续宣称「歌词已加载: N 行」。
+        if (droppedLyricLines)
+            std::cerr << "警告: 已忽略 " << droppedLyricLines
+                      << " 行歌词（时间戳 / [offset:] / start_beat 数值"
+                         "超出谱面时间轴可表示范围）\n";
         std::cout << "歌词已加载: " << lyricLines.size() << " 行\n";
         // 文件读到了却一行都没解析出来，通常是时间戳格式不对（[mm:ss] 写成
         // 了 mm:ss，或者整篇是纯文本）。这不是正常状态，得说出来——否则页眉

@@ -3983,6 +3983,69 @@ def main():
     rc, _, err = run(exe, v199mid, "--output", v199mid)
     check(rc == 1 and "覆盖源文件" in err,
           "v1.82 起「输出 == 输入 MIDI」的保护仍生效", err)
+    group("[105] v1.100.0 外部歌词时间轴越界：不再把歌词静默挂到曲首")
+    v100mid = os.path.join(tmp, "v100_in.mid")
+    shutil.copyfile(injmid, v100mid)
+    v100html = os.path.join(tmp, "v100.html")
+
+    def v100_lyrics(path):
+        body = open(path, encoding="utf-8").read()
+        return "".join(s.strip() for s in
+                       re.findall(r"<span class='lyric'>(.*?)</span>", body, re.S)
+                       if s.strip())
+
+    def v100_write(text, name, ext):
+        p = os.path.join(tmp, "v100_" + name + ext)
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return p
+
+    def v100_bad(s):
+        # html_meta_inject.mid 自带 16 个「LY」内置音节；外部歌词无效时回退
+        # 到内置歌词是既有设计，这里只断言外部那几个中文字没有被错挂。
+        return not any(ch in s for ch in "你好世界")
+
+    ok = v100_write("[00:00.00]你好\n[00:01.00]世界\n", "ok", ".lrc")
+    rc, out, err = run(exe, v100mid, "--lyrics", ok, "--html", v100html)
+    check(rc == 0 and v100_lyrics(v100html) == "你好世界",
+          "正常 LRC 两个词仍完整出谱", err)
+    check("已忽略" not in err, "正常 LRC 不误报越界警告", err)
+
+    v100_cases = [
+        ("big_offset", "[offset:999999999999]\n[00:00.00]你好\n[00:01.00]世界\n"),
+        ("big_stamp", "[99999999:00.00]你好\n[99999999:01.00]世界\n"),
+        ("neg_offset", "[offset:-999999999999]\n[00:00.00]你好\n[00:01.00]世界\n"),
+        ("huge_offset", "[offset:999999999999999999999999]\n[00:00.00]你好\n[00:01.00]世界\n"),
+    ]
+    for vname, vtext in v100_cases:
+        p = v100_write(vtext, vname, ".lrc")
+        rc, out, err = run(exe, v100mid, "--lyrics", p, "--html", v100html)
+        check(rc == 0, "%s 越界歌词不崩溃" % vname, err)
+        check("已忽略 2 行歌词" in err,
+              "%s 明确报告丢弃 2 行歌词" % vname, err)
+        check(v100_bad(v100_lyrics(v100html)),
+              "%s 不再把「世界」错挂到曲首" % vname, err)
+
+    mix = v100_write("[00:00.00]你好\n[99999999:00.00]世界\n", "mix", ".lrc")
+    rc, out, err = run(exe, v100mid, "--lyrics", mix, "--html", v100html)
+    check("已忽略 1 行歌词" in err and "你好" in v100_lyrics(v100html)
+          and "世界" not in v100_lyrics(v100html),
+          "混合时间戳只丢越界行，正常行照常出词", err)
+
+    huge_json = v100_write('[{"start_beat":999999999999,"text":"世界"}]\n',
+                           "huge", ".json")
+    rc, out, err = run(exe, v100mid, "--lyrics", huge_json, "--html", v100html)
+    check(rc == 0 and "已忽略 1 行歌词" in err,
+          "JSON start_beat 越界也明确报告", err)
+    check(v100_bad(v100_lyrics(v100html)),
+          "JSON 越界歌词不再挂到曲首", err)
+    ok_json = v100_write('[{"start_beat":0,"text":"你好"}]\n', "ok", ".json")
+    rc, out, err = run(exe, v100mid, "--lyrics", ok_json, "--html", v100html)
+    check("你好" in v100_lyrics(v100html) and "已忽略" not in err,
+          "JSON 正常歌词不误伤", err)
+    check(open(v100mid, "rb").read() == open(injmid, "rb").read(),
+          "越界歌词全程不改动输入 MIDI")
+
     check(open(v199mid, "rb").read() == open(injmid, "rb").read(),
           "输入 MIDI 一个字节都没被改")
 

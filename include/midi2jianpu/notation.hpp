@@ -191,18 +191,25 @@ struct LyricLine {
     std::string text;
 };
 
+// 所有外部歌词入口都带可选的 dropped：时间字段换算成 32 位 tick 会越界的
+// 行被显式丢弃（v1.100.0），计数由调用方决定要不要提示用户。默认 nullptr，
+// 旧的调用点（含 WASM 的 parseLrcText）无需改动。
 // 解析歌词JSON文件，返回按tick排序的歌词字列表
-std::vector<LyricSyllable> parseLyrics(const std::string& jsonPath, int division);
+std::vector<LyricSyllable> parseLyrics(const std::string& jsonPath, int division,
+                                       size_t* dropped = nullptr);
 
 // 解析LRC歌词文件（[mm:ss.xx]歌词），返回按tick排序的歌词字列表
-std::vector<LyricSyllable> parseLrc(const std::string& lrcPath, int division, int bpm);
+std::vector<LyricSyllable> parseLrc(const std::string& lrcPath, int division, int bpm,
+                                    size_t* dropped = nullptr);
 
 // 解析LRC为行列表（用于按音符对齐）
-std::vector<LyricLine> parseLrcLines(const std::string& lrcPath, int division, int bpm);
+std::vector<LyricLine> parseLrcLines(const std::string& lrcPath, int division, int bpm,
+                                     size_t* dropped = nullptr);
 
 // 同 parseLrcLines，但输入是 LRC 文本而不是路径。
 // WASM 版没有文件系统，只能走这个入口。
-std::vector<LyricLine> parseLrcText(const std::string& lrc, int division, int bpm);
+std::vector<LyricLine> parseLrcText(const std::string& lrc, int division, int bpm,
+                                    size_t* dropped = nullptr);
 
 // ---- 按 tempo map 对齐的 LRC 入口（推荐）----
 // LRC 的时间戳是真实秒，谱面用 tick。上面三个 (division, bpm) 版本把整首歌
@@ -213,9 +220,12 @@ std::vector<LyricLine> parseLrcText(const std::string& lrc, int division, int bp
 // 同时支持 LRC 的两项常见约定：
 //   [offset:±毫秒]              所有时间戳整体平移（正=延后）
 //   [mm:ss.xx][mm:ss.xx]同一行   一行词在多个时间点重复出现
-std::vector<LyricSyllable> parseLrc(const std::string& lrcPath, const MidiData& data);
-std::vector<LyricLine> parseLrcLines(const std::string& lrcPath, const MidiData& data);
-std::vector<LyricLine> parseLrcText(const std::string& lrc, const MidiData& data);
+std::vector<LyricSyllable> parseLrc(const std::string& lrcPath, const MidiData& data,
+                                    size_t* dropped = nullptr);
+std::vector<LyricLine> parseLrcLines(const std::string& lrcPath, const MidiData& data,
+                                     size_t* dropped = nullptr);
+std::vector<LyricLine> parseLrcText(const std::string& lrc, const MidiData& data,
+                                    size_t* dropped = nullptr);
 
 // 实质变速点数（供 CLI / 网页提示「LRC 已按 N 处变速分段对齐」）。
 // 走 tempoMarksOf 的折叠结果，所以一段渐慢只算一处，不是几十处。

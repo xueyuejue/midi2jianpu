@@ -2125,6 +2125,31 @@ if (existsSync(v90InjectPath)) {
     'WASM 转义后谱面音符照常出谱', v90Html.slice(0, 300));
 }
 
+// ---- 65. v1.100.0 外部歌词时间轴越界：网页端也不把歌词挂到曲首 ----
+// 网页端的 set_lyrics 走同一个 parseLrcText；漏重编 docs/wasm/ 时旧 .wasm
+// 仍会把 [offset:999999999999] 环绕后的假 tick 当真。
+if (existsSync(v90InjectPath)) {
+  const v100Caller = makeCaller(mod);
+  v100Caller.setMidi(new Uint8Array(readFileSync(v90InjectPath)));
+  v100Caller.setLyrics('[00:00.00]你好\n[00:01.00]世界\n');
+  const v100OkHtml = v100Caller.call('midi2jianpu_html', -1, 1) || '';
+  check(v100OkHtml.includes("<span class='lyric'>你</span>") &&
+        v100OkHtml.includes("<span class='lyric'>世</span>"),
+    'WASM 正常 LRC 两个词都出谱', v100OkHtml.slice(0, 300));
+  v100Caller.setLyrics('[offset:999999999999]\n[00:00.00]你好\n[00:01.00]世界\n');
+  const v100BadHtml = v100Caller.call('midi2jianpu_html', -1, 1) || '';
+  check(!v100BadHtml.includes("<span class='lyric'>世</span>") &&
+        !v100BadHtml.includes("<span class='lyric'>你</span>"),
+    'WASM 越界 LRC 不再把歌词错挂到曲首', v100BadHtml.slice(0, 300));
+  check(v100BadHtml.includes('class=\'note'),
+    'WASM 越界歌词不影响音符照常出谱', v100BadHtml.slice(0, 300));
+  v100Caller.setLyrics('[99999999:00.00]你好\n');
+  const v100StampHtml = v100Caller.call('midi2jianpu_html', -1, 1) || '';
+  check(!v100StampHtml.includes("<span class='lyric'>你</span>"),
+    'WASM 巨大时间戳同样不产出错挂歌词', v100StampHtml.slice(0, 300));
+  v100Caller.setLyrics('');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

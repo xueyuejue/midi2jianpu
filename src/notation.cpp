@@ -1993,7 +1993,10 @@ int pickMelodyTrack(const MidiData& data, const std::vector<LyricLine>* lyrics) 
 // std::stoi / std::stod 遇到畸形输入会直接 abort 整个页面，故统一用它。
 static double parseNum(const std::string& s, size_t from, size_t to);
 
-std::vector<LyricSyllable> parseLyrics(const std::string& jsonPath, int division) {
+std::vector<LyricSyllable> parseLyrics(const std::string& jsonPath, int division,
+                                       size_t* dropped) {
+    // dropped 是输出参数：调用方不必先清零，也不该把上一次的计数带进来。
+    if (dropped) *dropped = 0;
     std::vector<LyricSyllable> result;
     std::ifstream f(jsonPath);
     if (!f.is_open()) return result;
@@ -2006,7 +2009,7 @@ std::vector<LyricSyllable> parseLyrics(const std::string& jsonPath, int division
         // 提取数字
         size_t colon = content.find(":", pos);
         size_t end = content.find_first_of(",}", colon);
-        int beat = (int)parseNum(content, colon + 1, end);
+        const double beatNum = parseNum(content, colon + 1, end);
 
         // 找对应的text
         size_t textPos = content.find("\"text\"", end);
@@ -2015,17 +2018,37 @@ std::vector<LyricSyllable> parseLyrics(const std::string& jsonPath, int division
         size_t q2 = content.find("\"", q1 + 1);
         std::string line = content.substr(q1 + 1, q2 - q1 - 1);
 
+        // start_beat 是用户给的外部数字。旧版直接 (int) 强转再乘 division，
+        // 离谱值会 UB / 32 位溢出，把歌词静默挂到曲首。先按 long 值域判一次。
+        const double unit = (double)std::max(std::abs(division), 1);
+        const double maxBeat = (double)LONG_MAX / unit;
+        if (!std::isfinite(beatNum) || beatNum < -maxBeat || beatNum > maxBeat) {
+            if (dropped) ++*dropped;
+            pos = q2;
+            continue;
+        }
+        const long beat = (long)beatNum;
+        double startD = (double)beat * division;
+        if (startD > (double)LONG_MAX) startD = (double)LONG_MAX;
+        if (startD < (double)LONG_MIN) startD = (double)LONG_MIN;
+
         // 按字拆分, 每个字分配一个tick (均匀分布在该行的beat范围内)
-        long startTick = (long)beat * division;
+        const long startTick = (long)startD;
         // 找下一行的start_beat来确定该行长度
         size_t nextStart = content.find("\"start_beat\"", q2);
         long lineLenTicks = division * 4;  // 默认4拍
         if (nextStart != std::string::npos) {
             size_t nc = content.find(":", nextStart);
             size_t ne = content.find_first_of(",}", nc);
-            int nextBeat = (int)parseNum(content, nc + 1, ne);
-            lineLenTicks = (long)(nextBeat - beat) * division;
+            const double nextNum = parseNum(content, nc + 1, ne);
+            // 下一行 beat 离谱 / 倒序时退回默认 4 拍，不做溢出减法。
+            const double spanD = (nextNum - beatNum) * division;
+            if (std::isfinite(spanD) && spanD >= 0 && spanD <= (double)LONG_MAX)
+                lineLenTicks = (long)spanD;
         }
+        if (lineLenTicks < 0) lineLenTicks = 0;
+        const long maxSpan = LONG_MAX - startTick;
+        if (lineLenTicks > maxSpan) lineLenTicks = maxSpan;
         long perChar = lineLenTicks / std::max((int)line.size(), 1);
         for (size_t i = 0; i < line.size(); i++) {
             // UTF-8中文字符: 每个字3字节
@@ -2125,7 +2148,9 @@ static void lrcTimestamps(const std::string& line,
 
 // 唯一的时间戳换算点：offset 先叠到秒上，再由 tempo map 反解成 tick。
 static std::vector<LyricLine> parseLrcTextImpl(const std::string& lrc,
-                                               const TempoTimeline& tl) {
+                                               const TempoTimeline& tl,
+                                               size_t* dropped) {
+    if (dropped) *dropped = 0;   // 输出参数，见 parseLyrics
     const double off = lrcOffsetSeconds(lrc);
     std::vector<LyricLine> out;
     size_t pos = 0;
@@ -2141,8 +2166,16 @@ static std::vector<LyricLine> parseLrcTextImpl(const std::string& lrc,
         std::string text;
         lrcTimestamps(line, secs, text);
         if (text.empty()) continue;
-        for (double s : secs)
-            out.push_back({tl.secondsToTick(s + off), text});
+        for (double s : secs) {
+            long tick = 0;
+            if (!tl.secondsToTickChecked(s + off, tick)) {
+                // 秒数换算成 tick 会溢出 32 位 long：留着只会让歌词被静默
+                // 挂到曲首（或整行消失）。显式丢弃，由调用方提示用户。
+                if (dropped) ++*dropped;
+                continue;
+            }
+            out.push_back({tick, text});
+        }
     }
     // 多时间戳 + offset 可能让行顺序打乱，下游 assignLyrics 依赖升序
     std::stable_sort(out.begin(), out.end(),
@@ -2162,31 +2195,36 @@ static std::string readTextFile(const std::string& path) {
     return textenc::normalize(raw);
 }
 
-std::vector<LyricLine> parseLrcText(const std::string& lrc, const MidiData& data) {
-    return parseLrcTextImpl(lrc, TempoTimeline(data));
+std::vector<LyricLine> parseLrcText(const std::string& lrc, const MidiData& data,
+                                    size_t* dropped) {
+    return parseLrcTextImpl(lrc, TempoTimeline(data), dropped);
 }
 
-std::vector<LyricLine> parseLrcText(const std::string& lrc, int division, int bpm) {
+std::vector<LyricLine> parseLrcText(const std::string& lrc, int division, int bpm,
+                                    size_t* dropped) {
     if (division <= 0 || bpm <= 0) return {};
     // 旧签名没有 tempo map，按曲首单速构造一条等价时间轴
     const std::vector<TempoPoint> one{{0, (double)bpm}};
-    return parseLrcTextImpl(lrc, TempoTimeline(one, division));
+    return parseLrcTextImpl(lrc, TempoTimeline(one, division), dropped);
 }
 
-std::vector<LyricLine> parseLrcLines(const std::string& lrcPath, const MidiData& data) {
-    return parseLrcTextImpl(readTextFile(lrcPath), TempoTimeline(data));
+std::vector<LyricLine> parseLrcLines(const std::string& lrcPath, const MidiData& data,
+                                     size_t* dropped) {
+    return parseLrcTextImpl(readTextFile(lrcPath), TempoTimeline(data), dropped);
 }
 
-std::vector<LyricLine> parseLrcLines(const std::string& lrcPath, int division, int bpm) {
-    return parseLrcText(readTextFile(lrcPath), division, bpm);
+std::vector<LyricLine> parseLrcLines(const std::string& lrcPath, int division, int bpm,
+                                     size_t* dropped) {
+    return parseLrcText(readTextFile(lrcPath), division, bpm, dropped);
 }
 
 // 按字拆成音节（旧接口）。行长按「4 秒」换算：用时间轴双向查询，
 // 变速段里 4 秒对应的 tick 数会跟着变，不会像固定 secPerBeat 那样失真。
 static std::vector<LyricSyllable> parseLrcSyllables(const std::string& lrc,
-                                                    const TempoTimeline& tl) {
+                                                    const TempoTimeline& tl,
+                                                    size_t* dropped) {
     std::vector<LyricSyllable> result;
-    const auto lines = parseLrcTextImpl(lrc, tl);
+    const auto lines = parseLrcTextImpl(lrc, tl, dropped);
     for (const auto& ln : lines) {
         int charCount = 0;
         for (size_t i = 0; i < ln.text.size(); ) {
@@ -2198,7 +2236,9 @@ static std::vector<LyricSyllable> parseLrcSyllables(const std::string& lrc,
             i += charLen;
         }
         if (charCount == 0) continue;
-        const long endTick = tl.secondsToTick(tl.tickToSeconds(ln.startTick) + 4.0);
+        long endTick = 0;
+        if (!tl.secondsToTickChecked(tl.tickToSeconds(ln.startTick) + 4.0, endTick))
+            continue;
         const long perChar = std::max<long>(0, endTick - ln.startTick) / charCount;
         long idx = 0;
         for (size_t i = 0; i < ln.text.size(); ) {
@@ -2214,14 +2254,16 @@ static std::vector<LyricSyllable> parseLrcSyllables(const std::string& lrc,
     return result;
 }
 
-std::vector<LyricSyllable> parseLrc(const std::string& lrcPath, const MidiData& data) {
-    return parseLrcSyllables(readTextFile(lrcPath), TempoTimeline(data));
+std::vector<LyricSyllable> parseLrc(const std::string& lrcPath, const MidiData& data,
+                                    size_t* dropped) {
+    return parseLrcSyllables(readTextFile(lrcPath), TempoTimeline(data), dropped);
 }
 
-std::vector<LyricSyllable> parseLrc(const std::string& lrcPath, int division, int bpm) {
+std::vector<LyricSyllable> parseLrc(const std::string& lrcPath, int division, int bpm,
+                                    size_t* dropped) {
     if (division <= 0 || bpm <= 0) return {};
     const std::vector<TempoPoint> one{{0, (double)bpm}};
-    return parseLrcSyllables(readTextFile(lrcPath), TempoTimeline(one, division));
+    return parseLrcSyllables(readTextFile(lrcPath), TempoTimeline(one, division), dropped);
 }
 
 int tempoChangeCount(const MidiData& data) {

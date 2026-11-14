@@ -5,6 +5,7 @@
 #include "text_encoding.hpp"
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -82,7 +83,7 @@ double TempoTimeline::tickToSeconds(long tick) const {
     return s.seconds + (double)(tick - s.tick) * s.usPerQuarter / 1e6 / division_;
 }
 
-long TempoTimeline::secondsToTick(double seconds) const {
+bool TempoTimeline::secondsToTickChecked(double seconds, long& out) const {
     size_t lo = 0;
     // 线性扫就够：一个曲子的变速点最多几十个，二分反而容易在相等秒数上出错
     for (size_t i = 1; i < segments_.size(); i++) {
@@ -91,7 +92,20 @@ long TempoTimeline::secondsToTick(double seconds) const {
     const TempoSegment& s = segments_[lo];
     const double t = (double)s.tick
                    + (seconds - s.seconds) * 1e6 * division_ / s.usPerQuarter;
-    return (long)std::llround(t);
+    // llround 对超出 long long 的输入是未定义行为；而 Windows / WASM 的 long
+    // 只有 32 位，即便 llround 正常，(long) 强转也会把 1e12 tick 绕成负数。
+    if (!std::isfinite(t) || t < (double)LONG_MIN || t > (double)LONG_MAX)
+        return false;
+    out = (long)std::llround(t);
+    return true;
+}
+
+long TempoTimeline::secondsToTick(double seconds) const {
+    // 饱和到值域端点：溢出只可能来自畸形输入，保持「很大/很小」的语义，
+    // 不让 32 位截断把时间轴前后颠倒。
+    long tick = 0;
+    if (secondsToTickChecked(seconds, tick)) return tick;
+    return seconds < 0 ? LONG_MIN : LONG_MAX;
 }
 
 // SMPTE 时间基准的折算。

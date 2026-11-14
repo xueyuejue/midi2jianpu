@@ -1385,6 +1385,78 @@ int main() {
               "非法 division / bpm 时旧签名安全返回空");
     }
 
+    // ---- 外部歌词时间字段越界（v1.100.0）：32 位 tick 不能环绕 ----
+    {
+        MidiData d;
+        d.division = 480;
+        d.tempoChanges = {{0, 120.0}};
+        const TempoTimeline tl(d);
+        long tick = -1;
+
+        check(tl.secondsToTickChecked(1.0, tick) && tick == 960,
+              "1 秒有界换算成 960 tick");
+        check(tl.secondsToTickChecked(-1.0, tick) && tick == -960,
+              "负秒有界换算成 -960 tick");
+        check(!tl.secondsToTickChecked(1e12, tick),
+              "1e12 秒超出 long 值域时返回 false（旧版会绕成负数）");
+        check(!tl.secondsToTickChecked(-1e12, tick),
+              "负 1e12 秒同样被判越界");
+        check(tl.secondsToTick(1e12) > 0 && tl.secondsToTick(-1e12) < 0,
+              "secondsToTick 越界时饱和到端点，时间轴前后不颠倒");
+        check(tl.secondsToTick(1.0) == 960 && tl.secondsToTick(2.0) == 1920,
+              "正常秒数换算零回归");
+
+        size_t dropped = 99;   // 故意给脏值：dropped 是输出参数，入口必须清零
+        const auto normal = parseLrcText(
+            "[00:00.00]你好\n[00:01.00]世界\n", d, &dropped);
+        check(normal.size() == 2 && dropped == 0,
+              "正常 LRC 不丢任何行（dropped 入口清零）");
+        check(normal[0].startTick == 0 && normal[1].startTick == 960 &&
+              normal[0].text == "你好" && normal[1].text == "世界",
+              "正常 LRC 的 tick 与文本零回归");
+
+        dropped = 0;
+        const auto bigOff = parseLrcText(
+            "[offset:999999999999]\n[00:00.00]你好\n[00:01.00]世界\n",
+            d, &dropped);
+        check(bigOff.empty() && dropped == 2,
+              "巨大 [offset:] 的两行都被丢弃且计数为 2");
+        dropped = 0;
+        const auto bigStamp = parseLrcText(
+            "[99999999:00.00]你好\n[99999999:01.00]世界\n", d, &dropped);
+        check(bigStamp.empty() && dropped == 2,
+              "巨大时间戳的两行都被丢弃且计数为 2");
+        dropped = 0;
+        const auto negOff = parseLrcText(
+            "[offset:-999999999999]\n[00:00.00]你好\n[00:01.00]世界\n",
+            d, &dropped);
+        check(negOff.empty() && dropped == 2,
+              "巨大负 [offset:] 不会被环绕成曲首歌词");
+        dropped = 0;
+        const auto hugeOff = parseLrcText(
+            "[offset:999999999999999999999999]\n[00:00.00]甲\n", d, &dropped);
+        check(hugeOff.empty() && dropped == 1,
+              "超出 llround 值域的 [offset:] 也不崩、不产词");
+
+        dropped = 0;
+        const auto mixed = parseLrcText(
+            "[00:00.00]甲乙\n[99999999:00.00]丙丁\n", d, &dropped);
+        check(mixed.size() == 1 && dropped == 1,
+              "混合时间戳只丢越界那一行");
+        check(mixed[0].startTick == 0 && mixed[0].text == "甲乙",
+              "保留下来的歌词行 tick 不被越界行带偏");
+
+        dropped = 0;
+        const auto oldSig = parseLrcText(
+            "[offset:999999999999]\n[00:00.00]甲\n", 480, 120, &dropped);
+        check(oldSig.empty() && dropped == 1,
+              "旧 (division,bpm) 签名同样走有界换算");
+        dropped = 0;
+        const auto wasmSig = parseLrcText("[00:00.00]甲\n", d, &dropped);
+        check(wasmSig.size() == 1 && dropped == 0,
+              "WASM 使用的 MidiData 签名不误伤正常歌词");
+    }
+
     std::cout << "\n测试演奏表情分析 (ExpressionMap)\n";
     {
         MidiData d;

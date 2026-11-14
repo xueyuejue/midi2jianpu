@@ -387,7 +387,13 @@ public:
     explicit TempoTimeline(const MidiData& data);
 
     double tickToSeconds(long tick) const;   // 支持负 tick / 越过末段外推
-    long secondsToTick(double seconds) const;  // 反解，四舍五入到整数 tick
+    // 反解，四舍五入到整数 tick；超出 long 值域时饱和到端点，绝不环绕成负数。
+    long secondsToTick(double seconds) const;
+    // 有界反解：换算结果落在 long 值域内才写 out 并返回 true。外部歌词的
+    // 时间字段（LRC 秒 / [offset:] / JSON start_beat）可能离谱到 1e12 秒以上，
+    // 旧版 llround + 32 位截断会把 tick 绕成负数，歌词被静默挂到曲首。
+    // v1.100.0 起解析层用这个入口把越界行显式丢弃。
+    bool secondsToTickChecked(double seconds, long& out) const;
     int changeCount() const { return (int)segments_.size() - 1; }  // 实质变速点数
     int division() const { return division_; }
     const std::vector<TempoSegment>& segments() const { return segments_; }
