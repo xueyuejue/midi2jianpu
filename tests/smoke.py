@@ -3945,6 +3945,47 @@ def main():
     check("<script>alert(1)</script>" not in injphtm,
           "--player 组合下也没有注入脚本")
 
+    group("[104] v1.99.0 参数不再「悄悄改主意」：重复带值选项 + 非 MIDI 源文件保护")
+    import shutil
+    v199mid = os.path.join(tmp, "v199_in.mid")
+    shutil.copyfile(injmid, v199mid)
+    d1 = os.path.join(tmp, "v199_a.html")
+    d2 = os.path.join(tmp, "v199_b.html")
+    rc, _, err = run(exe, v199mid, "--html", d1, "--html", d2)
+    check(rc == 1, "重复 --html 明确拒绝（旧版只写后一个且 rc=0）", err)
+    check("重复" in err, "错误文案点明「重复指定」", err)
+    check(not os.path.exists(d1) and not os.path.exists(d2),
+          "拒绝后两个 HTML 路径都没有被写")
+    rc, _, err = run(exe, v199mid, "--key", "C", "--key", "D")
+    check(rc == 1 and "--key" in err,
+          "重复 --key 明确拒绝（旧版静默改成 D 大调）", err)
+    rc, _, err = run(exe, v199mid, "--bars", "2", "--no-dynamics",
+                     "--bars", "3")
+    check(rc == 1, "中间夹着开关的重复 --bars 也能拦住", err)
+    rc, _, err = run(exe, v199mid, "--html", d1, "--player", "--player")
+    check(rc == 0 and os.path.exists(d1), "开关类重复幂等，正常出谱", err)
+    rc, _, err = run(exe, v199mid, "--transpose", "-2", "--bars", "2",
+                     "--html", d2)
+    check(rc == 0, "合法负数值与不同带值选项共存不误伤", err)
+    lrc = os.path.join(tmp, "v199_words.lrc")
+    with open(lrc, "w", encoding="utf-8") as fh:
+        fh.write("[00:00.00]你好\n[00:01.00]世界\n")
+    before = open(lrc, "rb").read()
+    rc, _, err = run(exe, v199mid, "--lyrics", lrc, "--html", lrc)
+    check(rc == 1 and "覆盖歌词源文件" in err,
+          "HTML 输出覆盖 --lyrics 源文件时拒绝", err)
+    check(open(lrc, "rb").read() == before, "拒绝后歌词源文件逐字节不变")
+    rc, _, err = run(exe, v199mid, "--lyrics", lrc, "--output", lrc)
+    check(rc == 1 and "覆盖歌词源文件" in err,
+          "文本谱输出覆盖 --lyrics 源文件时拒绝", err)
+    rc, out, err = run(exe, v199mid, "--lyrics", lrc, "--html", d1)
+    check(rc == 0 and "歌词已加载" in out, "--lyrics 正常加载不误伤", err)
+    rc, _, err = run(exe, v199mid, "--output", v199mid)
+    check(rc == 1 and "覆盖源文件" in err,
+          "v1.82 起「输出 == 输入 MIDI」的保护仍生效", err)
+    check(open(v199mid, "rb").read() == open(injmid, "rb").read(),
+          "输入 MIDI 一个字节都没被改")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

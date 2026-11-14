@@ -7692,6 +7692,61 @@ int main() {
         check(plain.find("M2J_PLAY") == std::string::npos,
               "不开 --player 时整页没有 M2J_PLAY");
     }
+    // ---- v1.99.0 重复带值选项 + 外部歌词源文件保护（纯字符串） ----
+    {
+        using m2j::cli::validateDuplicateValueOptions;
+        using m2j::cli::validateOutputPaths;
+        using m2j::cli::OutputPath;
+
+        const std::string in = "song.mid";
+        check(validateDuplicateValueOptions({}).empty(),
+              "重复选项预检：空参数列表放行");
+        check(validateDuplicateValueOptions({in}).empty(),
+              "重复选项预检：只有输入文件时放行");
+        check(validateDuplicateValueOptions(
+                  {in, "--player", "--player"}).empty(),
+              "重复选项预检：开关类重复是幂等的，放行");
+        check(validateDuplicateValueOptions(
+                  {in, "--output", "a.txt", "--html", "b.html",
+                   "--musicxml", "c.xml"}).empty(),
+              "重复选项预检：三个不同输出选项共存放行");
+        check(validateDuplicateValueOptions(
+                  {in, "--transpose", "-2", "--bars", "2"}).empty(),
+              "重复选项预检：合法负数值不会被误判成新选项");
+        for (const char* opt : {"--html", "--musicxml", "--output", "--key",
+                                "--gong", "--track", "--transpose", "--lyrics",
+                                "--pickup", "--bars", "--soft-pedal-scale"}) {
+            const std::vector<std::string> a = {in, opt, "one", opt, "two"};
+            const std::string e = validateDuplicateValueOptions(a);
+            check(!e.empty() && e.find(opt) == 0 &&
+                  e.find("重复") != std::string::npos,
+                  std::string(opt) + " 重复给时拒绝并点明重复");
+        }
+        check(validateDuplicateValueOptions(
+                  {"--html", "a.html", in, "--html", "b.html"}).size() > 0,
+              "重复选项预检：两个 --html 之间夹着输入文件也能拦住");
+        check(validateDuplicateValueOptions(
+                  {"--key", "C", "--transpose", "-2", "--key", "D"}).size() > 0,
+              "重复选项预检：负数值不遮挡后面的重复 --key");
+        check(validateDuplicateValueOptions(
+                  {"--bars", "2", "--no-dynamics", "--bars", "3"}).size() > 0,
+              "重复选项预检：中间夹开关仍能拦住重复 --bars");
+        check(validateOutputPaths(in, {{"--html", "a.html"}},
+                                  {{"--lyrics", "a.lrc"}}).empty(),
+              "源文件保护：歌词与输出路径不同放行");
+        for (const char* opt : {"--output", "--html", "--musicxml"}) {
+            const std::string e = validateOutputPaths(
+                in, {{opt, "./WORDS.LRC"}}, {{"--lyrics", "words.lrc"}});
+            check(!e.empty() && e.find(opt) == 0 &&
+                  e.find("覆盖歌词源文件") != std::string::npos,
+                  std::string(opt) + " 覆盖 --lyrics 源文件时拒绝");
+        }
+        check(validateOutputPaths(in, {{"--html", "a.html"}},
+                                  {{"--lyrics", ""}}).empty(),
+              "源文件保护：未指定 --lyrics 时放行");
+        check(validateOutputPaths(in, {{"--html", "a.html"}}).empty(),
+              "源文件保护：两参重载保持 v1.82 口径");
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

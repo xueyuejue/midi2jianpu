@@ -310,6 +310,18 @@ int main(int argc, char** argv) {
         }
     }
     if (input.empty()) { printHelp(); return 1; }
+    // 同一带值选项重复给：旧版 last-wins 静默覆盖（--html a --html b 只写 b、
+    // --key C --key D 把调性改成 D），全程 rc=0。位置参数早在 v1.81 就只允许
+    // 一个，这里把 11 个带值选项补齐同一口径；开关类重复幂等，不在其列。
+    // 放在解析循环之后，--help / --version 仍可提前返回。
+    {
+        const std::vector<std::string> rawArgs(argv + 1, argv + argc);
+        const std::string de = m2j::cli::validateDuplicateValueOptions(rawArgs);
+        if (!de.empty()) {
+            std::cerr << "错误: " << de << "\n";
+            return 1;
+        }
+    }
     // --key 与 --gong 都是「指定原调」的入口，同时给时旧版静默丢掉 --key，
     // 用户以为调性按自己写的来，谱面却是宫音推出来的另一套。
     const std::string ke = m2j::cli::validateKeyOptions(keyArg, gongArg);
@@ -332,7 +344,12 @@ int main(int argc, char** argv) {
             {"--output", txtOut}, {"--html", htmlOut},
             {"--musicxml", xmlOut}
         };
-        const std::string oe = m2j::cli::validateOutputPaths(input, outs);
+        // --lyrics 指定的外部歌词也是「读进来的源文件」：三端输出写在它上面
+        // 会先读后写、把歌词盖掉（v1.82 只保护了输入 MIDI）。
+        const std::vector<m2j::cli::OutputPath> sources = {
+            {"--lyrics", lyricsPath}
+        };
+        const std::string oe = m2j::cli::validateOutputPaths(input, outs, sources);
         if (!oe.empty()) {
             std::cerr << "错误: " << oe << "\n";
             return 1;

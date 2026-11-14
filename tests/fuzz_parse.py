@@ -16,7 +16,7 @@
       含 RPN/CC64-65 仅 6 份），必须定点打。
 - **定点选种子**：语法感知算子优先从含对应字段的种子池里挑（`MUT_SEED_HINTS`），
   找不到才退回全体，避免「打空气」。
-- **边界选项矩阵（HOSTILE_ARGS）**：每个突变**强制**跑 5 组「必定失败但不该崩」
+- **边界选项矩阵（HOSTILE_ARGS）**：每个突变**强制**跑 6 组「必定失败但不该崩」
   的组合：`--track 99` / `--bars 9` / `--key ZZ` / `--transpose 999`（v1.96）/
   `--pickup 1 --no-pickup`（v1.97 矛盾开关），断言 rc ∈
   {0,1,2,3,4}（不崩、不卡死）；这比 v1.93 纯概率式 `pick_args` 抽修饰更
@@ -89,6 +89,7 @@ HOSTILE_ARGS = [
     ["--key", "ZZ"],                        # 非法调名 → 期望 rc=1
     ["--transpose", "999"],                 # 越界移调 → 期望 rc=1（v1.96.0 起有上限）
     ["--pickup", "1", "--no-pickup"],       # 矛盾弱起开关 → 期望 rc=1（v1.97.0 起拒绝）
+    ["--bars", "2", "--bars", "3"],         # 重复带值选项 → 期望 rc=1（v1.99.0 起拒绝）
 ]
 
 
@@ -562,6 +563,9 @@ def self_test():
        "敌对矩阵非空且每项有内容")
     st(any("--no-pickup" in h and "--pickup" in h for h in HOSTILE_ARGS),
        "敌对矩阵含 --pickup / --no-pickup 矛盾组合")
+    st(len(HOSTILE_ARGS) == 6, "敌对矩阵共 6 组")
+    st(any(h.count("--bars") == 2 for h in HOSTILE_ARGS),
+       "敌对矩阵含重复带值选项组合")
 
     total = len(items)
     print(f"自测：共 {total} 项，失败 {len(fails)} 项")

@@ -86,6 +86,34 @@ CLI_CONTRACTS = [
     (["--transpose", "-60"], 0, "--transpose 恰好下界"),
     (["--key", "C"], 0, "--key 合法调名"),
     (["--no-pickup"], 0, "--no-pickup 单独使用"),
+    # ---- 同一带值选项重复给：明确拒绝 rc=1（v1.99.0） ----
+    # 旧版清一色 last-wins：--html a --html b 只写 b、--key C --key D 把
+    # 调性改成 D，全程 rc=0、零提示。{OUT} / {OUT2} / {LRC} 在
+    # check_cli_contracts() 里换成临时目录下的真实路径。
+    (["--key", "C", "--key", "D"], 1, "--key 重复给（旧版静默改成 D）"),
+    (["--gong", "C", "--gong", "D"], 1, "--gong 重复给"),
+    (["--bars", "2", "--bars", "3"], 1, "--bars 重复给"),
+    (["--track", "0", "--track", "1"], 1, "--track 重复给"),
+    (["--transpose", "2", "--transpose", "-2"], 1, "--transpose 重复给"),
+    (["--pickup", "1", "--pickup", "2"], 1, "--pickup 重复给"),
+    (["--soft-pedal-scale", "0.5", "--soft-pedal-scale", "0.7"], 1,
+     "--soft-pedal-scale 重复给"),
+    (["--html", "{OUT}", "--html", "{OUT2}"], 1,
+     "--html 重复给（旧版只写后一个文件）"),
+    (["--output", "{OUT}", "--output", "{OUT2}"], 1, "--output 重复给"),
+    (["--musicxml", "{OUT}", "--musicxml", "{OUT2}"], 1, "--musicxml 重复给"),
+    (["--lyrics", "{LRC}", "--lyrics", "{LRC}"], 1, "--lyrics 重复给"),
+    # ---- 输出不得覆盖非 MIDI 源文件（v1.99.0） ----
+    (["--lyrics", "{LRC}", "--html", "{LRC}"], 1,
+     "HTML 覆盖 --lyrics 源文件（旧版把歌词盖成 HTML）"),
+    (["--lyrics", "{LRC}", "--output", "{LRC}"], 1,
+     "文本谱覆盖 --lyrics 源文件"),
+    (["--lyrics", "{LRC}", "--musicxml", "{LRC}"], 1,
+     "MusicXML 覆盖 --lyrics 源文件"),
+    # ---- 合法对照：放行路径不能误伤 ----
+    (["--lyrics", "{LRC}", "--html", "{OUT}"], 0, "--lyrics 正常加载"),
+    (["--player", "--player"], 0, "开关类重复幂等"),
+    (["--bars", "2", "--no-dynamics"], 0, "不同带值选项与开关共存"),
 ]
 
 TRACKS_RE = re.compile(r"共\s*(\d+)\s*轨")
@@ -167,8 +195,11 @@ def check_cli_contracts(exe):
 
     v1.96 只有 --transpose 一张边界契约；v1.97 推广成表驱动，把
     --bars / --pickup / --soft-pedal-scale / --track / --key 的边界，
-    以及 --pickup+--no-pickup、--key+--gong 这类语义冲突一并守死。
+    以及 --pickup+--no-pickup、--key+--gong 这类语义冲突一并守死；
+    v1.99 再补「同一带值选项重复给」与「输出覆盖 --lyrics 源文件」两组。
     固定用 4/4 的 html_meta_inject.mid，避免拍号差异让 --pickup 用例飘。
+    {OUT} / {OUT2} / {LRC} 换成临时目录下的真实路径；每条用例前都重写
+    LRC，免得「覆盖源文件」用例把后面用例的歌词文件弄脏。
     """
     f = os.path.join(FIX, "html_meta_inject.mid")
     if not os.path.exists(f):
@@ -177,15 +208,24 @@ def check_cli_contracts(exe):
             return ["CLI 边界契约：找不到任何 fixture"]
         f = mids[0]
     errs = []
-    for args, want, desc in CLI_CONTRACTS:
-        wants = {want} if isinstance(want, int) else set(want)
-        r = run(exe, [f] + args)
-        if r is None:
-            errs.append("%s（%s）: 超时" % (desc, " ".join(args)))
-            continue
-        if r.returncode not in wants:
-            errs.append("%s（%s）: 期望 rc∈%s 实得 rc=%d"
-                        % (desc, " ".join(args), sorted(wants), r.returncode))
+    lrc_text = "[00:00.00]你好\n[00:01.00]世界\n"
+    with tempfile.TemporaryDirectory() as td:
+        out = os.path.join(td, "o.out")
+        out2 = os.path.join(td, "o2.out")
+        lrc = os.path.join(td, "words.lrc")
+        slots = {"{OUT}": out, "{OUT2}": out2, "{LRC}": lrc}
+        for args, want, desc in CLI_CONTRACTS:
+            with open(lrc, "w", encoding="utf-8") as fh:
+                fh.write(lrc_text)
+            real = [slots.get(x, x) for x in args]
+            wants = {want} if isinstance(want, int) else set(want)
+            r = run(exe, [f] + real)
+            if r is None:
+                errs.append("%s（%s）: 超时" % (desc, " ".join(real)))
+                continue
+            if r.returncode not in wants:
+                errs.append("%s（%s）: 期望 rc∈%s 实得 rc=%d"
+                            % (desc, " ".join(real), sorted(wants), r.returncode))
     return errs
 
 
@@ -354,6 +394,17 @@ def self_test():
     ck(any("--no-pickup" in a and "--pickup" in a
            for a, w, d in CLI_CONTRACTS),
        "契约表含 --pickup / --no-pickup 矛盾组合")
+    ck(any(a.count("--key") == 2 for a, w, d in CLI_CONTRACTS),
+       "契约表含同一带值选项重复给用例")
+    ck(any("--lyrics" in a and "{LRC}" in a and wants_of(w) == {1}
+           for a, w, d in CLI_CONTRACTS),
+       "契约表含输出覆盖 --lyrics 源文件用例")
+    ck(all(x in ("{OUT}", "{OUT2}", "{LRC}")
+           for a, w, d in CLI_CONTRACTS for x in a if x.startswith("{")),
+       "契约表占位符只用已定义的三种")
+    ck(any(wants_of(w) == {0} and a.count("--player") == 2
+           for a, w, d in CLI_CONTRACTS),
+       "契约表含开关重复幂等放行用例")
 
     print("check_cli_matrix self-test: %d 项，%d 失败" % (n, len(failed)))
     for f in failed:

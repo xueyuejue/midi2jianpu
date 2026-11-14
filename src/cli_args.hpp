@@ -151,13 +151,27 @@ inline bool samePath(const std::string& a, const std::string& b) {
 }
 
 // 返回空串表示合法，否则是给 stderr 的错误文案（不带「错误: 」前缀）。
+// sources 是「除输入 MIDI 外还会被读进来的源文件」清单（当前是 --lyrics
+// 指定的 LRC / JSON）。v1.82 只保护输入 MIDI，可外部歌词同样会被三端输出
+// 先读后写地盖掉，用户下次跑同一条命令就再也读不到歌词。
 inline std::string validateOutputPaths(const std::string& input,
-                                        const std::vector<OutputPath>& outs) {
+                                        const std::vector<OutputPath>& outs,
+                                        const std::vector<OutputPath>& sources) {
     for (const auto& o : outs) {
         if (o.path.empty()) continue;
         if (samePath(o.path, input))
             return std::string(o.option) + " 的输出路径与输入 MIDI 相同（"
                  + o.path + "），会覆盖源文件；请换一个输出路径";
+    }
+    for (const auto& s : sources) {
+        if (s.path.empty()) continue;
+        for (const auto& o : outs) {
+            if (o.path.empty()) continue;
+            if (samePath(o.path, s.path))
+                return std::string(o.option) + " 的输出路径与 " + s.option
+                     + " 的源文件相同（" + s.path
+                     + "），会覆盖歌词源文件；请换一个输出路径";
+        }
     }
     for (size_t i = 0; i < outs.size(); ++i) {
         if (outs[i].path.empty()) continue;
@@ -170,6 +184,12 @@ inline std::string validateOutputPaths(const std::string& input,
         }
     }
     return {};
+}
+
+// 两参重载保留 v1.82 起的既有口径（只把输入 MIDI 当源文件）。
+inline std::string validateOutputPaths(const std::string& input,
+                                        const std::vector<OutputPath>& outs) {
+    return validateOutputPaths(input, outs, {});
 }
 
 // ---- 调名 / 宫音严格语法 ----
@@ -248,6 +268,29 @@ inline std::string validatePickupOptions(bool noPickup, double pickupBeats) {
         return "--pickup 与 --no-pickup 不能同时使用（一个手动指定弱起、"
                "一个明确关闭弱起，--no-pickup 会静默覆盖 --pickup，"
                "且会绕过弱起越界校验）；请只保留一个";
+    return {};
+}
+
+// ---- 同一带值选项重复给（v1.99.0） ----
+// 位置参数早在 v1.81 就只允许一个；11 个带值选项却一直是 last-wins：
+// `--html a.html --html b.html` 只写 b.html，`--key C --key D` 把调性直接
+// 改成 D，全程 rc=0、零提示。开关类（--player 等）重复是幂等的，不在其列。
+// 传入 argv[1..argc-1]（不含程序名），纯字符串扫描，CLI 与单测共用。
+inline std::string validateDuplicateValueOptions(
+        const std::vector<std::string>& args) {
+    std::vector<std::string> seen;
+    for (size_t i = 0; i < args.size(); ++i) {
+        const std::string& a = args[i];
+        if (!optionNeedsValue(a)) continue;
+        for (const auto& s : seen)
+            if (s == a)
+                return a + " 被重复指定（后一个值会静默覆盖前一个值）；"
+                       "每个带值选项只能给一次，请只保留一个";
+        seen.push_back(a);
+        // 与 main.cpp 的解析口径一致：紧跟的合法取值不是选项就跳过，
+        // 免得把 --transpose -2 里的 -2 当成新的参数名。
+        if (i + 1 < args.size() && !isOptionToken(args[i + 1])) ++i;
+    }
     return {};
 }
 }  // namespace cli

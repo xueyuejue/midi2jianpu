@@ -30,7 +30,7 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 2
 
-      - name: 单元测试（1238 项）
+      - name: 单元测试（1263 项）
         working-directory: build
         run: ctest --output-on-failure
 
@@ -126,7 +126,7 @@ jobs:
           python3 tests/check_utf8.py --self-test
           python3 tests/check_utf8.py
 
-      - name: CLI 参数矩阵 × 全素材（27 项自测 + 105 份素材）
+      - name: CLI 参数矩阵 × 全素材（31 项自测 + 105 份素材）
         # fuzz 侧重「畸形输入下的健壮性」、只在随机开关下抽查；这里逐份素材
         # 覆盖一组开关（--no-quantize / --no-dynamics / --no-key-changes /
         # --bar-numbers / --transpose），断言 rc ∈ {0,1,2,3,4}、rc==0 的 MusicXML 可解析、
@@ -135,7 +135,7 @@ jobs:
           python3 tests/check_cli_matrix.py --self-test
           python3 tests/check_cli_matrix.py
 
-      - name: CLI 端到端冒烟（103 组）
+      - name: CLI 端到端冒烟（104 组）
         # 失败项由 tests/ci_report.py 同步写进 annotations 与 step summary。
         run: python3 tests/smoke.py build/midi2jianpu
 
@@ -146,8 +146,9 @@ jobs:
         # HTML 不含 <script>、--player 恰 1 段 script、无 U+FFFD、--musicxml
         # 可被解析。
         # 每个突变额外强制跑 HOSTILE_ARGS 边界矩阵（--track 99 / --bars 9 /
-        # --key ZZ / --transpose 999 / --pickup 1 --no-pickup 共 5 组），确定性覆盖「应报错但不该崩」的选项校验路径（不再依赖
-        # 概率式抽修饰）。自测 42 项（含 player 脚本不变量与敌对矩阵结构）。
+        # --key ZZ / --transpose 999 / --pickup 1 --no-pickup /
+        # --bars 2 --bars 3 共 6 组），确定性覆盖「应报错但不该崩」的选项校验路径（不再依赖
+        # 概率式抽修饰）。自测 44 项（含 player 脚本不变量与敌对矩阵结构）。
         run: |
           python3 tests/fuzz_parse.py --self-test
           python3 tests/fuzz_parse.py build/midi2jianpu --count 200 --seeds 0x5EED,1,42
