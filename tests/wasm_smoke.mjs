@@ -2504,6 +2504,66 @@ if (existsSync(v90InjectPath)) {
     '网页接入 lyric_info，且拖拽按扩展名 + MThd 魔数分流歌词 / MIDI');
 }
 
+// ---- 74. v1.113.0 挂不上的歌词字：网页也要说清「解析 N 字、挂上 M 字」----
+// 一行字多于这段旋律的音头数时，多出来的字会被铺排丢掉；同戳行数多于音头时
+// 后面几行整行消失。上一版 lyric_info 只报「解析 N 字」，用户以为谱面上真有
+// N 个字，翻到那句却只剩半行。这里锁住三个数（解析 / 挂上 / 丢字）并把
+// 「挂上几个」与页面上真印出来的 span 数对上，免得文案与渲染各说一套。
+if (existsSync(v90InjectPath)) {
+  const inj74 = new Uint8Array(readFileSync(v90InjectPath));
+  const info74 = (text) => {
+    const p = mod._malloc(inj74.length);
+    mod.HEAPU8.set(inj74, p);
+    const n = mod.lengthBytesUTF8(text) + 1;
+    const lp = mod._malloc(n);
+    mod.stringToUTF8(text, lp, n);
+    const s = mod._midi2jianpu_lyric_info(p, inj74.length, lp);
+    const out = s ? mod.UTF8ToString(s) : '';
+    mod._free(lp);
+    mod._free(p);
+    return out;
+  };
+
+  const lrc74ok = '[00:00.00]一二\n[00:02.00]三四\n';
+  check(info74(lrc74ok).includes('挂上 4 字') &&
+        !info74(lrc74ok).includes('没有音头可挂'),
+    '字与音头够用时报「挂上 4 字」，不提丢字', info74(lrc74ok));
+
+  const over74 = '[00:00.00]一二三四五六七八九十\n';
+  const overInfo74 = info74(over74);
+  check(overInfo74.includes('按 LRC 解析 10 字，挂上 8 字') &&
+        overInfo74.includes('2 字没有音头可挂'),
+    '十字配八个音头：解析 10 字、挂上 8 字、丢 2 字', overInfo74);
+
+  const many74 = Array.from({ length: 12 }, (_, i) => `[00:00.00]行${i + 1}\n`).join('');
+  const manyInfo74 = info74(many74);
+  check(manyInfo74.includes('挂上 8 字') && manyInfo74.includes('19 字没有音头可挂'),
+    '同戳 12 行只配 8 个音头：挂上与丢字分别报数', manyInfo74);
+  check(manyInfo74.includes('4 行整行没挂上'),
+    '并把整行消失的行数单独点出来', manyInfo74);
+
+  const late74 = '[00:00.00]你好\n[00:30.00]后会有期\n';
+  check(info74(late74).includes('1 行整行没挂上'),
+    '整行落在全曲最后一个音之后：同样算整行没挂上', info74(late74));
+
+  // 每个音符格都带一个空的 <span class='lyric'>（占位），只数有字的那些，
+  // 否则「印了几个字」会被占位符放大一倍。
+  const spanText74 = (html) =>
+    [...html.matchAll(/<span class='lyric'>([^<]*)<\/span>/g)]
+      .map((m) => m[1]).filter((t) => t !== '');
+  const c74 = makeCaller(mod);
+  c74.setMidi(inj74);
+  c74.setLyrics(over74);
+  const spansOver = spanText74(c74.call('midi2jianpu_html', -1, 1) || '');
+  check(spansOver.length === 8 && spansOver.join('') === '一二三四五六七八',
+    '页面只印出「挂上」的那 8 个字，与体检口径一致', JSON.stringify(spansOver));
+
+  c74.setLyrics(lrc74ok);
+  const spansOk = spanText74(c74.call('midi2jianpu_html', -1, 1) || '');
+  check(spansOk.length === 4 && spansOk.join('') === '一二三四',
+    '字够用时四个字一个不少', JSON.stringify(spansOk));
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

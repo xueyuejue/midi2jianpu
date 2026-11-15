@@ -4590,6 +4590,52 @@ def main():
     check("内容看起来是 LRC" in err and "能解析出 1 行" in err,
           "并说明按 LRC 能解析出 1 行，扩展名写反了", err)
 
+    group("[113] v1.113.0 挂不上音头的歌词字不再静默消失，输出路径写「-」直接拒")
+    # 「歌词已加载: N 行」数的是解析出几行，不是谱面上真印了几个字。一行字多于
+    # 这段旋律的音头数时 placeLyricLine 直接 break；同戳行数多于音头时后面几行
+    # 整行 continue。两种都不崩不报错，用户只看到谱子少了半句。
+    over113 = v103_write("[00:00.00]\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b"
+                         "\u4e5d\u5341\n", "over113", ".lrc")
+    rc, out, err = v103_run(over113)
+    check(rc == 0 and "歌词已加载: 1 行" in out,
+          "十字一行照旧只报「已加载 1 行」（解析口径不变）", out[-200:])
+    check("2 个歌词字没有音头可挂" in err and "共 10 字，挂上 8 字" in err,
+          "同一份输入点明 10 个字里只挂上 8 个", err)
+    check(v103_lyrics() == "\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b"
+          and v103_xml_ok(),
+          "谱面确实只印出前 8 字（旧版静默丢弃，现在有话说），XML 仍良构",
+          v103_lyrics())
+
+    many113 = v103_write("".join("[00:00.00]\u884c%d\n" % i for i in range(1, 13)),
+                         "many113", ".lrc")
+    rc, out, err = v103_run(many113)
+    check(rc == 0 and "4 行歌词整行没挂上" in err,
+          "同戳 12 行只配 8 个音头：报出整行缺失的行数", err)
+    check("19 个歌词字没有音头可挂" in err,
+          "同时报出这些行里一共丢了几个字", err)
+
+    late113 = v103_write("[00:00.00]\u4f60\u597d\n[00:30.00]\u540e\u4f1a\u6709\u671f\n",
+                         "late113", ".lrc")
+    rc, out, err = v103_run(late113)
+    check(rc == 0 and "1 行歌词整行没挂上" in err and "4 个歌词字没有音头可挂" in err,
+          "整行落在全曲最后一个音之后：不再无声无息", err)
+
+    ok113 = v103_write("[00:00.00]\u4e00\u4e8c\n[00:02.00]\u4e09\u56db\n", "ok113", ".lrc")
+    rc, out, err = v103_run(ok113)
+    check(rc == 0 and "没有音头可挂" not in err and "整行没挂上" not in err,
+          "字与音头刚好对上时不冒警告（不拿正常文件吓人）", err)
+
+    # 「-」：命令行工具里通常表示标准输出，但本程序从没实现过——旧版会在当前
+    # 目录建一个名为「-」的文件，`--html - > out.html` 的那头什么也没有。
+    rc, out, err = run(exe, v103mid, "--html", "-")
+    check(rc == 1 and "\u4e0d\u80fd\u662f\u300c-\u300d" in err
+          and "\u6807\u51c6\u8f93\u51fa" in err,
+          "输出路径写 - 直接拒绝，并说明不把 - 当标准输出", err)
+    rc, out, err = run(exe, v103mid, "--html", os.path.join(tmp, "dash.html"),
+                       "--lyrics", "-")
+    check(rc == 1 and "\u6807\u51c6\u8f93\u5165" in err,
+          "--lyrics 写 - 也拒绝，并说明不把 - 当标准输入", err)
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

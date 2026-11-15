@@ -241,6 +241,29 @@ const char* midi2jianpu_lyric_info(const uint8_t* midiData, int size,
                 std::to_string(chars) + " 字";
     if (dropped > 0)
         g_result += "（忽略 " + std::to_string(dropped) + " 行越界时间戳）";
+    // 解析出来 ≠ 挂得上去（v1.113.0）：一行字多于该段旋律的音头数时，
+    // placeLyricLine 会把多出来的字 break 掉；同戳多行均分后一行一个音头
+    // 都分不到时整行 continue。只报「解析 N 字」会让用户以为谱面上一定有
+    // N 个字，翻到那句却只剩半行。这里补一句「挂上几个」，与 CLI 的
+    // 「N 个歌词字没有音头可挂」警告同口径（同两个纯函数、同一次铺排）。
+    const int lyricTrack = m2j::pickMelodyTrack(data, &lines);
+    if (lyricTrack >= 0) {
+        const m2j::LyricAssignment la = m2j::resolveLyrics(data, &lines, lyricTrack);
+        g_result += "，挂上 " + std::to_string(la.charsPlaced) + " 字";
+        // 丢字数用「解析出的字数 - 挂上的字数」算，而不是 la.charsSkipped()：
+        // 行尾若带半截多字节序列，splitUtf8 会丢掉那一截，charsTotal 就比分母
+        // 少一，三个数（解析 / 挂上 / 丢掉）在对用户的那句话里就对不上账了。
+        const size_t skipped =
+            chars > la.charsPlaced ? chars - la.charsPlaced : 0;
+        std::string missing;
+        if (skipped > 0)
+            missing += std::to_string(skipped) + " 字没有音头可挂";
+        if (la.linesEmpty > 0) {
+            if (!missing.empty()) missing += "，";
+            missing += std::to_string(la.linesEmpty) + " 行整行没挂上";
+        }
+        if (!missing.empty()) g_result += "（" + missing + "）";
+    }
     return g_result.c_str();
 }
 

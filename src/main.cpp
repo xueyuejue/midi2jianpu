@@ -681,6 +681,31 @@ int main(int argc, char** argv) {
         }
     }
 
+    // 歌词落位体检（v1.113.0）：铺排之后到底有几个字真的挂上了音头。
+    // 旧版到这里就只剩「歌词已加载: N 行」——一行十来个字配八音旋律时，
+    // placeLyricLine 会把多出来的字直接 break 掉；同戳多行均分后一行一个
+    // 音头都分不到时整行 continue。两种情况都不崩、不报错，谱面上少了半句，
+    // 控制台却一切正常，用户没法判断是文件坏了还是程序漏了。
+    // 这里用与输出层完全相同的两个纯函数（pickMelodyTrack + resolveLyrics）
+    // 算一遍，参数一致所以结果必然一致；只是多一次 O(n log n) 的铺排，相比
+    // 整份谱面的格式化可以忽略。
+    if ((!htmlOut.empty() || !xmlOut.empty())) {
+        const int lyricTrack = m2j::pickMelodyTrack(data, lyricPtr);
+        if (lyricTrack >= 0) {
+            const m2j::LyricAssignment placed =
+                m2j::resolveLyrics(data, lyricPtr, lyricTrack);
+            if (placed.charsSkipped() > 0)
+                std::cerr << "警告: " << placed.charsSkipped()
+                          << " 个歌词字没有音头可挂（共 " << placed.charsTotal
+                          << " 字，挂上 " << placed.charsPlaced
+                          << " 字）；这一段的字比旋律音多，多出来的字会缺席\n";
+            if (placed.linesEmpty > 0)
+                std::cerr << "警告: " << placed.linesEmpty
+                          << " 行歌词整行没挂上（同一时刻的行数多于该处的音头数，"
+                             "或整行落在全曲最后一个音之后）\n";
+        }
+    }
+
     std::string jianpu = m2j::formatJianpu(data, key, barNumbers);
     const std::string meter = m2j::meterSummary(data);
     std::string header = "\n共提取 " + std::to_string(data.notes.size())

@@ -309,6 +309,18 @@ struct LyricAssignment {
     // noteCount >= 2 的组，按 tick 升序
     std::vector<LyricPlacement> melismas;
 
+    // 落位统计（v1.113.0）：铺排时到底有多少字找到了音头。
+    // 铺排有两条静默丢字的路径——一行字多于这段旋律的音头数时，多出来的字
+    // 直接 break；同戳多行均分后某一行一个音头都没分到（a1 <= a0）时整行
+    // continue。两者都不会崩、也不报错，用户只看到谱子少了半句，控制台却
+    // 照样说「歌词已加载: N 行」。三个输出层与 CLI 都读这份计数。
+    size_t charsTotal = 0;   // 参与铺排的字数（含挂不上的）
+    size_t charsPlaced = 0;  // 真正落到音头上的字数
+    size_t linesEmpty = 0;   // 一个音头都没分到的整行（只统计 LRC 行）
+    size_t charsSkipped() const {
+        return charsTotal > charsPlaced ? charsTotal - charsPlaced : 0;
+    }
+
     // 任意 tick 落在哪个一字多音组里：返回 melismas 下标 + 1，0 表示不在。
     // 传延长段（`-`）的 tick 也能命中，连音线才不会在长音中间断掉。
     int groupAt(long tick) const {

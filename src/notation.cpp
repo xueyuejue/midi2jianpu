@@ -2998,6 +2998,9 @@ static void placeLyricLine(LyricAssignment& out, const std::string& text,
     const auto syls = splitUtf8(text);
     const size_t n = a1 - a0, m = syls.size();
     if (n == 0 || m == 0) return;
+    // 分母在铺排开始时就记好：m > n 时循环会 break，剩下的字根本不会进
+    // 循环体，靠循环次数是数不出来的。
+    out.charsTotal += m;
 
     // 第 i 个字覆盖的音符区间是 [startOf(i), startOf(i+1))。
     // n > m 时按 floor(i*n/m) 均匀分布，让一行词铺满自己的时间跨度；
@@ -3029,6 +3032,7 @@ static void placeLyricLine(LyricAssignment& out, const std::string& text,
 
         out.at[pl.tick] = pl;
         if (pl.noteCount >= 2) out.melismas.push_back(pl);
+        ++out.charsPlaced;
     }
 }
 
@@ -3075,7 +3079,18 @@ LyricAssignment assignLyrics(const MidiData& data,
         for (size_t j = 0; j < k; j++) {
             const size_t a0 = (size_t)((unsigned long long)j * n / k);
             const size_t a1 = (size_t)((unsigned long long)(j + 1) * n / k);
-            if (a1 <= a0) continue;
+            if (a1 <= a0) {
+                // 这一行一个音头都没分到（组内行数多于音头数，或整行的
+                // 时间戳落在全曲最后一个音之后）。整行不出现，但必须记进
+                // 统计——否则「歌词已加载: 12 行」与实际印出来的 8 行
+                // 对不上，用户只能猜是自己的文件坏了还是程序漏了。
+                const size_t missed = splitUtf8(lines[li + j].text).size();
+                if (missed > 0) {
+                    out.charsTotal += missed;
+                    ++out.linesEmpty;
+                }
+                continue;
+            }
             placeLyricLine(out, lines[li + j].text, inLine, a0, a1,
                            (j + 1 < k) ? inLine[a1] : to);
         }
@@ -3245,6 +3260,9 @@ LyricAssignment assignMidiLyrics(const MidiData& data, int mainTrack) {
         const long from = syls[i].tick;
         const long to = (syls[i].spanEnd > from) ? syls[i].spanEnd : songEnd + 1;
         const size_t m = j - i;
+        // 与 assignLyrics 同一口径：先记分母，循环里的 break / continue
+        // 会让「想挂几个」和「挂上几个」分道扬镳。
+        out.charsTotal += m;
 
         std::vector<long> inLine;
         for (long t : onsets) if (t >= from && t < to) inLine.push_back(t);
@@ -3279,6 +3297,7 @@ LyricAssignment assignMidiLyrics(const MidiData& data, int mainTrack) {
                 if (out.at.count(pl.tick)) continue;   // 同音头不重复挂词
                 out.at[pl.tick] = pl;
                 if (pl.noteCount >= 2) out.melismas.push_back(pl);
+                ++out.charsPlaced;
             }
         }
         i = j;

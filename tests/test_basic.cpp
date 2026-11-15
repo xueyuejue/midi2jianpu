@@ -823,6 +823,35 @@ int main() {
         check(q.at.size() == 3, "行数多于音头时只排出音头能装下的字，且不崩");
         check(q.at.count(960) && q.at[960].text == "己",
               "同戳组之外的下一行照旧落在自己的音头上");
+
+        // ---- 落位统计（v1.113.0） ----
+        // 「歌词已加载: N 行」说的是解析出几行，不是谱面上真印了几个字。
+        // 一行字多于这段旋律的音头数时，多出来的字被 break 掉；同戳行数多于
+        // 音头时，后面几行整行消失。两种都不报错、也不崩，所以要有一份计数，
+        // 让 CLI / 网页能说清「解析 10 字、只挂上 8 字」。
+        std::vector<LyricLine> overflow = {{0, "一二三四五六七八九十"}};
+        LyricAssignment ov = assignLyrics(d, overflow, 1);
+        check(ov.at.size() == 8 && ov.charsTotal == 10 && ov.charsPlaced == 8,
+              "十字配八个音头：八个挂上，十个字全记进分母");
+        check(ov.charsSkipped() == 2 && ov.linesEmpty == 0,
+              "多出来的两个字记为「没挂上」，不算整行缺失");
+
+        check(b.charsTotal == 8 && b.charsPlaced == 8 && b.charsSkipped() == 0,
+              "一音一字时一个字都不丢");
+        check(a.charsTotal == 4 && a.charsPlaced == 4,
+              "音多于字时四个字全部挂上（其余音由字拖着唱）");
+
+        check(q.charsTotal == 6 && q.charsPlaced == 3 && q.linesEmpty == 3,
+              "同戳六行配两个音头：挂上两行 + 后一行，另三行记为整行缺失");
+
+        std::vector<LyricLine> late = {{99999, "甲乙"}};
+        LyricAssignment lt = assignLyrics(d, late, 1);
+        check(lt.empty() && lt.charsTotal == 2 && lt.charsPlaced == 0 &&
+              lt.linesEmpty == 1,
+              "整行落在全曲最后一个音之后：一个字都不印，但必须记进统计");
+
+        check(assignLyrics(d, lines, -1).charsTotal == 0,
+              "没有旋律轨时统计也为零，不凭空报丢字");
     }
 
     // ---- MIDI 内置歌词（0x05 lyric meta） ----
@@ -885,6 +914,8 @@ int main() {
         check(m.at.count(2880) && m.at[2880].text == "Hello" &&
               m.at[2880].noteCount == 2, "「Hello」拖到曲终两个音");
         check(m.melismas.size() == 3, "只有 3 组一字多音");
+        check(m.charsTotal == 5 && m.charsPlaced == 5 && m.charsSkipped() == 0,
+              "内置歌词五个音节全部落到音头上（统计与 LRC 同一口径）");
         check(m.groupAt(480) == 1 && m.groupAt(3360) == 3 && m.groupAt(3841) == 0,
               "groupAt 覆盖延长音与末组，曲终之后出界");
         check(assignMidiLyrics(d, -1).empty(), "轨道号无效时结果为空");
@@ -7133,6 +7164,25 @@ int main() {
             check(e.find("覆盖源文件") != std::string::npos,
                   "同时踩两条时优先报「会覆盖源文件」");
         }
+
+        // ---- 输出路径写成「-」（v1.113.0）----
+        // 命令行工具里「-」通常表示标准输出，但本程序从没实现过：旧版会
+        // 建一个名为「-」的文件，`--html - > out.html` 那头是空的，Windows
+        // 里这个文件还不好找、不好删。现在显式拒绝并说清该怎么做。
+        for (const char* opt : {"--output", "--html", "--musicxml"}) {
+            const std::string e = validateOutputPaths(in, {{opt, "-"}});
+            check(e.find(opt) == 0 && e.find("标准输出") != std::string::npos &&
+                  e.find("out.html") != std::string::npos,
+                  std::string(opt) + " 的路径写成 - 时拒绝，并说明不把 - 当标准输出");
+        }
+        {
+            const std::string e = validateOutputPaths(
+                in, {{"--html", "a.html"}}, {{"--lyrics", "-"}});
+            check(!e.empty() && e.find("标准输入") != std::string::npos,
+                  "--lyrics 写成 - 时拒绝，并说明不把 - 当标准输入");
+        }
+        check(!validateOutputPaths(in, {{"--html", "a-.html"}}).size(),
+              "只在文件名里带 - 不算踩坑，照常放行");
     }
 
     // ---- v1.83.0 调名严格语法 + 有限浮点 + 冲突开关（纯函数） ----

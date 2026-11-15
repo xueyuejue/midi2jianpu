@@ -159,12 +159,23 @@ inline std::string validateOutputPaths(const std::string& input,
                                         const std::vector<OutputPath>& sources) {
     for (const auto& o : outs) {
         if (o.path.empty()) continue;
+        // 「-」在所有命令行工具里几乎都等于「标准输出」，但本程序从来没实现过：
+        // 旧版会老老实实建一个名为「-」的文件（Windows 资源管理器里既不好看
+        // 也不好删），`--html - > out.html` 的那一头什么也没有，用户还以为
+        // 管道拿到了谱面。这里显式拒绝，别继续写一个谁都找不着的文件。
+        if (o.path == "-")
+            return std::string(o.option) + " 的输出路径不能是「-」：本程序不把"
+                   "「-」当标准输出，也不会建一个名为「-」的文件；"
+                   "请给一个文件名，例如 --html out.html（重定向由 shell 负责）";
         if (samePath(o.path, input))
             return std::string(o.option) + " 的输出路径与输入 MIDI 相同（"
                  + o.path + "），会覆盖源文件；请换一个输出路径";
     }
     for (const auto& s : sources) {
         if (s.path.empty()) continue;
+        if (s.path == "-")
+            return std::string(s.option) + " 不能用「-」表示标准输入："
+                   "请给出歌词文件的真实路径";
         for (const auto& o : outs) {
             if (o.path.empty()) continue;
             if (samePath(o.path, s.path))
