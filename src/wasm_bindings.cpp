@@ -4,6 +4,7 @@
 #include "midi2jianpu/html_writer.hpp"
 #include "midi2jianpu/musicxml_writer.hpp"
 
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -190,6 +191,57 @@ int midi2jianpu_lyric_dropped(const uint8_t* midiData, int size, const char* lyr
     size_t dropped = 0;
     parseLyricsAuto(std::string(lyrics), data, &dropped);
     return (int)dropped;
+}
+
+// 网页端的歌词体检（v1.112.0）：一次回「按哪种格式解析出几个字、忽略几行」。
+// 上一版只暴露了 dropped 计数，于是「贴进去的歌词一个字都没认出来」这件事
+// 网页上完全看不见——谱面静默回退成 MIDI 内置的「LY」音节，提示栏一个字都
+// 不说，用户只会以为程序把歌词吃掉了（纯文本、忘了写时间戳、把 JSON 写成
+// 对象而不是数组，都是这种下场）。这里同样不做第二套嗅探：格式判定交
+// detectLyricFormat("")、解析交 parseLyricsAuto，与 CLI 和 set_lyrics 同一条路。
+// 没有 MIDI（无法把时间戳换算成 tick）或歌词全空白时返回空串，网页不显示。
+const char* midi2jianpu_lyric_info(const uint8_t* midiData, int size,
+                                   const char* lyrics) {
+    g_result.clear();
+    if (!lyrics) return g_result.c_str();
+    const std::string text(lyrics);
+    bool blank = true;
+    for (char c : text) {
+        if (!std::isspace((unsigned char)c)) { blank = false; break; }
+    }
+    if (blank) return g_result.c_str();
+
+    m2j::MidiData data;
+    if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter))
+        return g_result.c_str();
+
+    const bool isLrc = m2j::detectLyricFormat("", text) == m2j::LyricFormat::Lrc;
+    size_t dropped = 0;
+    const std::vector<m2j::LyricLine> lines = parseLyricsAuto(text, data, &dropped);
+
+    // 数「字」而不是数行：JSON 歌词每个字自成一行，数行对用户没有意义；
+    // 按 UTF-8 首字节计数，与谱面上真正印出来的字数一致。
+    size_t chars = 0;
+    for (const auto& line : lines)
+        for (char c : line.text)
+            if (((unsigned char)c & 0xC0) != 0x80) ++chars;
+
+    g_result = "歌词：";
+    if (chars == 0) {
+        // 一个字都没认出来分两种：歌词格式/字段不对，或者时间戳全都越界被丢。
+        // 后者若按「LRC 要 [mm:ss.xx]」提示，用户会去改本来完全正确的 LRC——
+        // 与 CLI 的「警告: 已忽略 N 行歌词」对齐，这里点名「越界」。
+        g_result += dropped > 0
+            ? std::to_string(dropped) +
+              " 行全部越界被忽略（时间戳超出谱面可解释范围）"
+            : std::string("未识别出歌词行（LRC 要 [mm:ss.xx]，JSON 要 start_beat + text）");
+        return g_result.c_str();
+    }
+    g_result += std::string("按 ") + (isLrc ? "LRC" : "JSON") + " 解析 " +
+                std::to_string(chars) + " 字";
+    if (dropped > 0)
+        g_result += "（忽略 " + std::to_string(dropped) + " 行越界时间戳）";
+    return g_result.c_str();
 }
 
 // 设置谱面标题（网页传 MIDI 文件名进来，让谱子顶上是歌名而不是程序名）

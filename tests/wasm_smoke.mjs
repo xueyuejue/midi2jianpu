@@ -2424,6 +2424,86 @@ if (existsSync(v90InjectPath)) {
   c72.setLyrics('');
 }
 
+// ---- 73. v1.112.0 歌词体检：网页要知道「认了几个字 / 一行都没认出来」----
+// 上一版只暴露 dropped 计数，于是「贴进去的歌词一个字都没认出来」这件事在
+// 网页上完全看不见：谱面静默回退成 MIDI 内置的「LY」音节，提示栏一声不吭。
+// 新导出 lyric_info 一次回「按哪种格式解析出几个字、忽略几行」，格式判定与
+// 解析仍在 C++（与 CLI 同一条路），网页不重写嗅探规则。
+if (existsSync(v90InjectPath)) {
+  const inj73 = new Uint8Array(readFileSync(v90InjectPath));
+  check(typeof mod._midi2jianpu_lyric_info === 'function',
+    'WASM 产物带 _midi2jianpu_lyric_info 导出（v1.112.0）',
+    typeof mod._midi2jianpu_lyric_info);
+  const lyricInfo = (text) => {
+    const p = mod._malloc(inj73.length);
+    mod.HEAPU8.set(inj73, p);
+    const n = mod.lengthBytesUTF8(text) + 1;
+    const lp = mod._malloc(n);
+    mod.stringToUTF8(text, lp, n);
+    const s = mod._midi2jianpu_lyric_info(p, inj73.length, lp);
+    const out = s ? mod.UTF8ToString(s) : '';
+    mod._free(lp);
+    mod._free(p);
+    return out;
+  };
+
+  check(lyricInfo('[00:00.00]你好\n[00:02.00]再见\n').includes('按 LRC 解析 4 字'),
+    'lyric_info 认 LRC 并报出字数', lyricInfo('[00:00.00]你好\n[00:02.00]再见\n'));
+  check(lyricInfo('[{"start_beat":0,"text":"你"},{"start_beat":1,"text":"好"}]')
+          .includes('按 JSON 解析 2 字'),
+    'lyric_info 认 JSON 并报出字数（格式判定与 CLI 同口径）',
+    lyricInfo('[{"start_beat":0,"text":"你"},{"start_beat":1,"text":"好"}]'));
+  check(lyricInfo('[{"start_beat":2,"text":"啊"}]').includes('按 JSON 解析 1 字'),
+    'lyric_info 单字 JSON 计 1 字，不按字节数报 3',
+    lyricInfo('[{"start_beat":2,"text":"啊"}]'));
+
+  // 一个字都没认出来：必须明说（此前页面完全沉默）
+  const noLyric = lyricInfo('这首歌的歌词\n没有时间戳\n');
+  check(noLyric.includes('未识别出歌词行') && noLyric.includes('mm:ss'),
+    'lyric_info 对无时间戳的纯文本明说「未识别出歌词行」并指出格式要求', noLyric);
+
+  // 全都越界：点名「越界」而不是让用户去改本来正确的 LRC
+  const allOut = lyricInfo('[offset:999999999999]\n[00:00.00]你\n[999999:00.00]鬼\n');
+  check(allOut.includes('全部越界被忽略') && allOut.includes('2 行'),
+    'lyric_info 对全部越界的时间戳点名「越界」而非「格式不对」', allOut);
+
+  // 部分越界：既报字数也报忽略行数
+  const partOut = lyricInfo('[00:00.00]你\n[999999:00.00]鬼\n');
+  check(partOut.includes('按 LRC 解析 1 字') && partOut.includes('忽略 1 行'),
+    'lyric_info 部分越界时同时报字数与忽略行数', partOut);
+
+  // 与 dropped 计数同口径：同一段文本两处报出来的丢弃数必须一致
+  if (mod._midi2jianpu_lyric_dropped) {
+    const droppedCount = (text) => {
+      const p = mod._malloc(inj73.length);
+      mod.HEAPU8.set(inj73, p);
+      const n = mod.lengthBytesUTF8(text) + 1;
+      const lp = mod._malloc(n);
+      mod.stringToUTF8(text, lp, n);
+      const d = mod._midi2jianpu_lyric_dropped(p, inj73.length, lp);
+      mod._free(lp);
+      mod._free(p);
+      return d;
+    };
+    const txt = '[00:00.00]你\n[999999:00.00]鬼\n[9999999:00.00]神\n';
+    check(droppedCount(txt) === 2 && lyricInfo(txt).includes('忽略 2 行'),
+      'lyric_info 的忽略行数与 lyric_dropped 一致', droppedCount(txt));
+  }
+
+  // 空 / 全空白：返回空串，网页不往提示栏塞废话
+  check(lyricInfo('') === '' && lyricInfo('  \n\t ') === '',
+    'lyric_info 对空歌词与全空白歌词返回空串',
+    JSON.stringify([lyricInfo(''), lyricInfo('  \n\t ')]));
+
+  // 静态守护：网页必须真的调用它，并且拖拽入口按扩展名 + MThd 魔数分流
+  // （拖一个 .lrc 进来曾被当 MIDI 解析，页面直接报「无法解析MIDI文件」）。
+  const page = readFileSync(path.join(ROOT, 'docs', 'index.html'), 'utf8');
+  check(page.includes('_midi2jianpu_lyric_info(') &&
+        page.includes('function handlePickedFile') &&
+        page.includes('LYRIC_EXT') && page.includes('applyLyricBytes'),
+    '网页接入 lyric_info，且拖拽按扩展名 + MThd 魔数分流歌词 / MIDI');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

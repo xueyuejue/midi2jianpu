@@ -38,9 +38,9 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
 
 <div class="drop" id="drop">
   <div style="font-size:18px;font-weight:500">拖入 .mid 文件到这里</div>
-  <p>或点击选择 · 纯浏览器解析，文件不会上传任何服务器</p>
+  <p>歌词 .lrc / .json / .txt 也可以直接拖进来 · 纯浏览器解析，文件不会上传任何服务器</p>
 </div>
-<input type="file" id="file" accept=".mid,.midi" style="display:none">
+<input type="file" id="file" accept=".mid,.midi,.lrc,.json,.txt" style="display:none">
 
 <div class="controls">
   <label for="key">调性：</label>
@@ -100,7 +100,7 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     <label class="hint"><input type="checkbox" id="useMidiLyrics" checked> 使用 MIDI 自带歌词</label>
     <span class="hint" id="midiLyricHint"></span>
   </div>
-  <div class="hint">歌词会按时间戳对齐到音符，只显示在旋律轨上；一字多音会画连音线，下载 MusicXML 也带词。文件自带歌词时无需再找 LRC，粘贴的 LRC 优先级更高。中途变拍号、弱起、变速、转调会自动识别：前三者按段划分小节线，转调则按段重算唱名。中国民歌/古风曲若只用五声音阶，自动识别会按宫音定 1（如 G 徵调式记 1=C 而不是 1=G），关掉上方复选框可回到大小调判定。LRC 的 [mm:ss.xx] 会按曲中变速分段换算成谱面位置，也支持 [offset:±毫秒] 与一行多个时间戳；JSON 歌词（<code>[{"start_beat":N,"text":"…"}]</code>）同样认，格式按内容自动判定，和命令行一个口径。文件里的力度（CC11）、note-on 力度、弯音与段落标记会自动转成谱面上的 mf/渐强/断音/滑音/段落名，三个导出通道同步；不想要这些记号可关掉「力度与演奏法」。</div>
+  <div class="hint">歌词会按时间戳对齐到音符，只显示在旋律轨上；一字多音会画连音线，下载 MusicXML 也带词。文件自带歌词时无需再找 LRC，粘贴的 LRC 优先级更高。中途变拍号、弱起、变速、转调会自动识别：前三者按段划分小节线，转调则按段重算唱名。中国民歌/古风曲若只用五声音阶，自动识别会按宫音定 1（如 G 徵调式记 1=C 而不是 1=G），关掉上方复选框可回到大小调判定。LRC 的 [mm:ss.xx] 会按曲中变速分段换算成谱面位置，也支持 [offset:±毫秒] 与一行多个时间戳；JSON 歌词（<code>[{"start_beat":N,"text":"…"}]</code>）同样认，格式按内容自动判定，和命令行一个口径；歌词文件也可以直接拖进页面，提示栏会回显「按 LRC / JSON 解析 N 字」，一个字都没认出来时同样直说。文件里的力度（CC11）、note-on 力度、弯音与段落标记会自动转成谱面上的 mf/渐强/断音/滑音/段落名，三个导出通道同步；不想要这些记号可关掉「力度与演奏法」。</div>
   <input type="file" id="lyricsFile" accept=".lrc,.LRC,.txt,.json,.JSON" style="display:none">
 </details>
 
@@ -268,21 +268,29 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
         wasmMod._midi2jianpu_track_info(p, midiBytes.length));
       if (tk) hints.push(tk);
     }
-    if (wasmMod._midi2jianpu_lyric_dropped) {
-      // 用户贴/传的 LRC 里若有时间戳超出谱面可解释范围（如 [offset:999999999999]
-      // 或巨大时间戳），CLI 会打印「警告: 已忽略 N 行歌词」，网页此前是静默丢弃
-      // （0 行可解析时还会回退到 MIDI 内置「LY」音节），用户只会以为程序漏了。
-      // 这里用与 CLI 同款的 parseLrcText(dropped) 统计一次，有丢弃就提示。歌词文本
-      // 作为参数传入，不依赖 wasm 全局状态，故顺序无关（可在 convert 之前调用）。
+    if (wasmMod._midi2jianpu_lyric_info || wasmMod._midi2jianpu_lyric_dropped) {
+      // 用户贴/传的歌词有没有被认下来？CLI 会打印「歌词已加载: N 行」与
+      // 「警告: 已忽略 N 行歌词」，网页此前只有后者（v1.106.0），「一个字都
+      // 没认出来」这种更要紧的情况反而一声不吭：谱面静默回退成 MIDI 内置
+      // 的「LY」音节，用户只会以为歌词被吃掉了。
+      // v1.112.0 的 lyric_info 一次回「按哪种格式解析出几个字、忽略几行」，
+      // 格式判定与解析仍在 C++ 侧（与 CLI 同一条路），网页不重写嗅探规则。
+      // 旧 wasm 没有该导出时退回 dropped 计数，行为与上一版一致。
       var lyr = $('lyricsText').value || '';
       if (lyr.trim()) {
         var ln = wasmMod.lengthBytesUTF8(lyr) + 1;
         var lp = wasmMod._malloc(ln);
         wasmMod.stringToUTF8(lyr, lp, ln);
-        var drp = wasmMod._midi2jianpu_lyric_dropped(p, midiBytes.length, lp);
+        if (wasmMod._midi2jianpu_lyric_info) {
+          var li = wasmMod.UTF8ToString(
+            wasmMod._midi2jianpu_lyric_info(p, midiBytes.length, lp));
+          if (li) hints.push(li);
+        } else {
+          var drp = wasmMod._midi2jianpu_lyric_dropped(p, midiBytes.length, lp);
+          if (drp > 0)
+            hints.push('歌词：已忽略 ' + drp + ' 行（时间戳超出谱面可解释范围）');
+        }
         wasmMod._free(lp);
-        if (drp > 0)
-          hints.push('歌词：已忽略 ' + drp + ' 行（时间戳超出谱面可解释范围）');
       }
     }
     wasmMod._free(p);
@@ -296,10 +304,10 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
   drop.ondrop = function (e) {
     e.preventDefault();
     drop.classList.remove('over');
-    if (e.dataTransfer.files.length) loadMidi(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files.length) handlePickedFile(e.dataTransfer.files[0]);
   };
   fileInput.onchange = function () {
-    if (fileInput.files.length) loadMidi(fileInput.files[0]);
+    if (fileInput.files.length) handlePickedFile(fileInput.files[0]);
   };
 
   function currentTrack() {
@@ -319,27 +327,64 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     sel.value = '-1';
   }
 
-  function loadMidi(f) {
+  // ---- 文件入口：MIDI 与歌词共用一个拖拽区 ----
+  // 按「魔数优先、扩展名其次」分流：MThd 开头一定是 MIDI；否则 .lrc / .json /
+  // .txt 交给歌词通路。此前拖一个 song.lrc 进来会被当 MIDI 解析，页面直接报
+  // 「无法解析MIDI文件」——用户拖的明明就是歌词。
+  var LYRIC_EXT = /\.(lrc|json|txt)$/i;
+  function looksLikeMidi(b) {
+    return !!b && b.length >= 4 && b[0] === 0x4d && b[1] === 0x54 &&
+           b[2] === 0x68 && b[3] === 0x64;
+  }
+  function handlePickedFile(f) {
     if (!f) return;
     clearErr();
-    // 谱面标题用文件名（去掉扩展名），跟命令行版一致
-    midiTitle = f.name.replace(/\.[^.]+$/, '');
     var fr = new FileReader();
     fr.onload = function () {
-      midiBytes = new Uint8Array(fr.result);
-      $('meta').textContent = f.name + ' · ' + (midiBytes.length / 1024).toFixed(1) + ' KB';
-      // MThd 的 trackCount 在大端 offset 10..11。format 1 的卡拉 OK 文件常把
-      // 歌词、伴奏、旋律分轨，format 2 则是几首独立的曲子，都该让用户挑。
-      var isMThd = midiBytes.length >= 14 && midiBytes[0] === 0x4d &&
-                   midiBytes[1] === 0x54 && midiBytes[2] === 0x68 &&
-                   midiBytes[3] === 0x64;
-      var tc = isMThd ? ((midiBytes[10] << 8) | midiBytes[11]) : 0;
-      fillTrackOptions(tc);
-      updateFileHints();
-      convert();
+      var bytes = new Uint8Array(fr.result);
+      if (LYRIC_EXT.test(f.name) && !looksLikeMidi(bytes)) {
+        applyLyricBytes(bytes, f.name);
+      } else {
+        applyMidiBytes(bytes, f.name);
+      }
     };
     fr.onerror = function () { showErr('读取文件失败'); };
     fr.readAsArrayBuffer(f);
+  }
+
+  function applyMidiBytes(bytes, name) {
+    midiBytes = bytes;
+    // 谱面标题用文件名（去掉扩展名），跟命令行版一致
+    midiTitle = name.replace(/\.[^.]+$/, '');
+    $('meta').textContent = name + ' · ' + (midiBytes.length / 1024).toFixed(1) + ' KB';
+    // MThd 的 trackCount 在大端 offset 10..11。format 1 的卡拉 OK 文件常把
+    // 歌词、伴奏、旋律分轨，format 2 则是几首独立的曲子，都该让用户挑。
+    var isMThd = looksLikeMidi(midiBytes);
+    var tc = (isMThd && midiBytes.length >= 14)
+             ? ((midiBytes[10] << 8) | midiBytes[11]) : 0;
+    fillTrackOptions(tc);
+    updateFileHints();
+    convert();
+  }
+
+  // 歌词文件走与「选择 .lrc / .json 文件」完全同一条路：原始字节交给 WASM 的
+  // decode_lyric_file（GBK / UTF-16 / UTF-8 都能救回来），再填进歌词框。
+  function applyLyricBytes(bytes, name) {
+    if (wasmMod && wasmMod._midi2jianpu_decode_lyric_file) {
+      lyricsArea.value = decodeLyricBytes(bytes);
+    } else {
+      lyricsArea.value = new TextDecoder('utf-8').decode(bytes);
+    }
+    if (midiBytes && wasmReady) {
+      updateFileHints();
+      convert();
+      return;
+    }
+    // 只拖了歌词还没拖 MIDI：把歌词收好并说明下一步，别让页面看起来没反应。
+    var box = $('midiLyricHint');
+    if (box) box.textContent = '已载入歌词 ' + name + '，请再拖入一个 .mid 文件';
+    var d = document.querySelector('details.lyrics');
+    if (d) d.open = true;
   }
 
   // ---- 歌词 ----
@@ -387,17 +432,8 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     var f = $('lyricsFile').files[0];
     if (!f) return;
     var fr = new FileReader();
-    fr.onload = function () {
-      var bytes = new Uint8Array(fr.result);
-      // 优先用 WASM 字节解码（保真覆盖 GBK / UTF-16 / UTF-8）；
-      // 旧 wasm 没有该导出时退回 UTF-8 解码（仅 UTF-8 正确，与旧版一致）。
-      if (wasmMod && wasmMod._midi2jianpu_decode_lyric_file) {
-        lyricsArea.value = decodeLyricBytes(bytes);
-      } else {
-        lyricsArea.value = new TextDecoder('utf-8').decode(bytes);
-      }
-      if (midiBytes) convert();
-    };
+    fr.onload = function () { applyLyricBytes(new Uint8Array(fr.result), f.name); };
+    fr.onerror = function () { showErr('读取文件失败'); };
     fr.readAsArrayBuffer(f);
   };
   $('lyricsClear').onclick = function () {
