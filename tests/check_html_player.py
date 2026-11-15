@@ -30,10 +30,16 @@ r"""HTML 试听播放器校验（v1.72.0）。
          基准**逐字节一致**——播放数据只取决于音符与速度；
        · 会改谱面结构的开关：不要求逐字节一致，但要求 **division / tempo
          不变且音符 multiset 守恒**（不许悄悄掉音或多音）。
-     `--no-dynamics` 属于后者：它关掉整个 ExpressionMap，倚音不再被识别合并
-     （`parts.mid` 的音符列 50 → 55），声部拆分顺序随之改变，PLAY 里的音符
-     顺序也变，但音符集合一个不少。`--no-quantize` 同理（改的是时值），
-     两者都有意不进「逐字节不变」契约，否则会把合理行为误判成缺陷。
+       `--no-dynamics` 属于后者：它关掉整个 ExpressionMap，倚音不再被识别合并
+       （`parts.mid` 的音符列 50 → 55），声部拆分顺序随之改变，PLAY 里的音符
+       顺序也变，但音符集合一个不少。`--no-quantize` 同理（改的是时值），
+       两者都有意不进「逐字节不变」契约，否则会把合理行为误判成缺陷。
+       v1.105.0 把纯显示开关扩到 `--bar-numbers` / `--no-pickup` /
+       `--no-key-changes`（它们只改排版，PLAY 必须逐字节不变，并已纳入全素材
+       核心组合）；并新增 `--transpose` 组合，走第三条契约：**division / tempo
+       不变、音符的 tick/dur/track/vel 一字不改、音高恰好整体 +N**（否则移调把
+       音高算错或顺手改了时序，手机端静音还看不到报错）。此前 `--player` 与这些
+       开关的叠加从没有常驻守护——正是 fuzz 字节突变覆盖不到的语义组合。
 
 用法：
   python tests/check_html_player.py                # 校验全部 fixture
@@ -65,23 +71,57 @@ COMBOS = [
     ["--no-midi-lyrics"],
     ["--bars", "4", "--no-dynamics"],
     ["--bars", "4", "--no-midi-lyrics"],
+    # ---- v1.105.0：--player 叠加此前未常驻守护的「显示 / 移调」开关 ----
+    # 纯显示开关只改排版，PLAY JSON 必须与基准逐字节一致（见 CORE_COMBOS 也已
+    # 纳入全素材）；--transpose 是结构变换，走「时序/力度不变、音高恰好 +N」
+    # 契约（见 combo_errors 的移调子分支），只跑代表子集以控制 CI 时长。
+    ["--bar-numbers"],
+    ["--no-pickup"],
+    ["--no-key-changes"],
+    ["--transpose", "12"],
+    ["--transpose", "2"],
 ]
-# 全素材只跑这三个核心组合，--bars 1..8 全边界交给代表子集跑，控制 CI 时长。
+# 全素材只跑这六个核心组合，--bars 1..8 全边界交给代表子集跑，控制 CI 时长。
+# v1.105.0 起把三个纯显示开关（--bar-numbers / --no-pickup / --no-key-changes）
+# 也纳入核心：它们只改排版，PLAY JSON 必须与基准逐字节一致——此前只在
+# check_cli_matrix 里被「默认参数」路径顺带跑过，--player 叠加它们从没有
+# 常驻守护，一旦播放数据被顺手改坏，手机端静音还看不到报错。
 CORE_COMBOS = [
     ["--bars", "4"],
     ["--no-dynamics"],
     ["--bars", "4", "--no-dynamics"],
+    ["--bar-numbers"],
+    ["--no-pickup"],
+    ["--no-key-changes"],
 ]
 
 # 会改谱面结构的开关：--no-dynamics 关掉整个 ExpressionMap，倚音不再合并、
-# 声部拆分顺序随之变；--no-quantize 改音符时值。两者都允许 PLAY 的排列/时值
-# 变化，但仍必须守住音符集合守恒。
-PLAY_MUTABLE_FLAGS = ("--no-dynamics", "--no-quantize")
+# 声部拆分顺序随之变；--no-quantize 改音符时值；--transpose 整体移调（音高
+# 变、时序/力度不变）。三者都允许 PLAY 与基准不同，但各有自己的守恒口径：
+# --no-dynamics / --no-quantize 守「音符集合守恒」；--transpose 守「时序/力度
+# 不变、音高恰好 +N」（见 combo_errors 的移调子分支）。
+PLAY_MUTABLE_FLAGS = ("--no-dynamics", "--no-quantize", "--transpose")
 
 
 def play_is_mutable(combo):
-    """该组合是否允许 PLAY JSON 与基准不同（改用「音符集合守恒」口径）。"""
+    """该组合是否允许 PLAY JSON 与基准不同（改用各自守恒口径）。"""
     return any(f in combo for f in PLAY_MUTABLE_FLAGS)
+
+
+def combo_transpose_amt(combo):
+    """若组合含 --transpose N 返回整数移调量 N，否则 None。"""
+    if combo and "--transpose" in combo:
+        try:
+            return int(combo[combo.index("--transpose") + 1])
+        except (IndexError, ValueError):
+            return None
+    return None
+
+
+def note_tdv_vel(n):
+    """取 (tick, dur, track, vel)，vel 缺省按 96。用于移调时校验时序/力度不变。"""
+    vel = n[4] if len(n) >= 5 else 96
+    return (n[0], n[1], n[3], vel)
 
 # 用假 DOM / 假 AudioContext 跑那段内嵌 JS，数「排了几个音」。
 # 断言点：恰好排 N 个振荡器（N = PLAY.notes 的长度），否则就是播放逻辑坏了。
@@ -318,14 +358,17 @@ def plain_errors(html):
     return errs
 
 
-def combo_errors(base_html, combo_html, label, expect_same_play=True):
+def combo_errors(base_html, combo_html, label, expect_same_play=True, combo=None):
     """v1.98.0 纯函数：组合渲染相对 `--player` 基准必须满足三件事。
 
     1. 结构照样合法（scan 的 A/B 两层）；
     2. PLAY 数据守契约：
        - expect_same_play=True（纯排版/显示开关）：逐字节不变；
        - expect_same_play=False（会改谱面结构的开关）：division / tempo
-         不变，且音符 multiset 守恒——顺序与时值可变，但不许掉音或多音；
+         不变，且音符守恒——其中 --no-dynamics / --no-quantize 守「音符
+         multiset 守恒」（顺序与时值可变，不许掉音或多音）；--transpose
+         守「时序/力度（tick/dur/track/vel）不变、音高恰好 +N」（见
+         combo_transpose_amt）；
     3. playerbar 仍在 `<h1>` 之前（position:sticky 依赖文档流位置）。
     """
     errs = []
@@ -350,8 +393,23 @@ def combo_errors(base_html, combo_html, label, expect_same_play=True):
             if (da.get("division") != db.get("division")
                     or da.get("tempo") != db.get("tempo")):
                 errs.append("%s: 结构开关改了 division/tempo" % label)
-            if sorted(da.get("notes") or []) != sorted(db.get("notes") or []):
-                errs.append("%s: 音符集合不守恒（掉音或多音）" % label)
+            tamt = combo_transpose_amt(combo)
+            da_notes = da.get("notes") or []
+            db_notes = db.get("notes") or []
+            if tamt is not None:
+                # 移调：时序/力度（tick/dur/track/vel）必须一字不改，音高
+                # 恰好整体 +N；只比较多重集合，避免音符排序不同造成假差异。
+                base_key = sorted(note_tdv_vel(n) for n in da_notes)
+                combo_key = sorted(note_tdv_vel(n) for n in db_notes)
+                if base_key != combo_key:
+                    errs.append("%s: 移调改了音符时序/力度（tick/dur/track/vel 应不变）" % label)
+                base_pitch = sorted(n[2] for n in da_notes)
+                combo_pitch = sorted(n[2] - tamt for n in db_notes)
+                if base_pitch != combo_pitch:
+                    errs.append("%s: 移调量不符（期望每个音高恰好 +%d）" % (label, tamt))
+            else:
+                if sorted(da_notes) != sorted(db_notes):
+                    errs.append("%s: 音符集合不守恒（掉音或多音）" % label)
     pb = combo_html.find("id='playerbar'")
     h1 = combo_html.find("<h1>")
     if pb < 0 or h1 < 0 or pb > h1:
@@ -448,7 +506,8 @@ def audit(exe):
                     bad.append(tag + ": 组合渲染失败")
                     continue
                 for e in combo_errors(html, ch, tag,
-                                      expect_same_play=not play_is_mutable(combo)):
+                                      expect_same_play=not play_is_mutable(combo),
+                                      combo=combo):
                     bad.append(e)
                 stats["combos"] += 1
 
@@ -616,17 +675,29 @@ def self_test():
     ok(any("--no-dynamics" in c for c in COMBOS)
        and any("--no-midi-lyrics" in c for c in COMBOS),
        "组合矩阵覆盖 --no-dynamics 与 --no-midi-lyrics")
+    # v1.105.0：--player 叠加的显示 / 移调开关纳入矩阵守护
+    ok(any("--bar-numbers" in c for c in COMBOS)
+       and any("--no-pickup" in c for c in COMBOS)
+       and any("--no-key-changes" in c for c in COMBOS),
+       "组合矩阵覆盖 --bar-numbers / --no-pickup / --no-key-changes")
+    ok(any(c[0] == "--transpose" for c in COMBOS),
+       "组合矩阵覆盖 --transpose（移调）")
+    ok(all(c in CORE_COMBOS for c in (["--bar-numbers"], ["--no-pickup"],
+                                      ["--no-key-changes"])),
+       "纯显示开关纳入核心组合（全素材逐字节守护）")
     ok(all(c in COMBOS for c in CORE_COMBOS)
        and all("--player" not in c and "--track" not in c for c in COMBOS),
        "核心组合是全矩阵子集，且矩阵不含 --player / --track")
 
-    # 会改谱面结构的开关走「音符集合守恒」而非逐字节一致。
+    # 会改谱面结构的开关走「音符集合守恒 / 移调守恒」而非逐字节一致。
     ok(play_is_mutable(["--no-dynamics"])
        and play_is_mutable(["--bars", "4", "--no-dynamics"])
        and play_is_mutable(["--no-quantize"])
+       and play_is_mutable(["--transpose", "12"])
        and not play_is_mutable(["--bars", "4"])
-       and not play_is_mutable(["--no-midi-lyrics"]),
-       "PLAY 可变分类：--no-dynamics / --no-quantize 放行，纯排版开关不放行")
+       and not play_is_mutable(["--no-midi-lyrics"])
+       and not play_is_mutable(["--bar-numbers"]),
+       "PLAY 可变分类：--no-dynamics / --no-quantize / --transpose 放行，纯排版开关不放行")
 
     ok(any("division/tempo" in x
            for x in combo_errors(base, changed, "tempo", expect_same_play=False)),
@@ -644,6 +715,31 @@ def self_test():
     ok(any("音符集合" in x
            for x in combo_errors(base, dropped, "drop", expect_same_play=False)),
        "集合守恒口径下掉一个音必须报错")
+
+    # v1.105.0：移调组合契约——时序/力度（tick/dur/track/vel）不变、音高恰好 +N
+    tbase = ('{"division":480,"tempo":[[0,500000]],'
+             '"notes":[[0,480,60,0,96],[480,480,62,0,40]]}')
+    tshift = ('{"division":480,"tempo":[[0,500000]],'
+              '"notes":[[0,480,72,0,96],[480,480,74,0,40]]}')   # +12
+    ok(combo_errors(combo_page(tbase), combo_page(tshift), "tp12",
+                    expect_same_play=False, combo=["--transpose", "12"]) == [],
+       "移调+12：时序/力度不变、音高恰好+12 应通过")
+    twrong = ('{"division":480,"tempo":[[0,500000]],'
+              '"notes":[[0,480,73,0,96],[480,480,74,0,40]]}')   # 第一个音错移
+    ok(any("移调量" in x for x in combo_errors(combo_page(tbase), combo_page(twrong),
+                                              "tpw", expect_same_play=False,
+                                              combo=["--transpose", "12"])),
+       "移调量不符（音高未恰好 +N）必须报错")
+    ttime = ('{"division":480,"tempo":[[0,500000]],'
+             '"notes":[[10,480,72,0,96],[480,480,74,0,40]]}')   # tick 被改
+    ok(any("时序" in x for x in combo_errors(combo_page(tbase), combo_page(ttime),
+                                            "tpt", expect_same_play=False,
+                                            combo=["--transpose", "12"])),
+       "移调改了时序（tick 偏移）必须报错")
+    # 反向：移调页在「逐字节不变」口径下必须报错，确认走了结构分支而非漏判
+    ok(any("PLAY JSON" in x for x in combo_errors(combo_page(tbase), combo_page(tshift),
+                                                 "tpb", expect_same_play=True)),
+       "移调页在逐字节口径下必须报错（确认不走错分支）")
 
     print("check_html_player self-test: %d 项，%d 失败" % (n, len(failed)))
     for f in failed:

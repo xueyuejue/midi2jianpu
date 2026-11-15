@@ -10,7 +10,9 @@
     本闸门把「每个素材 × 一组开关」都跑一遍，锁死参数矩阵的端到端不变量：
         ① 退出码 ∈ {0,1,2,3,4}（合法退出码集合）；
         ② rc==0 且 --musicxml 时，MusicXML 必须能被 ElementTree 严格解析；
-        ③ rc==0 且 --html 时，HTML 必须是合法 UTF-8；不开 --player 时整页无 script；
+        ③ rc==0 且 --html 时，HTML 必须是合法 UTF-8；不开 --player 时整页无
+           script，开了 --player 时必须有 script（v1.105.0 起 --player 进矩阵，
+           全素材守这一最基础的播放器不变量）；
         ④ --track 0..N-1 与越界轨：rc ∈ {0,4}，rc==0 时 MusicXML 可解析；
         ⑤ 移调不变量：--transpose 0 与默认逐字节一致；--transpose 12 / 24 时
            每个音符的音名 / 升降不变、八度恰好 +1 / +2，且调号 <fifths> 一字不改。
@@ -37,16 +39,20 @@ FIX = os.path.join(ROOT, "tests", "fixtures")
 # 合法退出码集合：0 成功 / 1 参数错 / 2 解析错 / 3 空谱 / 4 选定轨无音符。
 VALID_RC = {0, 1, 2, 3, 4}
 
-# 参数矩阵：覆盖解析期（--no-quantize / --no-dynamics / --no-key-changes /
-# --no-pentatonic）与输出期（--bar-numbers / --transpose）各类开关。不追求
-# 穷举，只要求「每一类开关都至少在全部素材上过一遍」——选 5 类最具代表性
-# 的，既覆盖解析、输出、移调三条路径，又把 CI 步骤耗时压在合理范围。
+# 参数矩阵：覆盖解析期（--no-quantize / --no-dynamics / --no-key-changes）、
+# 输出期（--bar-numbers / --transpose）与试听播放器（--player）各类开关。
+# 不追求穷举，只要求「每一类开关都至少在全部素材上过一遍」——选 6 类最具
+# 代表性的，既覆盖解析、输出、移调、播放器四条路径，又把 CI 步骤耗时压在
+# 合理范围。v1.105.0 把 --player 纳入此矩阵：此前 --player 只在
+# check_html_player 的 `--player × 少量开关` 组合里被守，而「所有素材 × 开
+# 播放器」的 rc 合法性 + script 出现 / 缺失这一最基础的不变量从没有常驻守护。
 FLAGSETS = [
     ["--no-quantize"],
     ["--no-dynamics"],
     ["--no-key-changes"],
     ["--bar-numbers"],
     ["--transpose", "2"],
+    ["--player"],
 ]
 
 # CLI 边界契约表（v1.97.0）：(附加参数, 期望 rc, 说明)。
@@ -261,8 +267,10 @@ def check_one(exe, mid, td):
         except UnicodeDecodeError as e:
             errs.append("%s [%s]: HTML 非 UTF-8 —— %s" % (name, tag, e))
             html = None
-        if html is not None and "<script" in html:
+        if html is not None and "<script" in html and "--player" not in flags:
             errs.append("%s [%s]: 未开 --player 却出现 <script>" % (name, tag))
+        if "--player" in flags and (html is None or "<script" not in html):
+            errs.append("%s [%s]: 开了 --player 却缺少 <script>" % (name, tag))
 
     # ---- ④ 轨扫描：全部在轨 + 一个越界轨；多轨素材再加一个远越界 ----
     n = track_count(exe, mid)
@@ -379,6 +387,12 @@ def self_test():
         return {w} if isinstance(w, int) else set(w)
 
     ck(bool(CLI_CONTRACTS), "CLI 边界契约表非空")
+    ck(all(f and f[0].startswith("--") for f in FLAGSETS),
+       "参数矩阵每项都以 -- 开头")
+    ck(any("--player" in f for f in FLAGSETS),
+       "参数矩阵含 --player 项（全素材覆盖 --player）")
+    ck(len(FLAGSETS) == len({tuple(f) for f in FLAGSETS}),
+       "参数矩阵各项互不重复")
     ck(all(a and a[0].startswith("--") for a, w, d in CLI_CONTRACTS),
        "契约表每项参数都以 -- 开头")
     ck(all(wants_of(w) <= VALID_RC for a, w, d in CLI_CONTRACTS),

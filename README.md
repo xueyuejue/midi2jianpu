@@ -67,7 +67,7 @@
 - [x] **损坏 / 截断 MIDI 的安全解析**：`MTrk` 长度字段写着原值、文件却只下载到一半时，不再越过 buffer 末尾把堆里相邻内存当成新事件继续解析（那会凭空冒出幻影音符与乱码歌词）。所有事件统一按 `min(trkEnd, size)` 取硬边界，残缺事件整条丢弃，CLI / HTML / 网页文件面板写明「文件数据不完整」并按可用字节正常出谱；合法文件逐字节零回归
 - [x] **CC67 软踏板**：踩下期间起音的音符力度按 ×0.7 衰减，重音记号 / 力度分析 / 网页播放 JSON 同步变化，时值与 CC11 力度表不动（没有 CC67 的文件逐字节零回归）；系数经 `--soft-pedal-scale` / `--no-soft-pedal` 与网页强度下拉可配（0.3~1.0 或关闭），纯整数公式零漂移
 - [x] **SMF chunk 级边界重同步**：轨间夹 DAW 私有扩展块（`XFIH` 等）或某条 `MTrk` 长度字段写错时，不再停掉整个 chunk 循环把后续旋律轨整条丢掉（旧版直接报「未提取到音符」）；改为按 chunk 通用规则跳过非 `MTrk` 块，并用「EOT 锚定 + 长度可信」的下一个轨头校正偏长 / 偏短的边界。歌词 / SysEx 里恰好出现的字面 `MTrk` 不会被误判，合法文件逐字节零回归；CLI / HTML / 网页文件面板写明「文件结构提示」
-- [x] 1334 项单元测试 + 108 组端到端冒烟测试 + 28 项 CI 失败报告自测 + 18 项 MusicXML 时值自测 + 39 项 MusicXML 连梁自测 + 26 项文本谱拍数自测 + 35 项 HTML 附点自测 + 77 项 HTML 休止符自测 + 11 项三端结构守卫自测 + 32 项大谱表方向记号自测 + 34 项 XML 结构守卫自测 + 35 项 HTML 播放器自测 + 15 项 UTF-8 守卫自测 + 31 项 CLI 参数矩阵自测 + 44 项 fuzz 自测 + 68 组 WASM 产物一致性检查（含产物版本号、源码一致性、「改了源码必须重编」与「重编了必须升版本」的双向纯 git 守护）+ 解析层模糊测试（12 类突变 × 3 种子 × 200 次，零崩溃）
+- [x] 1334 项单元测试 + 108 组端到端冒烟测试 + 28 项 CI 失败报告自测 + 18 项 MusicXML 时值自测 + 39 项 MusicXML 连梁自测 + 26 项文本谱拍数自测 + 35 项 HTML 附点自测 + 77 项 HTML 休止符自测 + 11 项三端结构守卫自测 + 32 项大谱表方向记号自测 + 34 项 XML 结构守卫自测 + 42 项 HTML 播放器自测 + 15 项 UTF-8 守卫自测 + 34 项 CLI 参数矩阵自测 + 44 项 fuzz 自测 + 68 组 WASM 产物一致性检查（含产物版本号、源码一致性、「改了源码必须重编」与「重编了必须升版本」的双向纯 git 守护）+ 解析层模糊测试（12 类突变 × 3 种子 × 200 次，零崩溃）
 
 ## 在线 Demo 功能
 
@@ -972,6 +972,8 @@ XG 鼓组通道与中途换音色的通道，新导出 `_midi2jianpu_bank_info`�
 
 - [x] **网页端歌词上传按原始字节解码（与 CLI 读盘同款，GBK / UTF-16 不再变 U+FFFD）（v1.104.0）**：① 缺陷：v1.103.0 只修了 C++ 读盘入口（`readTextFile` / `parseLyrics` 走 `normalizeLyricFileBytes`），网页端 `docs/index.html` 的 `$('lyricsFile').onchange` 仍用 `FileReader.readAsText(f)` 按浏览器默认 UTF-8 读上传的歌词文件——用户上传 GBK / UTF-16 / 其它编码的 `.lrc` / `.txt`，浏览器在「读盘阶段」就把非 UTF-8 字节折成 U+FFFD 或乱码，这些坏字符再进 WASM（`_midi2jianpu_set_lyrics`）时 C++ 的 `normalizeLyricFileBytes` 已经收到损坏的 Unicode、救不回来。探针用 Python 复现：`C4 E3 BA C3`（GBK「你好」）经 `readAsText` 直接变三个 U+FFFD、「你好」整行丢失，`FF FE 60 4F 7D 59`（UTF-16LE BOM）变成 U+FFFD 加 `` `O}Y `` 乱码，进 WASM 前已不可逆。② 实现：新增 WASM 导出 `_midi2jianpu_decode_lyric_file`（包装 CLI 既有的 `m2j::normalizeLyricFileBytes`：UTF-16 LE/BE BOM → UTF-8，其余走 `textenc::normalize()`——严格 UTF-8 原样返回，否则 GBK / Shift-JIS 打分，最后 CP1252 逐字节折叠），网页改用 `readAsArrayBuffer` 取原始字节、用 `HEAPU8` 喂进该导出、经 `UTF8ToString` 取回正确 UTF-8，彻底绕开浏览器的 UTF-8 解码；旧 wasm 没有该导出时退回 `TextDecoder('utf-8')`（与旧版一致，仅 UTF-8 正确）。③ 关键取舍：不把 143KB 的 `src/legacy_tables.inc`（GBK/Shift-JIS 映射表）移植到 JS——网页与 CLI 走同一份 C++ 解码逻辑，完全保真、零漂移，也避免网页体积膨胀与双份实现分叉。④ 守护：`tests/wasm_smoke.mjs` 新增第 68 组 5 条断言（GBK `C4E3BAC3` / UTF-16LE BOM `FFFE604F7D59` / 合法 UTF-8 `E4BDA0E5A5BD` / UTF-8 BOM `EFBBBFE4BDA0E5A5BD` / UTF-32LE BOM `FFFE0000` 各自解码为正确中文或无 U+FFFD、UTF-32 空内容返回空串）；`tests/check_wasm_exports.py` 的「构建脚本 / CMake / 源码 / 网页 / 冒烟」五处同步守护覆盖该新导出（现 29 个业务导出）。⑤ 结果：正常 UTF-8 歌词与全部谱面逐字节零回归；WASM 冒烟 67 → 68 组全绿。
 
+- [x] **播放器组合矩阵扩到 `--player` + 显示/移调开关（fuzz 覆盖不到的语义组合）（v1.105.0）**：① 动机：项目铁律「选项组合不被 fuzz 覆盖——语义不变量须靠矩阵守卫兜底」，而两道相关关卡存在空白——`tests/check_cli_matrix.py` 的参数矩阵（5 类开关 × 全素材）不含 `--player`，`tests/check_html_player.py` 的组合矩阵（`--bars 1~8` × `--player` 等）不含 `--transpose` / `--no-quantize` / `--bar-numbers` / `--no-pickup` / `--no-key-changes` 与 `--player` 的叠加；这些组合 fuzz 的字节突变从不触及，一旦播放数据被顺手改坏（手机端静音还看不到报错），CI 不会红。② 实现：把 `--player` 加进 `check_cli_matrix.py` 的 `FLAGSETS`（全素材守「rc 合法 + 开了 `--player` 必须有 `<script>`、没开则整页无 `<script>`」）；`check_html_player.py` 的 `COMBOS` 新增 `--bar-numbers` / `--no-pickup` / `--no-key-changes`（纯显示开关，PLAY JSON 必须与基准**逐字节一致**，并纳入全素材核心组合）+ `--transpose 12` / `--transpose 2`（结构变换，走新增的第三条契约：division/tempo 不变、音符的 tick/dur/track/vel 一字不改、音高恰好整体 +N）；`combo_errors()` 新增移调子分支与 `combo_transpose_amt()` / `note_tdv_vel()` 两个纯函数。③ 守护：两道守卫的自测同步扩展（HTML 播放器 35 → 42 项、CLI 矩阵 31 → 34 项），覆盖新组合的存在性、`--transpose` 的「时序/力度不变 + 音高恰好 +N」正例放行与错移/改时序/逐字节误判三类负例。④ 结果：只动测试守卫、零产品代码改动；全 105 份素材 × 新组合全绿（播放器组合参数 432 → **773 组**），零回归两连逐字节 0 差异。
+
 ## 为什么开源
 
 中文简谱是中国特有的记谱体系，国外打谱软件（MuseScore、Finale）对它支持很差，国内又一直缺少一个干净的、可二次开发的基础库。这个项目想把「MIDI → 简谱」这层地基打好，让后来的人不用重复造轮子。
@@ -1030,11 +1032,11 @@ python tests/check_three_way.py --self-test            # 11 项三端结构守�
 python tests/check_three_way.py                       # 全部 105 份素材三端结构一致性
 python tests/check_xml_structure.py --self-test       # 34 项 XML 结构守卫自测
 python tests/check_xml_structure.py                   # 全部 105 份素材严格解析 / 时值守恒 / 元素顺序 / HTML 配对
-python tests/check_html_player.py --self-test          # 35 项 HTML 播放器自测
+python tests/check_html_player.py --self-test          # 42 项 HTML 播放器自测
 python tests/check_html_player.py                     # 全部 105 份素材播放数据 / 高亮锚点 / 默认零痕迹
 python tests/check_utf8.py --self-test               # 15 项三端 UTF-8 自测
 python tests/check_utf8.py                           # 全部 105 份素材三端严格解码 + MusicXML 严格解析
-python tests/check_cli_matrix.py --self-test         # 27 项 CLI 参数矩阵自测
+python tests/check_cli_matrix.py --self-test         # 34 项 CLI 参数矩阵自测
 python tests/check_cli_matrix.py                     # 全部 105 份素材参数矩阵 / 轨扫描 / 移调八度与调号不变量
 python tests/fuzz_parse.py --self-test                # 42 项 fuzz 突变算子自测（含 player 脚本不变量与敌对矩阵结构）
 python tests/fuzz_parse.py                            # 12 类突变 × 600 次（3 种子）+ 每个突变强制边界矩阵，零崩溃 / 零不变量

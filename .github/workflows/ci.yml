@@ -108,7 +108,7 @@ jobs:
           python3 tests/check_xml_structure.py --self-test
           python3 tests/check_xml_structure.py
 
-      - name: HTML 试听播放器（35 项自测 + 105 份素材 + 组合矩阵）
+      - name: HTML 试听播放器（42 项自测 + 105 份素材 + 组合矩阵）
         # --player 必须只加播放数据与高亮锚点，不改谱面本身；不带开关时
         # 输出里不得残留 script / data-t / playerbar 任何痕迹。
         # v1.98.0 起叠加 --bars 1~8 / --no-dynamics / --no-midi-lyrics：
@@ -126,7 +126,7 @@ jobs:
           python3 tests/check_utf8.py --self-test
           python3 tests/check_utf8.py
 
-      - name: CLI 参数矩阵 × 全素材（31 项自测 + 105 份素材）
+      - name: CLI 参数矩阵 × 全素材（34 项自测 + 105 份素材）
         # fuzz 侧重「畸形输入下的健壮性」、只在随机开关下抽查；这里逐份素材
         # 覆盖一组开关（--no-quantize / --no-dynamics / --no-key-changes /
         # --bar-numbers / --transpose），断言 rc ∈ {0,1,2,3,4}、rc==0 的 MusicXML 可解析、
