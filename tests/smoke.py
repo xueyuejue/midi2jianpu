@@ -4511,6 +4511,47 @@ def main():
     check(rc == 0 and v103_lyrics() == "你好再见" and v103_xml_ok(),
           "单行歌词（k=1）与旧版逐字等价，零回归", err)
 
+    group("[111] v1.109.0 LRC 时间戳宽进：冒号式百分秒 / 小时级 / 括号内空格")
+    # 旧版只按第一个冒号切一刀，后半段交给 parseNum，而 parseNum 见到第二个冒号
+    # 就停：[mm:ss:xx] 慢掉那两位（2.50s 变 2.00s），[hh:mm:ss.xx] 直接归零
+    # （整首歌词堆到曲首），[ 00:01.00 ] 干脆连整行都认不出、回退成 MIDI 内置「LY」。
+    # 三种都是静默失准，所以按「落在这个音上」逐条钉住。
+    def v111_note_positions(path=v103xml):
+        root = ET.fromstring(open(path, "rb").read())
+        res = []
+        for i, nt in enumerate(root.iter("note")):
+            if nt.find("rest") is not None:
+                continue
+            texts = [t.text for t in nt.iter("text")]
+            if texts:
+                res.append((i, texts[0]))
+        return res
+
+    centi111 = v103_write("[ti:x]\n[00:00:00]起\n[00:02:50]中\n", "centi111", ".lrc")
+    rc, out, err = v103_run(centi111)
+    check(rc == 0 and v111_note_positions() == [(0, "起"), (5, "中")],
+          "冒号式百分秒 [00:02:50] 落在 2.5 秒（第 6 个音）而不是 2.0 秒",
+          repr(v111_note_positions()))
+
+    hh111 = v103_write("[00:00:02.50]中\n", "hh111", ".lrc")
+    rc, out, err = v103_run(hh111)
+    check(rc == 0 and v111_note_positions() == [(5, "中")],
+          "小时级 [00:00:02.50] 不再归零堆到曲首", repr(v111_note_positions()))
+
+    space111 = v103_write("[ 00:01.00 ]空\n", "space111", ".lrc")
+    rc, out, err = v103_run(space111)
+    check(rc == 0 and v111_note_positions() == [(2, "空")],
+          "括号内带空格的时间戳被接受（旧版 0 行，回退 MIDI 内置 LY 音节）",
+          repr(v111_note_positions()))
+    check("歌词已加载: 1 行" in out and "LY" not in str(v111_note_positions()),
+          "带空格的时间戳不会再触发空歌词回退", out[-200:])
+
+    std111 = v103_write("[00:02.00]准\n", "std111", ".lrc")
+    rc, out, err = v103_run(std111)
+    check(rc == 0 and v111_note_positions() == [(4, "准")] and v103_xml_ok(),
+          "规范写法 [mm:ss.xx] 落点与旧版一致（零回归）",
+          repr(v111_note_positions()))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

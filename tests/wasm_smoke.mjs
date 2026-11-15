@@ -2312,6 +2312,46 @@ if (existsSync(v90InjectPath)) {
   c70.setLyrics('');
 }
 
+// ---- 71. v1.109.0 LRC 时间戳宽进：冒号式百分秒 / 小时级 / 括号内空格 ----
+// 网页歌词框直接吃 LRC 文本（set_lyrics -> parseLrcText），旧版只按第一个冒号
+// 切一刀：冒号式百分秒慢掉两位、小时级归零堆到曲首、括号内空格整行不识。
+// 这里按「歌词落在第几个音」逐条钉住——只断言「词出现过」是抓不到错位的。
+if (existsSync(v90InjectPath)) {
+  const c71 = makeCaller(mod);
+  c71.setMidi(new Uint8Array(readFileSync(v90InjectPath)));
+  // 每个音恰好一个 <span class='lyric'>（没词时是空的），线性顺序与音头一致：
+  // 目标词之前已经有几个 lyric span，它就是第几个音。按 <span class='note 切段
+  // 会被页面里 JS 模板字符串中的同类片段干扰（实测偏 +2）。
+  function noteIndex70(html, ch) {
+    const at = html.indexOf("class='lyric'>" + ch + '</span>');
+    if (at < 0) return -1;
+    return (html.slice(0, at).match(/class='lyric'>/g) || []).length;
+  }
+  c71.setLyrics('[ti:x]\n[00:00:00]甲\n[00:02:50]乙\n');
+  const h71a = c71.call('midi2jianpu_html', -1, 1) || '';
+  check(noteIndex70(h71a, '甲') === 0 && noteIndex70(h71a, '乙') === 5,
+    'WASM 冒号式百分秒 [00:02:50] 落在第 6 个音（旧版第 5 个）',
+    String(noteIndex70(h71a, '乙')));
+
+  c71.setLyrics('[00:00:02.50]丙\n');
+  const h71b = c71.call('midi2jianpu_html', -1, 1) || '';
+  check(noteIndex70(h71b, '丙') === 5,
+    'WASM 小时级 [00:00:02.50] 不再归零堆到曲首',
+    String(noteIndex70(h71b, '丙')));
+
+  c71.setLyrics('[ 00:01.00 ]丁\n');
+  const h71c = c71.call('midi2jianpu_html', -1, 1) || '';
+  check(noteIndex70(h71c, '丁') === 2,
+    'WASM 括号内带空格的时间戳被接受（旧版 0 行，回退内置 LY）',
+    String(noteIndex70(h71c, '丁')));
+
+  c71.setLyrics('[00:02.00]戊\n');
+  const h71d = c71.call('midi2jianpu_html', -1, 1) || '';
+  check(noteIndex70(h71d, '戊') === 4,
+    'WASM 规范写法落点零回归', String(noteIndex70(h71d, '戊')));
+  c71.setLyrics('');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

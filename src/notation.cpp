@@ -2432,6 +2432,100 @@ static double lrcOffsetSeconds(const std::string& lrc) {
     return off;
 }
 
+// 小数位按「位数」定权重：1 位 = 十分之一、2 位 = 百分之一、3 位 = 毫秒。
+// LRC 里 .5 / .50 / .500 都是 0.5 秒，写 4 位以上只取前 3 位。
+static double lrcFraction(const std::string& digits) {
+    double v = 0.0, scale = 1.0;
+    const size_t n = digits.size() > 3 ? 3 : digits.size();
+    for (size_t i = 0; i < n; i++) {
+        scale /= 10.0;
+        v += (digits[i] - '0') * scale;
+    }
+    return v;
+}
+
+static bool lrcAllDigits(const std::string& s) {
+    if (s.empty()) return false;
+    for (char c : s) if (c < '0' || c > '9') return false;
+    return true;
+}
+
+// 把一段「整数[.小数]」拆成整数值与小数位字符串。整数位允许为空（`.50` = 0.5），
+// 这是旧版 parseNum 就接受过的写法，不趁这次收紧。
+static bool lrcSplitNumber(const std::string& s, double& whole,
+                           std::string& frac) {
+    const size_t dot = s.find('.');
+    const std::string w = (dot == std::string::npos) ? s : s.substr(0, dot);
+    frac = (dot == std::string::npos) ? std::string() : s.substr(dot + 1);
+    if (!w.empty() && !lrcAllDigits(w)) return false;
+    if (w.empty() && frac.empty()) return false;
+    if (!frac.empty() && !lrcAllDigits(frac)) return false;
+    // 用 double 累加：畸形文件里可能出现几十位数字，整数累加会溢出成 UB，
+    // 而这里最终只要能算出秒数再由 secondsToTickChecked 判上限即可。
+    whole = 0.0;
+    for (char c : w) whole = whole * 10.0 + (c - '0');
+    return true;
+}
+
+// 解析一个时间戳标签（已去掉方括号）。返回 false = 不是时间戳（元数据 / 畸形）。
+//
+// LRC 的规范单元是 mm:ss[.xx]，但真实文件里长出了几种写法。旧版只按「第一个
+// 冒号」切一刀，后半段交给 parseNum —— 而 parseNum 见到第二个冒号就停：
+//   [00:05:50]    冒号式百分秒（部分播放器 / 导出工具这么写）-> 5.00s，慢半秒
+//   [00:00:05.00] 小时级时间戳                                 -> 0.00s，整首堆到曲首
+// 两种都是静默失准，谁也不报错。这里按「冒号段数 + 末段有没有小数点」显式分派：
+//   2 段  mm:ss[.frac]                    规范写法
+//   3 段  · 末段带 '.' → hh:mm:ss[.frac]  超过一小时的录音
+//         · 末段纯数字 → mm:ss:cc         冒号式百分秒
+// 括号内两侧空白（[ 00:05.00 ]）也一并接受——旧版会连整行一起丢掉。
+static bool parseLrcTimestamp(const std::string& tag, double& outSec) {
+    size_t a = 0, b = tag.size();
+    while (a < b && (tag[a] == ' ' || tag[a] == '\t')) a++;
+    while (b > a && (tag[b - 1] == ' ' || tag[b - 1] == '\t')) b--;
+    if (a >= b) return false;
+    // 必须数字开头：ti: / ar: / offset: 这类元数据在这里一律不是时间戳
+    if (tag[a] < '0' || tag[a] > '9') return false;
+
+    std::vector<std::string> seg;
+    size_t start = a;
+    for (size_t i = a; i < b; i++) {
+        if (tag[i] != ':') continue;
+        seg.push_back(tag.substr(start, i - start));
+        start = i + 1;
+        if (seg.size() > 2) return false;   // [a:b:c:d] 没有公认含义
+    }
+    seg.push_back(tag.substr(start, b - start));
+    if (seg.size() < 2) return false;       // 没有冒号就不是时间戳
+
+    double first = 0;
+    std::string firstFrac;
+    if (!lrcSplitNumber(seg[0], first, firstFrac) || !firstFrac.empty())
+        return false;                       // 首段只许整数
+
+    if (seg.size() == 2) {
+        double ss = 0;
+        std::string frac;
+        if (!lrcSplitNumber(seg[1], ss, frac)) return false;
+        outSec = first * 60.0 + ss + lrcFraction(frac);
+        return true;
+    }
+
+    double mid = 0;
+    std::string midFrac;
+    if (!lrcSplitNumber(seg[1], mid, midFrac) || !midFrac.empty())
+        return false;                       // 中段只许整数
+    if (seg[2].find('.') != std::string::npos) {
+        double ss = 0;
+        std::string frac;
+        if (!lrcSplitNumber(seg[2], ss, frac)) return false;
+        outSec = first * 3600.0 + mid * 60.0 + ss + lrcFraction(frac);
+        return true;
+    }
+    if (!lrcAllDigits(seg[2])) return false;   // 冒号式百分秒，纯数字
+    outSec = first * 60.0 + mid + lrcFraction(seg[2]);
+    return true;
+}
+
 // 一行里可以有多个 [mm:ss.xx]（同一句词在副歌重复出现），也可以有
 // [ti:] / [ar:] / [offset:] 这类元数据。首个标签不是时间戳时整行跳过。
 static void lrcTimestamps(const std::string& line,
@@ -2441,11 +2535,9 @@ static void lrcTimestamps(const std::string& line,
         size_t close = line.find(']', p);
         if (close == std::string::npos) break;
         const std::string tag = line.substr(p + 1, close - p - 1);
-        const size_t colon = tag.find(':');
-        if (colon != std::string::npos && !tag.empty() &&
-            isdigit((unsigned char)tag[0])) {
-            secs.push_back(parseNum(tag, 0, colon) * 60.0
-                           + parseNum(tag, colon + 1, tag.size()));
+        double sec = 0;
+        if (parseLrcTimestamp(tag, sec)) {
+            secs.push_back(sec);
         } else if (secs.empty()) {
             return;  // 元数据行 / 畸形行，不当歌词
         }

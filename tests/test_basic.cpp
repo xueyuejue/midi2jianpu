@@ -1416,7 +1416,50 @@ int main() {
               "非法 division / bpm 时旧签名安全返回空");
     }
 
-    // ---- 外部歌词时间字段越界（v1.100.0）：32 位 tick 不能环绕 ----
+    // ---- LRC 时间戳的几种写法（v1.109.0）----
+    // 旧版只按「第一个冒号」切一刀，后半段交给 parseNum，而 parseNum 见到第二个
+    // 冒号就停：冒号式百分秒 [mm:ss:xx] 会慢掉那两位，小时级 [hh:mm:ss.xx] 直接
+    // 归零、整首歌词堆到曲首。两种都是静默失准，谁都不报错。这里把分派规则钉死。
+    {
+        MidiData d;
+        d.division = 480;
+        d.tempoChanges = {{0, 120.0}};
+        auto firstTick = [&](const std::string& line, long& tick) {
+            const auto v = parseLrcText(line, 480, 120);
+            if (v.empty()) return false;
+            tick = v[0].startTick;
+            return true;
+        };
+        long tick = -1;
+        check(firstTick("[00:05:50]甲\n", tick) && tick == 5280,
+              "冒号式百分秒 [mm:ss:xx] 是 5.50 秒，不是 5.00 秒");
+        check(firstTick("[00:05:99]甲\n", tick) && tick == 5750,
+              "冒号式 99 读成 5.99 秒");
+        check(firstTick("[00:00:05.00]甲\n", tick) && tick == 4800,
+              "小时级 [hh:mm:ss.xx] 落在 5 秒而不是曲首");
+        check(firstTick("[00:01:05.00]甲\n", tick) && tick == 62400,
+              "小时级的分钟位真的参与换算（1 分 5 秒）");
+        check(firstTick("[00:05:500]甲\n", tick) && tick == 5280,
+              "冒号式三位（毫秒）也按位数折算");
+        check(firstTick("[ 00:05.50 ]甲\n", tick) && tick == 5280,
+              "括号内带空格的时间戳不再整行消失");
+        check(firstTick("[00:05.50 ]甲\n", tick) && tick == 5280,
+              "右括号内尾空格同样接受");
+        check(firstTick("[00:05.5]甲\n", tick) && tick == 5280,
+              "一位小数仍是十分之一秒");
+        check(firstTick("[00:60.00]甲\n", tick) && tick == 57600,
+              "秒位写成 60 照旧按 60 秒算（宽进）");
+        check(firstTick("[00:.50]甲\n", tick) && tick == 480,
+              "缺整数位的 [mm:.ss] 仍是 0.5 秒（旧版行为）");
+        check(parseLrcText("[00:05:50:01]甲\n", 480, 120).empty(),
+              "四段冒号没有公认含义，整行拒绝而不是猜一个");
+        size_t hugeDropped = 0;
+        check(parseLrcText("[999999999999999999999999999999:00.00]甲\n",
+                           480, 120, &hugeDropped).empty() && hugeDropped == 1,
+              "超长数字不溢出，按越界计入 dropped");
+    }
+
+
     {
         MidiData d;
         d.division = 480;
