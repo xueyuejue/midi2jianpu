@@ -51,6 +51,16 @@ def run(exe, *args):
     return p.returncode, p.stdout or "", p.stderr or ""
 
 
+def strip_write_logs(text):
+    """剔除 CLI 的「XX 谱面已写入: <路径>」日志行，只留谱面正文。
+
+    mkdtemp(prefix="m2j-smoke-") 的随机后缀可能恰好含 "tr"（v1.102.0 的
+    CI 实测 "cozkatrj"），日志行混进 [Piano] 段会把「伴奏轨不继承弯音
+    记号」的 "tr" not in piano 断言误判成失败。
+    """
+    return "\n".join(ln for ln in text.splitlines() if "写入" not in ln)
+
+
 # 文本谱里一个时值后缀对应多少拍（与 src/notation.cpp 的 durationSuffix 同表）。
 SUFFIX_BEATS = {"": 1.0, "_": 0.5, ".": 1.5, "_.": 0.75,
                 "=": 0.25, "=.": 0.375, "%%": 0.125}
@@ -980,9 +990,13 @@ def main():
         check("▼" in out and "·" in out and "↗" in out and
               "↘" in out and "tr" in out and "4>" in out,
               "文本谱写出断奏/重音/上滑/下滑/颤音")
-        piano = out.split("[Piano]")[-1] if "[Piano]" in out else ""
+        piano = strip_write_logs(out.split("[Piano]")[-1]) if "[Piano]" in out else ""
         check("↘" not in piano and "↗" not in piano and "tr" not in piano,
               "伴奏轨不继承旋律的弯音记号（按通道索引）", piano[:200])
+        check("tr" not in strip_write_logs(
+            "[Piano] (24 音符)\n1,+3,+5, - - -  |\n"
+            "HTML 谱面已写入: /tmp/m2j-smoke-cozkatrj/expression.html\n"),
+            "写入日志里随机路径含 tr 也不污染伴奏轨记号断言")
 
         body = open(exh, encoding="utf-8").read()
         for cls, label in (("section", "段落名"), ("wedge", "渐强渐弱"),
