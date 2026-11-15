@@ -2171,6 +2171,36 @@ if (existsSync(v90InjectPath)) {
   v102Caller.setLyrics('');
 }
 
+// ---- 67. v1.103.0 外部歌词控制字符：网页端也不再印裸 C0 / DEL ----
+// set_lyrics 传进来的是 JS 字符串（已是 Unicode），不做字节转码；但纯文本
+// 入口的 sanitizeLyricControls 对三端一视同仁。MusicXML 的 xmlEscape() 早就
+// 会丢 C0，HTML 页眉转义却不会 —— 同一份词在网页端 HTML 里留下非法控制字节。
+if (existsSync(v90InjectPath)) {
+  const v103Caller = makeCaller(mod);
+  v103Caller.setMidi(new Uint8Array(readFileSync(v90InjectPath)));
+  v103Caller.setLyrics('[00:00.00]你\u0001\u007F好\n[00:01.00]世界\n');
+  const v103Html = v103Caller.call('midi2jianpu_html', -1, 1) || '';
+  check(v103Html.includes("<span class='lyric'>你</span>") &&
+        v103Html.includes("<span class='lyric'>好</span>"),
+    'WASM LRC 里的裸 C0/DEL 被过滤，中文仍完整出谱', v103Html.slice(0, 300));
+  check(!/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(v103Html),
+    'WASM HTML 不含任何裸 C0 / DEL 控制字符', v103Html.slice(0, 300));
+  const v103Xml = v103Caller.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(!/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(v103Xml),
+    'WASM MusicXML 同样不含裸控制字符', v103Xml.slice(0, 300));
+  v103Caller.setLyrics('\uFEFF[00:00.00]你好\n[00:01.00]世界\n');
+  const v103Bom = v103Caller.call('midi2jianpu_html', -1, 1) || '';
+  check(v103Bom.includes("<span class='lyric'>你</span>") &&
+        v103Bom.includes("<span class='lyric'>世</span>"),
+    'WASM UTF-8 BOM 首行仍不丢词（v1.102.0 零回归）', v103Bom.slice(0, 300));
+  v103Caller.setLyrics('[00:00.00]你好\n[00:01.00]世界\n');
+  const v103Plain = v103Caller.call('midi2jianpu_html', -1, 1) || '';
+  check(v103Plain.includes("<span class='lyric'>你</span>") &&
+        v103Plain.includes("<span class='lyric'>世</span>"),
+    'WASM 正常 LRC 逐字节零回归', v103Plain.slice(0, 300));
+  v103Caller.setLyrics('');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

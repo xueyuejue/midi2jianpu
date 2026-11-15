@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import traceback
+import xml.etree.ElementTree as ET
 
 # ci_report 与 smoke.py 同目录；从仓库根执行 `python tests/smoke.py` 时
 # sys.path[0] 已是 tests/，这里补一条是为了 `python -m tests.smoke` 也能跑。
@@ -4270,6 +4271,173 @@ def main():
 
     check(open(v199mid, "rb").read() == open(injmid, "rb").read(),
           "输入 MIDI 一个字节都没被改")
+
+    group("[108] v1.103.0 外部歌词宽进严出：编码 / UTF-16 BOM / 转义键名 / 控制字符")
+    v103mid = os.path.join(tmp, "v103_in.mid")
+    shutil.copyfile(injmid, v103mid)
+    v103html = os.path.join(tmp, "v103.html")
+    v103xml = os.path.join(tmp, "v103.xml")
+    v103_json = ('[{"start_beat":0,"text":"你好"},'
+                 '{"start_beat":4,"text":"世界"}]')
+    v103_lrc = "[00:00.00]你好\n[00:01.00]世界\n"
+
+    def v103_write(raw, name, ext=".json"):
+        p = os.path.join(tmp, "v103_" + name + ext)
+        with open(p, "wb") as fh:
+            fh.write(raw if isinstance(raw, bytes) else raw.encode("utf-8"))
+        return p
+
+    def v103_lyrics(path=v103html):
+        body = open(path, encoding="utf-8").read()
+        return "".join(s.strip() for s in
+                       re.findall(r"<span class='lyric'>(.*?)</span>", body, re.S)
+                       if s.strip())
+
+    def v103_run(lf):
+        for stale in (v103html, v103xml):
+            if os.path.exists(stale):
+                os.remove(stale)
+        return run(exe, v103mid, "--lyrics", lf,
+                   "--html", v103html, "--musicxml", v103xml)
+
+    def v103_html_ok():
+        b = open(v103html, "rb").read()
+        try:
+            b.decode("utf-8")
+        except UnicodeDecodeError:
+            return False
+        return b"\xef\xbf\xbd" not in b
+
+    def v103_xml_ok():
+        try:
+            ET.fromstring(open(v103xml, "rb").read())
+            return True
+        except Exception:
+            return False
+
+    base103 = v103_write(v103_json, "utf8")
+    rc, out, err = v103_run(base103)
+    check(rc == 0 and v103_lyrics() == "你好世界"
+          and v103_html_ok() and v103_xml_ok() and "已忽略" not in err,
+          "正常 UTF-8 JSON 对照：HTML/XML 都良构，零回归基准", err)
+
+    gbk103 = v103_write(v103_json.encode("gbk"), "gbk")
+    rc, out, err = v103_run(gbk103)
+    check(rc == 0 and v103_lyrics() == "你好世界",
+          "GBK 编码的 JSON 歌词不再变成乱码", err)
+    check(v103_html_ok() and v103_xml_ok(),
+          "GBK JSON：HTML 是合法 UTF-8、MusicXML 可解析（旧版 ParseError）", err)
+    check("已忽略" not in err and "没有解析出" not in err,
+          "GBK JSON 不误报丢弃 / 空歌词警告", err)
+
+    gbkl103 = v103_write(v103_lrc.encode("gbk"), "gbklrc", ".lrc")
+    rc, out, err = v103_run(gbkl103)
+    check(rc == 0 and v103_lyrics() == "你好世界" and v103_xml_ok(),
+          "GBK LRC 路径原有归一未被本轮改动破坏", err)
+
+    sjis103 = v103_write(b'[{"start_beat":0,"text":"\x82\xb1\x82\xf1"}]',
+                         "sjis")
+    rc, out, err = v103_run(sjis103)
+    check(rc == 0 and v103_lyrics() == "こん" and v103_html_ok(),
+          "Shift-JIS JSON 假名归一成 UTF-8（与 LRC 同口径）", err)
+
+    cp103 = v103_write(b'[{"start_beat":0,"text":"it\x92s"}]', "cp1252")
+    rc, out, err = v103_run(cp103)
+    check(rc == 0 and v103_lyrics() == "it’s"
+          and v103_html_ok() and v103_xml_ok(),
+          "CP1252 0x92 折叠成 U+2019，HTML/XML 都不含非法字节", err)
+
+    le103 = v103_write(b"\xff\xfe" + v103_json.encode("utf-16-le"), "u16le")
+    rc, out, err = v103_run(le103)
+    check(rc == 0 and v103_lyrics() == "你好世界"
+          and v103_html_ok() and v103_xml_ok(),
+          "UTF-16LE BOM 的 JSON 不再 0 行、不再回退内置 LY 歌词", err)
+    check("没有解析出" not in err and "已忽略" not in err,
+          "UTF-16LE JSON 明确加载出歌词，无空词警告", err)
+
+    lel103 = v103_write(b"\xff\xfe" + v103_lrc.encode("utf-16-le"),
+                        "u16lelrc", ".lrc")
+    rc, out, err = v103_run(lel103)
+    check(rc == 0 and v103_lyrics() == "你好世界" and v103_xml_ok(),
+          "UTF-16LE BOM 的 LRC 两行词都出谱", err)
+
+    be103 = v103_write(b"\xfe\xff" + v103_json.encode("utf-16-be"), "u16be")
+    rc, out, err = v103_run(be103)
+    check(rc == 0 and v103_lyrics() == "你好世界",
+          "UTF-16BE BOM 的 JSON 同样正确转码", err)
+
+    emoji103 = v103_write(
+        b"\xff\xfe" + '[{"start_beat":0,"text":"\U0001f600"}]'
+        .encode("utf-16-le"), "emoji")
+    rc, out, err = v103_run(emoji103)
+    check(rc == 0 and "😀" in v103_lyrics() and v103_html_ok(),
+          "UTF-16 代理对在文件入口合成 4 字节 emoji，不产 U+FFFD", err)
+
+    u32_103 = v103_write(b"\xff\xfe\x00\x00" + v103_lrc.encode("utf-16-le"),
+                         "u32", ".lrc")
+    rc, out, err = v103_run(u32_103)
+    check(rc == 0 and "没有解析出任何歌词行" in err,
+          "UTF-32LE BOM 不被误当 UTF-16，明确报空词而不是印乱码", err)
+
+    esc103 = v103_write(b'[{"start_beat":0,"\\u0074ext":"\\u4F60\\u597D"}]',
+                        "esckey")
+    rc, out, err = v103_run(esc103)
+    check(rc == 0 and v103_lyrics() == "你好" and "已忽略" not in err,
+          "JSON \\u0074ext 转义键名不再整行丢弃、不再回退 LY", err)
+
+    escb103 = v103_write(b'[{"\\u0073tart_beat":0,"text":"\\u4F60\\u597D"}]',
+                         "escbeat")
+    rc, out, err = v103_run(escb103)
+    check(rc == 0 and v103_lyrics() == "你好" and "已忽略" not in err,
+          "JSON \\u0073tart_beat 转义键名也能定位冒号", err)
+
+    both103 = v103_write(
+        b'[{"\\u0073tart_beat":0,"\\u0074ext":"\\u4F60\\u597D"},'
+        b'{"start_beat":4,"text":"\\u4E16\\u754C"}]', "escboth")
+    rc, out, err = v103_run(both103)
+    check(rc == 0 and v103_lyrics() == "你好世界",
+          "转义键名与普通键名混用，两行都保留", err)
+
+    bad103 = v103_write('[{"start_beat":0,"text":123}]', "numtext")
+    rc, out, err = v103_run(bad103)
+    check(rc == 0 and "已忽略 1 行歌词" in err,
+          "v1.101 的 \"text\":123 畸形对象仍明确丢弃", err)
+
+    c0l103 = v103_write(b"[00:00.00]\xe4\xbd\xa0\x01\x7f\xe5\xa5\xbd\n",
+                        "c0lrc", ".lrc")
+    rc, out, err = v103_run(c0l103)
+    c0body = open(v103html, "rb").read()
+    check(rc == 0 and v103_lyrics() == "你好"
+          and not [b for b in c0body if b < 0x20 and b not in (9, 10, 13)],
+          "LRC 裸 C0/DEL 不再进 HTML（与 MusicXML 同口径）", err)
+    check(v103_xml_ok(), "C0 歌词导出的 MusicXML 仍良构", err)
+
+    c0j103 = v103_write(b'[{"start_beat":0,"text":'
+                        b'"\xe4\xbd\xa0\x01\xe5\xa5\xbd"}]', "c0json")
+    rc, out, err = v103_run(c0j103)
+    check(rc == 0 and v103_lyrics() == "你好" and v103_html_ok(),
+          "JSON 裸 C0 被过滤，中文完整、HTML 合法 UTF-8", err)
+
+    bom103 = v103_write(b"\xef\xbb\xbf" + v103_json.encode("utf-8"), "bomjson")
+    rc, out, err = v103_run(bom103)
+    check(rc == 0 and v103_lyrics() == "你好世界",
+          "v1.102.0 的 UTF-8 BOM 处理未被本轮改动破坏", err)
+
+    nested103 = v103_write(
+        ('{"meta":{"song":"测试"},"lines":['
+         '{"start_beat":0,"text":"你好"},'
+         '{"start_beat":4,"text":"世界"}]}').encode("utf-8"), "nested")
+    rc, out, err = v103_run(nested103)
+    check(rc == 0 and v103_lyrics() == "你好世界",
+          "嵌套对象 / 数组 JSON 仍按对象边界扫描，不受 keyEnd 改动影响", err)
+
+    plain103 = v103_write(v103_lrc, "plainlrc", ".lrc")
+    rc, out, err = v103_run(plain103)
+    check(rc == 0 and v103_lyrics() == "你好世界" and v103_xml_ok(),
+          "正常 UTF-8 LRC 逐字节零回归", err)
+
+    check(open(v103mid, "rb").read() == open(injmid, "rb").read(),
+          "外部歌词编码 / 转义 / 控制字符全程不改动输入 MIDI")
 
     print("\n" + "-" * 48)
     if failures:

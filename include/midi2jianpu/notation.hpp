@@ -199,6 +199,12 @@ struct LyricLine {
 // v1.102.0 起支持标准 \uXXXX（含 surrogate pair）并剥 UTF-8 BOM。
 std::vector<LyricSyllable> parseLyricsText(const std::string& content, int division,
                                             size_t* dropped = nullptr);
+// 外部歌词文件的字节归一（v1.103.0）：UTF-16 LE/BE BOM 转 UTF-8，其余走
+// textenc::normalize()（严格 UTF-8 原样返回，否则 GBK / Shift-JIS 打分，
+// 最后按 CP1252 逐字节折叠）。只给两个读盘入口用；WASM 的 set_lyrics 收到
+// 的 JS 字符串已经是 Unicode，不需要字节转码。返回值一定是合法 UTF-8，
+// 且绝不产 U+FFFD。
+std::string normalizeLyricFileBytes(const std::string& raw);
 // 解析歌词 JSON 文件，返回按 tick 排序的歌词字列表（读盘后转调 parseLyricsText）
 std::vector<LyricSyllable> parseLyrics(const std::string& jsonPath, int division,
                                        size_t* dropped = nullptr);

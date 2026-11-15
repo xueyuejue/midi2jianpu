@@ -2004,6 +2004,26 @@ static void stripUtf8Bom(std::string& s) {
         s.erase(0, 3);
 }
 
+// 歌词正文里裸 C0 控制字符（除 tab/LF/CR）与 DEL：MusicXML 的 xmlEscape()
+// 会丢，JSON 的 \u0000 解码分支也会丢，唯独 HTML 页眉转义不会 —— 同一份
+// 歌词三端口径不一致。两个纯文本入口统一过滤；正常文件不含这些字节，
+// 输出逐字节零回归。
+static void sanitizeLyricControls(std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (unsigned char c : s) {
+        if (c == '\t' || c == '\n' || c == '\r' ||
+            (c >= 0x20u && c != 0x7Fu))
+            out.push_back((char)c);
+    }
+    if (out.size() != s.size()) s.swap(out);
+}
+
+static bool isJsonSpace(char ch) {
+    return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
+}
+
+
 // 读 4 位十六进制；任何一位非法都返回 false，绝不越界读。
 static bool jsonHex4(const std::string& c, size_t p, unsigned& v) {
     if (p + 4 > c.size()) return false;
@@ -2037,6 +2057,61 @@ static void appendUtf8(std::string& out, unsigned cp) {
         out.push_back((char)(0x80u | ((cp >> 6) & 0x3Fu)));
         out.push_back((char)(0x80u | (cp & 0x3Fu)));
     }
+}
+
+// UTF-16 LE/BE BOM（Windows 记事本「Unicode」另存）→ UTF-8。代理对合成
+// U+10000..U+10FFFF，孤立代理与 C0/DEL 一律丢弃（与 skipJsonString 的
+// \uXXXX 分支同口径），任何分支都不产 U+FFFD。
+static std::string decodeUtf16Bom(const std::string& raw, bool littleEndian) {
+    std::string out;
+    unsigned high = 0;
+    for (size_t i = 2; i + 1 < raw.size(); i += 2) {
+        const unsigned a = (unsigned char)raw[i];
+        const unsigned b = (unsigned char)raw[i + 1];
+        unsigned cp = littleEndian ? (a | (b << 8)) : ((a << 8) | b);
+        if (high) {
+            if (cp >= 0xDC00u && cp <= 0xDFFFu) {
+                cp = 0x10000u + ((high - 0xD800u) << 10) + (cp - 0xDC00u);
+                appendUtf8(out, cp);
+                high = 0;
+                continue;
+            }
+            high = 0;                         // 孤立高代理丢弃
+        }
+        if (cp >= 0xD800u && cp <= 0xDBFFu) { high = cp; continue; }
+        if (cp >= 0xDC00u && cp <= 0xDFFFu) continue;  // 孤立低代理丢弃
+        if (cp == 0u ||
+            (cp < 0x20u && cp != '\t' && cp != '\n' && cp != '\r') ||
+            cp == 0x7Fu) continue;
+        appendUtf8(out, cp);
+    }
+    return out;
+}
+
+// 外部歌词文件的唯一字节归一入口：UTF-16 BOM 先转 UTF-8，其余交给
+// textenc::normalize()（严格 UTF-8 原样返回，否则 GBK / Shift-JIS 打分，
+// 再不行按 CP1252 逐字节折叠）。LRC 的 readTextFile() 与 JSON 的
+// parseLyrics() 都走这里，避免「同一份 GBK 歌词另存成 .json 就产出
+// 非法 UTF-8 的 HTML 和打不开的 MusicXML」。
+// 注意：纯文本入口（WASM set_lyrics 收到的 JS 字符串已是 Unicode）不做
+// 字节转码，只走 stripUtf8Bom + sanitizeLyricControls。
+std::string normalizeLyricFileBytes(const std::string& raw) {
+    if (raw.size() >= 2) {
+        const unsigned char a = (unsigned char)raw[0];
+        const unsigned char b = (unsigned char)raw[1];
+        if (a == 0xFFu && b == 0xFEu) {
+            // FF FE 00 00 是 UTF-32LE BOM；按 UTF-16 解会变成满屏 NUL。
+            // 不支持就干脆给空文本，让上层明确报「没解析出歌词行」。
+            if (raw.size() >= 4 && (unsigned char)raw[2] == 0x00u &&
+                (unsigned char)raw[3] == 0x00u) return {};
+            return decodeUtf16Bom(raw, true);
+        }
+        if (a == 0xFEu && b == 0xFFu) return decodeUtf16Bom(raw, false);
+        if (a == 0x00u && b == 0x00u && raw.size() >= 4 &&
+            (unsigned char)raw[2] == 0xFEu && (unsigned char)raw[3] == 0xFFu)
+            return {};                        // UTF-32BE BOM，同上
+    }
+    return textenc::normalize(raw);
 }
 
 // 读一个 JSON 字符串字面量：q 必须指向起始 '"'，返回结束引号位置；out 非空时
@@ -2101,15 +2176,22 @@ static size_t skipJsonString(const std::string& c, size_t q, std::string* out) {
 
 // 在 [from, to) 内找 JSON key 字面量，跳过所有字符串值。单纯 find() 会把歌词
 // 正文里出现的 "start_beat" 当成下一个字段，进而把词挂错位置。
+// endOut 返回该 key 的**结束引号**位置：键名可能是 "\u0074ext" 这类转义形式，
+// 长度不能按字面量写死，冒号和值引号一律从 endOut+1 开始找。
 static size_t findJsonKey(const std::string& c, const char* name,
-                          size_t from, size_t to) {
+                          size_t from, size_t to,
+                          size_t* endOut = nullptr) {
+    if (endOut) *endOut = std::string::npos;
     if (to > c.size()) to = c.size();
     for (size_t i = from; i < to;) {
         if (c[i] != '"') { ++i; continue; }
         std::string s;
         const size_t e = skipJsonString(c, i, &s);
         if (e == std::string::npos) return std::string::npos;
-        if (s == name) return i;
+        if (s == name) {
+            if (endOut) *endOut = e;
+            return i;
+        }
         i = e + 1;
         if (i >= to) break;
     }
@@ -2137,6 +2219,7 @@ std::vector<LyricSyllable> parseLyricsText(const std::string& contentRaw, int di
     if (dropped) *dropped = 0;       // 输出参数，入口清零
     std::string content = contentRaw;
     stripUtf8Bom(content);
+    sanitizeLyricControls(content);
     std::vector<LyricSyllable> result;
 
     // start_beat 是用户给的外部数字。判据沿用 v1.100.1 的平台无关 512 小节
@@ -2156,10 +2239,14 @@ std::vector<LyricSyllable> parseLyricsText(const std::string& contentRaw, int di
         size_t nextPos = (objEnd < content.size()) ? objEnd + 1 : content.size();
         if (nextPos <= objStart) nextPos = objStart + 1;
 
-        const size_t key = findJsonKey(content, "start_beat", objStart, objEnd);
-        const size_t textPos = findJsonKey(content, "text", objStart, objEnd);
+        size_t keyEnd = std::string::npos, textEnd = std::string::npos;
+        const size_t key = findJsonKey(content, "start_beat", objStart, objEnd,
+                                       &keyEnd);
+        const size_t textPos = findJsonKey(content, "text", objStart, objEnd,
+                                           &textEnd);
         // 没有这两个字段的对象不是歌词行（例如外层元数据），静默跳过。
-        if (key == std::string::npos || textPos == std::string::npos) {
+        if (key == std::string::npos || textPos == std::string::npos ||
+            keyEnd == std::string::npos || textEnd == std::string::npos) {
             pos = nextPos;
             continue;
         }
@@ -2169,28 +2256,28 @@ std::vector<LyricSyllable> parseLyricsText(const std::string& contentRaw, int di
         };
 
         // "start_beat" 后面必须是冒号 + 数字，数字只在该对象内取。
-        const size_t colon = content.find(':', key + 12);
+        // 从真实结束引号之后找，键名写成 "\u0073tart_beat" 也能正确定位。
+        const size_t colon = content.find(':', keyEnd + 1);
         if (colon == std::string::npos || colon >= objEnd) { dropOne(); continue; }
         size_t end = content.find_first_of(",}", colon + 1);
         if (end == std::string::npos || end > objEnd) end = objEnd;
         const double beatNum = parseNum(content, colon + 1, end);
 
-        // "text" 后面只允许「空白 + 恰好一个冒号」再跟一个字符串字面量。
-        // 旧版直接 find('"')，遇到 "text":123 会抓到下一个对象里的引号，
-        // 把 JSON 源码字符 s/t/a/r/t 当歌词印进谱面。
-        const size_t q1 = content.find('"', textPos + 6);
-        bool shapeOk = (q1 != std::string::npos && q1 < objEnd);
-        int colons = 0;
-        if (shapeOk) {
-            for (size_t j = textPos + 6; j < q1; ++j) {
-                const char ch = content[j];
-                if (ch == ':') ++colons;
-                else if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n') {
-                    shapeOk = false; break;
-                }
+        // "text" 后面只允许「空白 + 恰好一个冒号 + 空白 + 字符串字面量」。
+        // 旧版按字面量长度 find('"')，遇到 "text":123 会抓到下一个对象里的
+        // 引号，把 JSON 源码字符 s/t/a/r/t 当歌词印进谱面；键名被写成
+        // "\u0074ext" 时更会连冒号都找不到，整行被静默丢弃。
+        size_t q1 = std::string::npos;
+        if (textEnd < objEnd) {
+            size_t j = textEnd + 1;
+            while (j < objEnd && isJsonSpace(content[j])) ++j;
+            if (j < objEnd && content[j] == ':') {
+                ++j;
+                while (j < objEnd && isJsonSpace(content[j])) ++j;
+                if (j < objEnd && content[j] == '"') q1 = j;
             }
-            if (colons != 1) shapeOk = false;
         }
+        const bool shapeOk = (q1 != std::string::npos);
         std::string line;
         const size_t q2 = shapeOk ? skipJsonString(content, q1, &line)
                                   : std::string::npos;
@@ -2207,11 +2294,13 @@ std::vector<LyricSyllable> parseLyricsText(const std::string& contentRaw, int di
 
         // 按字拆分，每个字分配一个 tick（均匀分布在该行的 beat 范围内）。
         const long startTick = (long)startD;
+        size_t nextKeyEnd = std::string::npos;
         const size_t nextStart = findJsonKey(content, "start_beat",
-                                             objEnd, content.size());
+                                             objEnd, content.size(),
+                                             &nextKeyEnd);
         long lineLenTicks = division * 4;  // 默认 4 拍
-        if (nextStart != std::string::npos) {
-            const size_t nc = content.find(':', nextStart + 12);
+        if (nextStart != std::string::npos && nextKeyEnd != std::string::npos) {
+            const size_t nc = content.find(':', nextKeyEnd + 1);
             if (nc != std::string::npos) {
                 size_t ne = content.find_first_of(",}", nc + 1);
                 if (ne == std::string::npos) ne = content.size();
@@ -2251,7 +2340,9 @@ std::vector<LyricSyllable> parseLyrics(const std::string& jsonPath, int division
     }
     std::string content((std::istreambuf_iterator<char>(f)),
                         std::istreambuf_iterator<char>());
-    return parseLyricsText(content, division, dropped);
+    // 与 LRC 的 readTextFile() 同口径：GBK / Shift-JIS / CP1252 / UTF-16 BOM
+    // 都在这里归一成合法 UTF-8，parseLyricsText 只看纯文本。
+    return parseLyricsText(normalizeLyricFileBytes(content), division, dropped);
 }
 
 // 解析LRC歌词文件: [mm:ss.xx]歌词
@@ -2340,6 +2431,7 @@ static std::vector<LyricLine> parseLrcTextImpl(const std::string& lrcRaw,
     if (dropped) *dropped = 0;   // 输出参数，见 parseLyrics
     std::string lrc = lrcRaw;
     stripUtf8Bom(lrc);
+    sanitizeLyricControls(lrc);
     const double off = lrcOffsetSeconds(lrc);
     std::vector<LyricLine> out;
     size_t pos = 0;
@@ -2379,9 +2471,10 @@ static std::string readTextFile(const std::string& path) {
     if (!f.is_open()) return {};
     const std::string raw((std::istreambuf_iterator<char>(f)),
                           std::istreambuf_iterator<char>());
-    // 老 LRC 常见 GBK / Shift-JIS；归一后再交给按字节切行的解析器，
-    // 否则中文歌词会以非法 UTF-8 混进 HTML / MusicXML。
-    return textenc::normalize(raw);
+    // 老 LRC 常见 GBK / Shift-JIS / UTF-16 BOM；归一后再交给按字节切行的
+    // 解析器，否则中文歌词会以非法 UTF-8 混进 HTML / MusicXML。
+    // 与 parseLyrics() 共用同一个入口，JSON / LRC 不再两套口径。
+    return normalizeLyricFileBytes(raw);
 }
 
 std::vector<LyricLine> parseLrcText(const std::string& lrc, const MidiData& data,

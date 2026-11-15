@@ -8005,6 +8005,139 @@ int main() {
         check(bomOnly.empty() && dropped == 0,
               "只有 BOM 的空文件不产生幻影歌词行");
     }
+    std::cout << "\n测试外部歌词字节归一 / 转义键名 / 控制字符（v1.103.0）\n";
+    {
+        const int d = 480;
+        size_t dropped = 99;
+
+        // ---- normalizeLyricFileBytes：读盘入口的唯一字节归一 ----
+        const std::string utf8 = "[{\"start_beat\":0,\"text\":\"你好\"}]";
+        check(normalizeLyricFileBytes(utf8) == utf8,
+              "严格 UTF-8 逐字节原样返回（既有素材零回归）");
+
+        const std::string gbk("\xC4\xE3\xBA\xC3", 4);
+        check(normalizeLyricFileBytes(gbk) == "你好",
+              "GBK 双字节中文归一成 UTF-8");
+
+        const std::string sjis("\x82\xB1\x82\xF1", 4);  // こん
+        const std::string sjisOut = normalizeLyricFileBytes(sjis);
+        check(sjisOut == "\xE3\x81\x93\xE3\x82\x93"
+              && m2j::textenc::isValidUtf8(sjisOut),
+              "Shift-JIS 假名归一成 UTF-8");
+
+        const std::string cp1252("it\x92s", 4);
+        const std::string cpOut = normalizeLyricFileBytes(cp1252);
+        check(cpOut == "it\xE2\x80\x99s" && m2j::textenc::isValidUtf8(cpOut),
+              "CP1252 0x92 折叠成 U+2019，绝不产 U+FFFD");
+        check(cpOut.find("\xEF\xBF\xBD") == std::string::npos,
+              "编码归一各分支都不产 U+FFFD");
+
+        auto u16 = [](bool le, const std::vector<unsigned>& units) {
+            std::string s;
+            if (le) { s.push_back((char)0xFF); s.push_back((char)0xFE); }
+            else    { s.push_back((char)0xFE); s.push_back((char)0xFF); }
+            for (unsigned u : units) {
+                const unsigned char hi = (unsigned char)(u >> 8);
+                const unsigned char lo = (unsigned char)(u & 0xFFu);
+                if (le) { s.push_back((char)lo); s.push_back((char)hi); }
+                else    { s.push_back((char)hi); s.push_back((char)lo); }
+            }
+            return s;
+        };
+        std::vector<unsigned> lrcUnits;
+        for (char ch : std::string("[00:00.00]")) lrcUnits.push_back((unsigned char)ch);
+        lrcUnits.push_back(0x4F60u);  // 你
+        lrcUnits.push_back(0x597Du);  // 好
+        lrcUnits.push_back(0x000Au);  // LF
+        const std::string le = u16(true, lrcUnits);
+        const std::string be = u16(false, lrcUnits);
+        const std::string expectedLrc = "[00:00.00]你好\n";
+        check(normalizeLyricFileBytes(le) == expectedLrc,
+              "UTF-16LE BOM 转 UTF-8（LRC 首行不再 0 行）");
+        check(normalizeLyricFileBytes(be) == expectedLrc,
+              "UTF-16BE BOM 转 UTF-8");
+
+        const auto lrcLe = parseLrcText(normalizeLyricFileBytes(le), d, 120, &dropped);
+        check(dropped == 0 && lrcLe.size() == 1 && lrcLe[0].text == "你好",
+              "UTF-16LE BOM 的 LRC 经归一后能出词");
+
+        std::vector<unsigned> pairUnits{0xD83Du, 0xDE00u, 0x4F60u};
+        const std::string emoji = normalizeLyricFileBytes(u16(true, pairUnits));
+        check(emoji == "\xF0\x9F\x98\x80\xE4\xBD\xA0",
+              "UTF-16 代理对合成 4 字节 emoji，后续中文不丢");
+
+        std::vector<unsigned> loneUnits{0xD83Du, 0x4F60u, 0xDC00u,
+                                        0x0001u, 0x0000u, 0x007Fu, 0x0041u};
+        const std::string lone = normalizeLyricFileBytes(u16(true, loneUnits));
+        check(lone == "\xE4\xBD\xA0\x41",
+              "孤立代理 / C0 / DEL / NUL 一律丢弃，不产 U+FFFD");
+
+        check(normalizeLyricFileBytes(std::string("\xFF\xFE\x00\x00", 4)).empty()
+              && normalizeLyricFileBytes(
+                     std::string("\x00\x00\xFE\xFF", 4)).empty(),
+              "UTF-32 LE/BE BOM 不被误当 UTF-16 解成乱码");
+
+        const std::string odd("\xFF\xFE\x41", 3);
+        check(normalizeLyricFileBytes(odd).empty(),
+              "UTF-16 半个字符（奇数长度）直接丢弃，不越界读");
+
+        // ---- JSON 转义键名：findJsonKey 返回真实结束引号 ----
+        const auto escText = parseLyricsText(
+            "[{\"start_beat\":0,\"\\u0074ext\":\"\\u4F60\\u597D\"}]",
+            d, &dropped);
+        check(dropped == 0 && escText.size() == 2
+              && escText[0].text == "你" && escText[1].text == "好",
+              "JSON \"\\u0074ext\" 转义键名不再整行丢弃");
+
+        const auto escBeat = parseLyricsText(
+            "[{\"\\u0073tart_beat\":0,\"text\":\"你好\"}]", d, &dropped);
+        check(dropped == 0 && escBeat.size() == 2
+              && escBeat[0].text == "你",
+              "JSON \"\\u0073tart_beat\" 转义键名也能定位冒号");
+
+        const auto escBoth = parseLyricsText(
+            "[{\"\\u0073tart_beat\":0,\"\\u0074ext\":\"你好\"},"
+            "{\"start_beat\":4,\"text\":\"世界\"}]", d, &dropped);
+        check(dropped == 0 && escBoth.size() == 4
+              && escBoth[0].tick < escBoth[3].tick,
+              "转义键名与普通键名混用，下一行 beat 间距仍正确");
+
+        const auto escSpace = parseLyricsText(
+            "[{\"start_beat\":0,\"text\" :  \"你好\"}]", d, &dropped);
+        check(dropped == 0 && escSpace.size() == 2,
+              "冒号两侧空白仍按 JSON 语义放行");
+
+        const auto numText = parseLyricsText(
+            "[{\"start_beat\":0,\"text\":123}]", d, &dropped);
+        check(numText.empty() && dropped == 1,
+              "v1.101 的 \"text\":123 畸形对象仍计入 dropped");
+
+        const auto noQuote = parseLyricsText(
+            "[{\"start_beat\":0,\"text\":", d, &dropped);
+        check(noQuote.empty() && dropped == 1,
+              "v1.101 的未闭合 JSON 仍不挂起、不吞源码字符");
+
+        // ---- 裸控制字符：两个纯文本入口同口径 ----
+        const std::string c0Lrc("[00:00.00]\xE4\xBD\xA0\x01\x7F\xE5\xA5\xBD\n");
+        const auto cleanLrc = parseLrcText(c0Lrc, d, 120, &dropped);
+        bool lrcOk = (dropped == 0 && cleanLrc.size() == 1
+                      && cleanLrc[0].text == "你好");
+        check(lrcOk, "LRC 歌词里的裸 C0 / DEL 被过滤，中文完整");
+
+        const std::string c0Json(
+            "[{\"start_beat\":0,\"text\":\"\xE4\xBD\xA0\x01\xE5\xA5\xBD\"}]");
+        const auto cleanJson = parseLyricsText(c0Json, d, &dropped);
+        bool jsonOk = (dropped == 0 && cleanJson.size() == 2
+                       && cleanJson[0].text == "你"
+                       && cleanJson[1].text == "好");
+        check(jsonOk, "JSON 歌词里的裸 C0 被过滤，不再进 HTML");
+
+        const std::string benign(
+            "[00:00.00]\t你好\r\n[00:01.00]世界\n");
+        const auto benignLines = parseLrcText(benign, d, 120, &dropped);
+        check(dropped == 0 && benignLines.size() == 2,
+              "tab / CR / LF 保留，正常歌词逐字节零回归");
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";
