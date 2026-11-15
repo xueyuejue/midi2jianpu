@@ -91,6 +91,25 @@ const char* midi2jianpu_parse(const uint8_t* midiData, int size, int keyPitch, i
     return g_result.c_str();
 }
 
+// 网页端的歌词解析入口（v1.111.0）：与 CLI 同一个格式判定，LRC 与 JSON 都吃。
+// 此前这里写死 parseLrcText，用户把 CLI 那份 JSON 歌词（[{"start_beat":…,
+// "text":…}]）贴进网页，一行都取不到，页面静默回退成 MIDI 内置的「LY」音节——
+// 而同一份 JSON 在命令行里是好好的。detectLyricFormat("") 走纯内容嗅探，
+// 与 CLI 对「扩展名不认识」的文件用的是同一条规则，三端不会各说各话。
+static std::vector<m2j::LyricLine> parseLyricsAuto(const std::string& text,
+                                                   const m2j::MidiData& data,
+                                                   size_t* dropped = nullptr) {
+    if (dropped) *dropped = 0;
+    if (text.empty()) return {};
+    if (m2j::detectLyricFormat("", text) == m2j::LyricFormat::Lrc)
+        return m2j::parseLrcText(text, data, dropped);
+    // JSON 路径与 CLI 完全一致：每个字自成一行，tick 由 start_beat 直接给。
+    std::vector<m2j::LyricLine> out;
+    for (const auto& s : m2j::parseLyricsText(text, data.division, dropped))
+        out.push_back({s.tick, s.text});
+    return out;
+}
+
 // 生成HTML谱面
 const char* midi2jianpu_html(const uint8_t* midiData, int size, int keyPitch, int isMajor) {
     m2j::MidiData data;
@@ -120,7 +139,7 @@ const char* midi2jianpu_html(const uint8_t* midiData, int size, int keyPitch, in
     // WASM 版默认关闭 C++ 异常，用户贴一段畸形 LRC 就会 abort 崩掉整页。
     // 现在统一走 notation.cpp 里的共享实现（同样不抛异常）。
     std::vector<m2j::LyricLine> lyricLines;
-    if (!g_lyrics.empty()) lyricLines = m2j::parseLrcText(g_lyrics, data);
+    if (!g_lyrics.empty()) lyricLines = parseLyricsAuto(g_lyrics, data);
 
     g_result = m2j::renderHtml(data, key, g_title.empty() ? "简谱" : g_title,
                               lyricLines.empty() ? nullptr : &lyricLines);
@@ -158,7 +177,8 @@ const char* midi2jianpu_decode_lyric_file(const uint8_t* data, int size) {
 }
 
 // 网页端：统计「当前歌词文本 + 当前 MIDI」会有多少条越界时间戳被丢弃，与 CLI
-// 的「警告: 已忽略 N 行歌词」同口径（都来自 parseLrcText 的 dropped 输出）。
+// 的「警告: 已忽略 N 行歌词」同口径（都来自解析入口的 dropped 输出，
+// v1.111.0 起 LRC / JSON 都走 parseLyricsAuto，JSON 的畸形对象也计入）。
 // 此前网页在渲染路径里直接丢弃 dropped，用户贴一段带离谱 [offset:] / 巨大时间戳
 // 的 LRC，对应的词会静默消失（0 行可解析时还会回退到 MIDI 内置「LY」音节），
 // 用户只会以为程序漏了。这里把歌词文本作为参数传入（不依赖 wasm 全局 g_lyrics），
@@ -168,7 +188,7 @@ int midi2jianpu_lyric_dropped(const uint8_t* midiData, int size, const char* lyr
     m2j::MidiData data;
     if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) return 0;
     size_t dropped = 0;
-    m2j::parseLrcText(std::string(lyrics), data, &dropped);
+    parseLyricsAuto(std::string(lyrics), data, &dropped);
     return (int)dropped;
 }
 
@@ -391,11 +411,12 @@ const char* midi2jianpu_musicxml(const uint8_t* midiData, int size, int keyPitch
         key = m2j::estimateKey(data);
     }
     // 网页版导出 MusicXML 也要带词：歌词文本由 midi2jianpu_set_lyrics 传进来，
-    // 和 HTML 谱面走同一个 LRC 解析器，连音线/音节划分才不会两边不一致。
+    // 和 HTML 谱面走同一个解析入口（LRC / JSON 自动判定），连音线/音节划分
+    // 才不会两边不一致。
     std::vector<m2j::LyricLine> lyricLines;
     const std::vector<m2j::LyricLine>* lyricPtr = nullptr;
     if (!g_lyrics.empty()) {
-        lyricLines = m2j::parseLrcText(g_lyrics, data);
+        lyricLines = parseLyricsAuto(g_lyrics, data);
         if (!lyricLines.empty()) lyricPtr = &lyricLines;
     }
     g_result = m2j::renderMusicXml(data, key, lyricPtr);

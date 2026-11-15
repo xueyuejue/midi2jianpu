@@ -2352,6 +2352,78 @@ if (existsSync(v90InjectPath)) {
   c71.setLyrics('');
 }
 
+// ---- 72. v1.111.0 网页端也认 JSON 歌词（与 CLI 同一套格式判定）----
+// 网页的 set_lyrics 原先写死 parseLrcText：把 CLI 那份
+// [{"start_beat":N,"text":"…"}] 贴进歌词框，一行都取不到，页面静默回退成
+// MIDI 内置的「LY」音节——同一份文件在命令行里是好好的。现在走
+// detectLyricFormat("") 的内容嗅探，LRC / JSON 自动分流，三端一个口径。
+if (existsSync(v90InjectPath)) {
+  const c72 = makeCaller(mod);
+  c72.setMidi(new Uint8Array(readFileSync(v90InjectPath)));
+  // 第 71 组的 noteIndex70 是块作用域内的函数，这里另起一个同口径的
+  const noteIndex72 = (html, ch) => {
+    const at = html.indexOf("class='lyric'>" + ch + '</span>');
+    if (at < 0) return -1;
+    return (html.slice(0, at).match(/class='lyric'>/g) || []).length;
+  };
+  const jsonLy = '[{"start_beat":0,"text":"你"},{"start_beat":4,"text":"好"}]';
+
+  c72.setLyrics(jsonLy);
+  const h72 = c72.call('midi2jianpu_html', -1, 1) || '';
+  check(h72.includes("<span class='lyric'>你</span>") &&
+        h72.includes("<span class='lyric'>好</span>"),
+    'WASM 贴 JSON 歌词能出词（旧版 0 行，回退内置 LY）', h72.slice(0, 200));
+  check(!h72.includes("class='lyric'>LY"),
+    'WASM 贴 JSON 歌词不再回退成 MIDI 内置的 LY 音节', h72.slice(0, 200));
+  check(noteIndex72(h72, '你') === 0 && noteIndex72(h72, '好') === 4,
+    'WASM JSON 的 start_beat 按 beat 换算后落在第 0 / 第 4 个音',
+    `${noteIndex72(h72, '你')},${noteIndex72(h72, '好')}`);
+
+  const x72 = c72.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(x72.includes('<text>你</text>') && x72.includes('<text>好</text>'),
+    'WASM 导出 MusicXML 带同一份 JSON 歌词', x72.slice(0, 200));
+
+  // 单字 JSON 也要落在它自己的 beat 上，别被当成整行铺开
+  c72.setLyrics('[{"start_beat":2,"text":"甲"}]');
+  const h72b = c72.call('midi2jianpu_html', -1, 1) || '';
+  check(noteIndex72(h72b, '甲') === 2,
+    'WASM 单字 JSON 落在 start_beat=2 对应的第 3 个音',
+    String(noteIndex72(h72b, '甲')));
+
+  // 越界 start_beat：与 CLI 一样计入 dropped、0 行时回退内置歌词
+  if (mod._midi2jianpu_lyric_dropped) {
+    const inj72 = new Uint8Array(readFileSync(v90InjectPath));
+    const p72 = mod._malloc(inj72.length);
+    mod.HEAPU8.set(inj72, p72);
+    const n72 = mod.lengthBytesUTF8('[{"start_beat":999999,"text":"乙"}]') + 1;
+    const lp72 = mod._malloc(n72);
+    mod.stringToUTF8('[{"start_beat":999999,"text":"乙"}]', lp72, n72);
+    const d72 = mod._midi2jianpu_lyric_dropped(p72, inj72.length, lp72);
+    mod._free(lp72);
+    mod._free(p72);
+    check(d72 === 1, 'WASM JSON 的越界 start_beat 也计入 dropped', d72);
+  }
+  c72.setLyrics('[{"start_beat":999999,"text":"乙"}]');
+  const h72c = c72.call('midi2jianpu_html', -1, 1) || '';
+  check(h72c.includes("class='lyric'>LY"),
+    'WASM 越界 start_beat 的 JSON 一行不剩，与 CLI 一样回退内置音节',
+    h72c.slice(0, 160));
+
+  // 畸形 JSON 不崩、不产生歌词（WASM 默认关异常，这里绝不能 abort 整页）
+  c72.setLyrics('[{"start_beat":0,"text":');
+  const h72d = c72.call('midi2jianpu_html', -1, 1) || '';
+  check(h72d.includes('简谱') || h72d.includes('jpl'),
+    'WASM 畸形 JSON 仍能出谱（不崩）', h72d.slice(0, 120));
+
+  // 负向对照：LRC 仍走 LRC 分支，落点与旧版一致
+  c72.setLyrics('[00:00.00]你好\n');
+  const h72e = c72.call('midi2jianpu_html', -1, 1) || '';
+  check(noteIndex72(h72e, '你') === 0 && noteIndex72(h72e, '好') === 4,
+    'WASM LRC 仍按 LRC 解析，落点零回归',
+    `${noteIndex72(h72e, '你')},${noteIndex72(h72e, '好')}`);
+  c72.setLyrics('');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);
