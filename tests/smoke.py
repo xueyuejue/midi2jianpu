@@ -4481,6 +4481,36 @@ def main():
     check(rc == 0 and v103_lyrics() == "你好世界",
           "带 BOM 的 UTF-16 仍走 BOM 分支，不被当无 BOM 解", err)
 
+    group("[110] v1.108.0 同时间戳多行歌词：双语 LRC 的原文不再整句消失")
+    # 双语歌词（原文一行、译文一行共用一个 [mm:ss.xx]）是导出工具的默认形态。
+    # 旧版把每行的右端直接取成下一行起点：同戳时 to == from，这一行一个音头
+    # 都拿不到就 continue，整句文字被静默吞掉，页面上只剩后一行。
+    bi110 = v103_write("[00:00.00]你好\n[00:00.00]Hello\n[00:02.00]再见\n",
+                       "bi110", ".lrc")
+    rc, out, err = v103_run(bi110)
+    check(rc == 0 and v103_lyrics() == "你好He再见",
+          "双语同戳两行都出词（旧版只有 Hell，原文整行丢失）", err)
+    check("歌词已加载: 3 行" in out and "已忽略" not in err,
+          "三行歌词全部计入，且不误报越界丢弃", err)
+    xml110 = ET.fromstring(open(v103xml, "rb").read())
+    texts110 = [t.text for t in xml110.iter("text")]
+    check(texts110[:3] == ["你", "好", "H"],
+          "MusicXML 歌词顺序与 HTML 一致（原文在前，译文接着排）",
+          repr(texts110))
+
+    # 同戳三行：组内音头按 3 等分依次落字，后面的行一个都不许丢。
+    tri110 = v103_write("[00:00.00]甲\n[00:00.00]乙\n[00:00.00]丙\n"
+                        "[00:03.00]丁\n", "tri110", ".lrc")
+    rc, out, err = v103_run(tri110)
+    check(rc == 0 and v103_lyrics() == "甲乙丙丁",
+          "同戳三行按音头三等分依次落字，后续行不受影响", err)
+
+    # 负向对照：单行歌词的分配口径不许被组逻辑带偏（一音一字 / 一字多音都还在）。
+    single110 = v103_write("[00:00.00]你好\n[00:02.00]再见\n", "single110", ".lrc")
+    rc, out, err = v103_run(single110)
+    check(rc == 0 and v103_lyrics() == "你好再见" and v103_xml_ok(),
+          "单行歌词（k=1）与旧版逐字等价，零回归", err)
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

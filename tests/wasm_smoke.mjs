@@ -2285,6 +2285,33 @@ if (existsSync(v90InjectPath)) {
   mod._free(injPtr);
 }
 
+// ---- 70. v1.108.0 同时间戳多行歌词：网页贴双语 LRC 时原文不再整行消失 ----
+// 网页的歌词输入框直接吃 LRC 文本（set_lyrics -> parseLrcText），所以「原文一行、
+// 译文一行共用一个 [mm:ss.xx]」这条路径在浏览器里同样会撞上 assignLyrics 的同戳
+// 丢行缺陷。这里断言两行的字都进了谱面。
+if (existsSync(v90InjectPath)) {
+  const c70 = makeCaller(mod);
+  c70.setMidi(new Uint8Array(readFileSync(v90InjectPath)));
+  c70.setLyrics('[00:00.00]你好\n[00:00.00]Hello\n[00:02.00]再见\n');
+  const h70 = c70.call('midi2jianpu_html', -1, 1) || '';
+  check(h70.includes("<span class='lyric'>你</span>") &&
+        h70.includes("<span class='lyric'>好</span>"),
+    'WASM 双语同戳：原文两个字都出谱（旧版整行丢失）', h70.slice(0, 200));
+  check(h70.includes("<span class='lyric'>H</span>") &&
+        h70.includes("<span class='lyric'>再</span>"),
+    'WASM 双语同戳：译文与下一句照常落字', h70.slice(0, 200));
+  const x70 = c70.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(x70.includes('<text>你</text>') && x70.includes('<text>H</text>'),
+    'WASM MusicXML 歌词与 HTML 同口径（原文在前）', x70.slice(0, 200));
+  // 负向对照：单行歌词仍是逐字节等价的老口径。
+  c70.setLyrics('[00:00.00]你好\n[00:02.00]再见\n');
+  const h70b = c70.call('midi2jianpu_html', -1, 1) || '';
+  check(h70b.includes("<span class='lyric'>你</span>") &&
+        h70b.includes("<span class='lyric'>再</span>"),
+    'WASM 单行歌词零回归', h70b.slice(0, 200));
+  c70.setLyrics('');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

@@ -792,6 +792,37 @@ int main() {
         check(assignLyrics(d, {}, 1).empty(), "没有歌词时结果为空");
         check(assignLyrics(d, lines, -1).empty(), "轨道号无效时结果为空");
         check(assignLyrics(d, lines, 7).empty(), "歌词不会挂到不存在的轨道上");
+
+        // ---- 同一时间戳的多行（双语 LRC 的原文 / 译文）----
+        // 「原文一行、译文一行共用一个 [mm:ss.xx]」是双语歌词最常见的写法。
+        // 旧版把每行的右端直接取成下一行的起点：同戳时 to == from，这一行一个
+        // 音头都拿不到就 continue，整句文字被静默吞掉，页面上只剩后一行。
+        // 现在同戳的连续行算一组，组内音头按行均分。
+        std::vector<LyricLine> bi = {{0, "一二"}, {0, "三四"}};
+        LyricAssignment g = assignLyrics(d, bi, 1);
+        check(g.at.size() == 4, "同戳两行都出字（旧版只剩后一行两个字）");
+        check(g.at.count(0) && g.at[0].text == "一",
+              "同戳第一行拿组内前半段音头");
+        check(g.at.count(1920) && g.at[1920].text == "三",
+              "同戳第二行接着拿后半段");
+        check(g.melismas.size() == 4 && g.melismas[0].noteCount == 2,
+              "组内均分后每字仍拖两个音");
+        check(g.melismas[1].spanEnd <= 1920, "前半段的连音线不越过第二行起点");
+
+        std::vector<LyricLine> tri = {{0, "甲"}, {0, "乙"}, {0, "丙"}};
+        LyricAssignment t = assignLyrics(d, tri, 1);
+        check(t.at.size() == 3 && t.at[0].text == "甲" && t.at[960].text == "乙"
+              && t.at[2400].text == "丙",
+              "同戳三行按 8 个音头三等分成 2/3/3 段依次落字");
+
+        // 行数多于音头：后面的行确实无处可挂（谱面容量），但前面几行不能
+        // 因此被一起吞掉，也不许崩。
+        std::vector<LyricLine> many = {{0, "甲"}, {0, "乙"}, {0, "丙"},
+                                       {0, "丁"}, {0, "戊"}, {960, "己"}};
+        LyricAssignment q = assignLyrics(d, many, 1);
+        check(q.at.size() == 3, "行数多于音头时只排出音头能装下的字，且不崩");
+        check(q.at.count(960) && q.at[960].text == "己",
+              "同戳组之外的下一行照旧落在自己的音头上");
     }
 
     // ---- MIDI 内置歌词（0x05 lyric meta） ----

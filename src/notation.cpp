@@ -2853,6 +2853,49 @@ static std::vector<std::string> splitUtf8(const std::string& s) {
     return out;
 }
 
+// 把一行文字铺到 onsets 的 [a0, a1) 这段音头上。
+//
+// tailEnd 是这一行右端的收尾位置（下一组歌词的起点或全曲末音之后）。
+static void placeLyricLine(LyricAssignment& out, const std::string& text,
+                           const std::vector<long>& onsets,
+                           size_t a0, size_t a1, long tailEnd) {
+    const auto syls = splitUtf8(text);
+    const size_t n = a1 - a0, m = syls.size();
+    if (n == 0 || m == 0) return;
+
+    // 第 i 个字覆盖的音符区间是 [startOf(i), startOf(i+1))。
+    // n > m 时按 floor(i*n/m) 均匀分布，让一行词铺满自己的时间跨度；
+    // 早先「第 k 个音领第 k 个字」会把 7 个字在第一小节一口气用完。
+    auto startOf = [&](size_t i) -> size_t {
+        if (i >= m) return n;
+        if (n > m) {
+            size_t v = (size_t)((unsigned long long)i * n / m);
+            return v < n ? v : n - 1;
+        }
+        return i < n ? i : n;
+    };
+
+    for (size_t i = 0; i < m; i++) {
+        size_t a = startOf(i);
+        if (a >= n) break;                  // 音不够，剩下的字没地方挂
+        size_t b = startOf(i + 1);
+        if (b <= a) b = a + 1;
+        if (b > n) b = n;
+
+        LyricPlacement pl;
+        pl.text = syls[i];
+        pl.tick = onsets[a0 + a];
+        pl.noteCount = (int)(b - a);
+        pl.lastNoteTick = onsets[a0 + b - 1];
+        // 右端不能越过下一行歌词的起点，否则连音线会拖进下一句
+        pl.spanEnd = (b < n) ? onsets[a0 + b] : tailEnd;
+        if (pl.spanEnd <= pl.tick) pl.spanEnd = pl.tick + 1;
+
+        out.at[pl.tick] = pl;
+        if (pl.noteCount >= 2) out.melismas.push_back(pl);
+    }
+}
+
 LyricAssignment assignLyrics(const MidiData& data,
                              const std::vector<LyricLine>& lines,
                              int mainTrack) {
@@ -2873,48 +2916,34 @@ LyricAssignment assignLyrics(const MidiData& data,
     std::sort(onsets.begin(), onsets.end());
     onsets.erase(std::unique(onsets.begin(), onsets.end()), onsets.end());
 
-    for (size_t li = 0; li < lines.size(); li++) {
+    for (size_t li = 0; li < lines.size(); ) {
+        // 同一时间戳的连续行算一组。双语 LRC（原文一行、译文一行共用同一个
+        // [mm:ss.xx]）非常普遍；旧版把每行的右端直接取成下一行的起点，同戳时
+        // to == from，这一行一个音头都拿不到就 continue，整句文字被静默吞掉，
+        // 页面上只剩后一行。
+        size_t gEnd = li + 1;
+        while (gEnd < lines.size() &&
+               lines[gEnd].startTick == lines[li].startTick) gEnd++;
         const long from = lines[li].startTick;
         // 最后一行的右端取「全曲最后一个音之后」，保证末字也能覆盖到尾音
-        const long to = (li + 1 < lines.size()) ? lines[li + 1].startTick : songEnd + 1;
+        const long to = (gEnd < lines.size()) ? lines[gEnd].startTick : songEnd + 1;
+
         std::vector<long> inLine;
         for (long t : onsets) if (t >= from && t < to) inLine.push_back(t);
 
-        const auto syls = splitUtf8(lines[li].text);
-        const size_t n = inLine.size(), m = syls.size();
-        if (n == 0 || m == 0) continue;
-
-        // 第 i 个字覆盖的音符区间是 [startOf(i), startOf(i+1))。
-        // n > m 时按 floor(i*n/m) 均匀分布，让一行词铺满自己的时间跨度；
-        // 早先「第 k 个音领第 k 个字」会把 7 个字在第一小节一口气用完。
-        auto startOf = [&](size_t i) -> size_t {
-            if (i >= m) return n;
-            if (n > m) {
-                size_t v = (size_t)((unsigned long long)i * n / m);
-                return v < n ? v : n - 1;
-            }
-            return i < n ? i : n;
-        };
-
-        for (size_t i = 0; i < m; i++) {
-            size_t a = startOf(i);
-            if (a >= n) break;                  // 音不够，剩下的字没地方挂
-            size_t b = startOf(i + 1);
-            if (b <= a) b = a + 1;
-            if (b > n) b = n;
-
-            LyricPlacement pl;
-            pl.text = syls[i];
-            pl.tick = inLine[a];
-            pl.noteCount = (int)(b - a);
-            pl.lastNoteTick = inLine[b - 1];
-            // 右端不能越过下一行歌词的起点，否则连音线会拖进下一句
-            pl.spanEnd = (b < n) ? inLine[b] : to;
-            if (pl.spanEnd <= pl.tick) pl.spanEnd = pl.tick + 1;
-
-            out.at[pl.tick] = pl;
-            if (pl.noteCount >= 2) out.melismas.push_back(pl);
+        const size_t n = inLine.size();
+        const size_t k = gEnd - li;
+        // 组内音头按行均分：第 j 行拿 [j*n/k, (j+1)*n/k)。k == 1 时与旧版
+        // 逐字节等价；k > 1 时每一行都有自己的音头（行数多于音头时后面几行
+        // 确实无处可挂，这是谱面容量问题，不是解析丢失）。
+        for (size_t j = 0; j < k; j++) {
+            const size_t a0 = (size_t)((unsigned long long)j * n / k);
+            const size_t a1 = (size_t)((unsigned long long)(j + 1) * n / k);
+            if (a1 <= a0) continue;
+            placeLyricLine(out, lines[li + j].text, inLine, a0, a1,
+                           (j + 1 < k) ? inLine[a1] : to);
         }
+        li = gEnd;
     }
     return out;
 }
