@@ -1993,6 +1993,52 @@ int pickMelodyTrack(const MidiData& data, const std::vector<LyricLine>* lyrics) 
 // std::stoi / std::stod 遇到畸形输入会直接 abort 整个页面，故统一用它。
 static double parseNum(const std::string& s, size_t from, size_t to);
 
+// UTF-8 BOM（EF BB BF）：Windows 记事本存 UTF-8 时会自动加。LRC 逐行解析
+// 要求 line[0]=='['，BOM 占掉首字节后整行歌词被静默丢掉；JSON 虽不受影响
+// （find('{') 会跳过前缀），两个入口仍统一剥掉，保证 CLI / WASM / 单测同口径。
+static void stripUtf8Bom(std::string& s) {
+    if (s.size() >= 3 &&
+        (unsigned char)s[0] == 0xEF &&
+        (unsigned char)s[1] == 0xBB &&
+        (unsigned char)s[2] == 0xBF)
+        s.erase(0, 3);
+}
+
+// 读 4 位十六进制；任何一位非法都返回 false，绝不越界读。
+static bool jsonHex4(const std::string& c, size_t p, unsigned& v) {
+    if (p + 4 > c.size()) return false;
+    unsigned r = 0;
+    for (size_t k = 0; k < 4; ++k) {
+        const char ch = c[p + k];
+        unsigned d;
+        if (ch >= '0' && ch <= '9')      d = (unsigned)(ch - '0');
+        else if (ch >= 'a' && ch <= 'f') d = (unsigned)(ch - 'a') + 10u;
+        else if (ch >= 'A' && ch <= 'F') d = (unsigned)(ch - 'A') + 10u;
+        else return false;
+        r = (r << 4) | d;
+    }
+    v = r;
+    return true;
+}
+
+static void appendUtf8(std::string& out, unsigned cp) {
+    if (cp < 0x80u) {
+        out.push_back((char)cp);
+    } else if (cp < 0x800u) {
+        out.push_back((char)(0xC0u | (cp >> 6)));
+        out.push_back((char)(0x80u | (cp & 0x3Fu)));
+    } else if (cp < 0x10000u) {
+        out.push_back((char)(0xE0u | (cp >> 12)));
+        out.push_back((char)(0x80u | ((cp >> 6) & 0x3Fu)));
+        out.push_back((char)(0x80u | (cp & 0x3Fu)));
+    } else {
+        out.push_back((char)(0xF0u | (cp >> 18)));
+        out.push_back((char)(0x80u | ((cp >> 12) & 0x3Fu)));
+        out.push_back((char)(0x80u | ((cp >> 6) & 0x3Fu)));
+        out.push_back((char)(0x80u | (cp & 0x3Fu)));
+    }
+}
+
 // 读一个 JSON 字符串字面量：q 必须指向起始 '"'，返回结束引号位置；out 非空时
 // 写入解码后的内容。没有闭合引号一律返回 npos——旧版在 npos 上继续做 +1，
 // 回绕成 0 后 pos 不再前进，形成无限循环并把整份文件逐字塞进谱面。
@@ -2014,6 +2060,36 @@ static size_t skipJsonString(const std::string& c, size_t q, std::string* out) {
                 case 't':  out->push_back('\t'); break;
                 case 'b':  out->push_back('\b'); break;
                 case 'f':  out->push_back('\f'); break;
+                case 'u': {
+                    // JSON 标准 \uXXXX：很多歌词工具默认把非 ASCII 转成它。
+                    // 旧版走 default 只收下 'u'，后面 4 位 hex 当普通字符，
+                    // 「你」变成字面 "u4F60" 印进谱面。
+                    unsigned cp = 0;
+                    if (jsonHex4(c, i + 1, cp)) {
+                        i += 4;                 // i 指向第 4 位 hex
+                        if (cp >= 0xD800u && cp <= 0xDBFFu) {
+                            unsigned lo = 0;
+                            if (i + 6 < c.size() && c[i + 1] == '\\' &&
+                                c[i + 2] == 'u' && jsonHex4(c, i + 3, lo) &&
+                                lo >= 0xDC00u && lo <= 0xDFFFu) {
+                                cp = 0x10000u + ((cp - 0xD800u) << 10)
+                                     + (lo - 0xDC00u);
+                                i += 6;
+                            } else {
+                                cp = 0;         // 孤立高代理，丢弃
+                            }
+                        } else if (cp >= 0xDC00u && cp <= 0xDFFFu) {
+                            cp = 0;             // 孤立低代理，丢弃
+                        }
+                        // \u0000 等 C0 控制字符不能变成 NUL 塞进 HTML /
+                        // MusicXML；DEL 与孤立代理（cp=0）一并丢弃。绝不产 U+FFFD。
+                        if (cp >= 0x20u && cp != 0x7Fu && cp <= 0x10FFFFu)
+                            appendUtf8(*out, cp);
+                    } else {
+                        out->push_back('u');   // 畸形 \u 按字面降级
+                    }
+                    break;
+                }
                 default:   out->push_back(e);   break;  // 未知转义按字面收下
             }
         } else if (out) {
@@ -2056,9 +2132,11 @@ static size_t findObjectEnd(const std::string& c, size_t objStart) {
 }
 
 // 解析 JSON 歌词文本本身（纯逻辑，便于单测）。文件入口 parseLyrics 只负责读盘。
-std::vector<LyricSyllable> parseLyricsText(const std::string& content, int division,
+std::vector<LyricSyllable> parseLyricsText(const std::string& contentRaw, int division,
                                             size_t* dropped) {
     if (dropped) *dropped = 0;       // 输出参数，入口清零
+    std::string content = contentRaw;
+    stripUtf8Bom(content);
     std::vector<LyricSyllable> result;
 
     // start_beat 是用户给的外部数字。判据沿用 v1.100.1 的平台无关 512 小节
@@ -2256,10 +2334,12 @@ static void lrcTimestamps(const std::string& line,
 }
 
 // 唯一的时间戳换算点：offset 先叠到秒上，再由 tempo map 反解成 tick。
-static std::vector<LyricLine> parseLrcTextImpl(const std::string& lrc,
+static std::vector<LyricLine> parseLrcTextImpl(const std::string& lrcRaw,
                                                const TempoTimeline& tl,
                                                size_t* dropped) {
     if (dropped) *dropped = 0;   // 输出参数，见 parseLyrics
+    std::string lrc = lrcRaw;
+    stripUtf8Bom(lrc);
     const double off = lrcOffsetSeconds(lrc);
     std::vector<LyricLine> out;
     size_t pos = 0;

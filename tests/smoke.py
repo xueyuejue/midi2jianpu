@@ -4149,6 +4149,111 @@ def main():
     check(open(v101mid, "rb").read() == open(injmid, "rb").read(),
           "畸形 JSON 全程不改动输入 MIDI")
 
+    group("[107] v1.102.0 外部歌词 JSON \\uXXXX 与 UTF-8 BOM")
+    v102mid = os.path.join(tmp, "v102_in.mid")
+    shutil.copyfile(injmid, v102mid)
+    v102html = os.path.join(tmp, "v102.html")
+
+    def v102_write(raw, name, ext=".json"):
+        p = os.path.join(tmp, "v102_" + name + ext)
+        with open(p, "wb") as fh:
+            fh.write(raw if isinstance(raw, bytes) else raw.encode("utf-8"))
+        return p
+
+    def v102_lyrics(path):
+        body = open(path, encoding="utf-8").read()
+        return "".join(s.strip() for s in
+                       re.findall(r"<span class='lyric'>(.*?)</span>", body, re.S)
+                       if s.strip())
+
+    def v102_run(lf):
+        return run(exe, v102mid, "--lyrics", lf, "--html", v102html)
+
+    bom = b"\xef\xbb\xbf"
+
+    p102 = v102_write('[{"start_beat":0,"text":"你好"},'
+                      '{"start_beat":4,"text":"世界"}]', "plain")
+    rc, out, err = v102_run(p102)
+    check(rc == 0 and v102_lyrics(v102html) == "你好世界"
+          and "已忽略" not in err,
+          "正常 UTF-8 中文对照（零回归基准）", err)
+
+    u102 = v102_write(b'[{"start_beat":0,"text":"\\u4F60\\u597D"},'
+                      b'{"start_beat":4,"text":"\\u4E16\\u754C"}]', "unicode")
+    rc, out, err = v102_run(u102)
+    check(rc == 0 and v102_lyrics(v102html) == "你好世界",
+          "JSON \\uXXXX 标准转义解成中文，不再印字面 u4F60", err)
+    check("u4F60" not in v102_lyrics(v102html) and "已忽略" not in err,
+          "JSON \\u 转义不泄漏 hex 字面、不误报忽略", err)
+
+    s102 = v102_write(b'[{"start_beat":0,"text":"\\uD83D\\uDE00"},'
+                      b'{"start_beat":4,"text":"\\u4E16\\u754C"}]', "surrogate")
+    rc, out, err = v102_run(s102)
+    check(rc == 0 and "😀" in v102_lyrics(v102html)
+          and "世界" in v102_lyrics(v102html),
+          "JSON surrogate pair 合成 4 字节 emoji，后续中文不丢", err)
+
+    bj102 = v102_write(bom + b'[{"start_beat":0,"text":"\\u4F60\\u597D"}]',
+                       "bomjson")
+    rc, out, err = v102_run(bj102)
+    check(rc == 0 and v102_lyrics(v102html) == "你好"
+          and "已忽略" not in err,
+          "JSON 开头带 UTF-8 BOM 与无 BOM 同口径", err)
+
+    z102 = v102_write(b'[{"start_beat":0,"text":"\\u0000\\u4F60"},'
+                      b'{"start_beat":4,"text":"\\u007F\\u4E16\\u754C"}]',
+                      "ctrl")
+    rc, out, err = v102_run(z102)
+    zbody = open(v102html, "rb").read()
+    check(rc == 0 and b"\x00" not in zbody and b"\xef\xbf\xbd" not in zbody,
+          "JSON \\u0000 / \\u007F 不把 NUL 或 U+FFFD 塞进 HTML", err)
+    check("你" in v102_lyrics(v102html)
+          and "世界" in v102_lyrics(v102html),
+          "C0 控制字符被丢弃，正常中文照常出谱", err)
+
+    x102 = v102_write(b'[{"start_beat":0,"text":"\\u003Cscript\\u003E"}]',
+                      "xss")
+    rc, out, err = v102_run(x102)
+    xbody = open(v102html, "rb").read().decode("utf-8", "replace")
+    check(rc == 0 and "<script" not in xbody and "&lt;" in xbody,
+          "JSON \\u003C 解出的 < 仍被 HTML 转义，无裸 script 标签", err)
+
+    h102 = v102_write(b'[{"start_beat":0,"text":"\\uZZZZ\\u4F60\\u597D"}]',
+                      "badhex")
+    rc, out, err = v102_run(h102)
+    check(rc == 0 and "你好" in v102_lyrics(v102html)
+          and "已忽略" not in err,
+          "非法 \\uZZZZ 按字面降级，不吞掉后续引号与中文", err)
+
+    l102 = v102_write(bom + "[00:00.00]你好\n[00:01.00]世界\n".encode("utf-8"),
+                      "bomlrc", ".lrc")
+    rc, out, err = v102_run(l102)
+    check(rc == 0 and v102_lyrics(v102html) == "你好世界"
+          and "已忽略" not in err,
+          "LRC 首行带 UTF-8 BOM：首行「你好」不再静默消失", err)
+
+    l102b = v102_write("[00:00.00]你好\n[00:01.00]世界\n".encode("utf-8"),
+                       "plainlrc", ".lrc")
+    rc, out, err = v102_run(l102b)
+    check(rc == 0 and v102_lyrics(v102html) == "你好世界",
+          "LRC 无 BOM 对照仍逐字节一致", err)
+
+    l102c = v102_write(bom + "[ti:测试]\n[00:00.00]你好\n[00:01.00]世界\n"
+                       .encode("utf-8"), "bommeta", ".lrc")
+    rc, out, err = v102_run(l102c)
+    check(rc == 0 and v102_lyrics(v102html) == "你好世界",
+          "LRC BOM + 元数据首行：两行歌词都保留", err)
+
+    l102d = v102_write("[00:00.00]你好\n".encode("utf-8") + bom
+                       + "[00:01.00]世界\n".encode("utf-8"), "midbom", ".lrc")
+    rc, out, err = v102_run(l102d)
+    check(rc == 0 and "你好" in v102_lyrics(v102html)
+          and "\ufeff" not in v102_lyrics(v102html),
+          "BOM 只剥文件开头，行中间的 BOM 不被当歌词印出", err)
+
+    check(open(v102mid, "rb").read() == open(injmid, "rb").read(),
+          "外部歌词转义 / BOM 全程不改动输入 MIDI")
+
     check(open(v199mid, "rb").read() == open(injmid, "rb").read(),
           "输入 MIDI 一个字节都没被改")
 

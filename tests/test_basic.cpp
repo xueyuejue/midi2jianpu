@@ -7905,6 +7905,106 @@ int main() {
         check(hugeBeat.empty() && dropped == 1,
               "start_beat 越界沿用 v1.100.1 的 512 小节 cap");
     }
+    std::cout << "\n测试 JSON \\uXXXX 与外部歌词 UTF-8 BOM（v1.102.0）\n";
+    {
+        const int d = 480;
+        const std::string bom("\xEF\xBB\xBF", 3);
+        size_t dropped = 99;
+
+        const auto plain = parseLyricsText(
+            "[{\"start_beat\":0,\"text\":\"你好\"}]", d, &dropped);
+        const auto bomJson = parseLyricsText(
+            bom + "[{\"start_beat\":0,\"text\":\"你好\"}]", d, &dropped);
+        check(dropped == 0 && plain.size() == 2 && bomJson.size() == 2
+              && bomJson[0].text == "你" && bomJson[1].text == "好"
+              && bomJson[0].tick == plain[0].tick
+              && bomJson[1].tick == plain[1].tick,
+              "JSON 开头 UTF-8 BOM 与无 BOM 逐字节同口径");
+
+        const auto uni = parseLyricsText(
+            "[{\"start_beat\":0,\"text\":\"\\u4F60\\u597D\"}]", d, &dropped);
+        check(dropped == 0 && uni.size() == 2 && uni[0].text == "你"
+              && uni[1].text == "好",
+              "JSON \\u4F60\\u597D 解成「你好」，不再印字面 u4F60");
+        bool noHex = true;
+        for (const auto& s : uni)
+            if (s.text.find("u4F60") != std::string::npos) noHex = false;
+        check(noHex && uni[0].tick == plain[0].tick
+              && uni[1].tick == plain[1].tick,
+              "\\uXXXX 解码后 tick 与直接 UTF-8 完全一致");
+
+        const auto lower = parseLyricsText(
+            "[{\"start_beat\":0,\"text\":\"\\u4f60\\u597d\"}]", d, &dropped);
+        check(lower.size() == 2 && lower[0].text == "你"
+              && lower[1].text == "好",
+              "\\uXXXX 大小写十六进制都支持");
+
+        const auto pair = parseLyricsText(
+            "[{\"start_beat\":0,\"text\":\"\\uD83D\\uDE00\"}]", d, &dropped);
+        check(dropped == 0 && pair.size() == 1
+              && pair[0].text.size() == 4
+              && (unsigned char)pair[0].text[0] == 0xF0,
+              "surrogate pair \\uD83D\\uDE00 合成 4 字节 UTF-8 emoji");
+
+        const auto loneHi = parseLyricsText(
+            "[{\"start_beat\":0,\"text\":\"\\uD83D\\u4F60\"}]", d, &dropped);
+        bool hiOk = (loneHi.size() == 1 && loneHi[0].text == "你");
+        for (const auto& s : loneHi)
+            if (s.text.find("\xEF\xBF\xBD") != std::string::npos) hiOk = false;
+        check(hiOk, "孤立高代理被丢弃，不产 U+FFFD，后续中文仍保留");
+
+        const auto loneLo = parseLyricsText(
+            "[{\"start_beat\":0,\"text\":\"\\uDE00\\u597D\"}]", d, &dropped);
+        check(loneLo.size() == 1 && loneLo[0].text == "好",
+              "孤立低代理被丢弃，后续中文仍保留");
+
+        const auto ctrl = parseLyricsText(
+            "[{\"start_beat\":0,\"text\":\"\\u0000\\u001F\\u4F60\\u007F\"}]",
+            d, &dropped);
+        bool ctrlOk = (ctrl.size() == 1 && ctrl[0].text == "你");
+        for (const auto& s : ctrl)
+            if (s.text.find('\0') != std::string::npos) ctrlOk = false;
+        check(ctrlOk, "\\u0000 / C0 / DEL 不变成 NUL 或控制字节进谱面");
+
+        const auto escQuote = parseLyricsText(
+            "[{\"start_beat\":0,\"text\":\"\\u0022\\u597D\"}]", d, &dropped);
+        check(dropped == 0 && escQuote.size() == 2
+              && escQuote[0].text == "\"" && escQuote[1].text == "好",
+              "\\u0022 解成引号但不切断对象，「好」保留");
+
+        const auto badHex = parseLyricsText(
+            "[{\"start_beat\":0,\"text\":\"\\uZZZZ\\u4F60\\u597D\"}]",
+            d, &dropped);
+        bool badOk = (dropped == 0 && !badHex.empty()
+                      && badHex.back().text == "好");
+        check(badOk, "非法 \\uZZZZ 按字面降级，不吞掉后续引号与中文");
+
+        const auto angle = parseLyricsText(
+            "[{\"start_beat\":0,\"text\":\"\\u003Cscript\\u003E\"}]",
+            d, &dropped);
+        check(!angle.empty() && angle.front().text == "<",
+              "\\u003C 解成 < 交给输出层转义（纯逻辑侧确认解码）");
+
+        const auto lrcPlain = parseLrcText(
+            "[00:00.00]你好\n[00:01.00]世界\n", 480, 120, &dropped);
+        const auto lrcBom = parseLrcText(
+            bom + "[00:00.00]你好\n[00:01.00]世界\n", 480, 120, &dropped);
+        check(dropped == 0 && lrcPlain.size() == 2 && lrcBom.size() == 2
+              && lrcBom[0].text == "你好" && lrcBom[1].text == "世界"
+              && lrcBom[0].startTick == lrcPlain[0].startTick
+              && lrcBom[1].startTick == lrcPlain[1].startTick,
+              "LRC 首行 UTF-8 BOM：首行「你好」不再静默消失");
+
+        const auto lrcMiddle = parseLrcText(
+            "[00:00.00]你好\n" + bom + "[00:01.00]世界\n",
+            480, 120, &dropped);
+        check(!lrcMiddle.empty() && lrcMiddle[0].text == "你好",
+              "BOM 只剥文件开头，行中间的 BOM 不误伤首行");
+
+        const auto bomOnly = parseLyricsText(bom, d, &dropped);
+        check(bomOnly.empty() && dropped == 0,
+              "只有 BOM 的空文件不产生幻影歌词行");
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

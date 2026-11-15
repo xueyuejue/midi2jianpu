@@ -2150,6 +2150,27 @@ if (existsSync(v90InjectPath)) {
   v100Caller.setLyrics('');
 }
 
+// ---- 66. v1.102.0 LRC 首行 UTF-8 BOM：网页端也不静默丢词 ----
+// set_lyrics 传进来的 JS 字符串由 stringToUTF8 编成 EF BB BF 开头；
+// parseLrcTextImpl 要求 line[0]=='['，旧版首行整行被跳过。
+if (existsSync(v90InjectPath)) {
+  const v102Caller = makeCaller(mod);
+  v102Caller.setMidi(new Uint8Array(readFileSync(v90InjectPath)));
+  v102Caller.setLyrics('\uFEFF[00:00.00]你好\n[00:01.00]世界\n');
+  const v102BomHtml = v102Caller.call('midi2jianpu_html', -1, 1) || '';
+  check(v102BomHtml.includes("<span class='lyric'>你</span>") &&
+        v102BomHtml.includes("<span class='lyric'>世</span>"),
+    'WASM LRC 首行带 UTF-8 BOM 两行词都出谱', v102BomHtml.slice(0, 300));
+  check(!v102BomHtml.includes('\uFFFD'),
+    'WASM BOM 不产生 U+FFFD 替换字符', v102BomHtml.slice(0, 300));
+  v102Caller.setLyrics('[00:00.00]你好\n[00:01.00]世界\n');
+  const v102PlainHtml = v102Caller.call('midi2jianpu_html', -1, 1) || '';
+  check(v102PlainHtml.includes("<span class='lyric'>你</span>") &&
+        v102PlainHtml.includes("<span class='lyric'>世</span>"),
+    'WASM 无 BOM 对照仍逐字节一致', v102PlainHtml.slice(0, 300));
+  v102Caller.setLyrics('');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

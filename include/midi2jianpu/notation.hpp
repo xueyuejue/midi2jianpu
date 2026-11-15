@@ -196,6 +196,7 @@ struct LyricLine {
 // 旧的调用点（含 WASM 的 parseLrcText）无需改动。v1.101.0 起 JSON 里格式
 // 错误的对象（缺字段 / 非字符串 / 未闭合引号）也计入同一个 dropped。
 // 解析歌词 JSON 文本本身：纯逻辑，不碰文件系统，便于单测与复用。
+// v1.102.0 起支持标准 \uXXXX（含 surrogate pair）并剥 UTF-8 BOM。
 std::vector<LyricSyllable> parseLyricsText(const std::string& content, int division,
                                             size_t* dropped = nullptr);
 // 解析歌词 JSON 文件，返回按 tick 排序的歌词字列表（读盘后转调 parseLyricsText）
