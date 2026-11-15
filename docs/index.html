@@ -268,6 +268,23 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
         wasmMod._midi2jianpu_track_info(p, midiBytes.length));
       if (tk) hints.push(tk);
     }
+    if (wasmMod._midi2jianpu_lyric_dropped) {
+      // 用户贴/传的 LRC 里若有时间戳超出谱面可解释范围（如 [offset:999999999999]
+      // 或巨大时间戳），CLI 会打印「警告: 已忽略 N 行歌词」，网页此前是静默丢弃
+      // （0 行可解析时还会回退到 MIDI 内置「LY」音节），用户只会以为程序漏了。
+      // 这里用与 CLI 同款的 parseLrcText(dropped) 统计一次，有丢弃就提示。歌词文本
+      // 作为参数传入，不依赖 wasm 全局状态，故顺序无关（可在 convert 之前调用）。
+      var lyr = $('lyricsText').value || '';
+      if (lyr.trim()) {
+        var ln = wasmMod.lengthBytesUTF8(lyr) + 1;
+        var lp = wasmMod._malloc(ln);
+        wasmMod.stringToUTF8(lyr, lp, ln);
+        var drp = wasmMod._midi2jianpu_lyric_dropped(p, midiBytes.length, lp);
+        wasmMod._free(lp);
+        if (drp > 0)
+          hints.push('歌词：已忽略 ' + drp + ' 行（时间戳超出谱面可解释范围）');
+      }
+    }
     wasmMod._free(p);
     box.textContent = hints.join(' · ');
   }

@@ -2242,6 +2242,38 @@ if (existsSync(v90InjectPath)) {
   check(u32 === '', 'UTF-32LE BOM 空内容返回空串', u32);
 }
 
+// ---- 69. v1.106.0 网页端歌词 dropped 计数可见：越界时间戳不再静默丢弃 ----
+// CLI 在歌词时间戳超出谱面可解释范围时打印「警告: 已忽略 N 行歌词」，网页此前
+// 在渲染路径里直接丢弃 dropped（0 行可解析时还会回退 MIDI 内置「LY」音节），
+// 用户只会以为程序漏了。新增 _midi2jianpu_lyric_dropped(midi,size,lyrics) 与 CLI
+// 同口径（都来自 parseLrcText 的 dropped）。本组直接调该导出验证计数。
+if (existsSync(v90InjectPath)) {
+  const fn = mod._midi2jianpu_lyric_dropped;
+  check(typeof fn === 'function', 'WASM 导出 _midi2jianpu_lyric_dropped 存在');
+  // 该导出按全局 g_trackFilter 解析；先复位到全部轨，保证计数与轨道选择无关。
+  if (mod._midi2jianpu_set_track) mod._midi2jianpu_set_track(-1);
+  const injMidi = new Uint8Array(readFileSync(v90InjectPath));
+  const injPtr = mod._malloc(injMidi.length);
+  mod.HEAPU8.set(injMidi, injPtr);
+  function droppedOf(lyr) {
+    const n = mod.lengthBytesUTF8(lyr) + 1;
+    const lp = mod._malloc(n);
+    mod.stringToUTF8(lyr, lp, n);
+    const d = fn(injPtr, injMidi.length, lp);
+    mod._free(lp);
+    return d;
+  }
+  const normalDrop = droppedOf('[00:00.00]你好\n[00:01.00]世界\n');
+  check(normalDrop === 0, 'WASM 正常 LRC 的 dropped 计数为 0', normalDrop);
+  const offsetDrop = droppedOf('[offset:999999999999]\n[00:00.00]你好\n[00:01.00]世界\n');
+  check(offsetDrop === 2, 'WASM 越界 offset 两行都计入 dropped', offsetDrop);
+  const mixedDrop = droppedOf('[00:00.00]你好\n[99999999:00.00]世界\n');
+  check(mixedDrop === 1, 'WASM 混合时间戳只把越界那行计入 dropped', mixedDrop);
+  const emptyDrop = droppedOf('');
+  check(emptyDrop === 0, 'WASM 空歌词的 dropped 计数为 0', emptyDrop);
+  mod._free(injPtr);
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

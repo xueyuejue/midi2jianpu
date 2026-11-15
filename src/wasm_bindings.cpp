@@ -157,6 +157,21 @@ const char* midi2jianpu_decode_lyric_file(const uint8_t* data, int size) {
     return buf.c_str();
 }
 
+// 网页端：统计「当前歌词文本 + 当前 MIDI」会有多少条越界时间戳被丢弃，与 CLI
+// 的「警告: 已忽略 N 行歌词」同口径（都来自 parseLrcText 的 dropped 输出）。
+// 此前网页在渲染路径里直接丢弃 dropped，用户贴一段带离谱 [offset:] / 巨大时间戳
+// 的 LRC，对应的词会静默消失（0 行可解析时还会回退到 MIDI 内置「LY」音节），
+// 用户只会以为程序漏了。这里把歌词文本作为参数传入（不依赖 wasm 全局 g_lyrics），
+// 网页可随时查询并在提示栏显示。返回被丢弃的时间戳条数；空歌词 / 解析失败返回 0。
+int midi2jianpu_lyric_dropped(const uint8_t* midiData, int size, const char* lyrics) {
+    if (!lyrics) return 0;
+    m2j::MidiData data;
+    if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) return 0;
+    size_t dropped = 0;
+    m2j::parseLrcText(std::string(lyrics), data, &dropped);
+    return (int)dropped;
+}
+
 // 设置谱面标题（网页传 MIDI 文件名进来，让谱子顶上是歌名而不是程序名）
 void midi2jianpu_set_title(const char* title) {
     g_title = title ? title : "";
