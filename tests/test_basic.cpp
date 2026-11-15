@@ -8081,6 +8081,49 @@ int main() {
         check(normalizeLyricFileBytes(odd).empty(),
               "UTF-16 半个字符（奇数长度）直接丢弃，不越界读");
 
+        // ---- v1.107.0 无 BOM 的 UTF-16：NUL 是合法 UTF-8，旧版被原样放过 ----
+        const std::string leNoBom = le.substr(2);
+        const std::string beNoBom = be.substr(2);
+        check(normalizeLyricFileBytes(leNoBom) == expectedLrc,
+              "UTF-16LE 无 BOM 转 UTF-8（旧版整行都解析不出）");
+        check(normalizeLyricFileBytes(beNoBom) == expectedLrc,
+              "UTF-16BE 无 BOM 转 UTF-8");
+        const auto lrcNoBom =
+            parseLrcText(normalizeLyricFileBytes(leNoBom), d, 120, &dropped);
+        check(dropped == 0 && lrcNoBom.size() == 1
+              && lrcNoBom[0].text == "你好",
+              "UTF-16LE 无 BOM 的 LRC 经归一后能出词");
+
+        std::vector<unsigned> jsonUnits;
+        for (char ch : std::string("[{\"start_beat\":0,\"text\":\""))
+            jsonUnits.push_back((unsigned char)ch);
+        jsonUnits.push_back(0x4F60u);  // 你
+        jsonUnits.push_back(0x597Du);  // 好
+        for (char ch : std::string("\"}]"))
+            jsonUnits.push_back((unsigned char)ch);
+        const std::string jsonNoBom = u16(true, jsonUnits).substr(2);
+        const std::string jsonExpect = "[{\"start_beat\":0,\"text\":\"你好\"}]";
+        check(normalizeLyricFileBytes(jsonNoBom) == jsonExpect,
+              "UTF-16LE 无 BOM 的 JSON 字节归一成原文");
+        const auto jsonParsed =
+            parseLyricsText(normalizeLyricFileBytes(jsonNoBom), d, &dropped);
+        check(dropped == 0 && jsonParsed.size() == 2
+              && jsonParsed[0].text == "你",
+              "UTF-16LE 无 BOM 的 JSON 归一后能出词");
+
+        // 反例：嗅探只认「NUL 成密度且只挤在一侧」，这三类都不许被抢走。
+        const std::string smallOk("A\0B\0C\0", 6);
+        check(normalizeLyricFileBytes(smallOk) == "ABC",
+              "小样本单侧 NUL（3/3）按 UTF-16 解");
+        std::string sparseNul(40, 'a');
+        sparseNul[3] = '\0';
+        sparseNul[7] = '\0';
+        check(normalizeLyricFileBytes(sparseNul) == sparseNul,
+              "NUL 密度不足 1/8 的字节流不被误判成 UTF-16");
+        const std::string twoSided("A\0\0B", 4);
+        check(normalizeLyricFileBytes(twoSided) == twoSided,
+              "样本过小且两侧都有 NUL 时不猜字节序");
+
         // ---- JSON 转义键名：findJsonKey 返回真实结束引号 ----
         const auto escText = parseLyricsText(
             "[{\"start_beat\":0,\"\\u0074ext\":\"\\u4F60\\u597D\"}]",

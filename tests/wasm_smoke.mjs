@@ -2240,6 +2240,17 @@ if (existsSync(v90InjectPath)) {
 
   const u32 = decodeBytes('FFFE0000');            // UTF-32LE BOM（无内容）
   check(u32 === '', 'UTF-32LE BOM 空内容返回空串', u32);
+
+  // v1.107.0：无 BOM 的 UTF-16（NUL 是合法 UTF-8，旧版被原样放过 -> 时间戳失效）
+  const lrcLe = '5B00300030003A00300030002E00300030005D00604F7D59';
+  const noBomLe = decodeBytes(lrcLe);             // [00:00.00]你好
+  check(noBomLe === '[00:00.00]你好', 'UTF-16LE 无 BOM 解码为 LRC 原文', noBomLe);
+  const lrcBe = '005B00300030003A00300030002E00300030005D4F60597D';
+  const noBomBe = decodeBytes(lrcBe);
+  check(noBomBe === '[00:00.00]你好', 'UTF-16BE 无 BOM 解码为 LRC 原文', noBomBe);
+  const noBomOdd = decodeBytes('5B00300030003A00300030002E00300030005D00604F7D');
+  check(noBomOdd === '[00:00.00]你',
+    '奇数长度的无 BOM UTF-16 忽略残缺尾字节', noBomOdd);
 }
 
 // ---- 69. v1.106.0 网页端歌词 dropped 计数可见：越界时间戳不再静默丢弃 ----

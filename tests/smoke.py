@@ -4439,6 +4439,48 @@ def main():
     check(open(v103mid, "rb").read() == open(injmid, "rb").read(),
           "外部歌词编码 / 转义 / 控制字符全程不改动输入 MIDI")
 
+    group("[109] v1.107.0 外部歌词 UTF-16 无 BOM：NUL 不再让时间戳失效")
+    # 部分 Windows 工具 / 脚本拼出来的 LRC 与 JSON 不带 BOM。UTF-16 的 ASCII 段
+    # 形如 5B 00 / 00 5B，而 NUL 是**合法 UTF-8**——旧版被 isValidUtf8() 直接
+    # 放过，时间戳里全是 NUL，一行都解析不出；CJK 段还会被当 GBK 偶合成乱码。
+    le109 = v103_write(v103_lrc.encode("utf-16-le"), "u16lenobom", ".lrc")
+    rc, out, err = v103_run(le109)
+    check(rc == 0 and v103_lyrics() == "你好世界",
+          "UTF-16LE 无 BOM 的 LRC 两行词都出谱", err)
+    check(v103_html_ok() and v103_xml_ok() and "已忽略" not in err,
+          "UTF-16LE 无 BOM LRC：HTML 合法 UTF-8、XML 良构、无丢弃警告", err)
+
+    be109 = v103_write(v103_lrc.encode("utf-16-be"), "u16benobom", ".lrc")
+    rc, out, err = v103_run(be109)
+    check(rc == 0 and v103_lyrics() == "你好世界" and v103_xml_ok(),
+          "UTF-16BE 无 BOM 的 LRC 同样识别", err)
+
+    lej109 = v103_write(v103_json.encode("utf-16-le"), "u16lejsonnobom")
+    rc, out, err = v103_run(lej109)
+    check(rc == 0 and v103_lyrics() == "你好世界" and v103_html_ok(),
+          "UTF-16LE 无 BOM 的 JSON 归一后能出词", err)
+
+    bej109 = v103_write(v103_json.encode("utf-16-be"), "u16bejsonnobom")
+    rc, out, err = v103_run(bej109)
+    check(rc == 0 and v103_lyrics() == "你好世界",
+          "UTF-16BE 无 BOM 的 JSON 同样识别", err)
+
+    # 反例：GBK / Shift-JIS / 带 BOM 的 UTF-16 一条都不许被嗅探抢走。
+    gbk109 = v103_write(v103_lrc.encode("gbk"), "gbklrc109", ".lrc")
+    rc, out, err = v103_run(gbk109)
+    check(rc == 0 and v103_lyrics() == "你好世界",
+          "GBK LRC 在嗅探加入后仍走原打分路径（零回归）", err)
+    sjis109 = v103_write(b'[{"start_beat":0,"text":"\x82\xb1\x82\xf1"}]',
+                         "sjis109")
+    rc, out, err = v103_run(sjis109)
+    check(rc == 0 and v103_lyrics() == "こん",
+          "Shift-JIS JSON 不受嗅探影响", err)
+    bom109 = v103_write(b"\xff\xfe" + v103_lrc.encode("utf-16-le"),
+                        "u16lebom109", ".lrc")
+    rc, out, err = v103_run(bom109)
+    check(rc == 0 and v103_lyrics() == "你好世界",
+          "带 BOM 的 UTF-16 仍走 BOM 分支，不被当无 BOM 解", err)
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

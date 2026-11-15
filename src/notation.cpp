@@ -2059,13 +2059,15 @@ static void appendUtf8(std::string& out, unsigned cp) {
     }
 }
 
-// UTF-16 LE/BE BOM（Windows 记事本「Unicode」另存）→ UTF-8。代理对合成
-// U+10000..U+10FFFF，孤立代理与 C0/DEL 一律丢弃（与 skipJsonString 的
-// \uXXXX 分支同口径），任何分支都不产 U+FFFD。
-static std::string decodeUtf16Bom(const std::string& raw, bool littleEndian) {
+// UTF-16 LE/BE → UTF-8。代理对合成 U+10000..U+10FFFF，孤立代理与 C0/DEL
+// 一律丢弃（与 skipJsonString 的 \uXXXX 分支同口径），任何分支都不产 U+FFFD。
+// start 是首个码元的偏移：带 BOM 时 2（跳过 FF FE / FE FF），无 BOM 时 0。
+// 尾部残缺的半个码元（奇数长度）直接忽略，不越界读。
+static std::string decodeUtf16(const std::string& raw, size_t start,
+                               bool littleEndian) {
     std::string out;
     unsigned high = 0;
-    for (size_t i = 2; i + 1 < raw.size(); i += 2) {
+    for (size_t i = start; i + 1 < raw.size(); i += 2) {
         const unsigned a = (unsigned char)raw[i];
         const unsigned b = (unsigned char)raw[i + 1];
         unsigned cp = littleEndian ? (a | (b << 8)) : ((a << 8) | b);
@@ -2088,10 +2090,37 @@ static std::string decodeUtf16Bom(const std::string& raw, bool littleEndian) {
     return out;
 }
 
-// 外部歌词文件的唯一字节归一入口：UTF-16 BOM 先转 UTF-8，其余交给
-// textenc::normalize()（严格 UTF-8 原样返回，否则 GBK / Shift-JIS 打分，
-// 再不行按 CP1252 逐字节折叠）。LRC 的 readTextFile() 与 JSON 的
-// parseLyrics() 都走这里，避免「同一份 GBK 歌词另存成 .json 就产出
+// 无 BOM UTF-16 的字节签名嗅探。UTF-16 里的 ASCII 段（LRC 时间戳、JSON 键名
+// 与标点）形如 `5B 00` / `00 5B`——NUL 全挤在同一个奇偶位上。而合法 UTF-8 /
+// GBK / Shift-JIS 歌词一个 NUL 都没有（真含 NUL 已是病态输入），所以「NUL
+// 成密度且只在一侧」这个判据零误判，不会像「按字节对打分」那样把 GBK 抢走。
+// 纯汉字的无 ASCII 文件（整份只有汉字、没有时间戳或键名）认不出来——那种内容
+// 本来就不符合 LRC / JSON 语法，硬猜只会伤到 GBK。
+// 样本量门槛不能省：4 字节 2 个 NUL 的碎片一眼看是 50%，按 90% 算却「达标」。
+// 小样本只认 100% 单侧，样本够大（>= 8 个 NUL）才放宽到 90%——因为 U+4E00「一」
+// 这类低字节为 0 的汉字会在**另一侧**留下 NUL，真实文件往往不是干净的一半一半。
+static bool sniffUtf16NoBom(const std::string& raw, bool& littleEndian) {
+    if (raw.size() < 6) return false;
+    size_t nulEven = 0, nulOdd = 0;
+    for (size_t i = 0; i < raw.size(); ++i) {
+        if (raw[i] != '\0') continue;
+        if (i & 1u) ++nulOdd; else ++nulEven;
+    }
+    const size_t total = nulEven + nulOdd;
+    if (total < 3 || total * 8 < raw.size()) return false;
+    if (nulOdd == total)  { littleEndian = true;  return true; }
+    if (nulEven == total) { littleEndian = false; return true; }
+    if (total >= 8) {
+        if (nulOdd * 10 >= total * 9)  { littleEndian = true;  return true; }
+        if (nulEven * 10 >= total * 9) { littleEndian = false; return true; }
+    }
+    return false;                                  // 两侧都有，当普通字节流
+}
+
+// 外部歌词文件的唯一字节归一入口：UTF-16 BOM 先转 UTF-8，其次识别无 BOM 的
+// UTF-16，其余交给 textenc::normalize()（严格 UTF-8 原样返回，否则 GBK /
+// Shift-JIS 打分，再不行按 CP1252 逐字节折叠）。LRC 的 readTextFile() 与
+// JSON 的 parseLyrics() 都走这里，避免「同一份 GBK 歌词另存成 .json 就产出
 // 非法 UTF-8 的 HTML 和打不开的 MusicXML」。
 // 注意：纯文本入口（WASM set_lyrics 收到的 JS 字符串已是 Unicode）不做
 // 字节转码，只走 stripUtf8Bom + sanitizeLyricControls。
@@ -2104,13 +2133,17 @@ std::string normalizeLyricFileBytes(const std::string& raw) {
             // 不支持就干脆给空文本，让上层明确报「没解析出歌词行」。
             if (raw.size() >= 4 && (unsigned char)raw[2] == 0x00u &&
                 (unsigned char)raw[3] == 0x00u) return {};
-            return decodeUtf16Bom(raw, true);
+            return decodeUtf16(raw, 2, true);
         }
-        if (a == 0xFEu && b == 0xFFu) return decodeUtf16Bom(raw, false);
+        if (a == 0xFEu && b == 0xFFu) return decodeUtf16(raw, 2, false);
         if (a == 0x00u && b == 0x00u && raw.size() >= 4 &&
             (unsigned char)raw[2] == 0xFEu && (unsigned char)raw[3] == 0xFFu)
             return {};                        // UTF-32BE BOM，同上
     }
+    // 无 BOM 的 UTF-16（部分工具 / 脚本拼出来的 LRC、JSON）：NUL 是合法
+    // UTF-8，不拦就会被 isValidUtf8() 放过，时间戳里全是 NUL、一行都解析不出。
+    bool noBomLe = true;
+    if (sniffUtf16NoBom(raw, noBomLe)) return decodeUtf16(raw, 0, noBomLe);
     return textenc::normalize(raw);
 }
 
