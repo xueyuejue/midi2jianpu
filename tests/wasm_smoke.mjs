@@ -2201,6 +2201,47 @@ if (existsSync(v90InjectPath)) {
   v103Caller.setLyrics('');
 }
 
+// ---- 68. v1.104.0 网页端歌词上传字节解码：覆盖 GBK / UTF-16 / UTF-8 ----
+// 旧版网页用 FileReader.readAsText(f) 默认 UTF-8 读上传歌词，GBK / UTF-16 在
+// 进 WASM 前就被浏览器折成 U+FFFD；v1.104.0 改为 readAsArrayBuffer 取原始字节，
+// 交给新增的 _midi2jianpu_decode_lyric_file（包装 CLI 的 normalizeLyricFileBytes，
+// 与 CLI 读盘入口同款解码）。本组直接调该导出，断言各编码正确还原中文、无 U+FFFD。
+{
+  const fn = mod._midi2jianpu_decode_lyric_file;
+  check(typeof fn === 'function', 'WASM 导出 _midi2jianpu_decode_lyric_file 存在');
+  function hexBytes(hex) {
+    const out = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+    return out;
+  }
+  function decodeBytes(hex) {
+    const bytes = hexBytes(hex);
+    const ptr = mod._malloc(bytes.length);
+    mod.HEAPU8.set(bytes, ptr);
+    const sptr = fn(ptr, bytes.length);
+    const txt = sptr ? mod.UTF8ToString(sptr) : '';
+    mod._free(ptr);
+    return txt;
+  }
+  const gbk = decodeBytes('C4E3BAC3');            // GBK 你好
+  check(gbk === '你好', 'GBK 字节解码为「你好」', gbk);
+  check(!gbk.includes('�'), 'GBK 解码无 U+FFFD', gbk);
+
+  const u16 = decodeBytes('FFFE604F7D59');        // UTF-16LE BOM + 你好
+  check(u16 === '你好', 'UTF-16LE BOM 解码为「你好」', u16);
+  check(!u16.includes('�'), 'UTF-16LE 解码无 U+FFFD', u16);
+
+  const u8 = decodeBytes('E4BDA0E5A5BD');         // UTF-8 你好
+  check(u8 === '你好', 'UTF-8 字节解码为「你好」', u8);
+
+  const u8bom = decodeBytes('EFBBBFE4BDA0E5A5BD'); // UTF-8 BOM + 你好
+  check(u8bom.includes('你好') && !u8bom.includes('�'),
+    'UTF-8 BOM 解码含「你好」且无 U+FFFD', u8bom);
+
+  const u32 = decodeBytes('FFFE0000');            // UTF-32LE BOM（无内容）
+  check(u32 === '', 'UTF-32LE BOM 空内容返回空串', u32);
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

@@ -144,6 +144,19 @@ void midi2jianpu_set_lyrics(const char* lyrics) {
     g_lyrics = lyrics ? lyrics : "";
 }
 
+// 网页端歌词文件解码：把用户上传的原始字节（readAsArrayBuffer 取来）直接交给
+// CLI 既有的 normalizeLyricFileBytes，与 CLI 读盘入口同款解码（UTF-16 LE/BE BOM
+// 转 UTF-8，其余走 textenc::normalize：严格 UTF-8 原样返回，否则 GBK / Shift-JIS
+// 打分，最后按 CP1252 逐字节折叠）。这样网页与 CLI 走同一套解码逻辑，完全保真、
+// 零漂移，避免浏览器 readAsText 默认 UTF-8 把非 UTF-8 字节折成 U+FFFD。
+// 返回 static 缓冲的 UTF-8 字符串，网页须过 UTF8ToString；不要 free（不是 malloc 出来的）。
+const char* midi2jianpu_decode_lyric_file(const uint8_t* data, int size) {
+    static std::string buf;
+    if (!data || size < 0) { buf.clear(); return buf.c_str(); }
+    buf = m2j::normalizeLyricFileBytes(std::string((const char*)data, (size_t)size));
+    return buf.c_str();
+}
+
 // 设置谱面标题（网页传 MIDI 文件名进来，让谱子顶上是歌名而不是程序名）
 void midi2jianpu_set_title(const char* title) {
     g_title = title ? title : "";

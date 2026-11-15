@@ -352,15 +352,36 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     if (midiBytes && wasmReady) convert();
   };
   $('lyricsBtn').onclick = function () { $('lyricsFile').click(); };
+
+  // 把上传歌词文件的原始字节交给 WASM 解码（与 CLI 读盘入口同款
+  // normalizeLyricFileBytes），覆盖 GBK / UTF-16 / UTF-8 等，避免浏览器
+  // readAsText 默认 UTF-8 把非 UTF-8 字节折成 U+FFFD。返回的是 WASM 内部
+  // static 缓冲，过 UTF8ToString 拷出即可，不要 free（不是 malloc 出来的）。
+  function decodeLyricBytes(bytes) {
+    var ptr = wasmMod._malloc(bytes.length);
+    wasmMod.HEAPU8.set(bytes, ptr);
+    var sptr = wasmMod._midi2jianpu_decode_lyric_file(ptr, bytes.length);
+    var txt = sptr ? wasmMod.UTF8ToString(sptr) : '';
+    wasmMod._free(ptr);
+    return txt;
+  }
+
   $('lyricsFile').onchange = function () {
     var f = $('lyricsFile').files[0];
     if (!f) return;
     var fr = new FileReader();
     fr.onload = function () {
-      lyricsArea.value = fr.result;
+      var bytes = new Uint8Array(fr.result);
+      // 优先用 WASM 字节解码（保真覆盖 GBK / UTF-16 / UTF-8）；
+      // 旧 wasm 没有该导出时退回 UTF-8 解码（仅 UTF-8 正确，与旧版一致）。
+      if (wasmMod && wasmMod._midi2jianpu_decode_lyric_file) {
+        lyricsArea.value = decodeLyricBytes(bytes);
+      } else {
+        lyricsArea.value = new TextDecoder('utf-8').decode(bytes);
+      }
       if (midiBytes) convert();
     };
-    fr.readAsText(f);
+    fr.readAsArrayBuffer(f);
   };
   $('lyricsClear').onclick = function () {
     lyricsArea.value = '';
