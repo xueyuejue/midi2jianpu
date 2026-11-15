@@ -205,6 +205,15 @@ std::vector<LyricSyllable> parseLyricsText(const std::string& content, int divis
 // 的 JS 字符串已经是 Unicode，不需要字节转码。返回值一定是合法 UTF-8，
 // 且绝不产 U+FFFD。
 std::string normalizeLyricFileBytes(const std::string& raw);
+// 外部歌词走哪套解析器（v1.110.0）。扩展名 .lrc / .json 不分大小写；
+// 其余（无扩展名、.txt、.lrc.bak、名字里带空格的）按内容嗅探。
+// 早先 main.cpp 只比 ".lrc" / ".LRC" 两个字面量：Windows 上把名字改成
+// .Lrc 或存成 lyrics.txt 的 LRC 会被当成 JSON 解析，一行都取不到，页面
+// 静默退回 MIDI 内置的「LY」音节，控制台还建议用户去查 [mm:ss.xx] 时间戳
+// ——而时间戳其实完全正确。
+enum class LyricFormat { Lrc, Json };
+LyricFormat detectLyricFormat(const std::string& path, const std::string& content);
+
 // 解析歌词 JSON 文件，返回按 tick 排序的歌词字列表（读盘后转调 parseLyricsText）
 std::vector<LyricSyllable> parseLyrics(const std::string& jsonPath, int division,
                                        size_t* dropped = nullptr);

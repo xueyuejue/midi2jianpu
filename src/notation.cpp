@@ -2246,6 +2246,50 @@ static size_t findObjectEnd(const std::string& c, size_t objStart) {
     return c.size();
 }
 
+// 取扩展名并转小写。点必须落在最后一段路径里，否则 "a.dir/b" 会把
+// ".dir/b" 当成扩展名（Windows 上还可能是反斜杠分隔）。
+static std::string lyricExtLower(const std::string& path) {
+    const size_t slash = path.find_last_of("/\\");
+    const size_t dot = path.find_last_of('.');
+    if (dot == std::string::npos) return {};
+    if (slash != std::string::npos && dot < slash) return {};
+    std::string ext = path.substr(dot);
+    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+    return ext;
+}
+
+// 内容嗅探：只读第一个标签/括号，不做全文猜测。
+//   [00:12.00] / [ti:…] / [offset:±500]  → LRC（标签里有冒号）
+//   [{…}] / ["…"] / [1,2]                → JSON（第一个有效字符不是标签）
+//   不以 [ 开头                          → JSON
+// 判据只看「第一个 ] 之前有没有冒号」，几十字节就够，不会把长文件读两遍。
+static bool lyricLooksLikeLrc(const std::string& text) {
+    size_t i = 0;
+    if (text.size() >= 3 && (unsigned char)text[0] == 0xEF &&
+        (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF)
+        i = 3;                                     // 自带 BOM 的文本
+    while (i < text.size() && (text[i] == ' ' || text[i] == '\t' ||
+                               text[i] == '\r' || text[i] == '\n'))
+        ++i;                                       // 前导空行
+    if (i >= text.size() || text[i] != '[') return false;
+    ++i;
+    while (i < text.size() && (text[i] == ' ' || text[i] == '\t')) ++i;
+    if (i >= text.size()) return false;
+    const char c = text[i];
+    if (c == '{' || c == '"' || c == ']') return false;   // 是 JSON 数组/对象
+    const size_t close = text.find(']', i);
+    if (close == std::string::npos || close - i > 64) return false;
+    return text.find(':', i) < close;
+}
+
+LyricFormat detectLyricFormat(const std::string& path, const std::string& content) {
+    const std::string ext = lyricExtLower(path);
+    if (ext == ".lrc") return LyricFormat::Lrc;
+    if (ext == ".json") return LyricFormat::Json;
+    // 扩展名不认识（含没有扩展名）：按内容判定，绝不让文件名决定命运。
+    return lyricLooksLikeLrc(content) ? LyricFormat::Lrc : LyricFormat::Json;
+}
+
 // 解析 JSON 歌词文本本身（纯逻辑，便于单测）。文件入口 parseLyrics 只负责读盘。
 std::vector<LyricSyllable> parseLyricsText(const std::string& contentRaw, int division,
                                             size_t* dropped) {

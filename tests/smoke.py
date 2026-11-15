@@ -4552,6 +4552,44 @@ def main():
           "规范写法 [mm:ss.xx] 落点与旧版一致（零回归）",
           repr(v111_note_positions()))
 
+    group("[112] v1.110.0 外部歌词的格式判定：扩展名只用来猜，猜不出按内容嗅探")
+    # 旧版只比 ".lrc" / ".LRC" 两个字面量，其余一律交给 JSON 解析器：Windows 上
+    # 改名成 .Lrc、存成 lyrics.txt、或者文件名结尾带个空格，LRC 文本就被送进
+    # JSON，一行都取不到，页面静默回退成 MIDI 内置的「LY」音节，控制台还建议
+    # 用户去查 [mm:ss.xx] 时间戳——而时间戳其实完全正确。
+    lrc112 = "[00:00.00]你\n[00:02.00]好\n"
+    for fname in ("a.Lrc", "b.lRc", "c.txt", "d", "e.lrc.bak", "f.lrc "):
+        p = os.path.join(tmp, "v112_" + fname)
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(lrc112)
+        rc, out, err = v103_run(p)
+        check(rc == 0 and v103_lyrics() == "你好" and "歌词已加载: 2 行" in out,
+              "LRC 文本存成 %r 也能正常出词（旧版 0 行 + 回退 LY）" % fname,
+              out[-160:])
+
+    # 反过来一样：未知扩展名里的 JSON 仍要按 JSON 解析，别把嗅探做成单向阀。
+    j112 = v103_write(v103_json, "j112", ".txt")
+    rc, out, err = v103_run(j112)
+    check(rc == 0 and v103_lyrics() == "你好世界" and "歌词已加载: 4 行" in out,
+          ".txt 里的 JSON 数组照旧按 JSON 解析（每个字自成一行）", out[-160:])
+
+    # 扩展名与内容写反时，0 行提示必须点名「按哪套解析器看过」以及另一种格式
+    # 能不能救回来——旧版不管走哪条路都说「检查是否以 [mm:ss.xx] 时间戳开头」，
+    # 把 JSON 用户指去改一个不存在的字段。
+    mism112 = v103_write('[{"start_beat":0,"text":"\u4f60"}]', "mism112", ".lrc")
+    rc, out, err = v103_run(mism112)
+    check(rc == 0 and "歌词已加载: 0 行" in out and "按 LRC 解析" in err,
+          ".lrc 里放 JSON：提示写明是按 LRC 解析的，不再一律甩时间戳建议", err)
+    check("内容看起来是 JSON" in err and "扩展名" in err,
+          "并且直接点出「内容看起来是 JSON，扩展名写反了」", err)
+
+    rev112 = v103_write("[00:00.00]\u4f60\n", "rev112", ".json")
+    rc, out, err = v103_run(rev112)
+    check(rc == 0 and "歌词已加载: 0 行" in out and "按 JSON 解析" in err,
+          ".json 里放 LRC：提示写明是按 JSON 解析的", err)
+    check("内容看起来是 LRC" in err and "能解析出 1 行" in err,
+          "并说明按 LRC 能解析出 1 行，扩展名写反了", err)
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

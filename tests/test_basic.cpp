@@ -1459,6 +1459,46 @@ int main() {
               "超长数字不溢出，按越界计入 dropped");
     }
 
+    // ---- 外部歌词的格式判定（v1.110.0）----
+    // 旧版 main.cpp 只比 ".lrc" / ".LRC" 两个字面量，其余一律当 JSON：
+    // Windows 上改名成 .Lrc、存成 lyrics.txt、或者名字结尾带个空格，LRC 文本
+    // 就被送进 JSON 解析器，一行都取不到，页面静默退回 MIDI 内置的「LY」音节。
+    // 现在扩展名只用来「猜」（且不分大小写），猜不出按内容嗅探。
+    {
+        const std::string lrcText = "[00:00.00]你\n[00:01.00]好\n";
+        const std::string jsonText = "[{\"start_beat\":0,\"text\":\"你\"}]";
+        auto fmt = [](const char* path, const std::string& body) {
+            return detectLyricFormat(path, body);
+        };
+        auto isLrc = [](LyricFormat f) { return f == LyricFormat::Lrc; };
+
+        check(isLrc(fmt("a.lrc", lrcText)), ".lrc 走 LRC");
+        check(isLrc(fmt("a.LRC", lrcText)), ".LRC 走 LRC（旧版硬编码的唯一大写形式）");
+        check(isLrc(fmt("a.Lrc", lrcText)), ".Lrc 不再被当成 JSON");
+        check(isLrc(fmt("a.lRc", lrcText)), "大小写混写同样认 .lrc");
+        check(!isLrc(fmt("a.json", jsonText)), ".json 走 JSON");
+        check(!isLrc(fmt("a.JSON", jsonText)) && !isLrc(fmt("a.Json", jsonText)),
+              ".JSON / .Json 同样走 JSON");
+        check(isLrc(fmt("a.lrc ", lrcText)), "文件名结尾带空格时按内容判定");
+        check(isLrc(fmt("lyrics", lrcText)), "没有扩展名时按内容判定");
+        check(!isLrc(fmt("lyrics", jsonText)), "没有扩展名的 JSON 也认得出");
+        check(isLrc(fmt("lyrics.txt", lrcText)) && !isLrc(fmt("lyrics.txt", jsonText)),
+              ".txt 里放什么就按什么解析");
+        check(isLrc(fmt("a.lrc.bak", lrcText)), ".lrc.bak 只认最后一段，回落到内容判定");
+        check(isLrc(fmt("C:\\music\\song.LRC", lrcText)),
+              "Windows 反斜杠路径的扩展名照样取得对");
+        check(isLrc(fmt("a.b/c", lrcText)),
+              "目录名里的点不算扩展名（a.b/c 无扩展名）");
+        check(isLrc(fmt("x.txt", "[ti:歌名]\n[ar:某人]\n[00:01.00]好\n")),
+              "元数据行在前的 LRC 也认得出，不会被当成 JSON 对象");
+        check(isLrc(fmt("x.txt", "\xEF\xBB\xBF[00:01.00]好\n")),
+              "带 BOM 的 LRC 嗅探前先跳过 BOM");
+        check(!isLrc(fmt("x.txt", "  [ {\"start_beat\":0} ]")),
+              "带空格的 JSON 数组不会被误判成 LRC");
+        check(!isLrc(fmt("x.txt", "[1,2]")), "纯数字数组没有冒号，按 JSON 处理");
+        check(!isLrc(fmt("x.txt", "")), "空内容按 JSON（两种都解析出 0 行）");
+    }
+
 
     {
         MidiData d;

@@ -9,6 +9,7 @@
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -596,6 +597,7 @@ int main(int argc, char** argv) {
     // 早先解析写在 --html 分支里，导 MusicXML 时整份歌词都丢了。
     std::vector<m2j::LyricLine> lyricLines;
     const std::vector<m2j::LyricLine>* lyricPtr = nullptr;
+    std::string lyricRaw;
     if (!lyricsPath.empty()) {
         // 路径写错必须当场报错。旧实现直接去读，读不到就是 0 行，然后
         // 「歌词已加载: 0 行」+ 退出码 0——用户完全不知道被告知的那个文件
@@ -604,6 +606,11 @@ int main(int argc, char** argv) {
         if (!probe) {
             std::cerr << "错误: 无法打开歌词文件 " << lyricsPath << "\n"; return 1;
         }
+        // 顺带把字节读进来：下面要按「扩展名 + 内容」决定走哪套解析器，
+        // 再交给纯文本入口。同一份文件读两遍、两处口径，是上一种格式
+        // 判定错乱的温床。
+        lyricRaw.assign((std::istreambuf_iterator<char>(probe)),
+                        std::istreambuf_iterator<char>());
         probe.close();
         if (htmlOut.empty() && xmlOut.empty()) {
             // 纯文本谱没有挂歌词的位置，说了比不说好，否则用户会以为歌词丢了。
@@ -612,17 +619,20 @@ int main(int argc, char** argv) {
         }
     }
     if (!lyricsPath.empty() && (!htmlOut.empty() || !xmlOut.empty())) {
-        size_t dot = lyricsPath.find_last_of(".");
-        std::string ext = (dot != std::string::npos) ? lyricsPath.substr(dot) : "";
+        // 字节归一与两个读盘入口同口径，之后只看纯文本（v1.110.0）。
+        const std::string lyricText = m2j::normalizeLyricFileBytes(lyricRaw);
+        const m2j::LyricFormat lyricFmt =
+            m2j::detectLyricFormat(lyricsPath, lyricText);
+        const bool isLrc = (lyricFmt == m2j::LyricFormat::Lrc);
         size_t droppedLyricLines = 0;
-        if (ext == ".lrc" || ext == ".LRC") {
+        if (isLrc) {
             // LRC 时间戳是真实秒，必须按 tempo map 分段反解成 tick；
             // 用曲首 BPM 一把梭会让变速后的歌词整体错位。
-            lyricLines = m2j::parseLrcLines(lyricsPath, data, &droppedLyricLines);
+            lyricLines = m2j::parseLrcText(lyricText, data, &droppedLyricLines);
         } else {
             // JSON 格式：每个字自成一行
-            auto syls = m2j::parseLyrics(lyricsPath, data.division,
-                                         &droppedLyricLines);
+            auto syls = m2j::parseLyricsText(lyricText, data.division,
+                                             &droppedLyricLines);
             for (const auto& s : syls) lyricLines.push_back({s.tick, s.text});
         }
         // 离谱的时间戳 / [offset:] / start_beat 换算成 32 位 tick 会溢出，
@@ -633,13 +643,32 @@ int main(int argc, char** argv) {
                       << " 行歌词（时间戳 / [offset:] / start_beat 数值"
                          "超出谱面时间轴范围，或 JSON 歌词行格式错误）\n";
         std::cout << "歌词已加载: " << lyricLines.size() << " 行\n";
-        // 文件读到了却一行都没解析出来，通常是时间戳格式不对（[mm:ss] 写成
-        // 了 mm:ss，或者整篇是纯文本）。这不是正常状态，得说出来——否则页眉
-        // 只写一句「0 行」，用户还以为工具坏了。
-        if (lyricLines.empty())
-            std::cerr << "警告: 歌词文件里没有解析出任何歌词行"
-                         "（检查是否以 [mm:ss.xx] 时间戳开头）\n";
-        if (ext == ".lrc" || ext == ".LRC") {
+        // 文件读到了却一行都没解析出来，通常只有两种：LRC 的时间戳不是
+        // [mm:ss.xx] 形状，或者 JSON 根本不是 [{start_beat,text}] 数组。
+        // 提示必须按实际用过的解析器说——早先不管走哪条路都说「检查是否以
+        // [mm:ss.xx] 时间戳开头」，把 JSON 用户指去改一个不存在的字段。
+        if (lyricLines.empty()) {
+            std::cerr << "警告: 歌词文件里没有解析出任何歌词行（按 "
+                      << (isLrc ? "LRC" : "JSON") << " 解析 "
+                      << lyricsPath << "）\n";
+            if (isLrc)
+                std::cerr << "      检查每行是否以 [mm:ss.xx] 时间戳开头\n";
+            else
+                std::cerr << "      检查是否为 [{\"start_beat\":N,"
+                             "\"text\":\"...\"}] 数组\n";
+            // 扩展名与内容写反是另一类常见错误（.lrc 里放着 JSON，或反过来）。
+            // 空手而归时顺手试一下另一种格式：能救回来的就直接说清楚，别让
+            // 用户对着「0 行」猜该改哪里。
+            size_t altDropped = 0;
+            const size_t altCount = isLrc
+                ? m2j::parseLyricsText(lyricText, data.division, &altDropped).size()
+                : m2j::parseLrcText(lyricText, data, &altDropped).size();
+            if (altCount)
+                std::cerr << "      内容看起来是 " << (isLrc ? "JSON" : "LRC")
+                          << "（按另一种格式能解析出 " << altCount
+                          << " 行），检查文件扩展名是否写反\n";
+        }
+        if (isLrc) {
             const int tc = m2j::tempoChangeCount(data);
             if (tc > 0)
                 std::cout << "LRC 时间轴: 检测到 " << tc
