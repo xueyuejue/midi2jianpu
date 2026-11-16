@@ -1867,6 +1867,15 @@ std::vector<TrackSummary> trackSummaries(const MidiData& data) {
                 cm[nt.channel] = nt.startTicks;
         }
     }
+    // 有旋律音却没有 0xC0 的轨：programAt 返回 -1 不是「读不出来」，而是
+    // 「文件没声明」——按 GM 规范这种通道就是 0 号音色（钢琴），播放器也
+    // 确实这么响。诊断里留一整段空白，用户会以为工具解析失败，所以把默认值
+    // 写明；program 仍保持 -1，机器照样能区分「声明了」和「没声明」。
+    // 这与 channelInstruments 不矛盾：那里答「各通道各自声明了什么」（空数组
+    // ＝都没声明），这里答「这条轨听起来是什么」。
+    for (auto& s : out) {
+        if (s.notes > 0 && s.program < 0) s.instrument = "未指定（GM 默认为钢琴）";
+    }
     // 歌词按「可唱音节」计，不数 0x05 事件：一条事件里写「春江花月夜」是 5 个字，
     // 而「@KMIDI」「-」「_」这些元数据 / 延续符一个字都不唱。此前直接数事件，
     // karaoke.mid 的 Vocal 轨有 9 条事件却只有 5 个音节，诊断写着「歌词 9 字」。

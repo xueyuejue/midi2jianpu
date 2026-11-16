@@ -2879,6 +2879,37 @@ if (existsSync(twoLyrics76)) {
     '整份文件的鼓件清单都没有截断标记', JSON.stringify(tlf));
 }
 
+// ---- 82. v1.121.0 track_list 写明「未指定音色」 ----
+// programAt 返回 -1 的含义是「文件没写 0xC0」，不是「读不出来」；GM 规范下
+// 这种通道就是 0 号音色。inst 现在把默认值写明，program 的语义不变，逐通道
+// insts 仍是空数组——那里回答的是另一个问题：各通道各自声明了什么。
+{
+  const np = new Uint8Array(readFileSync(path.join(FIXTURES, 'bank_no_program.mid')));
+  const pn = mod._malloc(np.length);
+  mod.HEAPU8.set(np, pn);
+  const tln = JSON.parse(mod.UTF8ToString(mod._midi2jianpu_track_list(pn, np.length)));
+  mod._free(pn);
+  check(tln[1].inst === '未指定（GM 默认为钢琴）' &&
+    tln[2].inst === '未指定（GM 默认为钢琴）',
+  '没有 0xC0 的旋律轨在 inst 里写明「未指定」与 GM 默认音色',
+  JSON.stringify(tln.map((t) => t.inst)));
+  check(tln[0].inst === '',
+    '没有音符的指挥轨 inst 仍是空串，不冒充钢琴', JSON.stringify(tln[0]));
+  check(Array.isArray(tln[1].insts) && tln[1].insts.length === 0,
+    '逐通道 insts 仍为空数组：它答的是「各通道声明了什么」',
+    JSON.stringify(tln[1].insts));
+
+  // 每条轨都写了音色的文件一个字段都不变。
+  const pm = new Uint8Array(readFileSync(path.join(FIXTURES, 'parts.mid')));
+  const ppm = mod._malloc(pm.length);
+  mod.HEAPU8.set(pm, ppm);
+  const tlp = JSON.parse(mod.UTF8ToString(mod._midi2jianpu_track_list(ppm, pm.length)));
+  mod._free(ppm);
+  check(tlp[1].inst === '长笛' && tlp[2].inst === '钢琴' &&
+    !tlp.some((t) => t.inst.includes('未指定')),
+  '都声明了音色的文件照旧只报乐器名', JSON.stringify(tlp.map((t) => t.inst)));
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

@@ -4841,6 +4841,22 @@ def main():
     check("高音阿哥哥 1" in out and "等" not in out,
           "--list-tracks 列全五种鼓件，不再用「等」吞掉末项", out)
 
+    # v1.121：没有 0xC0 的轨不再留一段空白。bank_no_program.mid 的两条旋律轨
+    # 一个 Program Change 都没有，旧版诊断只有「旋律 N 音」，用户分不清是
+    # 「文件没声明」还是「工具读不出」。
+    rc, out, err = run(exe, os.path.join(FIXTURES, "bank_no_program.mid"), "--list-tracks")
+    check(rc == 0 and out.count("乐器: 未指定（GM 默认为钢琴）") == 2,
+          "没有 0xC0 的两条旋律轨都补上「未指定」与 GM 默认音色", out)
+    cond_line = next((ln for ln in out.splitlines() if '"Conductor"' in ln), "")
+    check(cond_line.strip().endswith("旋律 0 音"),
+          "没有音符的指挥轨不补这一句（它本来就不发声）", cond_line)
+
+    # 有 0xC0 的文件逐字节不变：默认值只在「没声明」时出现。
+    rc, out, err = run(exe, os.path.join(FIXTURES, "parts.mid"), "--list-tracks")
+    check("未指定" not in out and
+          '"Vocal"   旋律 15 音   乐器: 长笛' in out,
+          "每条轨都写了音色的文件一个字不变", out)
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

@@ -8465,6 +8465,31 @@ int main() {
               "单通道轨的通道级乐器名与主导乐器一致");
         check(s0[1].name == "Piano" && s0[1].notes == 2,
               "第 1 轨 2 个旋律音");
+        // ---- 没有 0xC0 的轨：补一句默认值（v1.121）----
+        // programAt 返回 -1 的含义是「文件没声明」，不是「读不出来」：GM 规范里
+        // 这种通道就是 0 号音色，播放器也确实按钢琴发声。诊断留一整段空白会让
+        // 用户以为解析失败；program 仍留 -1，机器照样能分辨「声明」与「未声明」。
+        // 注意不能用上面 d0 的第 1 轨做样本：它与第 0 轨共用通道 0，而 0xC0 是
+        // 按通道生效的，programAt 会回退到 channelProgram 拿到小提琴——这是
+        // GM 的通道语义，不算「没声明」。
+        {
+            SmfTrack tp;
+            tp.at(0, ev({0xFF, 0x03, 0x03, 'K', 'e', 'y'}));
+            tp.at(0, ev({0x90, 60, 90}));
+            tp.at(480, ev({0x80, 60, 0}));
+            auto noPc = buildSmf(1, 480, {tp});
+            MidiData dn;
+            check(loadMidiFromMemory(noPc.data(), noPc.size(), dn),
+                  "一个 Program Change 都没有的文件照常解析");
+            const auto sn = trackSummaries(dn);
+            check(sn[0].program == -1 &&
+                  sn[0].instrument == "未指定（GM 默认为钢琴）",
+                  "有旋律音却没有 0xC0 的轨：明说「未指定」，program 仍留 -1");
+        }
+        check(s0[2].instrument.empty(),
+              "只有鼓件音的轨不补默认钢琴（打击乐没有 GM 旋律音色）");
+        check(s0[0].program == 40 && s0[0].instrument == "小提琴",
+              "写了 0xC0 的轨原样报乐器名，不会被默认值顶掉");
         check(s0[2].notes == 0 && s0[2].drumNotes == 1,
               "第 2 轨只有鼓件音：旋律 0 音、鼓件音 1，两者不混算");
         check(s0[2].drumInstruments.size() == 1 &&
