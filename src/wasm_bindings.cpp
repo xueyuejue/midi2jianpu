@@ -116,6 +116,31 @@ const char* midi2jianpu_track_list(const uint8_t* midiData, int size) {
     return g_result.c_str();
 }
 
+// 「选中的轨没有旋律音符」时要补的那一句：这条轨里到底有什么、旋律在哪条轨。
+// 解析层按轨过滤后 data 里只剩所选的那条轨，别的轨的音符早丢了，说不出
+// 「旋律在轨 1」——所以这里重新按全曲解析一次。只走这条出错路径，正常转换
+// 不会付这个代价。
+static std::string emptyTrackNote(const uint8_t* midiData, int size, int track) {
+    m2j::MidiData full;
+    if (!loadJ(midiData, size, full, false, -1)) return std::string();
+    return m2j::emptyTrackHint(full, track);
+}
+
+// 「没有旋律音符」的整句话。选了某条轨时说的是**这条轨**，没选时才是
+// **这个文件**。两者混用会出很具体的假话：drums.mid 有 32 个旋律音，
+// 只是第 3 轨是鼓轨，旧代码却说「文件里只有打击乐轨」。
+static std::string noNoteMessage(const m2j::MidiData& data, const uint8_t* midiData,
+                                 int size) {
+    if (g_trackFilter >= 0) {
+        std::string msg = "错误: 轨 " + std::to_string(g_trackFilter) + " 没有旋律音符";
+        const std::string hint = emptyTrackNote(midiData, size, g_trackFilter);
+        if (!hint.empty()) msg += "——" + hint;
+        return msg;
+    }
+    if (data.drumNotesSkipped > 0) return "错误: 文件里只有打击乐轨，简谱没有鼓谱记法";
+    return "错误: 未提取到音符";
+}
+
 // 解析MIDI并返回文本简谱
 // midiData: MIDI二进制数据指针
 // size: 数据大小
@@ -128,9 +153,7 @@ const char* midi2jianpu_parse(const uint8_t* midiData, int size, int keyPitch, i
         return g_result.c_str();
     }
     if (data.notes.empty()) {
-        g_result = data.drumNotesSkipped > 0
-                       ? "错误: 文件里只有打击乐轨，简谱没有鼓谱记法"
-                       : "错误: 未提取到音符";
+        g_result = noNoteMessage(data, midiData, size);
         return g_result.c_str();
     }
 
@@ -176,9 +199,7 @@ const char* midi2jianpu_html(const uint8_t* midiData, int size, int keyPitch, in
         return g_result.c_str();
     }
     if (data.notes.empty()) {
-        g_result = data.drumNotesSkipped > 0
-                       ? "<p>错误: 文件里只有打击乐轨，简谱没有鼓谱记法</p>"
-                       : "<p>错误: 未提取到音符</p>";
+        g_result = "<p>" + noNoteMessage(data, midiData, size) + "</p>";
         return g_result.c_str();
     }
 

@@ -3308,6 +3308,48 @@ std::string droppedLyricNote(const MidiData& data) {
            std::to_string(pick.droppedSyllables) + " 个音节已忽略";
 }
 
+std::string emptyTrackHint(const MidiData& data, int track) {
+    const std::vector<TrackSummary> tracks = trackSummaries(data);
+    const TrackSummary* mine = nullptr;
+    for (const auto& t : tracks)
+        if (t.index == track) mine = &t;
+
+    // 这条轨根本不存在：用户照着文件头部那个 16 位轨数敲了 --track 9，
+    // 只说「无音符」会让他以为轨存在、只是空的。
+    if (!mine) {
+        if (tracks.empty()) return "本文件没有解析到任何轨道";
+        return "本文件实际只有 " + std::to_string(tracks.size()) + " 轨（0~" +
+               std::to_string((int)tracks.size() - 1) + "）";
+    }
+    if (mine->notes > 0) return std::string();  // 有旋律音符，不该走到这里
+
+    // 这条轨里到底有什么。鼓件音和歌词音节都不是「音符」，但都不是「什么都没有」：
+    // 一条只带 10 个字的歌词轨被 --track 选中时，说「无音符」等于什么也没说。
+    std::string s;
+    if (mine->drumNotes > 0)
+        s = "该轨只有 " + std::to_string(mine->drumNotes) + " 个鼓件音（简谱不支持鼓谱）";
+    if (mine->lyrics > 0) {
+        if (s.empty()) s = "该轨只有 ";
+        else s += "和 ";
+        s += std::to_string(mine->lyrics) + " 个歌词音节";
+    }
+
+    // 旋律在哪：音符最多的一条，并列取轨号小的（与 --list-tracks 的列出顺序一致，
+    // 也让结果与遍历顺序无关）。
+    const TrackSummary* best = nullptr;
+    for (const auto& t : tracks) {
+        if (t.index == track || t.notes <= 0) continue;
+        if (!best || t.notes > best->notes) best = &t;
+    }
+    if (best) {
+        const std::string where = "旋律在轨 " + std::to_string(best->index) + "（" +
+                                  std::to_string(best->notes) + " 音）";
+        if (s.empty()) s = where;
+        else s += "，" + where;
+    }
+    return s;
+}
+
 std::vector<MidiSyllable> normalizeMidiLyrics(const MidiData& data) {
     if (data.midiLyrics.empty()) return std::vector<MidiSyllable>();
     // 多轨歌词只取一条：两段词各占一轨时合并会把两段词交错成乱码

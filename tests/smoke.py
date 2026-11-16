@@ -4708,6 +4708,26 @@ def main():
     check(rc == 0 and "MIDI 内置歌词: 5 个音节（轨 1）" in out,
           "单条歌词轨时也带轨号，与网页提示同口径", out[:300])
 
+    group("[116] v1.116.0 选中没有旋律音符的轨，说清「里面有什么、旋律在哪」")
+    # 旧行为只有一句「无音符」：twolyrics.mid 的轨 2 带 10 个字、drums.mid 的
+    # 轨 3 带 192 个鼓件音，都被说成「什么都没有」，而旋律就在隔壁那条轨上。
+    rc, out, err = run(exe, two_mid, "--track", "2")
+    check(rc == 4 and "该轨只有 10 个歌词音节" in err and "旋律在轨 1（8 音）" in err,
+          "只有歌词的轨写明音节数与旋律所在轨", err)
+    check("轨道 2 无音符" in err,
+          "仍保留「无音符」这个结论，只是补上细节", err)
+
+    rc, out, err = run(exe, two_mid, "--track", "0")
+    check(rc == 4 and "轨道 0 无音符：旋律在轨 1（8 音）" in err,
+          "只有元数据的轨直接指出旋律在哪", err)
+
+    drums_mid = os.path.join(FIXTURES, "drums.mid")
+    rc, out, err = run(exe, drums_mid, "--track", "3")
+    check(rc == 4 and "该轨只有 192 个鼓件音" in err and "旋律在轨 2（24 音）" in err,
+          "鼓轨写明鼓件音数，并指向音符最多的那条轨", err)
+    check("文件里只有打击乐" not in err,
+          "选中的是鼓轨，就不能说成「文件里只有打击乐」（文件里有 32 个旋律音）", err)
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

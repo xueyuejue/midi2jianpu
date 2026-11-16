@@ -361,12 +361,25 @@ int main(int argc, char** argv) {
         // 「无音符」和「没有这条轨」是两回事：头部轨数写错的文件里，
         // 用户照着 --list-tracks 的旧数字敲 --track 5，只会得到一句
         // 「轨道 5 无音符」，看不出这条轨根本不存在。
-        if (trackFilter >= data.trackCount)
+        if (trackFilter >= data.trackCount) {
             std::cerr << "轨道 " << trackFilter << " 不存在：本文件实际只有 "
                       << data.trackCount << " 轨（0~" << (data.trackCount - 1)
                       << "），用 --list-tracks 可查看\n";
-        else
-            std::cerr << "轨道 " << trackFilter << " 无音符。\n";
+        } else {
+            // 这条轨确实存在，但没有旋律音符——它里面可能有鼓件音或歌词，
+            // 旋律在别的轨上。按轨过滤后别的轨已经不在 data 里，这里重新按
+            // 全曲读一次（只走这条出错路径），否则只能说一句干巴巴的「无音符」。
+            m2j::MidiData full;
+            // keepAllFormat2 = true：format 2 里旋律可能在别的段落，只留第一段
+            // 的话这条提示就永远找不到「旋律在轨几」。
+            const std::string hint = m2j::loadMidiFile(input, full, true, -1)
+                                         ? m2j::emptyTrackHint(full, trackFilter)
+                                         : std::string();
+            if (hint.empty())
+                std::cerr << "轨道 " << trackFilter << " 无音符。\n";
+            else
+                std::cerr << "轨道 " << trackFilter << " 无音符：" << hint << "。\n";
+        }
         return 4;
     }
     // --list-tracks 是纯诊断：列完轨道就退出，不跑后面的转换流程。

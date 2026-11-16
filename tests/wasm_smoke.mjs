@@ -2706,6 +2706,53 @@ if (existsSync(twoLyrics76)) {
     '网页优先用 lyric_info 说话，只给旧 wasm 留 count 兜底');
 }
 
+// ---- 77. v1.116.0 选中没有旋律音符的轨：说清里面有什么、旋律在哪 ----
+// 解析层按轨过滤后只剩这一条轨，别的轨的音符已经丢了，所以「旋律在轨 1」
+// 只能靠全曲重解析说出来（只走这条出错路径）。旧代码更糟：选中一条鼓轨会报
+// 「文件里只有打击乐轨」，而 drums.mid 有 32 个旋律音，只是不在那条轨上。
+{
+  const two77 = new Uint8Array(readFileSync(path.join(ROOT, 'tests', 'fixtures', 'twolyrics.mid')));
+  const drum77 = new Uint8Array(readFileSync(path.join(ROOT, 'tests', 'fixtures', 'drums.mid')));
+  const at77 = (bytes, track, fn) => {
+    mod._midi2jianpu_set_track(track);
+    const p = mod._malloc(bytes.length);
+    mod.HEAPU8.set(bytes, p);
+    const s = mod[fn](p, bytes.length, 0, 1);
+    const out = s ? mod.UTF8ToString(s) : '';
+    mod._free(p);
+    mod._midi2jianpu_set_track(-1);
+    return out;
+  };
+
+  const ly77 = at77(two77, 2, '_midi2jianpu_parse');
+  check(ly77.includes('轨 2 没有旋律音符') && ly77.includes('只有 10 个歌词音节') &&
+        ly77.includes('旋律在轨 1（8 音）'),
+    '只有歌词的轨说清里面有什么、旋律在哪', ly77);
+  check(!ly77.includes('未提取到音符'), '不再只用一句「未提取到音符」打发', ly77);
+
+  const dr77 = at77(drum77, 3, '_midi2jianpu_parse');
+  check(dr77.includes('只有 192 个鼓件音') && dr77.includes('旋律在轨 2（24 音）'),
+    '网页选中鼓轨时给出鼓件音数与旋律轨', dr77);
+  check(!dr77.includes('文件里只有打击乐'),
+    '选的是鼓轨，不能说成「文件里只有打击乐」（全曲还有 32 个旋律音）', dr77);
+
+  const html77 = at77(two77, 2, '_midi2jianpu_html');
+  check(html77.startsWith('<p>') && html77.includes('旋律在轨 1（8 音）') &&
+        html77.trimEnd().endsWith('</p>'),
+    'HTML 通道的错误页是同一句话、且仍是完整的一段', html77);
+
+  // 全曲模式（没选轨）说的话不变：这时「这个文件没有旋律」才是真的
+  const all77 = at77(drum77, -1, '_midi2jianpu_parse');
+  check(!all77.startsWith('错误:'), '全曲模式照常转换，不冒「没有旋律音符」', all77.slice(0, 60));
+
+  // 下拉框：有词没音符的轨不能再标成「无音符」，否则用户根本不会去点它
+  const page77 = readFileSync(path.join(ROOT, 'docs', 'index.html'), 'utf8');
+  check(page77.includes("（只有歌词 ' + t.lyrics + ' 字）"),
+    '下拉框把「有词没音符」的轨标成「只有歌词 N 字」');
+  check(page77.includes('_midi2jianpu_track_list('),
+    '这条标签读的是 track_list 的每轨歌词数，不是头部轨数');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

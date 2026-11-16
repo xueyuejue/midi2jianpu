@@ -359,6 +359,7 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
       else if (t.inst) label += ' · ' + t.inst;
       if (t.drum && !t.notes) label += '（鼓轨，跳过 ' + t.drum + ' 鼓件音）';
       else if (t.notes) label += '（' + t.notes + ' 音）';
+      else if (t.lyrics) label += '（只有歌词 ' + t.lyrics + ' 字）';
       else label += '（无音符）';
       var op = document.createElement('option');
       op.value = String(t.i);

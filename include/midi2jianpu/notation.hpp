@@ -498,6 +498,15 @@ struct TrackSummary {
 };
 std::vector<TrackSummary> trackSummaries(const MidiData& data);
 
+// ---- 「这条轨没有旋律音符，但别处有」（CLI --track / 网页段落选择） ----
+// 按轨过滤后 MidiData 里只剩这一条轨，别的轨的音符已经不在，说不出「旋律在
+// 哪条轨」。所以 data 必须是**全曲**解析结果，track 是用户选的那条轨。
+//
+// 返回一句话（不带句号），三种情形：只报「该轨里有什么」（鼓件音 / 歌词音节）、
+// 只报「旋律在哪条轨」、两者都有；轨道确实什么都没有且别处也没音符时返回空串，
+// 由调用方沿用原来的说法。
+std::string emptyTrackHint(const MidiData& data, int track);
+
 // ---- 小节网格 ----
 // 「tick -> 小节」的换算分散在文本 / HTML / MusicXML 三个输出里，弱起一进来
 // 就得三处同时改，否则谱面一半对一半错。统一收进这个结构体。

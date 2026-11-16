@@ -1022,6 +1022,44 @@ int main() {
         check(lyricSyllablesByTrack(d5).empty(), "只有元数据/延续符时逐轨音节表为空");
         check(midiLyricHint(d5, -1) == "此文件没有内置歌词",
               "全是元数据时也说「没有内置歌词」而不是「0 个音节」");
+
+        // ---- 选中一条「没有旋律音符」的轨：说清这条轨里有什么、旋律在哪 ----
+        // 旧行为只有一句「无音符」：twolyrics.mid 的轨 2 带着 10 个字、
+        // drums.mid 的轨 3 带着 192 个鼓件音，都被说成「什么都没有」，
+        // 而旋律就在隔壁那条轨上。
+        const std::string h0 = emptyTrackHint(ts, 0);
+        check(h0.find("旋律在轨 ") != std::string::npos && h0.find("只有") == std::string::npos,
+              "只有元数据的轨只说旋律在哪条轨，实际: " + h0);
+        check(emptyTrackHint(ts, 2).empty(),
+              "有旋律音符的轨不该给这句提示，实际: " + emptyTrackHint(ts, 2));
+        check(emptyTrackHint(ts, 9).find("实际只有 3 轨（0~2）") != std::string::npos,
+              "轨号越界时说清实际只有几轨，实际: " + emptyTrackHint(ts, 9));
+        check(emptyTrackHint(MidiData(), 0).find("没有解析到任何轨道") != std::string::npos,
+              "空数据不崩，也不假装有轨");
+
+        MidiData hd;
+        hd.trackCount = 3;
+        hd.drumNotesByTrack[2] = 12;
+        NoteEvent hn;
+        hn.track = 1; hn.channel = 0; hn.startTicks = 0; hn.durationTicks = 480; hn.pitch = 60;
+        hd.notes.push_back(hn);
+        const std::string hdrum = emptyTrackHint(hd, 2);
+        check(hdrum.find("只有 12 个鼓件音") != std::string::npos &&
+                  hdrum.find("旋律在轨 1（1 音）") != std::string::npos,
+              "鼓轨的提示写明鼓件音数与旋律所在轨，实际: " + hdrum);
+
+        MidiData hl = hd;
+        hl.drumNotesByTrack.clear();
+        hl.midiLyrics = {{0, "春江花月夜", 2}};
+        const std::string hly = emptyTrackHint(hl, 2);
+        check(hly.find("只有 5 个歌词音节") != std::string::npos &&
+                  hly.find("旋律在轨 1") != std::string::npos,
+              "只有歌词的轨写明音节数，实际: " + hly);
+
+        MidiData solo = hl;
+        solo.notes.clear();   // 全曲都没有旋律：别再硬指一条「旋律轨」
+        check(emptyTrackHint(solo, 2) == "该轨只有 5 个歌词音节",
+              "全曲无音符时只报这条轨里有什么，实际: " + emptyTrackHint(solo, 2));
     }
 
     std::cout << "\n测试中途变拍号（拍号 map / 逐小节网格）\n";
