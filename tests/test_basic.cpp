@@ -8510,6 +8510,31 @@ int main() {
             check(drumInstrumentList(sd[0]) == "闭镲 3, 底鼓 2, 军鼓 1" &&
                   drumInstrumentList(sd[0], 2, false) == "闭镲、底鼓 等",
                   "带次数给 CLI / 网页，不带次数给空轨提示，截断补「等」");
+
+            // 完整诊断（--list-tracks / track_list）传全量，不能把第 5 种
+            // 鼓件吞成一个「等」：sysex_ch9_normal.mid 就踩过这个坑。构造
+            // 6 种不同鼓件，验证传 size() 时一种不漏、默认仍停在 4 项。
+            {
+                SmfTrack td6;
+                const int pitches6[] = {36, 38, 42, 46, 60, 67};
+                for (size_t i = 0; i < 6; i++) {
+                    td6.at((long)i * 240, ev({0x99, (unsigned char)pitches6[i], 100}));
+                    td6.at((long)i * 240 + 120, ev({0x89, (unsigned char)pitches6[i], 0}));
+                }
+                auto smf6 = buildSmfFmt(1, 1, 480, {td6});
+                MidiData d6;
+                check(loadMidiFromMemory(smf6.data(), smf6.size(), d6),
+                      "六种鼓件的样本照常解析");
+                const auto s6 = trackSummaries(d6);
+                check(s6.size() == 1 && s6[0].drumInstruments.size() == 6,
+                      "六种鼓件各自成一项，不和同族键位混算");
+                const std::string all = drumInstrumentList(s6[0], s6[0].drumInstruments.size());
+                check(all.find("等") == std::string::npos &&
+                          all.find("高音阿哥哥") != std::string::npos,
+                      "传全量时六种鼓件一个不漏，末尾没有「等」：" + all);
+                check(drumInstrumentList(s6[0]).find("等") != std::string::npos,
+                      "默认上限 4 项不变，空轨提示仍靠这个默认值不刷屏");
+            }
             const std::string hd = emptyTrackHint(dd, 0);
             check(hd.find("只有 6 个鼓件音（闭镲、底鼓、军鼓") != std::string::npos &&
                       hd.find("简谱不支持鼓谱") != std::string::npos,

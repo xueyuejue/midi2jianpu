@@ -126,7 +126,10 @@ const char* midi2jianpu_track_list(const uint8_t* midiData, int size) {
         // druminsts：鼓轨被跳过的鼓件清单（中文名 + 次数），由诊断层统一
         // 生成，避免网页和命令行对同一份文件报出不同的鼓名。非鼓轨是空串。
         std::string druminsts;
-        if (t.drumNotes > 0) druminsts = m2j::drumInstrumentList(t);
+        // 与 --list-tracks 同口径：track_list 是完整诊断，列全所有鼓件种类。
+        // 默认 4 项上限只给空轨提示，这里传全量，网页下拉框不会在鼓件多时
+        // 冒出一个没有下文的「等」。
+        if (t.drumNotes > 0) druminsts = m2j::drumInstrumentList(t, t.drumInstruments.size());
         json += "{\"i\":" + std::to_string(t.index) +
                 ",\"name\":\"" + jsonEscape(t.name) + "\"" +
                 ",\"notes\":" + std::to_string(t.notes) +

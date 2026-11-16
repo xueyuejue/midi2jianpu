@@ -2862,6 +2862,23 @@ if (existsSync(twoLyrics76)) {
     '网页下拉框把鼓件清单接在「跳过 N 鼓件音」后面');
 }
 
+// ---- 81. v1.120.0 track_list 的鼓件清单列全 ----
+// 默认 4 项上限只给空轨提示；--list-tracks 与 track_list 是完整诊断。
+// sysex_ch9_normal.mid 有 5 种鼓件，旧版报「高音邦戈 1 等」，第 5 种被吞。
+{
+  const five = new Uint8Array(readFileSync(path.join(FIXTURES, 'sysex_ch9_normal.mid')));
+  const pf = mod._malloc(five.length);
+  mod.HEAPU8.set(five, pf);
+  const tlf = JSON.parse(mod.UTF8ToString(mod._midi2jianpu_track_list(pf, five.length)));
+  mod._free(pf);
+  const df = tlf[1];
+  check(df.drum === 8 && df.druminsts.includes('高音阿哥哥 1') &&
+    !df.druminsts.includes('等'),
+  'track_list 列全五种鼓件，末尾没有「等」', JSON.stringify(df));
+  check(tlf.every((t) => !t.druminsts.includes('等')),
+    '整份文件的鼓件清单都没有截断标记', JSON.stringify(tlf));
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

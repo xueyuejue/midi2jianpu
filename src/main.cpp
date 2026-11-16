@@ -151,7 +151,12 @@ static void printTrackList(const m2j::MidiData& data, int selected = -1) {
         // 还是一整片镲片，用户没法判断是不是导入错了轨。鼓名由诊断层统一
         // 映射，这里只管排版；原句保持原样，新内容另起一段，老输出不挪位。
         if (s.drumNotes > 0) {
-            const std::string detail = m2j::drumInstrumentList(s);
+            // 这张表是**完整诊断**，鼓件有多少种就列多少种：默认 4 项的
+            // 上限是给空轨提示那种「顺带一提」用的，在这里会把第 5 种鼓件
+            // 吞成一个「等」字，用户仍不知道丢的是什么。WASM track_list
+            // 同样传全量，两端详略一致（sysex_ch9_normal.mid 有 5 种鼓件）。
+            const std::string detail =
+                m2j::drumInstrumentList(s, s.drumInstruments.size());
             if (!detail.empty()) std::cout << "   鼓件: " << detail;
         }
         // 一条轨混多个通道（format 0 的常态、DAW 的「主旋律+伴奏一条轨」）：

@@ -4834,6 +4834,13 @@ def main():
     check("鼓件: 底鼓 6" in out,
           "只列实际出现的鼓件，不凭空补 GM 表里的其它鼓", out)
 
+    # v1.120：完整诊断列全所有鼓件种类，默认 4 项的上限是给空轨提示的。
+    # sysex_ch9_normal.mid 有 5 种鼓件，旧版报成「高音邦戈 1 等」，第 5 种
+    # 被吞了；现在必须点出「高音阿哥哥」且整行没有「等」字。
+    rc, out, err = run(exe, os.path.join(FIXTURES, "sysex_ch9_normal.mid"), "--list-tracks")
+    check("高音阿哥哥 1" in out and "等" not in out,
+          "--list-tracks 列全五种鼓件，不再用「等」吞掉末项", out)
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")
