@@ -943,7 +943,9 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
     uint32_t hdrLen = rd32(d + pos); pos += 4;
     if (hdrLen < 6) return false;   // 先判长度，否则后面 pos += (hdrLen-6) 会下溢
     out.format = (int)rd16(d + pos); pos += 2;
-    out.trackCount = (int)rd16(d + pos); pos += 2;
+    out.headerTrackCount = (int)rd16(d + pos);
+    out.trackCount = out.headerTrackCount;   // 先照抄，chunk 走完再按真实块数订正
+    pos += 2;
     {
         uint32_t divWord = rd16(d + pos);
         out.rawDivision = (int)divWord;
@@ -1435,6 +1437,12 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
         while (!active.empty()) flushNote(active.begin()->first, absTick);
         trackIdx++;
     }
+
+    // 轨道数以「真的走过几个 MTrk 块」为准，头部那个 16 位字段只留作对照。
+    // 这个数字决定 --list-tracks 列出几行、网页下拉框给几个选项，以及
+    // --track N 越界时怎么解释——信头部会得到「共 0 轨」却仍能 --track 3
+    // 这种自相矛盾的诊断。
+    out.trackCount = trackIdx;
 
     // ---- 文本 meta 编码归一（必须做「整份文件」一次判定）----
     // 逐条探测会漏：GBK「水」= CB AE 恰好也是合法 2 字节 UTF-8(U+02EE)，

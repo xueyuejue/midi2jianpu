@@ -206,7 +206,13 @@ struct MidiData {
     //      两段音乐互相错位、同拍音被当成和弦。
     // format: 0=单轨，1=多轨同一首，2=多轨各自独立。
     int format = 1;
+    // 真实解析到的 MTrk 块数（以文件里实际存在的块为准），不是头里那个数字。
+    // 两者常常不一致：导出器合并轨后忘了改头、16 位计数写溢出成 0 或 0xFFFF、
+    // 文件下载到一半被截断……解析器本来就不靠这个数字工作（它逐个 chunk 走，
+    // 遇到非 MTrk 就跳过、长度字段不对就按 EOT 锚点重同步），所以诊断与网页
+    // 的轨道下拉框也必须按真实块数来报，否则「共 0 轨」之下还能 --track 3。
     int trackCount = 0;
+    int headerTrackCount = 0;   // MThd 里写的 16 位轨数，只用来提示两者不一致
     int rawDivision = 480;      // 文件里原始的 16 位 division（含 SMPTE 标志位）
 
     bool smpte = false;         // division 高字节为负 → SMPTE 时间基准

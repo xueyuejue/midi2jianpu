@@ -1793,6 +1793,41 @@ std::string partSummary(const MidiData& data) {
     return os.str();
 }
 
+std::vector<TrackSummary> trackSummaries(const MidiData& data) {
+    std::vector<TrackSummary> out;
+    const int n = data.trackCount > 0 ? data.trackCount : 0;
+    if (n <= 0) return out;
+
+    // 音色表必须与谱面页眉同源（partPrograms 的按轨音色时间轴），
+    // 否则诊断说「小提琴」而谱面写「钢琴」，用户照诊断选轨会被误导。
+    const auto progs = partPrograms(data);
+    out.reserve((size_t)n);
+    for (int t = 0; t < n; t++) {
+        TrackSummary s;
+        s.index = t;
+        auto nit = data.trackNames.find(t);
+        if (nit != data.trackNames.end()) s.name = nit->second;
+        auto dit = data.drumNotesByTrack.find(t);
+        if (dit != data.drumNotesByTrack.end()) s.drumNotes = dit->second;
+        auto pit = progs.find(t);
+        if (pit != progs.end() && pit->second >= 0) {
+            s.program = pit->second;
+            s.instrument = gmInstrumentName(pit->second);
+        }
+        out.push_back(std::move(s));
+    }
+
+    // 一次线性扫描把音符与歌词按轨归位：轨数是几十的量级，但文件可能有
+    // 上万个音符，逐轨重扫就是 O(轨 × 音)。
+    for (const auto& nt : data.notes) {
+        if (nt.track >= 0 && nt.track < n) out[(size_t)nt.track].notes++;
+    }
+    for (const auto& ly : data.midiLyrics) {
+        if (ly.track >= 0 && ly.track < n) out[(size_t)ly.track].lyrics++;
+    }
+    return out;
+}
+
 std::string formatJianpu(const MidiData& data, const KeyEstimate& key,
                            bool barNumbers) {
     const KeyMap keys(data, key);

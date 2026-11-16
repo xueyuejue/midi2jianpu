@@ -2564,6 +2564,85 @@ if (existsSync(v90InjectPath)) {
     '字够用时四个字一个不少', JSON.stringify(spansOk));
 }
 
+// ---- 75. v1.114.0 网页轨道下拉框按真实 MTrk 块，不再信头部的 16 位轨数 ----
+// 网页过去直接读 MThd offset 10..11 生成选项，而那个数字经常是错的：合并轨
+// 后忘了改头会让 4 轨的曲子只剩 2 个选项，溢出成 0 则一个选项都没有（选不了
+// 任何轨，尽管 --track 3 照样能转），多写几轨又会凭空冒出几个空轨（选了就报
+// 「未提取到音符」）。这里锁住 track_list 的清单与头部数字无关，并静态守住
+// 网页真的走这条导出、头部计数只做兜底。
+const partsPath75 = path.join(ROOT, 'tests', 'fixtures', 'parts.mid');
+if (existsSync(partsPath75)) {
+  const parts75 = new Uint8Array(readFileSync(partsPath75));
+  const trackList75 = (bytes) => {
+    const p = mod._malloc(bytes.length);
+    mod.HEAPU8.set(bytes, p);
+    const s = mod._midi2jianpu_track_list(p, bytes.length);
+    const out = s ? mod.UTF8ToString(s) : '';
+    mod._free(p);
+    return JSON.parse(out);
+  };
+  // 只改头里那个 16 位轨数，文件里的 MTrk 块一个不动
+  const withHeaderCount75 = (bytes, n) => {
+    const copy = new Uint8Array(bytes);
+    copy[10] = (n >> 8) & 0xff;
+    copy[11] = n & 0xff;
+    return copy;
+  };
+  const hdr75 = (bytes) => (bytes[10] << 8) | bytes[11];
+
+  const base75 = trackList75(parts75);
+  check(base75.length === 4 && base75.map((t) => t.i).join(',') === '0,1,2,3',
+    'track_list 列出全部 4 条真实轨道', JSON.stringify(base75));
+  check(base75[0].name === 'Conductor' && base75[1].name === 'Vocal' &&
+        base75[1].notes === 15 && base75[1].inst === '长笛' &&
+        base75[2].notes === 12 && base75[3].notes === 8,
+    '轨名 / 音数 / 乐器与 --list-tracks 同口径', JSON.stringify(base75));
+
+  for (const fake of [0, 2, 7]) {
+    const arr = trackList75(withHeaderCount75(parts75, fake));
+    check(arr.length === 4,
+      `头部写着 ${fake} 轨时仍按 4 个真实块给出选项（不是 ${fake} 个）`,
+      JSON.stringify(arr.map((t) => t.i)));
+  }
+  check(hdr75(parts75) === 4,
+    '素材本身的头部轨数是对的（上面几条只改了副本）');
+
+  // 下拉框的清单不能跟着当前选中轨走，否则选完第 2 轨就只剩一个选项
+  if (mod._midi2jianpu_set_track) {
+    mod._midi2jianpu_set_track(2);
+    check(trackList75(parts75).length === 4,
+      '选中某一轨之后 track_list 仍列出全部轨');
+    mod._midi2jianpu_set_track(-1);
+  }
+
+  // 轨名是 0x03 里的自由文本：引号 / 反斜杠 / 换行 / 裸 C0 都要转义，
+  // 否则 JSON.parse 抛错，整个下拉框会变成空的。
+  const be32 = (n) => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+  const vlq = (n) => { const o = []; let b = n & 0x7f; n >>= 7; while (n) { o.unshift((b | 0x80) & 0xff); b = n & 0x7f; n >>= 7; } o.push(b); return o; };
+  const weird = smfWithName([0x61, 0x22, 0x62, 0x5c, 0x63, 0x0a, 0x64, 0x01, 0x65]); // a"b\c\nd<C0>e
+  function smfWithName(nameBytes) {
+    const body = [...vlq(0), 0xff, 0x03, ...vlq(nameBytes.length), ...nameBytes,
+                  ...vlq(0), 0x90, 60, 100, ...vlq(480), 0x80, 60, 0,
+                  ...vlq(0), 0xff, 0x2f, 0x00];
+    const head = [0x4d, 0x54, 0x68, 0x64, ...be32(6), 0, 1, 0, 1, 0x01, 0xe0];
+    return new Uint8Array([...head, 0x4d, 0x54, 0x72, 0x6b, ...be32(body.length), ...body]);
+  }
+  let weirdParsed = null;
+  try { weirdParsed = trackList75(weird); } catch (e) { weirdParsed = null; }
+  check(weirdParsed && weirdParsed.length === 1 &&
+        weirdParsed[0].name === 'a"b\\c\nd\u0001e',
+    '轨名里的引号 / 反斜杠 / 换行 / 裸 C0 都正确转义，JSON 仍可解析',
+    weirdParsed ? JSON.stringify(weirdParsed[0].name) : 'JSON.parse 失败');
+
+  const page75 = readFileSync(path.join(ROOT, 'docs', 'index.html'), 'utf8');
+  check(page75.includes('_midi2jianpu_track_list(') &&
+        page75.includes('function trackListFromWasm') &&
+        page75.includes('function trackListFromHeader'),
+    '网页走 track_list 生成下拉框，头部计数只作旧 wasm 的兜底');
+  check(page75.includes('for (var i = 0; i < tracks.length; i++)'),
+    '网页按 track_list 的条目数逐个建选项（不再用头部数字当循环上界）');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

@@ -120,46 +120,27 @@ static bool parseDouble(const char* s, double& out) {
 // --list-tracks：把文件里的每条轨列出来（序号 / 名称 / 旋律音数 / 乐器 /
 // 歌词字数 / 是否鼓轨），让用户在 `--track N` 之前先看清该选哪条。纯诊断，
 // 不参与转换，因此不改动任何既有转换输出，零回归。
+// 统计口径收在 notation.cpp 的 trackSummaries()：网页的轨道下拉框读的是
+// 同一份数据，两处各算一套的话，诊断说「4 轨」而网页只给 2 个选项。
 static void printTrackList(const m2j::MidiData& data) {
-    struct TrackStat {
-        int notes = 0;
-        int lyrics = 0;
-    };
-    std::map<int, TrackStat> st;
-    for (const auto& n : data.notes) st[n.track].notes++;
-    for (const auto& ly : data.midiLyrics)
-        if (ly.track >= 0) st[ly.track].lyrics++;
-
-    // 乐器名必须和谱面页眉同源：直接用 partPrograms() 的按轨音色时间轴表。
-    // 旧实现在这里读 channelProgram（只留最后一个 0xC0 音色号），中途换
-    // 乐器的曲子会报「小提琴」而谱面写「钢琴」，用户照诊断选轨反而被误导。
-    const auto progs = m2j::partPrograms(data);
-    auto instOf = [&](int track) -> std::string {
-        auto it = progs.find(track);
-        if (it == progs.end() || it->second < 0) return "";
-        return m2j::gmInstrumentName(it->second);
-    };
-
-    std::cout << "轨道列表 (format " << data.format << ", 共 " << data.trackCount << " 轨):\n";
-    for (int t = 0; t < data.trackCount; t++) {
-        const auto& s = st[t];
-        std::string name;
-        auto nit = data.trackNames.find(t);
-        if (nit != data.trackNames.end()) name = nit->second;
-        int drum = 0;
-        auto dit = data.drumNotesByTrack.find(t);
-        if (dit != data.drumNotesByTrack.end()) drum = dit->second;
-        std::string inst = instOf(t);
-
-        std::cout << "  #" << t;
-        if (!name.empty()) std::cout << "  \"" << name << "\"";
-        if (drum > 0 && s.notes == 0)
-            std::cout << "   鼓轨 (跳过 " << drum << " 鼓件音)";
-        else if (drum > 0)
-            std::cout << "   旋律 " << s.notes << " 音, 鼓件音 " << drum;
+    const std::vector<m2j::TrackSummary> tracks = m2j::trackSummaries(data);
+    std::cout << "轨道列表 (format " << data.format << ", 共 " << tracks.size() << " 轨):\n";
+    // 头部那个 16 位轨数是不可信的：导出器合并轨后忘了改、写溢出成 0 或
+    // 0xFFFF、下载被截断……不解释一句的话，用户会以为下面漏列了轨道，
+    // 或者奇怪为什么「共 0 轨」还能 --track 3。
+    if (data.headerTrackCount != data.trackCount)
+        std::cout << "注意: 文件头部写着 " << data.headerTrackCount << " 轨，实际解析到 "
+                  << data.trackCount << " 个 MTrk 数据块（以实际为准）\n";
+    for (const auto& s : tracks) {
+        std::cout << "  #" << s.index;
+        if (!s.name.empty()) std::cout << "  \"" << s.name << "\"";
+        if (s.drumNotes > 0 && s.notes == 0)
+            std::cout << "   鼓轨 (跳过 " << s.drumNotes << " 鼓件音)";
+        else if (s.drumNotes > 0)
+            std::cout << "   旋律 " << s.notes << " 音, 鼓件音 " << s.drumNotes;
         else
             std::cout << "   旋律 " << s.notes << " 音";
-        if (!inst.empty()) std::cout << "   乐器: " << inst;
+        if (!s.instrument.empty()) std::cout << "   乐器: " << s.instrument;
         if (s.lyrics > 0) std::cout << "   歌词 " << s.lyrics << " 字";
         std::cout << "\n";
     }
@@ -377,7 +358,15 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (trackFilter >= 0 && data.notes.empty()) {
-        std::cerr << "轨道 " << trackFilter << " 无音符。\n";
+        // 「无音符」和「没有这条轨」是两回事：头部轨数写错的文件里，
+        // 用户照着 --list-tracks 的旧数字敲 --track 5，只会得到一句
+        // 「轨道 5 无音符」，看不出这条轨根本不存在。
+        if (trackFilter >= data.trackCount)
+            std::cerr << "轨道 " << trackFilter << " 不存在：本文件实际只有 "
+                      << data.trackCount << " 轨（0~" << (data.trackCount - 1)
+                      << "），用 --list-tracks 可查看\n";
+        else
+            std::cerr << "轨道 " << trackFilter << " 无音符。\n";
         return 4;
     }
     // --list-tracks 是纯诊断：列完轨道就退出，不跑后面的转换流程。

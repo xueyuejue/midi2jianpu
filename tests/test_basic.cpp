@@ -8345,6 +8345,72 @@ int main() {
         check(dropped == 0 && benignLines.size() == 2,
               "tab / CR / LF 保留，正常歌词逐字节零回归");
     }
+
+    // ------------------------------------------------------------------
+    // 轨道诊断：MThd 的 16 位轨数不可信，一律以真实 MTrk 块为准
+    // ------------------------------------------------------------------
+    // 导出器合并轨后忘了改头、16 位计数溢出成 0、文件下载被截断、手工拼过
+    // 的 MIDI……都会让头里的数字与文件里真实存在的 MTrk 块对不上。解析器
+    // 本来就逐个 chunk 走（遇到非 MTrk 跳过、长度字段不对按 EOT 重同步），
+    // 所以转换结果一直是对的；错的是诊断与网页的下拉框——它们读头部数字，
+    // 于是同一份文件在命令行里显示「共 0 轨」，却还能 --track 3 转出声部。
+    {
+        SmfTrack ta, tb, tc;
+        ta.at(0, ev({0xFF, 0x03, 0x05, 'V', 'o', 'c', 'a', 'l'}));
+        ta.at(0, ev({0xC0, 40}));                    // 小提琴
+        ta.at(0, ev({0x90, 60, 100}));
+        ta.at(480, ev({0x80, 60, 0}));
+        ta.at(480, ev({0xFF, 0x05, 0x02, 'l', 'a'})); // 内置歌词 1 个音节
+        tb.at(0, ev({0xFF, 0x03, 0x05, 'P', 'i', 'a', 'n', 'o'}));
+        tb.at(0, ev({0x90, 64, 90}));
+        tb.at(240, ev({0x80, 64, 0}));
+        tb.at(240, ev({0x90, 67, 90}));
+        tb.at(480, ev({0x80, 67, 0}));
+        tc.at(0, ev({0x99, 38, 100}));                // 通道 10 鼓件
+        tc.at(120, ev({0x89, 38, 0}));
+
+        // 头写 0 轨，文件里却有 3 个 MTrk 块
+        auto zeroHdr = buildSmfFmt(1, 0, 480, {ta, tb, tc});
+        MidiData d0;
+        check(loadMidiFromMemory(zeroHdr.data(), zeroHdr.size(), d0),
+              "头部写 0 轨的文件照常解析");
+        check(d0.headerTrackCount == 0 && d0.trackCount == 3,
+              "trackCount 按真实 MTrk 块报 3，头部那个 0 单存 headerTrackCount");
+
+        const auto s0 = trackSummaries(d0);
+        check(s0.size() == 3, "轨道诊断给出 3 条（不再按头部 0 条）");
+        check(s0[0].index == 0 && s0[0].name == "Vocal" && s0[0].notes == 1 &&
+              s0[0].instrument == "小提琴" && s0[0].lyrics == 1,
+              "第 0 轨的轨名 / 音数 / 乐器 / 歌词字数各自归位");
+        check(s0[1].name == "Piano" && s0[1].notes == 2,
+              "第 1 轨 2 个旋律音");
+        check(s0[2].notes == 0 && s0[2].drumNotes == 1,
+              "第 2 轨只有鼓件音：旋律 0 音、鼓件音 1，两者不混算");
+
+        // 头写 9 轨，实际仍是 3 块：不能凭空多出 6 条空轨
+        auto bigHdr = buildSmfFmt(1, 9, 480, {ta, tb, tc});
+        MidiData d9;
+        check(loadMidiFromMemory(bigHdr.data(), bigHdr.size(), d9),
+              "头部写 9 轨的文件照常解析");
+        check(d9.headerTrackCount == 9 && d9.trackCount == 3 &&
+              trackSummaries(d9).size() == 3,
+              "头部多写的轨道不在诊断里变成空轨");
+
+        // 头写对了就没有那句「注意」，老文件的 --list-tracks 逐字节不变
+        auto okHdr = buildSmfFmt(1, 3, 480, {ta, tb, tc});
+        MidiData dok;
+        check(loadMidiFromMemory(okHdr.data(), okHdr.size(), dok) &&
+              dok.headerTrackCount == dok.trackCount,
+              "头部轨数与真实块数一致时两者相等（提示不出现）");
+
+        // --track 越界要能分清「没这条轨」与「这条轨是空的」
+        MidiData dsel;
+        check(loadMidiFromMemory(zeroHdr.data(), zeroHdr.size(), dsel,
+                                 false, 5),
+              "选一个不存在的轨号仍能走完解析（好给出可读的报错）");
+        check(dsel.trackCount == 3,
+              "按轨隔离时 trackCount 仍是全文件的真实块数，不被过滤成 1");
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

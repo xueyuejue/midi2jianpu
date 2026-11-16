@@ -1955,8 +1955,8 @@ def main():
     check(rc == 4 and "轨道 0 无音符" in ee,
           "--track 指向只有 meta 的空轨时明确报错并返回 4")
     rc, _, e9 = run(exe, tf, "--track", "9")
-    check(rc == 4 and "轨道 9 无音符" in e9,
-          "--track 越界时明确报错并返回 4")
+    check(rc == 4 and "轨道 9 不存在" in e9 and "本文件实际只有 2 轨" in e9,
+          "--track 越界时按真实轨数说明并返回 4")
     _, sm, _ = run(exe, os.path.join(FIXTURES, "sample.mid"))
     check("按轨隔离" not in sm,
           "不带 --track 的普通文件不显示按轨隔离提示（页眉零回归）")
@@ -4635,6 +4635,51 @@ def main():
                        "--lyrics", "-")
     check(rc == 1 and "\u6807\u51c6\u8f93\u5165" in err,
           "--lyrics 写 - 也拒绝，并说明不把 - 当标准输入", err)
+
+    group("[114] v1.114.0 轨道诊断按真实 MTrk 块，不信头部的 16 位轨数")
+    # MThd offset 10..11 那个 16 位轨数并不可信：导出器合并轨后忘了改、写溢出
+    # 成 0、文件下载被截断、手工拼过的 MIDI……解析器本来就逐个 chunk 走，转换
+    # 一直是对的；错的是诊断——旧版照抄头部数字，于是同一份 4 轨文件在
+    # --list-tracks 里显示「共 0 轨」，而 --track 3 照样能转出 Bass。
+    def patch_header_tracks(src, dst, n):
+        b = bytearray(open(src, "rb").read())
+        b[10] = (n >> 8) & 0xFF
+        b[11] = n & 0xFF
+        open(dst, "wb").write(bytes(b))
+        return dst
+
+    parts_mid = os.path.join(FIXTURES, "parts.mid")
+    rc, out, err = run(exe, parts_mid, "--list-tracks")
+    check(rc == 0 and "共 4 轨" in out and "#3" in out,
+          "头部轨数正确时照旧列出 4 轨", out[:300])
+    check("文件头部写着" not in out,
+          "头部与真实块数一致时不冒「注意」提示（老文件逐字节不变）", out[:300])
+    check('"Bass"' in out and "原声贝斯" in out and "共提取" not in out,
+          "仍然只列不转，轨名与乐器都在", out[:300])
+
+    for fake in (0, 2, 7):
+        p = patch_header_tracks(parts_mid, os.path.join(tmp, "hdr%d.mid" % fake), fake)
+        rc, out, err = run(exe, p, "--list-tracks")
+        check(rc == 0 and "共 4 轨" in out,
+              "头部写着 %d 轨时仍按 4 个真实块报（不是 %d）" % (fake, fake),
+              out[:300])
+        check("文件头部写着 %d 轨，实际解析到 4 个 MTrk 数据块" % fake in out,
+              "并把「头部 %d / 实际 4」这句话说清楚" % fake, out[:300])
+        check(out.count("#") == 4 and "#4" not in out,
+              "头部写着 %d 轨时既不多列空轨也不漏列真实轨" % fake, out[:400])
+
+    hdr0 = os.path.join(tmp, "hdr0.mid")
+    rc, out, err = run(exe, hdr0, "--track", "3", "--html",
+                       os.path.join(tmp, "hdr0.html"))
+    check(rc == 0 and "只转换轨 3" in out and "Bass" in out,
+          "「共 4 轨」的诊断是可信的：--track 3 真的能转出 Bass", out[:200])
+
+    rc, out, err = run(exe, hdr0, "--track", "9")
+    check(rc == 4 and "轨道 9 不存在" in err and "本文件实际只有 4 轨（0~3）" in err,
+          "越界轨号按真实轨数解释，不再含糊地说「无音符」", err)
+    rc, out, err = run(exe, parts_mid, "--track", "0")
+    check(rc == 4 and "轨道 0 无音符" in err and "不存在" not in err,
+          "真实存在的空轨仍报「无音符」（两种情形必须分开）", err)
 
     print("\n" + "-" * 48)
     if failures:

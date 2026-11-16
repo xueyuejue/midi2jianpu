@@ -467,6 +467,23 @@ std::vector<std::pair<std::string, std::string>> listParts(const MidiData& data)
 // 页眉用的声部摘要，如 "声部：Vocal·钢琴, Piano·钢琴"；没有可标注的声部时返回空串。
 std::string partSummary(const MidiData& data);
 
+// ---- 轨道诊断（CLI --list-tracks 与网页轨道下拉框共用一份） ----
+// 两处过去各算一套：CLI 数 data.notes 里的 track、网页直接读 MThd 的 16 位
+// 轨数。文件头那个数字常常是错的（导出器合并轨后忘了改、16 位溢出成 0、
+// 下载被截断），于是同一份文件在命令行里是「共 0 轨」，在网页上连一个
+// 轨选项都没有，而 --track 3 明明还能转出 Bass 声部。
+// 结构里的 index 一律以「真实解析到的 MTrk 块」为界（MidiData::trackCount）。
+struct TrackSummary {
+    int index = 0;
+    std::string name;       // 0x03 轨名，没有就是空串
+    int notes = 0;          // 旋律音数（鼓件音不算在这里）
+    int drumNotes = 0;      // 被跳过的鼓件音
+    int lyrics = 0;         // MIDI 内置歌词字数
+    int program = -1;       // 主导音色号（-1 = 没有 0xC0 记录）
+    std::string instrument; // program 对应的 GM 名，查不到为空串
+};
+std::vector<TrackSummary> trackSummaries(const MidiData& data);
+
 // ---- 小节网格 ----
 // 「tick -> 小节」的换算分散在文本 / HTML / MusicXML 三个输出里，弱起一进来
 // 就得三处同时改，否则谱面一半对一半错。统一收进这个结构体。

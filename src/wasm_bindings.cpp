@@ -59,6 +59,63 @@ const char* midi2jianpu_track_info(const uint8_t* midiData, int size) {
     return buf.c_str();
 }
 
+// JSON 字符串转义：轨名是 0x03 里的自由文本，引号、反斜杠、换行都可能出现。
+// C0 控制字符一律转成 \u00XX，绝不原样塞进 JSON（那会让网页的 JSON.parse
+// 直接抛错，整份轨道下拉框变成空的）。
+static std::string jsonEscape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (unsigned char c : s) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if (c < 0x20) {
+                    char b[8];
+                    std::snprintf(b, sizeof(b), "\\u%04x", (int)c);
+                    out += b;
+                } else {
+                    out += (char)c;
+                }
+        }
+    }
+    return out;
+}
+
+// 网页的轨道下拉框：返回真实 MTrk 块的清单（JSON 数组）。
+// 网页过去直接读 MThd offset 10..11 的 16 位轨数来生成选项，而那个数字经常
+// 是错的（合并轨后忘了改 / 溢出成 0 / 文件被截断）：一份 4 轨的文件在页面上
+// 可能只有 0 个选项（选不了任何轨），也可能凭空多出 3 个空轨（选了就报
+// 「未提取到音符」）。统计口径与 CLI --list-tracks 共用 trackSummaries()。
+const char* midi2jianpu_track_list(const uint8_t* midiData, int size) {
+    m2j::MidiData data;
+    // 这里永远按「全曲」解析：下拉框要列出全部轨，不能受当前选中轨影响，
+    // 否则用户选了第 2 轨之后下拉框就只剩一个选项了。
+    if (!loadJ(midiData, size, data, false, -1)) {
+        g_result = "[]";
+        return g_result.c_str();
+    }
+    const auto tracks = m2j::trackSummaries(data);
+    std::string json = "[";
+    bool first = true;
+    for (const auto& t : tracks) {
+        if (!first) json += ",";
+        first = false;
+        json += "{\"i\":" + std::to_string(t.index) +
+                ",\"name\":\"" + jsonEscape(t.name) + "\"" +
+                ",\"notes\":" + std::to_string(t.notes) +
+                ",\"drum\":" + std::to_string(t.drumNotes) +
+                ",\"lyrics\":" + std::to_string(t.lyrics) +
+                ",\"inst\":\"" + jsonEscape(t.instrument) + "\"}";
+    }
+    json += "]";
+    g_result = json;
+    return g_result.c_str();
+}
+
 // 解析MIDI并返回文本简谱
 // midiData: MIDI二进制数据指针
 // size: 数据大小
