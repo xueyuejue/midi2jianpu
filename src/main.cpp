@@ -157,7 +157,18 @@ static void printTrackList(const m2j::MidiData& data, int selected = -1) {
                 if (i) std::cout << ",";
                 std::cout << s.channels[i].first;
             }
-            std::cout << "（" << s.channels.size() << " 个通道混在同一轨）";
+            std::cout << "（" << s.channels.size() << " 个通道混在同一轨";
+            // 只给通道号还没说完：同一轨的通道 0 是钢琴、通道 1 是小提琴时，
+            // 「乐器: 钢琴」那一行只代表主导通道，得把其余乐器的名字交代出来。
+            if (!s.channelInstruments.empty()) {
+                std::cout << "；各通道乐器: ";
+                for (size_t j = 0; j < s.channelInstruments.size(); j++) {
+                    if (j) std::cout << ", ";
+                    std::cout << "通道 " << s.channelInstruments[j].first << " "
+                              << s.channelInstruments[j].second;
+                }
+            }
+            std::cout << "）";
         }
         if (s.index == selected) std::cout << "   ← 当前 --track";
         std::cout << "\n";

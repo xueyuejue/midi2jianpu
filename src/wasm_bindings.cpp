@@ -113,13 +113,23 @@ const char* midi2jianpu_track_list(const uint8_t* midiData, int size) {
             chans += std::to_string(t.channels[i].first);
         }
         chans += "]";
+        // insts：逐通道 GM 乐器名（通道号 + 名字），网页下拉框靠它解释
+        // 「同一条轨为什么有两种乐器」。名字来自 MIDI 0xC0 / 轨名，
+        // 仍要走 jsonEscape；通道号是纯数字。
+        std::string insts = "[";
+        for (size_t i = 0; i < t.channelInstruments.size(); i++) {
+            if (i) insts += ",";
+            insts += "{\"c\":" + std::to_string(t.channelInstruments[i].first) +
+                     ",\"n\":\"" + jsonEscape(t.channelInstruments[i].second) + "\"}";
+        }
+        insts += "]";
         json += "{\"i\":" + std::to_string(t.index) +
                 ",\"name\":\"" + jsonEscape(t.name) + "\"" +
                 ",\"notes\":" + std::to_string(t.notes) +
                 ",\"drum\":" + std::to_string(t.drumNotes) +
                 ",\"lyrics\":" + std::to_string(t.lyrics) +
                 ",\"inst\":\"" + jsonEscape(t.instrument) + "\"" +
-                ",\"channels\":" + chans + "}";
+                ",\"channels\":" + chans + ",\"insts\":" + insts + "}";
     }
     json += "]";
     g_result = json;

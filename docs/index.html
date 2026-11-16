@@ -365,6 +365,11 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
       // 不标出来用户会以为「选了这条轨就该只有钢琴」。
       if (t.channels && t.channels.length > 1) {
         label += ' · 通道 ' + t.channels.join(',');
+        // 乐器名只代表主导通道，其余通道的乐器在这里逐个点名，
+        // 否则用户看到谱面里的第二件乐器会以为转换器串了轨。
+        if (t.insts && t.insts.length) {
+          label += '（' + t.insts.map(function (x) { return x.c + '=' + x.n; }).join(',') + '）';
+        }
       }
       var op = document.createElement('option');
       op.value = String(t.i);

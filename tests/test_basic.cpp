@@ -8460,6 +8460,9 @@ int main() {
         check(s0[0].index == 0 && s0[0].name == "Vocal" && s0[0].notes == 1 &&
               s0[0].instrument == "小提琴" && s0[0].lyrics == 1,
               "第 0 轨的轨名 / 音数 / 乐器 / 歌词字数各自归位");
+        check(s0[0].channelInstruments.size() == 1 &&
+              s0[0].channelInstruments[0].second == "小提琴",
+              "单通道轨的通道级乐器名与主导乐器一致");
         check(s0[1].name == "Piano" && s0[1].notes == 2,
               "第 1 轨 2 个旋律音");
         check(s0[2].notes == 0 && s0[2].drumNotes == 1,
@@ -8491,12 +8494,34 @@ int main() {
                   "逐轨通道表按通道号升序，各带自己的 note-on 数");
             check(sm[0].notes == 3,
                   "音数仍是 3（通道不参与音数统计）");
+            check(sm[0].channelInstruments.size() == 2 &&
+                  sm[0].channelInstruments[0].first == 0 &&
+                  sm[0].channelInstruments[0].second == "钢琴" &&
+                  sm[0].channelInstruments[1].first == 1 &&
+                  sm[0].channelInstruments[1].second == "小提琴",
+                  "每个通道按自己的首音时刻报 GM 乐器名，不再只写主导通道");
+
+            // 通道中途换音色：通道级名字仍取该通道首音那一刻，不能被后来的
+            // 0xC0 覆盖成「小提琴」，否则和谱面页眉的 Lead·钢琴又对不上。
+            SmfTrack tmixSwap = tmix;
+            tmixSwap.at(480, ev({0xC0, 40}));
+            const auto dswap = buildSmfFmt(1, 1, 480, {tmixSwap});
+            MidiData ds;
+            check(loadMidiFromMemory(dswap.data(), dswap.size(), ds),
+                  "通道中途换音色后照常解析");
+            const auto ss = trackSummaries(ds);
+            check(ss[0].channelInstruments.size() == 2 &&
+                  ss[0].channelInstruments[0].second == "钢琴" &&
+                  ss[0].channelInstruments[1].second == "小提琴",
+                  "通道乐器名按通道首音取，不被后来的 0xC0 覆盖");
 
             // 鼓件音也要占一个通道位：否则纯鼓轨在诊断里成了「没有通道」。
             const auto sc = trackSummaries(d0);
             check(sc[2].channels.size() == 1 && sc[2].channels[0].first == 9 &&
                   sc[2].channels[0].second == 1,
                   "纯鼓轨的通道表里是通道 9（鼓件音同样计入）");
+            check(sc[2].channelInstruments.empty(),
+                  "鼓通道没有 GM 旋律音色名，不冒充成钢琴");
 
             // format 0：轨数只有 1，通道才是真正的分层
             auto f0 = buildSmfFmt(0, 1, 480, {tmix});

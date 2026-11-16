@@ -499,6 +499,10 @@ struct TrackSummary {
     // 一条轨混多个通道时，乐器名只能代表主导通道，--track N 也切不开——
     // 诊断必须把这层结构说出来，否则用户无法解释「同一条轨里两种乐器」。
     std::vector<std::pair<int, int>> channels;
+    // 每条通道在它**首个音符时刻**的 GM 乐器名（通道号, 名字），按通道号升序。
+    // 没有 0xC0 记录、或鼓通道没有 GM 旋律音色名时不列。多通道轨只有
+    // 「通道 0,1」而不说各是什么乐器，用户没法解释谱面里第二件乐器从哪来。
+    std::vector<std::pair<int, std::string>> channelInstruments;
 };
 std::vector<TrackSummary> trackSummaries(const MidiData& data);
 

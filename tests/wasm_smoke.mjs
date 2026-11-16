@@ -2792,6 +2792,53 @@ if (existsSync(twoLyrics76)) {
     '下拉框对多通道轨补一句「通道 0,1」');
 }
 
+// ---- 79. v1.118.0 track_list 的逐通道乐器名 ----
+// 只有通道号还不够：同一轨 ch0 钢琴、ch1 小提琴时，下拉框仍写着笼统的
+// 「乐器: 钢琴」。新字段 insts 把每条通道在它首音时刻的 GM 名带出来。
+{
+  const vlq79 = (n) => {
+    const o = []; let b = n & 0x7f; n >>= 7;
+    while (n) { o.unshift((b | 0x80) & 0xff); b = n & 0x7f; n >>= 7; }
+    o.push(b); return o;
+  };
+  const be32 = (n) => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+  const body79 = [
+    ...vlq79(0), 0xff, 0x03, 3, 0x44, 0x75, 0x6f,   // "Duo"
+    ...vlq79(0), 0xc0, 0,                           // 通道 0 钢琴
+    ...vlq79(0), 0xc1, 40,                          // 通道 1 小提琴 (GM 40)
+    ...vlq79(0), 0x90, 60, 90, ...vlq79(480), 0x80, 60, 0,
+    ...vlq79(0), 0x91, 67, 90, ...vlq79(480), 0x81, 67, 0,
+    ...vlq79(0), 0xff, 0x2f, 0,
+  ];
+  const head79 = [0x4d, 0x54, 0x68, 0x64, ...be32(6), 0, 1, 0, 1, 0x01, 0xe0];
+  const dual79 = new Uint8Array([...head79, 0x4d, 0x54, 0x72, 0x6b,
+    ...be32(body79.length), ...body79]);
+  const p79 = mod._malloc(dual79.length);
+  mod.HEAPU8.set(dual79, p79);
+  const tl79 = JSON.parse(mod.UTF8ToString(mod._midi2jianpu_track_list(p79, dual79.length)));
+  mod._free(p79);
+  check(tl79.length === 1 && Array.isArray(tl79[0].insts) && tl79[0].insts.length === 2,
+    'track_list 带出同轨每通道的乐器名', JSON.stringify(tl79[0]));
+  check(JSON.stringify(tl79[0].insts) === '[{"c":0,"n":"钢琴"},{"c":1,"n":"小提琴"}]',
+    '逐通道乐器按通道号升序、名字可读', JSON.stringify(tl79[0].insts));
+  check(['i', 'name', 'notes', 'drum', 'lyrics', 'inst', 'channels', 'insts']
+    .every((k) => k in tl79[0]),
+  'insts 作为新字段加入，既有字段一个不少', JSON.stringify(tl79[0]));
+
+  // 没有 0xC0 的多通道轨：insts 是空数组，不能凭空编一个乐器出来。
+  const trio79 = new Uint8Array(readFileSync(path.join(FIXTURES, 'voice_trio.mid')));
+  const pt79 = mod._malloc(trio79.length);
+  mod.HEAPU8.set(trio79, pt79);
+  const t79 = JSON.parse(mod.UTF8ToString(mod._midi2jianpu_track_list(pt79, trio79.length)));
+  mod._free(pt79);
+  check(Array.isArray(t79[1].insts) && t79[1].insts.length === 0,
+    '没有音色声明的多通道轨 insts 为空数组，不是 null', JSON.stringify(t79[1]));
+
+  const page79 = readFileSync(path.join(ROOT, 'docs', 'index.html'), 'utf8');
+  check(page79.includes("t.insts.map(function (x) { return x.c + '=' + x.n; })"),
+    '网页下拉框把每个通道的乐器名点出来');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

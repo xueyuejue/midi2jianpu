@@ -4772,6 +4772,47 @@ def main():
     check('"SongB"' in out,
           "format 2 指定 --track 0 时第 1 段也不会退化成没有轨名的空轨", out)
 
+    group("[118] v1.118.0 同轨多通道逐个点名乐器")
+    # 一条轨里 ch0=钢琴、ch1=小提琴：旧版只说「通道 0,1」加「乐器: 钢琴」，
+    # 用户没法解释谱面里的小提琴从哪来。这里内联造一份最小 SMF，避免为
+    # 一句诊断多添一份顶层素材（105 份回归素材的零回归基线保持不动）。
+    def _vq118(n):
+        o = [n & 0x7f]
+        n >>= 7
+        while n:
+            o.insert(0, (n & 0x7f) | 0x80)
+            n >>= 7
+        return bytes(o)
+
+    with tempfile.TemporaryDirectory(prefix="m2j-v1180-") as td:
+        dual = bytearray()
+        dual += _vq118(0) + b"\xff\x03\x03Duo"
+        dual += _vq118(0) + b"\xc0\x00"          # 通道 0 钢琴
+        dual += _vq118(0) + b"\xc1\x28"          # 通道 1 小提琴 (GM 40)
+        dual += _vq118(0) + b"\x90\x3c\x5a" + _vq118(480) + b"\x80\x3c\x00"
+        dual += _vq118(0) + b"\x91\x43\x5a" + _vq118(480) + b"\x81\x43\x00"
+        dual += _vq118(0) + b"\xff\x2f\x00"
+        dual_path = os.path.join(td, "dual.mid")
+        with open(dual_path, "wb") as f:
+            f.write(b"MThd" + struct.pack(">IHHH", 6, 1, 1, 480) +
+                    b"MTrk" + struct.pack(">I", len(dual)) + bytes(dual))
+        rc, out, err = run(exe, dual_path, "--list-tracks")
+        check(rc == 0, "同轨双音色素材照常列出轨道", err[:200])
+        check("各通道乐器: 通道 0 钢琴, 通道 1 小提琴" in out,
+              "多通道轨逐个点名每个通道的乐器", out)
+        check("乐器: 钢琴" in out and "旋律 2 音" in out,
+              "主导乐器与音数照旧显示（既有字段不回退）", out)
+
+    # 单通道轨一个字都不多印：老文件的列表逐字节不变。
+    rc2, out2, _ = run(exe, os.path.join(FIXTURES, "meter.mid"), "--list-tracks")
+    check("各通道乐器:" not in out2,
+          "单通道轨不多印逐通道乐器（老文件逐字节不变）", out2)
+    # 没有 0xC0 的多通道轨也不该凭空编一个乐器名。
+    rc3, out3, _ = run(exe, os.path.join(FIXTURES, "voice_trio.mid"),
+                       "--list-tracks")
+    check(rc3 == 0 and "各通道乐器:" not in out3,
+          "没有音色声明的多通道轨只报通道号，不编造乐器名", out3)
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

@@ -1818,9 +1818,17 @@ std::vector<TrackSummary> trackSummaries(const MidiData& data) {
     }
 
     // 一次线性扫描把音符与歌词按轨归位：轨数是几十的量级，但文件可能有
-    // 上万个音符，逐轨重扫就是 O(轨 × 音)。
+    // 上万个音符，逐轨重扫就是 O(轨 × 音)。顺手记下每轨每通道的首音 tick：
+    // 通道级乐器名要和 partPrograms 一样按时间轴取，不能读 channelProgram 末值。
+    std::map<int, std::map<int, long>> trackChanFirstTick;
     for (const auto& nt : data.notes) {
-        if (nt.track >= 0 && nt.track < n) out[(size_t)nt.track].notes++;
+        if (nt.track >= 0 && nt.track < n) {
+            out[(size_t)nt.track].notes++;
+            auto& cm = trackChanFirstTick[nt.track];
+            auto it = cm.find(nt.channel);
+            if (it == cm.end() || nt.startTicks < it->second)
+                cm[nt.channel] = nt.startTicks;
+        }
     }
     // 歌词按「可唱音节」计，不数 0x05 事件：一条事件里写「春江花月夜」是 5 个字，
     // 而「@KMIDI」「-」「_」这些元数据 / 延续符一个字都不唱。此前直接数事件，
@@ -1833,7 +1841,21 @@ std::vector<TrackSummary> trackSummaries(const MidiData& data) {
     for (const auto& kv : data.channelNotesByTrack) {
         if (kv.first < 0 || kv.first >= n) continue;
         for (const auto& ch : kv.second) {
-            if (ch.second > 0) out[(size_t)kv.first].channels.push_back(ch);
+            if (ch.second <= 0) continue;
+            out[(size_t)kv.first].channels.push_back(ch);
+            // 鼓件音也占一个通道位，但打击乐没有 GM 旋律音色名，别把通道 9
+            // 标成「钢琴」（默认 program 0）——那比不说还误导。
+            if ((ch.first & 0x0F) == 9) continue;
+            long firstTick = 0;
+            auto tit = trackChanFirstTick.find(kv.first);
+            if (tit != trackChanFirstTick.end()) {
+                auto cit = tit->second.find(ch.first);
+                if (cit != tit->second.end()) firstTick = cit->second;
+            }
+            const std::string nm =
+                gmInstrumentName(programAt(data, ch.first, firstTick));
+            if (!nm.empty())
+                out[(size_t)kv.first].channelInstruments.emplace_back(ch.first, nm);
         }
     }
     return out;
