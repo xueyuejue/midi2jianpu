@@ -909,6 +909,50 @@ def main():
         tags = [c.tag for c in m1]
         check("direction" in tags and tags.index("attributes") < tags.index("direction"),
               "direction 排在 attributes 之后", str(tags))
+        # --gong 是硬指定宫音，曲子未必落在那支五声上。落音 G 在 12 个宫音
+        # 里只有 5 个是正音（C 徵 / Eb 角 / F 商 / G 宫 / Bb 羽），另外 7 个
+        # G 是偏音。旧版对那 7 个照样写「G 宫调式（宫音 D）」——宫调式的主音
+        # 必须就是宫音，这句自相矛盾，用户会以为程序判对了调式。
+        # 判据不能是「落音 == 宫音」——那是因为宫调式才成立。真正的约束是
+        # 「落音 − 宫音」必须落在五声音级上，且调式名与这个音程一致。
+        SEMI = {"C": 0, "C#": 1, "Db": 1, "D": 2, "D#": 3, "Eb": 3, "E": 4,
+                "F": 5, "F#": 6, "Gb": 6, "G": 7, "G#": 8, "Ab": 8,
+                "A": 9, "A#": 10, "Bb": 10, "B": 11}
+        PENTA = {0: "宫", 2: "商", 4: "角", 7: "徵", 9: "羽"}
+        bad_gong, mode_reported = [], []
+        for g in ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"):
+            _rc, gout, _ = run(exe, pent, "--gong", g)
+            m = re.search(r"五声调式: (.+?)，首调 1=", gout)
+            lbl = m.group(1) if m else ""
+            mm = re.match(r"^(\S+) (宫|商|角|徵|羽)调式（宫音 (\S+)）$", lbl)
+            if not mm:
+                continue
+            mode_reported.append(g)
+            final_name, mode_name, gong_name = mm.groups()
+            rel = (SEMI[final_name] - SEMI[gong_name]) % 12
+            if PENTA.get(rel) != mode_name:
+                bad_gong.append(g + ":" + lbl)
+        check(not bad_gong,
+              "12 个宫音：报出的调式名都与「落音−宫音」的音程对得上", str(bad_gong))
+        # 落音是 G：只有 C 徵 / Eb 角 / F 商 / G 宫 / Bb 羽这 5 个宫音能让 G 当正音
+        check(mode_reported == ["C", "D#", "F", "G", "A#"],
+              "12 个宫音里只有落音是正音的 5 个才报调式名", str(mode_reported))
+
+        rc7, gd, _ = run(exe, pent, "--gong", "D")
+        check("宫音 D（落音 G 是清角，不在五声内）" in gd and
+              "G 宫调式（宫音 D）" not in gd,
+              "--gong D：落音是清角时给实话，不再谎称宫调式", gd[:260])
+        check("1=D 大调" in gd, "宫音仍是 1 的位置（1=D 不变）", gd[:260])
+
+        gdh = os.path.join(tmp, "pentatonic_gongd.html")
+        gdx = os.path.join(tmp, "pentatonic_gongd.xml")
+        run(exe, pent, "--gong", "D", "--html", gdh, "--musicxml", gdx)
+        gdbody = open(gdh, encoding="utf-8").read()
+        check("宫音 D（落音 G 是清角，不在五声内）" in gdbody,
+              "HTML 页眉同样给实话")
+        gdwords = [w.text for w in ET.parse(gdx).getroot().iter("words")]
+        check("宫音 D（落音 G 是清角，不在五声内）" in gdwords,
+              "MusicXML 谱头同样给实话", str(gdwords))
 
     # ---- [21] LRC × tempo map：变速曲目的歌词不能整体错位 ----
     # tempolrc.mid 前 4 小节 120BPM、后 4 小节 60BPM，LRC 时间戳写真实秒。

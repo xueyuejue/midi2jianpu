@@ -1485,6 +1485,60 @@ int main() {
               "降号宫音写 Bb 而不是 A#: " + bbGong.scaleLabel);
         check(prefersFlats(bbGong) && keyFifths(bbGong) == -2,
               "降号宫音的等音写法与调号一致");
+
+        // ---- 落音不在指定宫系统的五声里 ----
+        // zhi 的落音是 G。--gong 是硬指定，G 未必落在那个宫的五声上；
+        // 旧实现一律写成「G 宫调式（宫音 D）」——宫调式的主音必须就是宫音，
+        // 这是两个互相打架的断言（12 个宫音里 7 个会这样）。
+        {
+            struct BiasCase {
+                int gong; const char* want; const char* bias;   // bias 为空表示无偏音名
+            };
+            const BiasCase biasCases[] = {
+                { 2, "宫音 D（落音 G 是清角，不在五声内）",  "清角" },
+                { 1, "宫音 Db（落音 G 是变徵，不在五声内）", "变徵" },
+                { 8, "宫音 Ab（落音 G 是变宫，不在五声内）", "变宫" },
+                { 9, "宫音 A（落音 G 是闰，不在五声内）",   "闰" },
+                { 4, "宫音 E（落音 G，不在五声内）",        "" },   // 差半音，无名
+            };
+            for (const auto& c : biasCases) {
+                const KeyEstimate kk = keyFromGong(zhi, c.gong);
+                check(kk.scaleLabel == c.want,
+                      std::string("--gong 落音不在五声内时给实话: ") + kk.scaleLabel);
+                // 绝不出现「<落音> …调式（宫音 <别的音>）」这种自相矛盾的写法
+                const bool saysMode = kk.scaleLabel.find("调式") != std::string::npos;
+                check(!saysMode, "落音是偏音时不谎称调式名: " + kk.scaleLabel);
+                check(kk.scaleLabel.find(c.bias) != std::string::npos || c.bias[0] == 0,
+                      std::string("偏音名可读: ") + kk.scaleLabel);
+                check(kk.tonicPitchClass == c.gong % 12, "宫音仍是 1 的位置");
+                // pitchToJianpu 吃的是 MIDI 音高不是音级：宫音 D = MIDI 62
+                check(pitchToJianpu(60 + c.gong, kk) == "1",
+                      "宫音记作 1（与标签一致）");
+                check(keyDescription(kk).find("不在五声内") != std::string::npos,
+                      "页眉把这句话带出去: " + keyDescription(kk));
+            }
+
+            // 落音恰是正音的 5 个宫音：一个字都不许变
+            struct OkCase { int gong; const char* want; };
+            const OkCase okCases[] = {
+                { 0, "G 徵调式（宫音 C）" },
+                { 3, "G 角调式（宫音 Eb）" },
+                { 5, "G 商调式（宫音 F）" },
+                { 7, "G 宫调式（宫音 G）" },
+                { 10, "G 羽调式（宫音 Bb）" },
+            };
+            for (const auto& c : okCases)
+                check(keyFromGong(zhi, c.gong).scaleLabel == c.want,
+                      std::string("正音落音的旧写法逐字不变: ")
+                          + keyFromGong(zhi, c.gong).scaleLabel);
+
+            // 没有音符就没有落音：那时不是「不匹配」，不该报「不在五声内」
+            MidiData silent;
+            silent.division = 480;
+            silent.timeSig = TimeSignature{4, 2, true};
+            check(keyFromGong(silent, 2).scaleLabel == "D 宫调式（宫音 D）",
+                  "拿不到落音时保持宫调式，不冒充「不在五声内」");
+        }
     }
 
     // ---- TempoTimeline：tick <-> 秒 ----

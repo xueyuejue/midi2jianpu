@@ -263,6 +263,45 @@ static std::string makeScaleLabel(int gong, int finalPc, PentatonicMode mode,
     return os.str();
 }
 
+// 相对宫音的半音数 -> 传统七声里的偏音名。
+//
+// 只认四个有固定写法的偏音：清角(5)、变徵(6)、闰(10)、变宫(11)。
+// 差半音的关系（1 / 3 / 8）在十二律里没有名字——那种情形基本可以断定是
+// 宫音选错了半音，硬给个名字反而像在替用户圆场。
+static const char* pentatonicBiasName(int rel) {
+    switch (rel) {
+        case 5:  return "清角";
+        case 6:  return "变徵";
+        case 10: return "闰";
+        case 11: return "变宫";
+        default: return nullptr;
+    }
+}
+
+// --gong 是用户硬指定的宫音，曲子却未必落在这个宫系统上。
+//
+// pentatonic.mid 的落音是 G；指定 --gong D 时 G 是清角，不在 D 宫五声里。
+// 旧实现照旧写成「G 宫调式（宫音 D）」——宫调式的主音必须就是宫音，
+// 这不是措辞难看的问题，是两个互相打架的断言：真按宫调式唱，落音该是 D。
+// 12 个宫音里有 7 个会撞出这种标签。所以落音是偏音时不再给调式名，
+// 直接说清「落音是哪个偏音、不在五声内」，由用户判断是宫音选错了还是
+// 这首本来就不是五声。
+static std::string makeGongMismatchLabel(int gong, int finalPc, int fifthsHint) {
+    KeyEstimate k;
+    k.tonicPitchClass = ((gong % 12) + 12) % 12;
+    k.isMajor = true;
+    k.fifthsHint = fifthsHint;
+    const bool flat = keyFifths(k) < 0;
+    const int rel = ((finalPc - gong) % 12 + 12) % 12;
+    std::ostringstream os;
+    os << "宫音 " << pitchClassName(gong, flat) << "（落音 "
+       << pitchClassName(finalPc, flat);
+    if (const char* bias = pentatonicBiasName(rel))
+        os << " 是" << bias;
+    os << "，不在五声内）";
+    return os.str();
+}
+
 std::string PentatonicEstimate::label() const {
     if (!detected) return {};
     return makeScaleLabel(gongPitchClass, finalPitchClass, mode);
@@ -371,12 +410,18 @@ KeyEstimate keyFromGong(const MidiData& data, int gongPitchClass, int fifthsHint
     const PitchProfile prof = melodyPitchProfile(data);
     PentatonicMode mode = PentatonicMode::Gong;
     int finalPc = -1;
+    // 落音是正音才敢报调式名。没有音符（finalPc 拿不到）时保持宫调式：
+    // 那不是「不匹配」，只是没有证据，写「宫音 X（…不在五声内）」反而像报错。
+    bool matched = true;
     if (prof.finalPc >= 0) {
         finalPc = prof.finalPc;
         const PentatonicMode m = modeOfFinal(k.tonicPitchClass, finalPc);
         if (m != PentatonicMode::None) mode = m;
+        else matched = false;
     }
-    k.scaleLabel = makeScaleLabel(k.tonicPitchClass, finalPc, mode, fifthsHint);
+    k.scaleLabel = matched
+                       ? makeScaleLabel(k.tonicPitchClass, finalPc, mode, fifthsHint)
+                       : makeGongMismatchLabel(k.tonicPitchClass, finalPc, fifthsHint);
     return k;
 }
 
