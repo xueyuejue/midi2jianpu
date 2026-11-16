@@ -337,6 +337,23 @@ int midi2jianpu_midi_lyric_count(const uint8_t* midiData, int size) {
     return (int)m2j::normalizeMidiLyrics(data).size();
 }
 
+// 内置歌词的一句话体检（网页提示栏）：词在哪条轨、有没有别的轨被忽略、
+// 所选轨没词时词到底在谁身上。与 CLI 那段「MIDI 内置歌词: N 个音节（轨 K）」
+// 同一口径（都走 midiLyricHint / droppedLyricNote）。
+//
+// 这里必须按「全曲」解析：按当前选中轨过滤后，所选轨以外的歌词事件已经在
+// 解析层被丢掉，那样「选了一条没有词的轨」就只剩「此文件没有内置歌词」这句
+// 错话——文件明明有词，只是不在这一轨上。
+const char* midi2jianpu_midi_lyric_info(const uint8_t* midiData, int size) {
+    m2j::MidiData data;
+    if (!loadJ(midiData, size, data, false, -1)) {
+        g_result.clear();
+        return g_result.c_str();
+    }
+    g_result = m2j::midiLyricHint(data, g_trackFilter);
+    return g_result.c_str();
+}
+
 // 网页版「使用 MIDI 自带歌词」开关：0 = 忽略，非 0 = 自动加载（默认）。
 void midi2jianpu_set_use_midi_lyrics(int on) {
     g_useMidiLyrics = (on != 0);

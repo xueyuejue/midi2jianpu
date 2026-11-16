@@ -374,8 +374,22 @@ struct LyricTrackPick {
 };
 LyricTrackPick pickMidiLyricTrack(const MidiData& data);
 
+// 每条轨各自的有效音节数（只列真能唱的轨，元数据轨不占位），按轨号升序。
+// 「哪条轨有词、有几字」只有一份口径：取轨（pickMidiLyricTrack）、
+// 提示（midiLyricHint）、命令行与网页都从它出发。
+std::vector<std::pair<int, int>> lyricSyllablesByTrack(const MidiData& data);
+
 // 「（另 1 轨的 10 个音节已忽略）」，没有可忽略的轨时返回空串。
 std::string droppedLyricNote(const MidiData& data);
+
+// 一句内置歌词体检提示，网页与命令行共用：
+//   全曲都无词        -> 「此文件没有内置歌词」
+//   selectedTrack < 0 -> 「此文件自带 10 个歌词音节（轨 1）…」+ 忽略说明
+//   所选轨有词        -> 「轨 1 自带 10 个歌词音节…」，别的轨注明不参与
+//   所选轨无词        -> 点明词在哪条轨、怎么才能用上
+// 传进来的 data 必须是「全曲解析」（没按轨过滤），否则所选轨以外的信息已经
+// 在解析层丢掉了，最后一种情形就只剩「没有内置歌词」这一句错话可说。
+std::string midiLyricHint(const MidiData& data, int selectedTrack);
 
 // 按精确 tick 对齐：一批音节吸附到 [tick, spanEnd) 内真实存在的旋律音头，
 // 单音节批次就覆盖整段（这正是一字多音），多字批次在段内均分。

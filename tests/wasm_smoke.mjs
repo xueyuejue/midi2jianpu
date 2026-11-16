@@ -2643,6 +2643,69 @@ if (existsSync(partsPath75)) {
     '网页按 track_list 的条目数逐个建选项（不再用头部数字当循环上界）');
 }
 
+// ---- 76. v1.115.0 网页「自带几个歌词音节」要说清在哪条轨 ----
+// 旧页面只数 normalizeMidiLyrics 的音节数，一句「此文件自带 10 个歌词音节」
+// 既不说词在哪条轨，也不说另有一条歌词轨整轨被忽略；更糟的是在单轨模式下
+// 选了一条没有词的轨，页面会说「此文件没有内置歌词」——文件明明有词，只是
+// 不在这一轨上，用户会去找一个根本不存在的 LRC。现在这句由 C++ 的
+// midiLyricHint 统一算（与 CLI 同一个 pickMidiLyricTrack 口径），网页只负责显示。
+const twoLyrics76 = path.join(ROOT, 'tests', 'fixtures', 'twolyrics.mid');
+if (existsSync(twoLyrics76)) {
+  const two76 = new Uint8Array(readFileSync(twoLyrics76));
+  const hint76 = (track) => {
+    mod._midi2jianpu_set_track(track);
+    const p = mod._malloc(two76.length);
+    mod.HEAPU8.set(two76, p);
+    const s = mod._midi2jianpu_midi_lyric_info(p, two76.length);
+    const out = s ? mod.UTF8ToString(s) : '';
+    mod._free(p);
+    return out;
+  };
+  const auto76 = hint76(-1);
+  check(auto76.includes('此文件自带 10 个歌词音节（轨 1）'),
+    '自动模式点明词在第几轨', auto76);
+  check(auto76.includes('另 1 轨的 10 个音节已忽略'),
+    '另一条歌词轨被整轨忽略这件事也要说', auto76);
+
+  const none76 = hint76(0);
+  check(none76.includes('轨 0 没有歌词') && none76.includes('10 个音节在轨 1'),
+    '选中没有词的轨时指出词其实在哪条轨', none76);
+  check(!none76.includes('此文件没有内置歌词'),
+    '选中没有词的轨时不能说「此文件没有」', none76);
+  check(none76.includes('「自动」'),
+    '并给出可操作的建议（把轨道选回自动）', none76);
+
+  const other76 = hint76(2);
+  check(other76.includes('轨 2 自带 10 个歌词音节') &&
+        other76.includes('另 1 轨的 10 个音节不参与'),
+    '选中带词的轨时注明别的轨这次不参与', other76);
+  mod._midi2jianpu_set_track(-1);
+
+  // 「歌词 N 字」曾是 0x05 事件数：karaoke.mid 的 Vocal 轨有 9 条事件
+  // （@KMIDI / - / _ / / 都在里面），真正能唱的只有 5 个字。
+  const kar76 = new Uint8Array(readFileSync(path.join(ROOT, 'tests', 'fixtures', 'karaoke.mid')));
+  const kp76 = mod._malloc(kar76.length);
+  mod.HEAPU8.set(kar76, kp76);
+  const klist76 = JSON.parse(mod.UTF8ToString(mod._midi2jianpu_track_list(kp76, kar76.length)));
+  mod._free(kp76);
+  check(klist76.length === 3 && klist76[1].lyrics === 5,
+    'track_list 的歌词字数是可唱音节数，不是 0x05 事件数（9）',
+    JSON.stringify(klist76.map((t) => t.lyrics)));
+
+  // 没有词的谱：说得出口「没有内置歌词」，而不是空串让提示栏开天窗。
+  const plain76 = new Uint8Array(readFileSync(path.join(ROOT, 'tests', 'fixtures', 'parts.mid')));
+  const pp76 = mod._malloc(plain76.length);
+  mod.HEAPU8.set(plain76, pp76);
+  const plainHint76 = mod.UTF8ToString(mod._midi2jianpu_midi_lyric_info(pp76, plain76.length));
+  mod._free(pp76);
+  check(plainHint76 === '此文件没有内置歌词', '无内置歌词的文件如实说明', plainHint76);
+
+  const page76 = readFileSync(path.join(ROOT, 'docs', 'index.html'), 'utf8');
+  check(page76.includes('_midi2jianpu_midi_lyric_info(') &&
+        page76.includes('_midi2jianpu_midi_lyric_count('),
+    '网页优先用 lyric_info 说话，只给旧 wasm 留 count 兜底');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

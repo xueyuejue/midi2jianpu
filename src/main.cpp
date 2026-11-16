@@ -403,10 +403,16 @@ int main(int argc, char** argv) {
             std::cout << "已忽略 MIDI 内置歌词: " << builtinLyricEvents << " 个事件\n";
     } else if (builtinLyricEvents > 0) {
         const auto syls = m2j::normalizeMidiLyrics(data);
+        const m2j::LyricTrackPick ly = m2j::pickMidiLyricTrack(data);
         if (!syls.empty())
-            std::cout << "MIDI 内置歌词: " << syls.size() << " 个音节"
+            std::cout << "MIDI 内置歌词: " << syls.size() << " 个音节（轨 " << ly.track << "）"
                       << m2j::droppedLyricNote(data) << "（自动加载，"
                       << "--no-midi-lyrics 可关闭）\n";
+        else
+            // 有 0x05 事件但一个可唱音节都没有（全是 @KMIDI 这类元数据）：
+            // 一声不吭会让用户以为「文件里的词被吞了」。
+            std::cout << "MIDI 内置歌词: " << builtinLyricEvents
+                      << " 条事件里没有可唱音节（@KMIDI 等元数据与延续符不计）\n";
     }
 
     // --track 的轨道隔离已在解析层完成（含 format 2 的「实际转换第 N 轨」

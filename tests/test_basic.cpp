@@ -972,6 +972,43 @@ int main() {
         check(lyricSourceLabel(d4, nullptr).find("另 1 轨") != std::string::npos,
               "页眉的歌词来源也带上忽略说明");
 
+        // ---- 逐轨音节表与「词在哪一轨」的体检提示 ----
+        // 网页提示栏原来只会说「此文件自带 N 个歌词音节」，选了没有词的那条轨
+        // 就变成「此文件没有内置歌词」——文件明明有词，只是不在这一轨上。
+        const auto byTrack = lyricSyllablesByTrack(d4);
+        check(byTrack.size() == 2 && byTrack[0].first == 1 && byTrack[0].second == 4 &&
+                  byTrack[1].first == 2 && byTrack[1].second == 1,
+              "逐轨音节表只列能唱的轨、按轨号升序");
+        check(midiLyricHint(MidiData(), -1) == "此文件没有内置歌词",
+              "全曲无词时的提示");
+        check(midiLyricHint(d, -1).find("此文件自带 5 个歌词音节（轨 1）") != std::string::npos &&
+                  midiLyricHint(d, -1).find("另 ") == std::string::npos,
+              "自动模式点明词在第几轨，且不谎报丢弃，实际: " + midiLyricHint(d, -1));
+        check(midiLyricHint(d4, -1).find("另 1 轨的 1 个音节已忽略") != std::string::npos,
+              "自动模式复用 droppedLyricNote 的口径，实际: " + midiLyricHint(d4, -1));
+        check(midiLyricHint(d, 1) == "轨 1 自带 5 个歌词音节",
+              "选中轨有词、别处没有时只说数量，实际: " + midiLyricHint(d, 1));
+        check(midiLyricHint(d4, 2).find("轨 2 自带 1 个歌词音节") != std::string::npos &&
+                  midiLyricHint(d4, 2).find("另 1 轨的 4 个音节不参与") != std::string::npos,
+              "单轨模式下别的轨注明不参与，实际: " + midiLyricHint(d4, 2));
+        // 这条是本次真正的缺陷：说「此文件没有内置歌词」会把人骗去找一个
+        // 根本不存在的 LRC。
+        const std::string noLyric = midiLyricHint(d, 2);
+        check(noLyric.find("轨 2 没有歌词") != std::string::npos &&
+                  noLyric.find("5 个音节在轨 1") != std::string::npos &&
+                  noLyric.find("此文件没有内置歌词") == std::string::npos,
+              "选中没词的轨时不能说「此文件没有」，实际: " + noLyric);
+        check(midiLyricHint(d, 2).find("「自动」") != std::string::npos,
+              "选中没词的轨时给出可操作的建议");
+
+        // 轨道诊断里的「歌词 N 字」必须数可唱音节，不能数 0x05 事件数：
+        // d 的歌词轨有 9 条事件（含 @KMIDI / - / / 等），只有 5 个字。
+        MidiData ts = d;
+        ts.trackCount = 3;
+        const auto sums = trackSummaries(ts);
+        check(sums.size() == 3 && sums[1].lyrics == 5 && sums[2].lyrics == 0,
+              "轨道诊断的歌词字数是可唱音节数，不是事件数");
+
         MidiData d5;
         d5.midiLyrics = {{0, "  ", 1}, {0, "- -", 1}, {0, "/", 1}, {0, "！", 1}};
         check(normalizeMidiLyrics(d5).empty(), "纯空白/延续符/换行/标点不产生音节");
@@ -982,6 +1019,9 @@ int main() {
         NoteEvent w = v; w.track = 2;
         d5.notes.push_back(w);
         check(midiLyricTrack(d5) == -1, "只有元数据/延续符时不采信歌词轨号");
+        check(lyricSyllablesByTrack(d5).empty(), "只有元数据/延续符时逐轨音节表为空");
+        check(midiLyricHint(d5, -1) == "此文件没有内置歌词",
+              "全是元数据时也说「没有内置歌词」而不是「0 个音节」");
     }
 
     std::cout << "\n测试中途变拍号（拍号 map / 逐小节网格）\n";

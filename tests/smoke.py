@@ -4681,6 +4681,33 @@ def main():
     check(rc == 4 and "轨道 0 无音符" in err and "不存在" not in err,
           "真实存在的空轨仍报「无音符」（两种情形必须分开）", err)
 
+    group("[115] v1.115.0 歌词诊断说清在哪条轨、字数按可唱音节算")
+    # 两处都曾是「诊断说谎」：① --list-tracks 的「歌词 N 字」数的是 0x05
+    # 事件条数，karaoke.mid 的 Vocal 轨有 9 条事件（@KMIDI / - / _ / / 全在
+    # 里面），真正能唱的只有 5 个字；② 控制台只说「10 个音节」，不说在哪条轨，
+    # 用户想 --track 也只能瞎猜。
+    kara_mid = os.path.join(FIXTURES, "karaoke.mid")
+    rc, out, err = run(exe, kara_mid, "--list-tracks")
+    check(rc == 0 and "歌词 5 字" in out,
+          "轨道诊断的歌词字数是可唱音节数（5），不是 0x05 事件数", out[:300])
+    check("歌词 9 字" not in out,
+          "元数据 / 延续符 / 换行标记不占字数", out[:300])
+
+    two_mid = os.path.join(FIXTURES, "twolyrics.mid")
+    rc, out, err = run(exe, two_mid, "--list-tracks")
+    check(rc == 0 and out.count("歌词 10 字") == 2,
+          "两条歌词轨各自报自己的可唱音节数", out[:300])
+
+    rc, out, err = run(exe, two_mid)
+    check(rc == 0 and "MIDI 内置歌词: 10 个音节（轨 1）" in out,
+          "控制台点明内置歌词在哪条轨（等价于 --track 1）", out[:300])
+    check("另 1 轨的 10 个音节已忽略" in out,
+          "另一条歌词轨被整轨忽略这件事照旧说清楚", out[:300])
+
+    rc, out, err = run(exe, kara_mid)
+    check(rc == 0 and "MIDI 内置歌词: 5 个音节（轨 1）" in out,
+          "单条歌词轨时也带轨号，与网页提示同口径", out[:300])
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

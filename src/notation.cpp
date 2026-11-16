@@ -1822,8 +1822,11 @@ std::vector<TrackSummary> trackSummaries(const MidiData& data) {
     for (const auto& nt : data.notes) {
         if (nt.track >= 0 && nt.track < n) out[(size_t)nt.track].notes++;
     }
-    for (const auto& ly : data.midiLyrics) {
-        if (ly.track >= 0 && ly.track < n) out[(size_t)ly.track].lyrics++;
+    // 歌词按「可唱音节」计，不数 0x05 事件：一条事件里写「春江花月夜」是 5 个字，
+    // 而「@KMIDI」「-」「_」这些元数据 / 延续符一个字都不唱。此前直接数事件，
+    // karaoke.mid 的 Vocal 轨有 9 条事件却只有 5 个音节，诊断写着「歌词 9 字」。
+    for (const auto& c : lyricSyllablesByTrack(data)) {
+        if (c.first >= 0 && c.first < n) out[(size_t)c.first].lyrics = c.second;
     }
     return out;
 }
@@ -3231,26 +3234,71 @@ static std::vector<MidiSyllable> normalizeLyricEvents(std::vector<const LyricEve
     return out;
 }
 
-LyricTrackPick pickMidiLyricTrack(const MidiData& data) {
-    LyricTrackPick pick;
-    if (data.midiLyrics.empty()) return pick;
+std::vector<std::pair<int, int>> lyricSyllablesByTrack(const MidiData& data) {
+    std::vector<std::pair<int, int>> out;
+    if (data.midiLyrics.empty()) return out;
     std::map<int, std::vector<const LyricEvent*>> byTrack;
     for (const auto& e : data.midiLyrics) byTrack[e.track].push_back(&e);
-
-    std::vector<std::pair<int, int>> counts;
+    // std::map 保证按轨号升序，调用方可以直接依赖这个次序做「并列取轨号小」
     for (const auto& kv : byTrack) {
         const int n = (int)normalizeLyricEvents(kv.second).size();
-        counts.push_back({kv.first, n});
-        // std::map 按轨号升序，用严格大于比较，并列时自然保住轨号小的那条
-        if (n > pick.syllables) { pick.syllables = n; pick.track = kv.first; }
+        if (n > 0) out.push_back({kv.first, n});   // 只有元数据 / 延续符的轨不占位
+    }
+    return out;
+}
+
+LyricTrackPick pickMidiLyricTrack(const MidiData& data) {
+    LyricTrackPick pick;
+    const std::vector<std::pair<int, int>> counts = lyricSyllablesByTrack(data);
+    for (const auto& c : counts) {
+        // 用严格大于比较，并列时自然保住轨号小的那条
+        if (c.second > pick.syllables) { pick.syllables = c.second; pick.track = c.first; }
     }
     if (pick.track < 0 || pick.syllables == 0) return LyricTrackPick{};
     for (const auto& c : counts) {
-        if (c.first == pick.track || c.second <= 0) continue;
+        if (c.first == pick.track) continue;
         pick.droppedTracks++;
         pick.droppedSyllables += c.second;
     }
     return pick;
+}
+
+std::string midiLyricHint(const MidiData& data, int selectedTrack) {
+    const std::vector<std::pair<int, int>> counts = lyricSyllablesByTrack(data);
+    if (counts.empty()) return "此文件没有内置歌词";
+
+    const LyricTrackPick pick = pickMidiLyricTrack(data);
+    if (selectedTrack < 0) {
+        // 自动（全部轨）：只有一条轨的词会被采用，其余整轨忽略——必须说出来，
+        // 否则「自带 10 个音节」看起来像全曲只有 10 个字。
+        return "此文件自带 " + std::to_string(pick.syllables) + " 个歌词音节（轨 " +
+               std::to_string(pick.track) + "）" + droppedLyricNote(data);
+    }
+
+    int mine = 0;
+    for (const auto& c : counts)
+        if (c.first == selectedTrack) mine = c.second;
+    if (mine > 0) {
+        // 单轨模式只取所选轨：别的轨上的词这次不参与，说清楚免得下一次换轨后
+        // 「音节数怎么变了」。
+        int others = 0, otherSyllables = 0;
+        for (const auto& c : counts) {
+            if (c.first == selectedTrack) continue;
+            others++;
+            otherSyllables += c.second;
+        }
+        std::string s = "轨 " + std::to_string(selectedTrack) + " 自带 " +
+                        std::to_string(mine) + " 个歌词音节";
+        if (others > 0)
+            s += "，另 " + std::to_string(others) + " 轨的 " +
+                 std::to_string(otherSyllables) + " 个音节不参与（只取所选轨）";
+        return s;
+    }
+    // 所选轨一个字都没有，但文件别处有词：这时绝不能说「此文件没有内置歌词」，
+    // 用户会以为这份 MIDI 压根不带词，转而去翻一个根本不存在的 LRC。
+    return "轨 " + std::to_string(selectedTrack) + " 没有歌词；文件的 " +
+           std::to_string(pick.syllables) + " 个音节在轨 " +
+           std::to_string(pick.track) + "，把轨道选回「自动」才会用上";
 }
 
 std::string droppedLyricNote(const MidiData& data) {
