@@ -317,6 +317,12 @@ struct MidiData {
     // `--list-tracks` 用它把鼓轨在轨道列表里标出来；普通转换不读它，零回归。
     std::map<int, int> drumNotesByTrack;
 
+    // 逐轨的鼓件音高分布（轨 -> 鼓件音高 -> note-on 数）。光有上面的总数，
+    // `--list-tracks` 只能说「跳过 192 鼓件音」，用户分不清丢的是底鼓还是镲片；
+    // 这里按音高记全，诊断层用 gmDrumName() 映射成中文鼓名再聚合。只在解析
+    // 阶段多记一个 map 计数，转换输出不读它，既有谱面逐字节不变。
+    std::map<int, std::map<int, int>> drumPitchesByTrack;
+
     // 每条轨实际用到的逻辑通道（轨 -> 通道 -> note-on 数）。一条轨混多个
     // 通道是常态：format 0 的导出器把整首曲子塞进一条轨，DAW 也常把
     // 主旋律与伴奏放同一条轨的不同通道。转换层按通道拆声部，但 --track N

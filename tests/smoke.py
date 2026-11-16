@@ -4813,6 +4813,27 @@ def main():
     check(rc3 == 0 and "各通道乐器:" not in out3,
           "没有音色声明的多通道轨只报通道号，不编造乐器名", out3)
 
+    group("[119] v1.119.0 鼓轨逐个点名被跳过的鼓件")
+    drums119 = os.path.join(FIXTURES, "drums.mid")
+    rc, out, err = run(exe, drums119, "--list-tracks")
+    drum_line = next((ln for ln in out.splitlines() if '"Drums"' in ln), "")
+    check(rc == 0 and "鼓轨 (跳过 192 鼓件音)" in drum_line,
+          "原有「跳过 N 鼓件音」那句逐字保留，新清单另起一段", drum_line)
+    check("鼓件: 开镲 64, 闭镲 64, 军鼓 32, 底鼓 32" in drum_line,
+          "鼓件按次数降序列出中文名与次数", drum_line)
+    check('"Vocal"   旋律 8 音   乐器: 钢琴' in out and
+          '"Piano"   旋律 24 音   乐器: 钢琴' in out,
+          "非鼓轨的列表行一个字不变", out)
+
+    rc, out, err = run(exe, drums119, "--track", "3")
+    check(rc == 4 and
+          "该轨只有 192 个鼓件音（开镲、闭镲、军鼓、底鼓；简谱不支持鼓谱）" in err,
+          "空轨提示说清是哪几种鼓，不再只报总数", err)
+
+    rc, out, err = run(exe, os.path.join(FIXTURES, "meter.mid"), "--list-tracks")
+    check("鼓件: 底鼓 6" in out,
+          "只列实际出现的鼓件，不凭空补 GM 表里的其它鼓", out)
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

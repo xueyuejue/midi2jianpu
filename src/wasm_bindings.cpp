@@ -123,13 +123,18 @@ const char* midi2jianpu_track_list(const uint8_t* midiData, int size) {
                      ",\"n\":\"" + jsonEscape(t.channelInstruments[i].second) + "\"}";
         }
         insts += "]";
+        // druminsts：鼓轨被跳过的鼓件清单（中文名 + 次数），由诊断层统一
+        // 生成，避免网页和命令行对同一份文件报出不同的鼓名。非鼓轨是空串。
+        std::string druminsts;
+        if (t.drumNotes > 0) druminsts = m2j::drumInstrumentList(t);
         json += "{\"i\":" + std::to_string(t.index) +
                 ",\"name\":\"" + jsonEscape(t.name) + "\"" +
                 ",\"notes\":" + std::to_string(t.notes) +
                 ",\"drum\":" + std::to_string(t.drumNotes) +
                 ",\"lyrics\":" + std::to_string(t.lyrics) +
                 ",\"inst\":\"" + jsonEscape(t.instrument) + "\"" +
-                ",\"channels\":" + chans + ",\"insts\":" + insts + "}";
+                ",\"channels\":" + chans + ",\"insts\":" + insts +
+                ",\"druminsts\":\"" + jsonEscape(druminsts) + "\"}";
     }
     json += "]";
     g_result = json;

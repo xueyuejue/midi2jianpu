@@ -658,6 +658,7 @@ static void applySysExDrumMode(MidiData& out,
                                // 与 removedExtra 一样依赖 remove_if 对每个元素
                                // 恰好调用一次谓词的标准保证，不会重复累加。
                                out.drumNotesByTrack[n.track]++;
+                               out.drumPitchesByTrack[n.track][n.pitch & 0x7F]++;
                            }
                            return true;
                        }),
@@ -1186,6 +1187,9 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                     // 鼓轨都标出来。
                     if (keepTrack) defaultDrumNoteOn++;
                     out.drumNotesByTrack[trackIdx]++;
+                    // 音高就是 GM 鼓件编号；同一次 note-on 只记一次，与上面的
+                    // 总数同一时点，保证「总数 = 各鼓件次数之和」。
+                    out.drumPitchesByTrack[trackIdx][note]++;
                 }
                 {
                     uint64_t key = ((uint64_t)channel << 24) |

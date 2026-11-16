@@ -147,6 +147,13 @@ static void printTrackList(const m2j::MidiData& data, int selected = -1) {
             std::cout << "   旋律 " << s.notes << " 音";
         if (!s.instrument.empty()) std::cout << "   乐器: " << s.instrument;
         if (s.lyrics > 0) std::cout << "   歌词 " << s.lyrics << " 字";
+        // 只写「跳过 192 鼓件音」等于什么都没交代：这段到底是底鼓加军鼓，
+        // 还是一整片镲片，用户没法判断是不是导入错了轨。鼓名由诊断层统一
+        // 映射，这里只管排版；原句保持原样，新内容另起一段，老输出不挪位。
+        if (s.drumNotes > 0) {
+            const std::string detail = m2j::drumInstrumentList(s);
+            if (!detail.empty()) std::cout << "   鼓件: " << detail;
+        }
         // 一条轨混多个通道（format 0 的常态、DAW 的「主旋律+伴奏一条轨」）：
         // 转换层按通道拆声部，--track 却只能整轨取。不说这句的话，用户看到
         // 「乐器: 钢琴」与谱面上的两件乐器对不上，也没有任何线索去查。

@@ -8467,6 +8467,54 @@ int main() {
               "第 1 轨 2 个旋律音");
         check(s0[2].notes == 0 && s0[2].drumNotes == 1,
               "第 2 轨只有鼓件音：旋律 0 音、鼓件音 1，两者不混算");
+        check(s0[2].drumInstruments.size() == 1 &&
+              s0[2].drumInstruments[0].first == "军鼓" &&
+              s0[2].drumInstruments[0].second == 1,
+              "鼓件音 38 报成中文鼓名「军鼓」，不再只有一个总数");
+
+        // ---- 鼓件名诊断（v1.119）----
+        // 解析层按音高记数，诊断层统一映射成 GM 打击乐中文名。同族键位
+        // （35/36 两个底鼓）合并计数，否则常见鼓件会被冷门键位挤到「等」后面。
+        check(gmDrumName(36) == "底鼓" && gmDrumName(35) == "底鼓" &&
+              gmDrumName(38) == "军鼓" && gmDrumName(42) == "闭镲" &&
+              gmDrumName(46) == "开镲" && gmDrumName(82) == "鼓件 82" &&
+              gmDrumName(20) == "鼓件 20",
+              "GM 鼓件键位：同族共用中文名，表外音高回落成「鼓件 N」");
+        {
+            SmfTrack td;
+            td.at(0, ev({0x99, 36, 100}));
+            td.at(120, ev({0x89, 36, 0}));
+            td.at(240, ev({0x99, 35, 100}));
+            td.at(360, ev({0x89, 35, 0}));      // 底鼓 ×2（两个键位合并）
+            for (int t = 480; t <= 960; t += 240) {
+                td.at(t, ev({0x99, 42, 100}));
+                td.at(t + 120, ev({0x89, 42, 0})); // 闭镲 ×3
+            }
+            td.at(1200, ev({0x99, 38, 100}));
+            td.at(1320, ev({0x89, 38, 0}));      // 军鼓 ×1
+            auto smf = buildSmfFmt(1, 1, 480, {td});
+            MidiData dd;
+            check(loadMidiFromMemory(smf.data(), smf.size(), dd),
+                  "三种鼓件的样本照常解析");
+            const auto sd = trackSummaries(dd);
+            check(sd.size() == 1 && sd[0].drumNotes == 6 &&
+                  sd[0].drumInstruments.size() == 3,
+                  "6 个鼓件音按中文名聚合成三种，总数不丢");
+            check(sd[0].drumInstruments[0].first == "闭镲" &&
+                  sd[0].drumInstruments[0].second == 3 &&
+                  sd[0].drumInstruments[1].first == "底鼓" &&
+                  sd[0].drumInstruments[1].second == 2 &&
+                  sd[0].drumInstruments[2].first == "军鼓" &&
+                  sd[0].drumInstruments[2].second == 1,
+                  "鼓件按次数降序，35/36 合并成「底鼓 2」");
+            check(drumInstrumentList(sd[0]) == "闭镲 3, 底鼓 2, 军鼓 1" &&
+                  drumInstrumentList(sd[0], 2, false) == "闭镲、底鼓 等",
+                  "带次数给 CLI / 网页，不带次数给空轨提示，截断补「等」");
+            const std::string hd = emptyTrackHint(dd, 0);
+            check(hd.find("只有 6 个鼓件音（闭镲、底鼓、军鼓") != std::string::npos &&
+                      hd.find("简谱不支持鼓谱") != std::string::npos,
+                  "空轨提示点出具体鼓件，仍保留简谱不支持鼓谱的说法：" + hd);
+        }
 
         // ---- 每轨的通道布局（v1.117）----
         // 一条轨混多个通道是常态：format 0 把整首曲子塞进一条轨，DAW 也常把

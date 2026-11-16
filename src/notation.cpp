@@ -1734,6 +1734,25 @@ std::string gmInstrumentName(int prog) {
     return std::string(GM_NAMES[prog]);
 }
 
+// GM Level 1 打击乐键位 35..81 的中文名。同族键位刻意共用一名：诊断要回答的是
+// 「这段鼓里有什么」，35/36 两个底鼓分开报只会把清单撑长、把常见鼓件挤到「等」
+// 后面。未定义的键位（比如 GM2 扩展的 82 以后）由 gmDrumName 回落成「鼓件 N」。
+static const char* GM_DRUM_NAMES[] = {
+    /*35*/ "底鼓", "底鼓", "边击", "军鼓", "拍手", "军鼓",
+    /*41*/ "低音嗵鼓", "闭镲", "低音嗵鼓", "脚踏镲", "中音嗵鼓", "开镲",
+    /*47*/ "中音嗵鼓", "高音嗵鼓", "碎音镲", "高音嗵鼓", "叮叮镲", "中国镲",
+    /*53*/ "叮叮铃", "铃鼓", "水镲", "牛铃", "碎音镲", "颤音器",
+    /*59*/ "叮叮镲", "高音邦戈", "低音邦戈", "弱音康加", "开放康加", "低音康加",
+    /*65*/ "高音小鼓", "低音小鼓", "高音阿哥哥", "低音阿哥哥", "沙锤", "沙球",
+    /*71*/ "短哨", "长哨", "短刮器", "长刮器", "响棒", "高音木鱼",
+    /*77*/ "低音木鱼", "弱音刮葫芦", "开放刮葫芦", "弱音三角铁", "开放三角铁"
+};
+
+std::string gmDrumName(int note) {
+    if (note < 35 || note > 81) return "鼓件 " + std::to_string(note);
+    return std::string(GM_DRUM_NAMES[note - 35]);
+}
+
 std::map<int, int> partPrograms(const MidiData& data) {
     // 统计每条声部轨（跳过打击乐通道 9）的主导通道与首音 tick。
     // 这张表是谱面页眉与 --list-tracks 诊断唯一的乐器名来源，两边都不能
@@ -1809,6 +1828,24 @@ std::vector<TrackSummary> trackSummaries(const MidiData& data) {
         if (nit != data.trackNames.end()) s.name = nit->second;
         auto dit = data.drumNotesByTrack.find(t);
         if (dit != data.drumNotesByTrack.end()) s.drumNotes = dit->second;
+        // 鼓件名在这里统一映射：解析层只认音高，CLI、网页下拉框、空轨提示
+        // 若各查一张表，同一份文件会报出三种鼓名。同族键位合并计数后按
+        // 次数降序排，让最常听到的鼓件排在清单前面。
+        auto dpit = data.drumPitchesByTrack.find(t);
+        if (dpit != data.drumPitchesByTrack.end()) {
+            std::map<std::string, int> byName;
+            for (const auto& kv : dpit->second) {
+                if (kv.second <= 0) continue;
+                byName[gmDrumName(kv.first)] += kv.second;
+            }
+            for (const auto& kv : byName)
+                s.drumInstruments.emplace_back(kv.first, kv.second);
+            std::stable_sort(s.drumInstruments.begin(), s.drumInstruments.end(),
+                             [](const auto& a, const auto& b) {
+                                 if (a.second != b.second) return a.second > b.second;
+                                 return a.first < b.first;
+                             });
+        }
         auto pit = progs.find(t);
         if (pit != progs.end() && pit->second >= 0) {
             s.program = pit->second;
@@ -1858,6 +1895,19 @@ std::vector<TrackSummary> trackSummaries(const MidiData& data) {
                 out[(size_t)kv.first].channelInstruments.emplace_back(ch.first, nm);
         }
     }
+    return out;
+}
+
+std::string drumInstrumentList(const TrackSummary& s, size_t maxItems,
+                               bool withCount) {
+    std::string out;
+    const size_t n = std::min(maxItems, s.drumInstruments.size());
+    for (size_t i = 0; i < n; i++) {
+        if (i) out += withCount ? ", " : "、";
+        out += s.drumInstruments[i].first;
+        if (withCount) out += " " + std::to_string(s.drumInstruments[i].second);
+    }
+    if (s.drumInstruments.size() > n) out += " 等";
     return out;
 }
 
@@ -3356,8 +3406,13 @@ std::string emptyTrackHint(const MidiData& data, int track) {
     // 这条轨里到底有什么。鼓件音和歌词音节都不是「音符」，但都不是「什么都没有」：
     // 一条只带 10 个字的歌词轨被 --track 选中时，说「无音符」等于什么也没说。
     std::string s;
-    if (mine->drumNotes > 0)
-        s = "该轨只有 " + std::to_string(mine->drumNotes) + " 个鼓件音（简谱不支持鼓谱）";
+    if (mine->drumNotes > 0) {
+        s = "该轨只有 " + std::to_string(mine->drumNotes) + " 个鼓件音";
+        // 光说「有鼓件音」还是不知道丢的是什么；这里把最多的三种鼓件点出来。
+        const std::string detail = drumInstrumentList(*mine, 4, false);
+        s += "（" + (detail.empty() ? std::string("简谱不支持鼓谱")
+                                    : detail + "；简谱不支持鼓谱") + "）";
+    }
     if (mine->lyrics > 0) {
         if (s.empty()) s = "该轨只有 ";
         else s += "和 ";

@@ -465,6 +465,11 @@ std::string tempoSummary(const MidiData& data);
 // Tremolo Strings 等通用音色，所以中文译名只覆盖标准 GM 集，不臆造民族乐器名。
 std::string gmInstrumentName(int prog);
 
+// GM Level 1 打击乐键位号(35..81) -> 中文鼓件名。同族键位共用一名（35/36 都叫
+// 底鼓、38/40 都叫军鼓），让诊断按「有哪些鼓」聚合而不是按厂家键位拆碎；
+// 表外音高回落到「鼓件 N」，不臆造名字。鼓件音高不是音级，绝不能走乐器名表。
+std::string gmDrumName(int note);
+
 // 每条「含音符」声部轨的代表音色号：按该轨音符最多的逻辑通道，在该轨首音
 // 那一刻用 programAt() 从音色时间轴取值（中途 0xC0 换乐器的曲子取首音乐器，
 // 没有时间轴记录时回退到 channelProgram）。跳过打击乐通道 9，查不到返回 -1。
@@ -503,8 +508,17 @@ struct TrackSummary {
     // 没有 0xC0 记录、或鼓通道没有 GM 旋律音色名时不列。多通道轨只有
     // 「通道 0,1」而不说各是什么乐器，用户没法解释谱面里第二件乐器从哪来。
     std::vector<std::pair<int, std::string>> channelInstruments;
+    // 这条轨被跳过的鼓件（中文名, 次数），按次数降序、同次数按名字升序。
+    // 解析层只按音高计数，名字在这里统一映射，CLI / WASM / 空轨提示共用一份。
+    std::vector<std::pair<std::string, int>> drumInstruments;
 };
 std::vector<TrackSummary> trackSummaries(const MidiData& data);
+
+// 把上面的鼓件表压成一句短清单。maxItems 之后还有种类时末尾加「等」；
+// withCount=true 出「底鼓 64, 军鼓 64」（CLI / 网页），false 出「底鼓、军鼓」
+// （空轨提示）。没有鼓件时返回空串，调用方据此决定要不要多印一行。
+std::string drumInstrumentList(const TrackSummary& s, size_t maxItems = 4,
+                               bool withCount = true);
 
 // ---- 「这条轨没有旋律音符，但别处有」（CLI --track / 网页段落选择） ----
 // 按轨过滤后 MidiData 里只剩这一条轨，别的轨的音符已经不在，说不出「旋律在

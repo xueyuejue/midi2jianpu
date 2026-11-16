@@ -2839,6 +2839,29 @@ if (existsSync(twoLyrics76)) {
     '网页下拉框把每个通道的乐器名点出来');
 }
 
+// ---- 80. v1.119.0 track_list 的鼓件名 ----
+// 「跳过 192 鼓件音」回答不了「丢的是底鼓还是镲片」。新字段 druminsts
+// 由诊断层统一生成，命令行与网页不会再各写一套鼓名表。
+{
+  const drums80 = new Uint8Array(readFileSync(path.join(FIXTURES, 'drums.mid')));
+  const p80 = mod._malloc(drums80.length);
+  mod.HEAPU8.set(drums80, p80);
+  const tl80 = JSON.parse(mod.UTF8ToString(mod._midi2jianpu_track_list(p80, drums80.length)));
+  mod._free(p80);
+  const dr80 = tl80[3];
+  check(dr80.drum === 192 && dr80.druminsts === '开镲 64, 闭镲 64, 军鼓 32, 底鼓 32',
+    'track_list 把鼓件按中文名与次数带出来', JSON.stringify(dr80));
+  check(['i', 'name', 'notes', 'drum', 'lyrics', 'inst', 'channels', 'insts', 'druminsts']
+    .every((k) => k in dr80),
+  'druminsts 作为新字段加入，既有字段一个不少', JSON.stringify(dr80));
+  check(tl80[1].druminsts === '' && tl80[2].druminsts === '',
+    '非鼓轨的 druminsts 是空串，不会凭空多一句', JSON.stringify(tl80[1]));
+
+  const page80 = readFileSync(path.join(ROOT, 'docs', 'index.html'), 'utf8');
+  check(page80.includes("if (t.druminsts) label += '：' + t.druminsts;"),
+    '网页下拉框把鼓件清单接在「跳过 N 鼓件音」后面');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);
