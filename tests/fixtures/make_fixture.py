@@ -129,6 +129,12 @@ LEGACY_GBK = ("主旋律 钢琴", "副歌段落", "春江潮水连海平", "gbk"
 LEGACY_SJIS = ("主旋律 ピアノ", "サビ段落", "春の江潮水連海平", "shift_jis")
 LEGACY_UTF8 = ("主旋律 钢琴", "副歌段落", "春江潮水连海平", "utf-8")
 
+# v1.122.0 的「恶意轨名」：0x03 是任意字节，没有「必须可见」这一说。
+# 换行 / 双引号 / 反斜杠 / ANSI 转义序列（ESC[31m 让终端变红）/ 0x01 / DEL，
+# 外加一条 80 个汉字的超长名字（超过诊断的 40 字符上限）。
+HOSTILE_NAME = b'Line\nBreak "Q" \\ \x1b[31mRED\x1b[0m \x01END\x7f'
+LONG_NAME = ("长" * 80).encode("utf-8")
+
 
 def vlq(n: int) -> bytes:
     out = bytearray([n & 0x7F])
@@ -3486,6 +3492,13 @@ def main() -> None:
         f.write(data)
     print(f"wrote {ipath} ({len(data)} bytes)")
 
+    # v1.122.0：轨名里的控制字符（终端转义注入 / 诊断表被换行撕开）
+    hpath = os.path.join(here, "hostile_name.mid")
+    with open(hpath, "wb") as f:
+        hdata = build_hostile_name()
+        f.write(hdata)
+    print(f"wrote {hpath} ({len(hdata)} bytes)")
+
 def build_utf8_marker() -> bytes:
     """段落名截断必须落在 UTF-8 字符边界上（v1.79.0）。
 
@@ -3878,6 +3891,41 @@ def build_html_meta_inject() -> bytes:
         t1.note(0, p, 90, i * DIV, DIV)
 
     return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
+
+
+def build_hostile_name() -> bytes:
+    """v1.122.0：轨名里的控制字符不再原样打到终端 / 网页。
+
+    0x03 轨名是**文件内容**：MIDI 规范只说它是一串字节，没说必须可见。
+    旧版三端各错一处，同一份文件三种口径：
+      * 命令行 --list-tracks：`"` 让外层引号配错对，`\\n` 把「一行一轨」
+        的诊断表撕成两行，`ESC[31m` 到终端上会真的变红（终端转义注入），
+        80 个汉字的名字再把整行撑到 160 列。
+      * 文本谱 / HTML 页眉：同样原样带出 ESC 与 0x01（HTML 里不可见，
+        但页面源码就是脏了）。
+      * MusicXML 早就在丢 C0 —— 只有它是对的。
+    新版：文档输出丢控制字符（dropControlChars），诊断输出转成看得见的写法
+    并按 40 个字符截断（escapeForTerminal）。两轨各有 4 个四分音符。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, HOSTILE_NAME))
+    t1.program(0, 0, 0)
+    for i, p in enumerate((60, 62, 64, 65)):
+        t1.note(0, p, 90, i * DIV, DIV)
+
+    t2 = Track()
+    t2.add(0, meta(0x03, LONG_NAME))
+    t2.program(1, 40, 0)          # 小提琴，顺便确认两轨乐器名互不串
+    for i, p in enumerate((67, 69, 71, 72)):
+        t2.note(1, p, 90, i * DIV, DIV)
+
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 3, DIV) + t0.render() + t1.render() + t2.render()
 
 
 if __name__ == "__main__":

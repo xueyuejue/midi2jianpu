@@ -1799,6 +1799,23 @@ std::vector<std::pair<std::string, std::string>> listParts(const MidiData& data)
     return out;
 }
 
+// 单行摘要里容不下换行：把任意空白串压成一个空格，并去掉首尾空白。
+// HTML 本来就会这么折叠，文本谱不会——两端口径在这里对齐。
+static std::string squeezeWhitespace(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    bool pending = false;   // 前面已经有字，遇到空白就先记一笔
+    for (char c : s) {
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            if (!out.empty()) pending = true;
+            continue;
+        }
+        if (pending) { out += ' '; pending = false; }
+        out += c;
+    }
+    return out;
+}
+
 std::string partSummary(const MidiData& data) {
     auto parts = listParts(data);
     if (parts.empty()) return std::string();
@@ -1806,7 +1823,11 @@ std::string partSummary(const MidiData& data) {
     os << "声部：";
     for (size_t i = 0; i < parts.size(); i++) {
         if (i) os << "，";
-        os << parts[i].first;
+        // 轨名是文件里的裸字节：带换行就会把这个单行页眉撕成两半，
+        // 带 ESC 就会在终端里执行。文档口径是丢掉，不是转义；再把剩下的
+        // 空白压成一个空格，让文本谱和网页对同一个名字给出同样的形状
+        // （HTML 本来就会把连续空白折叠成一个空格）。
+        os << squeezeWhitespace(dropControlChars(parts[i].first));
         if (!parts[i].second.empty()) os << "·" << parts[i].second;
     }
     return os.str();
@@ -2016,7 +2037,9 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key,
         std::string label;
         auto it = data.trackNames.find(t);
         if (it != data.trackNames.end() && !it->second.empty()) {
-            label = it->second;
+            // 文档口径：控制字符丢掉、空白压成单空格。这是文本谱里的小标题，
+            // 一行一条声部；轨名里的换行/ESC 会把它拆成两行、或把终端染红。
+            label = squeezeWhitespace(dropControlChars(it->second));
         } else {
             label = isMainTrack ? "旋律轨" : "伴奏轨" + std::to_string(t);
         }
@@ -3623,6 +3646,56 @@ static std::string truncateUtf8Chars(const std::string& s, size_t maxChars) {
     return s.substr(0, i);
 }
 
+// 见 notation.hpp「自由文本的显示安全」。两条口径刻意分开：
+// 文档输出丢字符（不把噪声塞进谱面），诊断输出转义成看得见的写法
+// （它要回答「这个名字里到底有什么」）。
+std::string dropControlChars(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (unsigned char c : s) {
+        // \t \n \r 三种空白在文本谱 / HTML / XML 里都合法（HTML 折叠成空格、
+        // XML 原样保留），其余 C0 与 DEL 一律丢掉：XML 1.0 明文禁止 C0，
+        // HTML 遇到它们是解析错误，终端则会把 ESC 当命令执行、把 DEL 当退格
+        // （0x7F 在 XML 里其实合法，但它在三种载体里都不可见，留它只会让
+        // 「名字里到底有什么」更难查，索性一并丢掉）。
+        if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') continue;
+        if (c == 0x7F) continue;
+        out += (char)c;
+    }
+    return out;
+}
+
+std::string escapeForTerminal(const std::string& s, size_t maxChars) {
+    // 先按字符（不是字节）截断，再转义：转义后的 `\x1b` 是 4 个字符，
+    // 若反过来做，截断点会落在转义序列中间，输出就成了新的乱码。
+    const std::string src = maxChars ? truncateUtf8Chars(s, maxChars) : s;
+    static const char* HEX = "0123456789abcdef";
+    std::string out;
+    out.reserve(src.size() + 8);
+    for (unsigned char c : src) {
+        switch (c) {
+            case '\\': out += "\\\\"; break;
+            case '"':  out += "\\\""; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if (c < 0x20 || c == 0x7F) {
+                    // 不写 snprintf 是为了不被本地化的格式串 / 缓冲区长度
+                    // 绊住；这里只有两位十六进制，手写更快也更清楚。
+                    out += "\\x";
+                    out += HEX[(c >> 4) & 0xF];
+                    out += HEX[c & 0xF];
+                } else {
+                    out += (char)c;
+                }
+        }
+    }
+    // 截断要留痕：静默砍掉半个名字，用户会以为文件里就叫这个。
+    if (src.size() < s.size()) out += "…";
+    return out;
+}
+
 // 从某个音的弯音事件序列里判断滑音 / 颤音。
 //
 // 现有三个输出层都把弯音「取平均后改音高」，那是给没有弯音记号时的兜底；
@@ -3739,7 +3812,10 @@ ExpressionMap::ExpressionMap(const MidiData& data) {
 
     // ---- 2. 0x06 marker：段落名 ----
     for (const auto& mk : markers) {
-        std::string text = trimSectionText(mk.text);
+        // 0x06 段落名同样是文件里的裸字节。这里是它进三端之前的唯一入口：
+        // 在源头上过滤，文本谱 / HTML / MusicXML 就都干净（HTML 与 XML 各自的
+        // 转义层只是第二道保险，不是唯一一道）。
+        std::string text = trimSectionText(dropControlChars(mk.text));
         if (text.empty()) continue;
         text = truncateUtf8Chars(text, 40);
         ExpressionMark m;

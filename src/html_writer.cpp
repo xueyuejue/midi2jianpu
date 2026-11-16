@@ -25,7 +25,10 @@ namespace m2j {
 
 static std::string htmlEscape(const std::string& s) {
     std::string out;
-    for (char c : s) {
+    // C0 / DEL 在 HTML 里没有意义，解析器会静默丢弃：留着只会让页面源码
+    // 里多出不可见字节（旧版把轨名里的 ESC 原样写进了页眉与 <h3>）。
+    // 口径与 MusicXML 一致，都走 notation 的 dropControlChars()。
+    for (char c : m2j::dropControlChars(s)) {
         if (c == '<') out += "&lt;";
         else if (c == '>') out += "&gt;";
         else if (c == '&') out += "&amp;";

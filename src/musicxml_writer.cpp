@@ -26,14 +26,15 @@ namespace m2j {
 // 解析器不容忍，所以这里是 MusicXML 专属的清理。
 static std::string xmlEscape(const std::string& s) {
     std::string out;
-    for (unsigned char c : s) {
+    // XML 1.0 禁止 C0 控制字符，留着会让整份谱面无法解析。过滤口径收在
+    // notation 的 dropControlChars()（HTML / 文本谱页眉共用同一份），
+    // 免得三个输出层各写一套、某天只改了一处。
+    for (unsigned char c : m2j::dropControlChars(s)) {
         if (c == '&') out += "&amp;";
         else if (c == '<') out += "&lt;";
         else if (c == '>') out += "&gt;";
         else if (c == '"') out += "&quot;";
         else if (c == '\'') out += "&apos;";
-        else if (c < 0x20 && c != '\t' && c != '\n' && c != '\r')
-            ;  // XML 1.0 禁止 C0 控制字符，丢弃
         else out += (char)c;
     }
     return out;

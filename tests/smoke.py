@@ -4857,6 +4857,70 @@ def main():
           '"Vocal"   旋律 15 音   乐器: 长笛' in out,
           "每条轨都写了音色的文件一个字不变", out)
 
+    # ---- [120] 轨名里的控制字符：终端与网页都不许原样带出 ----
+    # 0x03 轨名是一串任意字节，没有「必须可见」这一说。旧版把它原样拼进
+    # --list-tracks 与三端：换行把「一行一轨」的表撕成两行，ESC[31m 到终端
+    # 上真的变红（终端转义注入），80 个汉字的名字把整行撑到 160 列。
+    group("[120] v1.122.0 轨名里的控制字符不再原样进终端 / 网页")
+    host = os.path.join(FIXTURES, "hostile_name.mid")
+    rc, out, err = run(exe, host, "--list-tracks")
+    check(rc == 0, "含恶意轨名的文件照常列出", err[:300])
+    check(len([ln for ln in out.splitlines() if ln.startswith("  #")]) == 3,
+          "三条轨还是三行：轨名里的换行没有把诊断表撕开", out)
+    check("\x1b" not in out and "\x01" not in out and "\x7f" not in out,
+          "诊断输出里没有裸 ESC / 0x01 / DEL（终端不会再执行那条 ANSI 序列）",
+          repr(out))
+    check("\\n" in out and "\\x1b[31m" in out and "\\x01" in out and
+          "\\x7f" in out and '\\"Q\\"' in out,
+          "换行 / ESC / 0x01 / DEL / 双引号都转成看得见的写法", out)
+    long_line = next((ln for ln in out.splitlines() if "长" in ln), "")
+    long_name = long_line.split('"')[1] if long_line.count('"') >= 2 else ""
+    check(long_name.endswith("…") and len(long_name) == 41,
+          "80 个字的名字截到 40 个字符并留省略号，不静默砍掉半个", long_name)
+    check("小提琴" in long_line,
+          "截断只影响轨名，同一行的乐器名照常显示", long_line)
+
+    txtp120 = os.path.join(tmp, "hostile120.txt")
+    rc, _, err = run(exe, host, "--output", txtp120)
+    check(rc == 0, "文本谱导出成功", err[:300])
+    raw120 = open(txtp120, "rb").read()
+    check(b"\x1b" not in raw120 and b"\x01" not in raw120 and b"\x7f" not in raw120,
+          "文本谱里没有裸控制字符（cat 到终端不会被 ANSI 序列劫持）")
+    # 写文件时页眉那半句并进「1=C 大调 4/4 ♩=120 … 声部：…」这一行，
+    # 所以按「含」而不是「以…开头」找。
+    head120 = next((ln for ln in raw120.decode("utf-8").splitlines()
+                    if "声部：" in ln), "")
+    # 期望：换行被压成一个空格、ESC / 0x01 / DEL 丢掉，其余字节原样
+    # （轨名里那个反斜杠是文件内容，不该被吞）。
+    want120 = '声部：Line Break "Q" \\ [31mRED[0m END'
+    check(want120 in head120,
+          "页眉声部名压成单行：换行变空格、ESC 丢掉", head120)
+
+    html120 = os.path.join(tmp, "hostile120.html")
+    rc, _, err = run(exe, host, "--html", html120)
+    check(rc == 0, "HTML 导出成功", err[:300])
+    hraw120 = open(html120, "rb").read()
+    check(b"\x1b" not in hraw120 and b"\x01" not in hraw120 and b"\x7f" not in hraw120,
+          "HTML 源码里没有裸控制字符", repr(hraw120[:80]))
+    # 网页页眉的「声部：」那一句必须与文本谱**逐字一致**：两端口径分叉时，
+    # 同一个轨名会在命令行与网页上显示成两种样子。
+    htext120 = hraw120.decode("utf-8")
+    hit120 = htext120.find(want120)
+    check(hit120 >= 0 and htext120[hit120:hit120 + len(want120)] == want120,
+          "网页页眉与文本谱对同一个名字给出同一句话",
+          htext120[max(0, hit120 - 10):hit120 + len(want120) + 10])
+
+    xml120 = os.path.join(tmp, "hostile120.xml")
+    rc, _, err = run(exe, host, "--musicxml", xml120)
+    check(rc == 0, "MusicXML 导出成功", err[:300])
+    try:
+        ETC.fromstring(open(xml120, encoding="utf-8").read())
+        xml_ok120 = True
+    except ETC.ParseError as e:  # noqa: PERF203
+        xml_ok120 = False
+        err = str(e)
+    check(xml_ok120, "控制字符一路丢干净，MusicXML 仍可被严格解析", err)
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

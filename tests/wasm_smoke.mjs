@@ -2910,6 +2910,33 @@ if (existsSync(twoLyrics76)) {
   '都声明了音色的文件照旧只报乐器名', JSON.stringify(tlp.map((t) => t.inst)));
 }
 
+// ---- 83. v1.122.0 track_list 的轨名：控制字符只以 \u00XX 出现 ----
+// 网页下拉框用 innerHTML 拼选项，轨名里的 ESC 若原样进 JSON → 原样进页面。
+// jsonEscape 早就在转 C0，这里把它钉死：JSON 文本里一个裸 C0 / DEL 都不许有，
+// 而解析回来又要与文件里的字节一字不差（转义不能丢信息）。
+// 注意 40 字符上限只服务命令行那张表，网页下拉框要完整名字。
+{
+  const hp = new Uint8Array(readFileSync(path.join(FIXTURES, 'hostile_name.mid')));
+  const ph = mod._malloc(hp.length);
+  mod.HEAPU8.set(hp, ph);
+  const rawJson = mod.UTF8ToString(mod._midi2jianpu_track_list(ph, hp.length));
+  mod._free(ph);
+  check(!/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(rawJson),
+    'track_list 的 JSON 文本里没有裸控制字符',
+    JSON.stringify(rawJson.slice(0, 160)));
+  const tlh = JSON.parse(rawJson);
+  check(tlh[1].name === 'Line\nBreak "Q" \\ \u001b[31mRED\u001b[0m \u0001END\u007f',
+    '控制字符在 JSON 里往返一圈回到原样（转义不丢信息）',
+    JSON.stringify(tlh[1].name));
+  check(rawJson.includes('\\u001b') && rawJson.includes('\\u0001') &&
+    rawJson.includes('\\u007f'),
+  'JSON 文本里是 \\u00XX 而不是裸字节（下拉框 textContent 也不会渲染出控制符）',
+  JSON.stringify(rawJson.slice(0, 160)));
+  check(tlh[2].name === '长'.repeat(80),
+    'JSON 不做 40 字符截断：网页下拉框要完整名字，上限只服务命令行那张表',
+    String(tlh[2].name.length));
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

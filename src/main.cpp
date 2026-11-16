@@ -138,7 +138,12 @@ static void printTrackList(const m2j::MidiData& data, int selected = -1) {
     bool anyMultiChannel = false;
     for (const auto& s : tracks) {
         std::cout << "  #" << s.index;
-        if (!s.name.empty()) std::cout << "  \"" << s.name << "\"";
+        // 轨名是文件内容：换行会把这张「一行一轨」的表撕成两行，ESC[31m
+        // 这类 ANSI 序列会被终端当命令执行。这里是诊断而不是谱面，转成
+        // 看得见的写法（\n / \" / \x1b）比丢掉更有用。40 字符上限与段落名
+        // 一致，也保证一个几百字符的名字撑不爆整张表。
+        if (!s.name.empty())
+            std::cout << "  \"" << m2j::escapeForTerminal(s.name, 40) << "\"";
         if (s.drumNotes > 0 && s.notes == 0)
             std::cout << "   鼓轨 (跳过 " << s.drumNotes << " 鼓件音)";
         else if (s.drumNotes > 0)

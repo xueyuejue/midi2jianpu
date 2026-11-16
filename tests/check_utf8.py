@@ -9,9 +9,15 @@
     用户拿到的不是「少一个段落名」，而是「这份谱打不开」。
     v1.79.0 修的就是 `substr(0, 40)` 把汉字劈成半截，缺陷正是被这里抓到的。
 
+v1.122.0 起这道闸门同时管「控制字符」：轨名 / 段落名 / 歌词都是裸字节，
+XML 1.0 禁止 C0（留着整份谱面解析不了）、HTML 遇到它们是解析错误、终端则会
+把 ESC 当 ANSI 命令执行（改颜色、清屏、改窗口标题）。所以三端产物与
+`--list-tracks` 的终端输出里都不许出现裸 C0 / DEL——这是注入面，不是洁癖。
+
 用法：
     python tests/check_utf8.py [--exe PATH]
-        对全部 fixture 生成三端输出，逐个严格 UTF-8 解码 + XML 严格解析。
+        对全部 fixture 生成三端输出，逐个严格 UTF-8 解码 + XML 严格解析，
+        并审计控制字符（含 `--list-tracks` 的 stdout）。
     python tests/check_utf8.py --self-test
         纯逻辑自测，不调用可执行文件。
 
@@ -34,6 +40,14 @@ FIX = os.path.join(ROOT, "tests", "fixtures")
 MAX_SECTION_CHARS = 40
 
 SECTION = re.compile(r"<span class='section'>([^<]*)</span>")
+
+# 三端产物与诊断输出里都不许出现的控制字符：C0（除 \t \n \r）与 DEL。
+# 这不是编码问题而是**载体**问题：XML 1.0 明文禁止 C0（留着整份谱面解析不了）、
+# HTML 遇到它们是解析错误、终端则会把 ESC 当成 ANSI 命令执行（改颜色、清屏、
+# 改窗口标题）。轨名 / 段落名 / 歌词都是裸字节，这条闸门盯的是「有没有哪个
+# 输出层又把它们原样放出去了」——v1.122.0 之前只有 MusicXML 是对的。
+BAD_CTRL = set(range(0x00, 0x20)) - {0x09, 0x0A, 0x0D}
+BAD_CTRL.add(0x7F)
 
 
 def default_exe():
@@ -60,6 +74,15 @@ def invalid_utf8(blob):
 
 def section_names(html):
     return SECTION.findall(html)
+
+
+def control_chars(blob):
+    """返回产物流里出现过的裸控制字符（字节值升序）；空列表表示干净。"""
+    return sorted({b for b in blob if b in BAD_CTRL})
+
+
+def describe_ctrl(codes):
+    return "、".join("0x%02x" % b for b in codes)
 
 
 def check_one(exe, mid, td):
@@ -90,6 +113,21 @@ def check_one(exe, mid, td):
         if "\ufffd" in blob.decode("utf-8"):
             errs.append("%s: %s 里出现了替换字符 U+FFFD（说明字节被悄悄改写过）"
                         % (name, tag))
+        bad = control_chars(blob)
+        if bad:
+            errs.append("%s: %s 里有裸控制字符 %s（XML 禁止、HTML 是解析错误、"
+                        "终端会执行 ESC 序列）" % (name, tag, describe_ctrl(bad)))
+
+    # 诊断输出同样打到终端：--list-tracks 的表格里出现 ESC，就等于让文件内容
+    # 执行终端命令。这条不算「输出卫生」而是注入面，必须一起守。
+    r = subprocess.run([exe, mid, "--list-tracks"], capture_output=True, timeout=120)
+    if r.returncode != 0:
+        errs.append("%s: --list-tracks 失败 rc=%d" % (name, r.returncode))
+    else:
+        bad = control_chars(r.stdout)
+        if bad:
+            errs.append("%s: --list-tracks 输出里有裸控制字符 %s"
+                        % (name, describe_ctrl(bad)))
 
     # MusicXML 是唯一会被外部解析器严格校验的一端：解码过关还不够，
     # 必须真的能被 XML 解析器读完。
@@ -150,6 +188,17 @@ def self_test():
          "<span class='section'>副歌</span>")
     ck(section_names(h) == ["前奏", "副歌"], "段落名提取: %r" % section_names(h))
     ck(section_names("<span class='chord'>C</span>") == [], "无段落名时为空")
+
+    # v1.122.0：控制字符闸门本身要能把「干净」和「脏」分开，否则它只是个
+    # 永远返回空列表的摆设。
+    ck(control_chars(b"abc\n\t\r") == [], "换行 / tab / CR 是合法空白，不算脏")
+    ck(control_chars(b"") == [], "空文件干净")
+    ck(control_chars(b"A\x1b[31mB") == [0x1B], "ESC 必须被抓出来")
+    ck(control_chars(b"A\x01B\x00C") == [0x00, 0x01], "多个控制字符按字节值排序")
+    ck(control_chars(b"A\x7fB") == [0x7F], "DEL 也算控制字符")
+    ck(control_chars("中文".encode("utf-8")) == [],
+       "UTF-8 多字节序列不会被误判（0x80..0xBF 不是 C0）")
+    ck(describe_ctrl([0x01, 0x1B]) == "0x01、0x1b", "错误信息里的写法")
 
 
     # v1.80.0：源头就是旧编码时，裸字节同样绝不能流到三端。

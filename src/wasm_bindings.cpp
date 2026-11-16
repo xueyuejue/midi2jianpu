@@ -73,7 +73,9 @@ static std::string jsonEscape(const std::string& s) {
             case '\r': out += "\\r";  break;
             case '\t': out += "\\t";  break;
             default:
-                if (c < 0x20) {
+                // C0 与 DEL 一律走 \u00XX：JSON 里它们虽然合法，但把 ESC 原样
+                // 带进网页，下拉框一拼 innerHTML 就又是终端转义注入那条路。
+                if (c < 0x20 || c == 0x7F) {
                     char b[8];
                     std::snprintf(b, sizeof(b), "\\u%04x", (int)c);
                     out += b;

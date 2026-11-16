@@ -1062,6 +1062,69 @@ int main() {
               "全曲无音符时只报这条轨里有什么，实际: " + emptyTrackHint(solo, 2));
     }
 
+    std::cout << "\n测试自由文本的显示安全（轨名里的控制字符）\n";
+    {
+        // 0x03 轨名是**文件内容**，不是可信字面量。旧版把它原样拼进三端：
+        // 换行把「一行一轨」的诊断表撕成两行，ESC[31m 到终端上真的变红
+        // （终端转义注入），80 个汉字的名字把整行撑到 160 列；HTML 页眉也
+        // 原样带出 ESC / 0x01。两条口径刻意分开：文档丢字符（不把噪声塞进
+        // 谱面），诊断转义成看得见的写法（它要回答「名字里到底有什么」）。
+        check(dropControlChars("abc") == "abc", "普通文本原样通过");
+        check(dropControlChars("A\nB") == "A\nB", "换行是合法空白，保留");
+        check(dropControlChars("A\tB\r") == "A\tB\r", "tab / CR 同样保留");
+        check(dropControlChars(std::string("A\x01") + "B") == "AB", "0x01 被丢掉");
+        check(dropControlChars(std::string("A\x1b[31m") + "B") == "A[31mB",
+              "ESC 被丢掉（终端不再执行这条 ANSI 序列）");
+        check(dropControlChars(std::string("A\x7f") + "B") == "AB", "DEL 被丢掉");
+        check(dropControlChars("") == "", "空串不崩");
+        check(dropControlChars("中文 A&<B>") == "中文 A&<B>",
+              "只删控制字符；& < > 留给各自的转义层，别在这里顺手改");
+
+        check(escapeForTerminal("abc") == "abc", "可见文本原样");
+        check(escapeForTerminal("A\nB") == "A\\nB", "换行转成看得见的 \\n");
+        check(escapeForTerminal("A\rB") == "A\\rB", "回车转成 \\r");
+        check(escapeForTerminal("A\tB") == "A\\tB", "tab 转成 \\t");
+        check(escapeForTerminal("say \"Q\"") == "say \\\"Q\\\"",
+              "双引号要转义，否则外层那对引号配不上对");
+        check(escapeForTerminal("C:\\dir") == "C:\\\\dir", "反斜杠自己也要转义");
+        check(escapeForTerminal(std::string("A\x1b[31m") + "B") == "A\\x1b[31mB",
+              "ESC 转成 \\x1b，用户才看得出文件里是转义序列");
+        check(escapeForTerminal(std::string("A\x01") + "B") == "A\\x01B", "0x01 转成 \\x01");
+        check(escapeForTerminal(std::string("A\x7f")) == "A\\x7f", "DEL 转成 \\x7f");
+
+        // 截断按**字符**算（不是字节），且必须在最后一个完整字符后下刀。
+        std::string many;
+        for (int i = 0; i < 50; i++) many += "长";
+        const std::string cut = escapeForTerminal(many, 40);
+        check(cut.size() == 40 * 3 + 3,
+              "40 个汉字截断后应是 123 字节（120 + 省略号），实际: " +
+                  std::to_string(cut.size()));
+        check(cut.compare(cut.size() - 3, 3, "…") == 0, "截断处留省略号，不静默");
+        check(escapeForTerminal(many, 50) == many, "刚好等于上限时不截断");
+        check(escapeForTerminal(many, 51) == many, "短于上限时不截断");
+        check(escapeForTerminal(many, 0) == many, "maxChars=0 表示不截断");
+        // 先截断再转义：反过来做，截断点会落在 \x1b 这种 4 字符转义中间。
+        check(escapeForTerminal(std::string(40, 'a') + "\x1b[31m", 40) ==
+                  std::string(40, 'a') + "…",
+              "转义序列整个落在截断点之外，不会留下半截 \\x");
+
+        // 页眉的「声部：」是单行摘要，轨名里的换行会把它撕成两行。
+        MidiData hp;
+        hp.trackCount = 1;
+        hp.trackNames[0] = std::string("Line\nBreak ") + "\x1b[31m" + "RED";
+        NoteEvent hpNote;
+        hpNote.track = 0; hpNote.channel = 0;
+        hpNote.startTicks = 0; hpNote.durationTicks = 480; hpNote.pitch = 60;
+        hp.notes.push_back(hpNote);
+        const std::string ps = partSummary(hp);
+        check(ps.find('\n') == std::string::npos && ps.find('\x1b') == std::string::npos,
+              "页眉声部名不含换行与 ESC，实际: " + ps);
+        // 控制字符丢掉之后，剩下的空白压成一个空格（HTML 本来就这么折叠）：
+        // 文本谱与网页对同一个名字必须给出同样的形状，而不是一个断行、一个空格。
+        check(ps == "声部：Line Break [31mRED",
+              "空白压成单空格、可见文字一个字都不少，实际: " + ps);
+    }
+
     std::cout << "\n测试中途变拍号（拍号 map / 逐小节网格）\n";
     {
         // 4/4 ×2 -> 3/4 ×2 -> 6/8 ×2，伴奏轨还重复声明了同样的 0x58。

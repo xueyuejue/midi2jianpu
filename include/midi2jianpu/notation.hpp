@@ -520,6 +520,26 @@ std::vector<TrackSummary> trackSummaries(const MidiData& data);
 std::string drumInstrumentList(const TrackSummary& s, size_t maxItems = 4,
                                bool withCount = true);
 
+// ---- 自由文本的显示安全（轨名 0x03 / 段落名 0x06 / 歌词） ----
+// 这三类东西是**文件内容**，不是可信字面量。旧版把它们原样拼进三端：
+//   * 命令行：轨名里的 `\n` 把「一行一轨」的诊断表撕成两行；`ESC[31m`
+//     这类 ANSI 序列到终端上会直接改颜色、清屏、改窗口标题（终端转义注入）。
+//   * HTML：ESC / 0x01 这类 C0 原样进了页面源码（解析器会静默丢弃，
+//     但页面里就是多了几个不可见字节，也是 U+FFFD 之外的另一类脏字节）。
+//   * MusicXML：C0 会让整份文件不再是合法 XML —— 这一端早就在丢，只是
+//     另外两端没跟上，同一份文件三种口径。
+//
+// 现在统一成两条口径：
+//   dropControlChars()   文档输出（文本谱 / HTML / MusicXML）用：**丢掉**无法
+//                        承载的控制字符（C0 除 \t \n \r，以及 DEL）。文档是
+//                        给人看的原文，不该塞进「\x01」这种噪声。
+//   escapeForTerminal()  诊断输出用：转成**看得见的**写法（\n \" \\ \xNN），
+//                        因为它要回答「这个名字里到底有什么」。顺带按字符数
+//                        截断超长名字（0 表示不截断），一张表才不会被一个
+//                        几百字符的名字撑爆。
+std::string dropControlChars(const std::string& s);
+std::string escapeForTerminal(const std::string& s, size_t maxChars = 0);
+
 // ---- 「这条轨没有旋律音符，但别处有」（CLI --track / 网页段落选择） ----
 // 按轨过滤后 MidiData 里只剩这一条轨，别的轨的音符已经不在，说不出「旋律在
 // 哪条轨」。所以 data 必须是**全曲**解析结果，track 是用户选的那条轨。
