@@ -8465,6 +8465,59 @@ int main() {
         check(s0[2].notes == 0 && s0[2].drumNotes == 1,
               "第 2 轨只有鼓件音：旋律 0 音、鼓件音 1，两者不混算");
 
+        // ---- 每轨的通道布局（v1.117）----
+        // 一条轨混多个通道是常态：format 0 把整首曲子塞进一条轨，DAW 也常把
+        // 主旋律与伴奏放进同一条轨的不同通道。诊断原来一个字都不提，于是
+        // 「乐器: 钢琴」与谱面上的两种乐器对不上，用户也没有线索去查。
+        {
+            SmfTrack tmix;
+            tmix.at(0, ev({0xFF, 0x03, 0x03, 'D', 'u', 'o'}));
+            tmix.at(0, ev({0xC0, 0}));               // 通道 0 钢琴
+            tmix.at(0, ev({0xC1, 40}));              // 通道 1 小提琴
+            tmix.at(0, ev({0x90, 60, 100}));
+            tmix.at(240, ev({0x80, 60, 0}));
+            tmix.at(240, ev({0x91, 67, 90}));
+            tmix.at(480, ev({0x81, 67, 0}));
+            tmix.at(480, ev({0x90, 62, 100}));
+            tmix.at(720, ev({0x80, 62, 0}));
+            auto mixed = buildSmfFmt(1, 1, 480, {tmix});
+            MidiData dm;
+            check(loadMidiFromMemory(mixed.data(), mixed.size(), dm),
+                  "一条轨里混两个通道的文件照常解析");
+            const auto sm = trackSummaries(dm);
+            check(sm.size() == 1 && sm[0].channels.size() == 2 &&
+                  sm[0].channels[0].first == 0 && sm[0].channels[0].second == 2 &&
+                  sm[0].channels[1].first == 1 && sm[0].channels[1].second == 1,
+                  "逐轨通道表按通道号升序，各带自己的 note-on 数");
+            check(sm[0].notes == 3,
+                  "音数仍是 3（通道不参与音数统计）");
+
+            // 鼓件音也要占一个通道位：否则纯鼓轨在诊断里成了「没有通道」。
+            const auto sc = trackSummaries(d0);
+            check(sc[2].channels.size() == 1 && sc[2].channels[0].first == 9 &&
+                  sc[2].channels[0].second == 1,
+                  "纯鼓轨的通道表里是通道 9（鼓件音同样计入）");
+
+            // format 0：轨数只有 1，通道才是真正的分层
+            auto f0 = buildSmfFmt(0, 1, 480, {tmix});
+            MidiData df0;
+            check(loadMidiFromMemory(f0.data(), f0.size(), df0),
+                  "format 0 单轨文件照常解析");
+            const auto sf = trackSummaries(df0);
+            check(df0.format == 0 && sf.size() == 1 && sf[0].channels.size() == 2,
+                  "format 0 的通道布局同样如实报出（共 1 轨、2 个通道）");
+
+            // --track 只隔离演奏事件，通道布局仍按全轨统计：音符会被过滤掉，
+            // 通道表不会——否则「按轨过滤后再说这个文件长什么样」就只剩谎话。
+            MidiData dchan;
+            check(loadMidiFromMemory(zeroHdr.data(), zeroHdr.size(), dchan,
+                                     false, 0),
+                  "--track 0 解析成功");
+            check(dchan.channelNotesByTrack.size() == 3 &&
+                  dchan.channelNotesByTrack.count(2) == 1,
+                  "按轨过滤后通道布局仍覆盖全部轨（列表不会把别的轨写成 0 音）");
+        }
+
         // 头写 9 轨，实际仍是 3 块：不能凭空多出 6 条空轨
         auto bigHdr = buildSmfFmt(1, 9, 480, {ta, tb, tc});
         MidiData d9;

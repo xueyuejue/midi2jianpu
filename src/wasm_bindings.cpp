@@ -104,12 +104,22 @@ const char* midi2jianpu_track_list(const uint8_t* midiData, int size) {
     for (const auto& t : tracks) {
         if (!first) json += ",";
         first = false;
+        // channels：这条轨实际用到的逻辑通道（升序）。一条轨混多个通道时
+        // 下拉框要说明「乐器名只代表主导通道」，否则用户没法解释同一条轨
+        // 里出现的两种乐器。字段是纯数字数组，不需要转义。
+        std::string chans = "[";
+        for (size_t i = 0; i < t.channels.size(); i++) {
+            if (i) chans += ",";
+            chans += std::to_string(t.channels[i].first);
+        }
+        chans += "]";
         json += "{\"i\":" + std::to_string(t.index) +
                 ",\"name\":\"" + jsonEscape(t.name) + "\"" +
                 ",\"notes\":" + std::to_string(t.notes) +
                 ",\"drum\":" + std::to_string(t.drumNotes) +
                 ",\"lyrics\":" + std::to_string(t.lyrics) +
-                ",\"inst\":\"" + jsonEscape(t.instrument) + "\"}";
+                ",\"inst\":\"" + jsonEscape(t.instrument) + "\"" +
+                ",\"channels\":" + chans + "}";
     }
     json += "]";
     g_result = json;

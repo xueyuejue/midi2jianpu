@@ -4728,6 +4728,50 @@ def main():
     check("文件里只有打击乐" not in err,
           "选中的是鼓轨，就不能说成「文件里只有打击乐」（文件里有 32 个旋律音）", err)
 
+    group("[117] v1.117.0 --list-tracks 是整份文件的诊断，不受 --track 过滤")
+    # 旧版拿过滤后的 data 去列轨道，两种翻车：
+    #   ① `--track 2 --list-tracks` 把别的轨全写成「旋律 0 音」，而同一条列表
+    #      里的鼓件数仍是全曲口径，自相矛盾；
+    #   ② 选中的轨没有旋律时直接 exit 4，一行都不列——那正是最该看列表的时刻。
+    rc, out, err = run(exe, drums_mid, "--track", "2", "--list-tracks")
+    check(rc == 0, "--list-tracks 与 --track 同时给时正常退出", err)
+    check('"Vocal"   旋律 8 音' in out,
+          "别的轨音数仍按全曲统计（不再被过滤成 0 音）", out)
+    check('"Piano"   旋律 24 音   乐器: 钢琴   ← 当前 --track' in out,
+          "选中的那条轨单独标出「当前 --track」", out)
+
+    rc, out, err = run(exe, drums_mid, "--track", "3", "--list-tracks")
+    check(rc == 0 and "轨道列表" in out,
+          "选中的是鼓轨也照样列出轨道（旧版直接 exit 4、一行不给）", err)
+    check("--track 3 没有旋律音符" in out and "该轨只有 192 个鼓件音" in out,
+          "顺手说明它为什么转不出来、旋律在轨几", out)
+    check('"Drums"' in out and "← 当前 --track" in out,
+          "鼓轨那行照样标出当前选择", out)
+
+    rc, out, err = run(exe, drums_mid, "--track", "9", "--list-tracks")
+    check(rc == 0 and "--track 9 不存在" in out and "实际只有 4 轨（0~3）" in out,
+          "轨号越界时也先列完整张表，再说它不存在", out)
+
+    # 一条轨混多个通道：转换层按通道拆声部，--track 只能整轨取，
+    # 不说这句话用户没法解释「同一条轨里两种乐器」。
+    trio_mid = os.path.join(FIXTURES, "voice_trio.mid")
+    rc, out, err = run(exe, trio_mid, "--list-tracks")
+    check(rc == 0 and "通道 0,1,2（3 个通道混在同一轨）" in out,
+          "一轨三通道如实标注通道号", out)
+    rc, out, err = run(exe, os.path.join(FIXTURES, "meter.mid"), "--list-tracks")
+    check("通道 " not in out,
+          "单通道轨不多印这句（老文件的列表逐字不变）", out)
+
+    # format 2：转换默认只留第 0 段，但列表说的是整份文件，
+    # 不给全曲解析的话第 1 段会变成「旋律 0 音」、连轨名都读不到。
+    f2 = os.path.join(FIXTURES, "format2.mid")
+    rc, out, err = run(exe, f2, "--list-tracks")
+    check(rc == 0 and '"SongB"   旋律 8 音' in out,
+          "format 2 的第二段也如实列出（默认只转第 0 段，但列表是整份文件）", out)
+    rc, out, err = run(exe, f2, "--track", "0", "--list-tracks")
+    check('"SongB"' in out,
+          "format 2 指定 --track 0 时第 1 段也不会退化成没有轨名的空轨", out)
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

@@ -2753,6 +2753,45 @@ if (existsSync(twoLyrics76)) {
     '这条标签读的是 track_list 的每轨歌词数，不是头部轨数');
 }
 
+// ---- 78. v1.117.0 track_list 的每轨通道布局 ----
+// 一条轨混多个通道（format 0 的常态、DAW 的「主旋律+伴奏一条轨」）时，
+// 下拉框里的乐器名只代表主导通道。不把通道列表带出来，用户没法解释
+// 「同一条轨里为什么有两种乐器」，也不知道 --track 切不开这层结构。
+{
+  const trio78 = new Uint8Array(readFileSync(path.join(ROOT, 'tests', 'fixtures', 'voice_trio.mid')));
+  const p78 = mod._malloc(trio78.length);
+  mod.HEAPU8.set(trio78, p78);
+  const tl78 = JSON.parse(mod.UTF8ToString(mod._midi2jianpu_track_list(p78, trio78.length)));
+  mod._free(p78);
+
+  check(Array.isArray(tl78[1].channels) && tl78[1].channels.length === 3,
+    'track_list 带出每轨的通道数（voice_trio 的旋律轨是 3 个通道）',
+    JSON.stringify(tl78.map((t) => t.channels)));
+  check(JSON.stringify(tl78[1].channels) === '[0,1,2]',
+    '通道号按升序给出，不重复', JSON.stringify(tl78[1].channels));
+  check(Array.isArray(tl78[0].channels) && tl78[0].channels.length === 0,
+    '没有音符的 conductor 轨给空数组，不是 null', JSON.stringify(tl78[0]));
+
+  // 纯鼓轨的通道表里是通道 9 —— 鼓件音也算一次 note-on，
+  // 否则这条轨在诊断里会变成「没有任何通道」。
+  const drum78 = new Uint8Array(readFileSync(path.join(ROOT, 'tests', 'fixtures', 'drums.mid')));
+  const pd78 = mod._malloc(drum78.length);
+  mod.HEAPU8.set(drum78, pd78);
+  const dl78 = JSON.parse(mod.UTF8ToString(mod._midi2jianpu_track_list(pd78, drum78.length)));
+  mod._free(pd78);
+  check(JSON.stringify(dl78[3].channels) === '[9]',
+    '鼓轨的通道是 9（鼓件音同样计入通道布局）', JSON.stringify(dl78[3].channels));
+
+  // 老字段一个都不能少：网页的当前版本仍读 notes / drum / lyrics / inst
+  const ok78 = ['i', 'name', 'notes', 'drum', 'lyrics', 'inst', 'channels']
+    .every((k) => k in dl78[1]);
+  check(ok78, 'track_list 的既有字段全部保留，只新增 channels', JSON.stringify(dl78[1]));
+
+  const page78 = readFileSync(path.join(ROOT, 'docs', 'index.html'), 'utf8');
+  check(page78.includes("' · 通道 ' + t.channels.join(',')"),
+    '下拉框对多通道轨补一句「通道 0,1」');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

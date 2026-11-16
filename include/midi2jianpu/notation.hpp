@@ -495,6 +495,10 @@ struct TrackSummary {
     int lyrics = 0;         // MIDI 内置歌词字数
     int program = -1;       // 主导音色号（-1 = 没有 0xC0 记录）
     std::string instrument; // program 对应的 GM 名，查不到为空串
+    // 这条轨实际用到的逻辑通道（通道号, note-on 数），按通道号升序。
+    // 一条轨混多个通道时，乐器名只能代表主导通道，--track N 也切不开——
+    // 诊断必须把这层结构说出来，否则用户无法解释「同一条轨里两种乐器」。
+    std::vector<std::pair<int, int>> channels;
 };
 std::vector<TrackSummary> trackSummaries(const MidiData& data);
 

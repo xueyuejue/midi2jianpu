@@ -1828,6 +1828,14 @@ std::vector<TrackSummary> trackSummaries(const MidiData& data) {
     for (const auto& c : lyricSyllablesByTrack(data)) {
         if (c.first >= 0 && c.first < n) out[(size_t)c.first].lyrics = c.second;
     }
+    // 通道布局来自解析层（std::map 已按通道号升序）。note-on 数为 0 的通道
+    // 理论上不会进表，这里仍挡一道，免得将来改成「记 0xC0 的通道」时冒出空项。
+    for (const auto& kv : data.channelNotesByTrack) {
+        if (kv.first < 0 || kv.first >= n) continue;
+        for (const auto& ch : kv.second) {
+            if (ch.second > 0) out[(size_t)kv.first].channels.push_back(ch);
+        }
+    }
     return out;
 }
 

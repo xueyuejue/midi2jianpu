@@ -317,6 +317,13 @@ struct MidiData {
     // `--list-tracks` 用它把鼓轨在轨道列表里标出来；普通转换不读它，零回归。
     std::map<int, int> drumNotesByTrack;
 
+    // 每条轨实际用到的逻辑通道（轨 -> 通道 -> note-on 数）。一条轨混多个
+    // 通道是常态：format 0 的导出器把整首曲子塞进一条轨，DAW 也常把
+    // 主旋律与伴奏放同一条轨的不同通道。转换层按通道拆声部，但 --track N
+    // 只能按轨隔离——不把这层结构说出来，用户看不出「为什么 8 个音里
+    // 有 4 个是小提琴的」。鼓件音也计入（否则纯鼓轨会显示成没有通道）。
+    std::map<int, std::map<int, int>> channelNotesByTrack;
+
     // ---- 0xF0 SysEx 里的鼓模式（Roland GS / Yamaha XG）----
     // GS/XG 允许把任意 part 指定为节奏声部（鼓），也允许把通道 10 改回普通
     // 乐器；GM/GS/XG Reset 则把整台音源恢复成「只有通道 10 是鼓」。这三件事

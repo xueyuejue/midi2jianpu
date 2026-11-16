@@ -118,11 +118,15 @@ static bool parseDouble(const char* s, double& out) {
 }
 
 // --list-tracks：把文件里的每条轨列出来（序号 / 名称 / 旋律音数 / 乐器 /
-// 歌词字数 / 是否鼓轨），让用户在 `--track N` 之前先看清该选哪条。纯诊断，
-// 不参与转换，因此不改动任何既有转换输出，零回归。
+// 歌词字数 / 是否鼓轨 / 用到的通道），让用户在 `--track N` 之前先看清该选哪条。
+// 纯诊断，不参与转换，因此不改动任何既有转换输出，零回归。
 // 统计口径收在 notation.cpp 的 trackSummaries()：网页的轨道下拉框读的是
 // 同一份数据，两处各算一套的话，诊断说「4 轨」而网页只给 2 个选项。
-static void printTrackList(const m2j::MidiData& data) {
+//
+// 这张表说的是**整份文件**，不是「当前选中轨」：按轨过滤后别的轨音符已经不在
+// MidiData 里，列出来会全是「旋律 0 音」，而同一行的鼓件数却仍是全曲口径。
+// 所以 main() 会在带 --track 时按全曲重解析一次再调这里（见下面的调用点）。
+static void printTrackList(const m2j::MidiData& data, int selected = -1) {
     const std::vector<m2j::TrackSummary> tracks = m2j::trackSummaries(data);
     std::cout << "轨道列表 (format " << data.format << ", 共 " << tracks.size() << " 轨):\n";
     // 头部那个 16 位轨数是不可信的：导出器合并轨后忘了改、写溢出成 0 或
@@ -131,6 +135,7 @@ static void printTrackList(const m2j::MidiData& data) {
     if (data.headerTrackCount != data.trackCount)
         std::cout << "注意: 文件头部写着 " << data.headerTrackCount << " 轨，实际解析到 "
                   << data.trackCount << " 个 MTrk 数据块（以实际为准）\n";
+    bool anyMultiChannel = false;
     for (const auto& s : tracks) {
         std::cout << "  #" << s.index;
         if (!s.name.empty()) std::cout << "  \"" << s.name << "\"";
@@ -142,11 +147,42 @@ static void printTrackList(const m2j::MidiData& data) {
             std::cout << "   旋律 " << s.notes << " 音";
         if (!s.instrument.empty()) std::cout << "   乐器: " << s.instrument;
         if (s.lyrics > 0) std::cout << "   歌词 " << s.lyrics << " 字";
+        // 一条轨混多个通道（format 0 的常态、DAW 的「主旋律+伴奏一条轨」）：
+        // 转换层按通道拆声部，--track 却只能整轨取。不说这句的话，用户看到
+        // 「乐器: 钢琴」与谱面上的两件乐器对不上，也没有任何线索去查。
+        if (s.channels.size() > 1) {
+            anyMultiChannel = true;
+            std::cout << "   通道 ";
+            for (size_t i = 0; i < s.channels.size(); i++) {
+                if (i) std::cout << ",";
+                std::cout << s.channels[i].first;
+            }
+            std::cout << "（" << s.channels.size() << " 个通道混在同一轨）";
+        }
+        if (s.index == selected) std::cout << "   ← 当前 --track";
         std::cout << "\n";
+    }
+    // 选中的轨没有旋律时，列表本身才是用户最需要的东西（旧版这里直接
+    // 报错退出、一行都不列），顺手把「为什么转不出来、旋律在哪」说完。
+    if (selected >= 0) {
+        if (selected >= (int)tracks.size()) {
+            std::cout << "注意: --track " << selected << " 不存在：本文件实际只有 "
+                      << tracks.size() << " 轨（0~" << (int)tracks.size() - 1 << "）\n";
+        } else if (tracks[(size_t)selected].notes == 0) {
+            const std::string hint = m2j::emptyTrackHint(data, selected);
+            std::cout << "注意: --track " << selected << " 没有旋律音符";
+            if (!hint.empty()) std::cout << "：" << hint;
+            std::cout << "，直接转换会以退出码 4 结束\n";
+        }
     }
     std::cout << "默认: 转换全部轨道（多轨各自成行）；--track N 只取第 N 轨（从 0 起）\n";
     if (data.format == 2)
         std::cout << "注意: format 2 各轨是独立序列，默认只转第 0 轨；--track N 可指定别的段\n";
+    // format 0 把整首曲子塞进一条轨：轨号只有一个，通道才是真正的分层。
+    // 这跟 format 2 的提示同一个位置、同一个目的——解释「为什么切不开」。
+    if (data.format == 0 && anyMultiChannel)
+        std::cout << "注意: format 0 把多个通道写进同一条轨，--track 只能整轨转换，"
+                     "无法按通道拆分\n";
 }
 
 int main(int argc, char** argv) {
@@ -357,6 +393,27 @@ int main(int argc, char** argv) {
         std::cerr << "错误: 无法读取或解析 MIDI 文件: " << input << "\n";
         return 2;
     }
+    // --list-tracks 是**整份文件**的诊断，必须排在「--track 选中空轨就报错」
+    // 之前：
+    // ① 按轨过滤之后别的轨音符已经不在 data 里，列表会把它们全写成「旋律 0 音」
+    //    （`--track 2 --list-tracks` 时 Vocal 那条真有的 8 个音显示成 0，同一条
+    //    列表里鼓件数却仍是全曲口径，自相矛盾）；
+    // ② 选中的轨恰好没有旋律时，旧版直接 exit 4、一行都不列——而那正是用户
+    //    最需要看轨道列表的时刻。
+    if (listTracks) {
+        // 需要「整份文件」的场合：带 --track（其余轨的演奏事件已被丢弃）、
+        // 或者 format 2（默认只保留第 0 段，第 1 段连轨名都读不到）。
+        if (trackFilter >= 0 || data.format == 2) {
+            // keepAllFormat2 = true：format 2 的其它段也要一并列出。
+            m2j::MidiData full;
+            if (m2j::loadMidiFile(input, full, true, -1)) {
+                printTrackList(full, trackFilter);
+                return 0;
+            }
+        }
+        printTrackList(data, trackFilter);
+        return 0;
+    }
     if (trackFilter >= 0 && data.notes.empty()) {
         // 「无音符」和「没有这条轨」是两回事：头部轨数写错的文件里，
         // 用户照着 --list-tracks 的旧数字敲 --track 5，只会得到一句
@@ -381,11 +438,6 @@ int main(int argc, char** argv) {
                 std::cerr << "轨道 " << trackFilter << " 无音符：" << hint << "。\n";
         }
         return 4;
-    }
-    // --list-tracks 是纯诊断：列完轨道就退出，不跑后面的转换流程。
-    if (listTracks) {
-        printTrackList(data);
-        return 0;
     }
     // 中途转调（0x59 map）默认生效。关掉时保留事件表本身：曲首调号还要
     // 用来判调性，清空数据会把「忽略转调」和「没有调号」混为一谈。

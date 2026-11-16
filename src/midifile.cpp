@@ -1191,6 +1191,10 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                     uint64_t key = ((uint64_t)channel << 24) |
                                    ((uint64_t)note << 8) | (uint64_t)trackIdx;
                     if (type == 0x90u && vel > 0) {
+                        // 通道布局与 --track 无关，按全部轨统计：--list-tracks
+                        // 说的是「这个文件长什么样」，不是「当前选中轨长什么样」。
+                        // 鼓件音同样计入，否则纯鼓轨会显示成「没有通道」。
+                        out.channelNotesByTrack[trackIdx][channel]++;
                         // 同一个键还没抬手就又按下（重复触键、转录软件、踏板踩法
                         // 都会这样）：旧实现用 active[key] = ... 直接覆盖，前一个
                         // 音凭空消失，调性判断也跟着少一个音。现在把它收到此刻，
