@@ -330,7 +330,12 @@ static std::string playerBlock(const std::string& playJson) {
   }
 
   var ctx = null, master = null, nodes = [], timers = [], raf = 0;
-  var evts = [], cursor = 0, active = [], t0 = 0, speed = 1, playing = false;
+  // stopAt = 本轮真正要播的音符里「最晚结束」的那个时刻（相对起播点、已按
+  // 速度缩放）。不能拿 evts[evts.length-1].end：evts 是按 start 排序的，
+  // 曲首一条 16 秒的长音后面跟一条 10.5 秒的短音时，最后那个事件结束得
+  // 更早，旧条件会让播放器在长音还剩 5 秒时就停掉（.probe/probe_player_stop.py）。
+  var evts = [], cursor = 0, active = [], t0 = 0, speed = 1, playing = false,
+      stopAt = 0;
 
   function mmss(sec) {
     var m = Math.floor(sec / 60), s = Math.round(sec - m * 60);
@@ -412,7 +417,9 @@ static std::string playerBlock(const std::string& playJson) {
         active.splice(i, 1);
       }
     }
-    if (now > evts.length && evts.length && now > evts[evts.length - 1].end + 0.25) {
+    // 判断放完要用 stopAt（全部音符的最大结束时刻），不能用数组末尾：
+    // start 排序后末尾那个音可能比曲首的长音早结束得多。
+    if (now > stopAt + 0.25) {
       stop();
       return;
     }
@@ -437,11 +444,13 @@ static std::string playerBlock(const std::string& playJson) {
     var s0 = secAt(from);
     // 每个音一个事件；同一 tick 的多个音（和弦 / 多轨）共用同一批 DOM 列
     evts = [];
+    stopAt = 0;
     for (var i = 0; i < P.notes.length; i++) {
       var n = P.notes[i];
       if (n[0] < from) continue;
       var s = (secAt(n[0]) - s0) / speed;
       var e = (secAt(n[0] + Math.max(n[1], 1)) - s0) / speed;
+      if (e > stopAt) stopAt = e;
       var els = document.querySelectorAll("[data-t='" + n[0] + "']");
       evts.push({ start: s, end: e, tick: n[0], pitch: n[2],
                   vel: n.length > 4 ? n[4] : 96, els: els });

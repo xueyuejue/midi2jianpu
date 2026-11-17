@@ -5234,6 +5234,51 @@ def main():
           "+24 在 MIDI 音域内照常精确平移、零折回提示",
           "rc=%d %s" % (rc, sorted({m for m, _ in hits})))
 
+    # v1.129.0：--player 的自动停止必须按「本轮全部音符的最晚结束时刻」。
+    # evts 按 start 排序，末尾事件未必最后结束：曲首 32 拍长音 + 第 21 拍起的
+    # 1 拍短音，旧条件在 10.5 秒就停，长音 16 秒才完（探针实测差 5.5 秒）。
+    group("[125] v1.129.0 播放器不再提前掐掉曲首长音")
+
+    long_short = os.path.join(tmp, "player_long_then_short.mid")
+    long_short_evs = [
+        b"\x00\x90\x3c\x60",                                  # 0 拍起 C4
+        _vlq(20 * 480) + b"\x90\x40\x60",                     # 20 拍起 E4
+        _vlq(480) + b"\x80\x40\x00",                          # 21 拍停 E4
+        _vlq(32 * 480 - 20 * 480 - 480) + b"\x80\x3c\x00",    # 32 拍停 C4
+        b"\x00\xff\x2f\x00",
+    ]
+    with open(long_short, "wb") as f:
+        f.write(b"MThd" + struct.pack(">IHHH", 6, 0, 1, 480) +
+                _trk(long_short_evs))
+    ph = os.path.join(tmp, "player_long_then_short.html")
+    rc, out, err = run(exe, long_short, "--html", ph, "--player")
+    check(rc == 0 and os.path.exists(ph),
+          "长音 + 后接短音的样本正常出谱", "rc=%d %s" % (rc, err[:200]))
+    if os.path.exists(ph):
+        html = open(ph, encoding="utf-8").read()
+        pm = re.search(r"var M2J_PLAY = (\{.*?\});\r?\n", html, re.S)
+        play = json.loads(pm.group(1)) if pm else {}
+        notes = play.get("notes") or []
+        div = play.get("division") or 480
+        ptempo = play.get("tempo") or [[0, 500000]]
+        us = ptempo[0][1] if ptempo[0][1] > 0 else 500000
+
+        def _psec(t):
+            return t / div * us / 1e6
+
+        ends = sorted(((_psec(n[0]), _psec(n[0] + max(n[1], 1)), n[2])
+                       for n in notes), key=lambda x: (x[0], x[2]))
+        check(len(ends) == 2 and ends[-1][1] < max(e[1] for e in ends) - 4,
+              "样本确实触发旧缺陷：排序末尾比最晚结束早 5 秒以上",
+              str([(round(a, 2), round(b, 2)) for a, b, _ in ends]))
+        check("stopAt = 0;" in html and "if (e > stopAt) stopAt = e;" in html,
+              "播放器按每个音符的结束时刻累计 stopAt")
+        check("if (now > stopAt + 0.25)" in html,
+              "自动停止条件改用 stopAt（全部音符的最晚结束时刻）")
+        check("evts[evts.length - 1].end + 0.25" not in html and
+              "now > evts.length" not in html,
+              "旧的「末尾事件 / 事件个数」停止条件已移除")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

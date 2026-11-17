@@ -9131,6 +9131,31 @@ int main() {
         check(xml.find("<step>B</step><octave>-2</octave>") != std::string::npos,
               "MusicXML 对负音高写 B-2 而不是截断成 B-1");
     }
+
+    // v1.129.0 --player 自动停止要取「本轮全部音符的最晚结束时刻」。
+    // evts 按 start 排序，末尾那个音未必最后结束：曲首 32 拍长音 + 第 21 拍
+    // 起的 1 拍短音，旧条件在 10.5 秒就停，长音要到 16 秒才完（探针实测）。
+    {
+        MidiData sd;
+        sd.division = 480;
+        sd.timeSig.valid = true;
+        NoteEvent a;
+        a.track = 1; a.channel = 0; a.startTicks = 0;
+        a.durationTicks = 32 * 480; a.pitch = 60;
+        sd.notes.push_back(a);
+        a.startTicks = 20 * 480; a.durationTicks = 480; a.pitch = 64;
+        sd.notes.push_back(a);
+        const std::string sh = renderHtml(sd, estimateKey(sd), "t", nullptr, true);
+        check(sh.find("stopAt = 0;") != std::string::npos,
+              "播放器初始化本轮停止时刻 stopAt");
+        check(sh.find("if (e > stopAt) stopAt = e;") != std::string::npos,
+              "每个播放事件按结束时刻刷新 stopAt（不按数组顺序取末尾）");
+        check(sh.find("if (now > stopAt + 0.25)") != std::string::npos,
+              "自动停止条件使用全部音符的最晚结束时刻");
+        check(sh.find("evts[evts.length - 1].end + 0.25") == std::string::npos &&
+              sh.find("now > evts.length") == std::string::npos,
+              "不再拿排序后末尾事件 / 事件个数当停止时刻");
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";
