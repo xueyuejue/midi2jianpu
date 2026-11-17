@@ -29,8 +29,13 @@ static const std::array<int, 7> MAJOR = {0, 2, 4, 5, 7, 9, 11};
 static const std::array<int, 7> MINOR = {0, 2, 3, 5, 7, 8, 10};
 
 std::string midiNoteName(int pitch) {
+    // pitch 在合法 MIDI 范围（0~127）内时 pc 恒非负；负值来自移调折回前
+    // 的极端输入或未来的音高改写路径，归一后 (pitch - pc) 是 12 的整倍数，
+    // 除法不再受「向零截断」影响（-1/12 = 0 会把 B-2 写成 B-1）。
+    int pc = pitch % 12;
+    if (pc < 0) pc += 12;
     std::ostringstream os;
-    os << NOTE_NAMES[pitch % 12] << (pitch / 12 - 1);
+    os << NOTE_NAMES[pc] << ((pitch - pc) / 12 - 1);
     return os.str();
 }
 
@@ -83,7 +88,11 @@ KeyEstimate estimateKey(const MidiData& data) {
         if (note.track != mainTrack) continue;
         double w = note.durationSeconds;
         if (note.startTicks == lastTick) w *= 5.0;   // 终止音
-        pitchWeights[note.pitch % 12] += w;
+        // 移调折回后 pitch 已在 0~127，这里按音级取模仍是防御：负 pitch
+        // 的 % 12 是负下标，对栈上数组是越界写，宁可多一次归一。
+        int wPc = note.pitch % 12;
+        if (wPc < 0) wPc += 12;
+        pitchWeights[wPc] += w;
         totalWeight += w;
     }
     if (totalWeight <= 0) return KeyEstimate{};
@@ -185,9 +194,23 @@ int transposeFifths(int fifths, int semitones) {
     return normalizeFifths12(fifths + d);
 }
 
-void transposeData(MidiData& data, int semitones) {
-    if (semitones == 0) return;
-    for (auto& n : data.notes) n.pitch += semitones;
+int transposeData(MidiData& data, int semitones) {
+    if (semitones == 0) return 0;
+    // ±60 半音（v1.96 设的 CLI 上限）内，极端移调仍可能把音符推出 MIDI
+    // 音域：30 + (-60) = -30，120 + 60 = 180。旧实现放任越界值流进下游，
+    // 两个后果：estimateKey 的 pitchWeights[pitch % 12] 用负下标越界写栈
+    // （内存安全），MusicXML 的 <octave> 写出 12 或 -5（越过规范 0~9，
+    // 记谱软件可能拒绝）。按整八度折回：音级不变，调性 / 和弦 / 唱名等
+    // 一切按音级算的链路都不受影响，页眉如实报告折回数。
+    int folded = 0;
+    for (auto& n : data.notes) {
+        n.pitch += semitones;
+        if (n.pitch > 127 || n.pitch < 0) {
+            while (n.pitch > 127) n.pitch -= 12;
+            while (n.pitch < 0) n.pitch += 12;
+            folded++;
+        }
+    }
     // 调号必须跟着走：estimateKey() 优先采信 MIDI 内置调号，只移音不移调号
     // 会让 --transpose +2 输出的谱面「音符在 D 大调、调号还是 1=C」，
     // 简谱唱名全变成 2 3 #4，MusicXML 的 <fifths> 也留在 0，MuseScore 里
@@ -196,6 +219,7 @@ void transposeData(MidiData& data, int semitones) {
         data.keySig.sharpsFlats = transposeFifths(data.keySig.sharpsFlats, semitones);
     for (auto& p : data.keySigChanges)
         p.sig.sharpsFlats = transposeFifths(p.sig.sharpsFlats, semitones);
+    return folded;
 }
 
 KeyEstimate transposeKey(const KeyEstimate& key, int semitones) {

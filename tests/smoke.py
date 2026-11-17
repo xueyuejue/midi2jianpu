@@ -5158,6 +5158,82 @@ def main():
           "半途截断的 VLQ 照旧计一次损坏事件",
           "rc=%d %s" % (rc, out.splitlines()[:4]))
 
+    # ±60 半音（CLI 上限）内仍可能推出 MIDI 音域：59-60 = -1、107+60 = 167。
+    # 旧实现放任越界值流进下游：estimateKey 的音级权重表用负下标越界写栈
+    # （-30 % 12 = -6，内存安全），MusicXML 的 <octave> 写出 12（规范 0~9），
+    # 文本谱吐 12 个八度逗点。现在按整八度折回（音级不变），页眉如实计数。
+    group("[124] v1.127.0 极端移调按八度折回：不再让越界音高流进下游")
+
+    def _plain_smf(pitches, delta=480):
+        evs = []
+        for p in pitches:
+            evs.append(b"\x00" + bytes([0x90, p, 100]))
+        for p in pitches:
+            evs.append(_vlq(delta) + bytes([0x80, p, 0]))
+        evs.append(b"\x00\xff\x2f\x00")
+        return b"MThd" + struct.pack(">IHHH", 6, 1, 1, 480) + _trk(evs)
+
+    STEP_PC = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
+
+    def _xml_pitches(path):
+        s = open(path, encoding="utf-8").read()
+        pairs = re.findall(
+            r"<pitch><step>(\w+)</step>(?:<alter>(-?\d+)</alter>)?"
+            r"<octave>(-?\d+)</octave>", s)
+        return [((int(o) + 1) * 12 + STEP_PC[s0] + int(a or 0), int(o))
+                for s0, a, o in pairs]
+
+    # 高音 +60：107+60=167 -> 119；104+60=164 -> 116；100+60=160 -> 124。
+    hi = os.path.join(tmp, "transpose_high.mid")
+    with open(hi, "wb") as f:
+        f.write(_plain_smf([100, 104, 107]))
+    hxml = os.path.join(tmp, "transpose_high.xml")
+    rc, out, err = run(exe, hi, "--transpose", "+60", "--musicxml", hxml)
+    check(rc == 0 and "移调越界: 3 个音移调后越出 MIDI 音域" in out,
+          "+60 把 3 个高音推出 MIDI 音域，页眉如实计数（旧实现零提示）",
+          "rc=%d %s" % (rc, [l for l in out.splitlines() if "移调" in l]))
+    hits = _xml_pitches(hxml)
+    check(all(0 <= m <= 127 for m, _ in hits),
+          "MusicXML 每个音都能映射回合法 MIDI 音高（旧实现 160/164/167）",
+          str(sorted({m for m, _ in hits})))
+    check(sorted({o for _, o in hits}) and max(o for _, o in hits) <= 9
+          and min(o for _, o in hits) >= 0,
+          "<octave> 全部落在规范 0~9（旧实现 12）",
+          str(sorted({o for _, o in hits})))
+
+    # 低音 -60：59-60=-1 -> 折回 11；其余 0/2/4/5 已在界内。
+    lo = os.path.join(tmp, "transpose_low.mid")
+    with open(lo, "wb") as f:
+        f.write(_plain_smf([59, 60, 62, 64, 65]))
+    lxml = os.path.join(tmp, "transpose_low.xml")
+    rc, out, err = run(exe, lo, "--transpose", "-60", "--musicxml", lxml)
+    check(rc == 0 and "移调越界: 1 个音移调后越出 MIDI 音域" in out,
+          "-60 把 1 个低音推出 MIDI 音域，页眉如实计数",
+          "rc=%d %s" % (rc, [l for l in out.splitlines() if "移调" in l]))
+    hits = _xml_pitches(lxml)
+    check(all(0 <= m <= 127 for m, _ in hits) and
+          sorted({m for m, _ in hits}) == [0, 2, 4, 5, 11],
+          "折回后的音高集合保音级（-1 -> 11，其余原样）",
+          str(sorted({m for m, _ in hits})))
+
+    # 文本谱：折回后八度逗点回到可读范围（旧实现一口 12 个逗点）。
+    rc, out, err = run(exe, lo, "--transpose", "-60")
+    check(",,,,,,,,," not in out,
+          "文本谱不再吐 9 个以上的八度逗点（旧实现 12 个）",
+          [l for l in out.splitlines() if "," in l][:2])
+
+    # 对照：±24 契约区不触发折回，页眉没有越界提示，移调量严格 +k。
+    nm = os.path.join(tmp, "transpose_norm.mid")
+    with open(nm, "wb") as f:
+        f.write(_plain_smf([60, 86]))
+    nxml = os.path.join(tmp, "transpose_norm.xml")
+    rc, out, err = run(exe, nm, "--transpose", "+24", "--musicxml", nxml)
+    hits = _xml_pitches(nxml)
+    check(rc == 0 and "移调越界" not in out and
+          sorted({m for m, _ in hits}) == [84, 110],
+          "+24 在 MIDI 音域内照常精确平移、零折回提示",
+          "rc=%d %s" % (rc, sorted({m for m, _ in hits})))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

@@ -987,7 +987,9 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
 
             int pc = seg.pitch % 12;
             if (pc < 0) pc += 12;
-            int octave = seg.pitch / 12 - 1;
+            // (pitch - pc) 是 12 的整倍数：负 pitch 时 C++ 的 / 12 向零截断
+            //（-1 / 12 = 0），会把 B-2 写成 B-1（高一个八度）。
+            int octave = (seg.pitch - pc) / 12 - 1;
             const bool flat = prefersFlats(keys.at(seg.start));
             const char* step = flat ? FLAT_STEP[pc] : SHARP_STEP[pc];
             int alter = flat ? FLAT_ALTER[pc] : SHARP_ALTER[pc];
@@ -1038,7 +1040,7 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                                             seg.start, seg.channel);
                     if (std::abs(goff) >= 0.5) gp += (int)std::round(goff);
                     int gpc = gp % 12; if (gpc < 0) gpc += 12;
-                    int goct = gp / 12 - 1;
+                    int goct = (gp - gpc) / 12 - 1;
                     const bool gflat = prefersFlats(keys.at(seg.start));
                     const char* gstep = gflat ? FLAT_STEP[gpc] : SHARP_STEP[gpc];
                     int galter = gflat ? FLAT_ALTER[gpc] : SHARP_ALTER[gpc];

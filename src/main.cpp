@@ -561,7 +561,7 @@ int main(int argc, char** argv) {
     bool transposeShiftsKey = false;  // 这次移调是否改变调性（非整八度）
     if (transpose != 0) {
         const int sfBefore = data.keySig.valid ? data.keySig.sharpsFlats : 0;
-        m2j::transposeData(data, transpose);
+        const int foldedNotes = m2j::transposeData(data, transpose);
         // 移整个八度时调号不动，别谎报「同步平移」。
         transposeMovedKey = data.keySig.valid &&
                             data.keySig.sharpsFlats != sfBefore;
@@ -570,6 +570,9 @@ int main(int argc, char** argv) {
         transposeShiftsKey = (transpose % 12) != 0;
         std::cout << "移调: " << (transpose > 0 ? "+" : "") << transpose << " 半音"
                   << (transposeMovedKey ? "（调号同步平移）" : "") << "\n";
+        if (foldedNotes > 0)
+            std::cout << "移调越界: " << foldedNotes
+                      << " 个音移调后越出 MIDI 音域（0~127），按八度折回\n";
     }
 
     // 时值量化：真实录音 MIDI 的 note-off 普遍提前，不量化会把八分判成附点十六

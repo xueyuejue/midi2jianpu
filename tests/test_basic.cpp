@@ -9048,6 +9048,89 @@ int main() {
                   std::to_string(d.truncatedEvents) + " 损坏");
         }
     }
+
+    // ---- v1.127.0 极端移调按八度折回 ----
+    //
+    // ±60 半音（v1.96 的 CLI 上限）内仍可能推出 MIDI 音域：30-60 = -30、
+    // 120+60 = 180。旧实现放任越界值流进下游：estimateKey 的
+    // pitchWeights[pitch % 12] 用负下标越界写栈（-30 % 12 = -6，内存安全），
+    // MusicXML 的 <octave> 写出 12（规范 0~9，记谱软件可能拒绝），负音高
+    // 的 octave 又被向零截断写错八度（B-2 写成 B-1）。现在按整八度折回：
+    // 音级不变，调性 / 和弦 / 唱名等一切按音级算的链路都不受影响。
+    std::cout << "\n测试极端移调的八度折回（v1.127）\n";
+    {
+        MidiData d;
+        d.division = 480;
+        d.keySig = KeySignature{0, false, true};              // 1=C
+        const int pitches[5] = {59, 60, 62, 100, 104};
+        for (int i = 0; i < 5; i++) {
+            NoteEvent m;
+            m.startSeconds = i * 0.5;
+            m.durationSeconds = 0.5;
+            m.pitch = pitches[i];
+            m.startTicks = i * 480;
+            m.durationTicks = 480;
+            m.rawDurationTicks = 480;
+            m.channel = 0;
+            m.track = 0;
+            d.notes.push_back(m);
+        }
+
+        // 1) 向下移到界外：59-60 = -1 -> 折回 11；其余 0 / 2 / 40 / 44 界内。
+        MidiData down = d;
+        const int foldedDown = transposeData(down, -60);
+        check(foldedDown == 1,
+              "低音文件 -60 只折回 1 个音, 实际: " + std::to_string(foldedDown));
+        check(down.notes[0].pitch == 11 && down.notes[1].pitch == 0 &&
+              down.notes[2].pitch == 2 && down.notes[3].pitch == 40 &&
+              down.notes[4].pitch == 44,
+              "折回 = 原音高 + 移调量再按整八度归位");
+
+        // 2) 向上移到界外：100+60 = 160 -> 124；104+60 = 164 -> 116；
+        //    59/60/62 + 60 = 119/120/122 界内原样平移。
+        MidiData up = d;
+        const int foldedUp = transposeData(up, 60);
+        check(foldedUp == 2,
+              "高音文件 +60 折回 2 个音, 实际: " + std::to_string(foldedUp));
+        check(up.notes[0].pitch == 119 && up.notes[1].pitch == 120 &&
+              up.notes[2].pitch == 122 && up.notes[3].pitch == 124 &&
+              up.notes[4].pitch == 116,
+              "越界音折回、界内音原样平移");
+
+        // 3) 折回只动八度不动音级：调性 / 和弦 / 唱名全链路不受影响。
+        bool pcKept = true;
+        for (size_t i = 0; i < d.notes.size(); i++)
+            pcKept = pcKept && ((up.notes[i].pitch % 12 + 12) % 12) ==
+                               ((d.notes[i].pitch + 60) % 12 + 12) % 12;
+        check(pcKept, "折回保音级（新旧 pitch 对 12 同余）");
+        check(up.keySig.sharpsFlats == 0 && down.keySig.sharpsFlats == 0,
+              "整八度移调的调号不动（+60 / -60 仍是 1=C）");
+
+        // 4) midiNoteName 对负音高按向下取整，不再越界读音名表。
+        check(midiNoteName(-1) == "B-2",
+              "-1 -> B-2（旧实现向零截断写成 B-1）, 实际: " + midiNoteName(-1));
+        check(midiNoteName(-12) == "C-2" && midiNoteName(0) == "C-1" &&
+              midiNoteName(60) == "C4",
+              "音名八度在 0 与负半音区间逐点正确");
+
+        // 5) 写手加固：负 pitch 的音（弯音可以把倚音推到 -1..-11）不再被
+        //    向零截断写错八度。
+        MidiData bad;
+        bad.division = 480;
+        NoteEvent n;
+        n.startSeconds = 0;
+        n.durationSeconds = 0.5;
+        n.pitch = -1;                       // B-2
+        n.startTicks = 0;
+        n.durationTicks = 480;
+        n.rawDurationTicks = 480;
+        n.channel = 0;
+        n.track = 0;
+        bad.notes.push_back(n);
+        const std::string xml = renderMusicXml(bad, estimateKey(bad));
+        check(xml.find("<step>B</step><octave>-2</octave>") != std::string::npos,
+              "MusicXML 对负音高写 B-2 而不是截断成 B-1");
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";
