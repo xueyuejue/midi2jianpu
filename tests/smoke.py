@@ -5021,6 +5021,75 @@ def main():
     check(rc == 0 and "轨 256" in phead,
           "全量转换的声部列表里有轨 256（旧实现只列到轨 255）", phead[:200])
 
+    # ---- 巨额 delta 不翻负：坏文件不许铺出兆字节（v1.125）----
+    # SMF 的 delta 上限是 4 字节 VLQ（0x0FFFFFFF）。解析循环旧写法
+    # `absTick += (long)delta` 在 32 位 long 上累 18 次就跨过 2^31 翻负，
+    # 负 tick 躲过「tick >= cap」这道单侧闸：152 字节的坏文件吐出 6.7 MB，
+    # 其中一整行 6 712 937 字符，页眉还写「已截断 9 个越界音符」而谱里
+    # 留着 4 个 tick 为 -1879048200 的幽灵音。
+    group("[122] v1.125.0 巨额 delta 不翻负：坏文件不会铺出兆字节")
+
+    def _huge_smf(n_notes, warmup=False):
+        evs = []
+        if warmup:                      # 轨首两对完全正常的音
+            evs += [b"\x00\x90\x3c\x64", _vlq(480) + b"\x80\x3c\x00",
+                    b"\x00\x90\x3e\x64", _vlq(480) + b"\x80\x3e\x00"]
+        for i in range(n_notes):
+            evs.append(b"\xff\xff\xff\x7f" + bytes([0x90, 60 + i, 100]))   # delta=0x0FFFFFFF
+            evs.append(b"\xff\xff\xff\x7f" + bytes([0x80, 60 + i, 0]))
+        evs.append(b"\x00\xff\x2f\x00")
+        return b"MThd" + struct.pack(">IHHH", 6, 1, 1, 480) + _trk(evs)
+
+    bad = os.path.join(tmp, "huge_delta.mid")
+    with open(bad, "wb") as f:
+        f.write(_huge_smf(9))
+    check(os.path.getsize(bad) < 200,
+          "坏文件只有 %d 字节（9 个音，每个 delta 都取 VLQ 上限）"
+          % os.path.getsize(bad))
+
+    rc, out, err = run(exe, bad)
+    check(rc == 3 and "未提取到音符" in err,
+          "9 个音的起点全在 512 小节之外 -> 如实报「未提取到音符」",
+          "rc=%d err=%r" % (rc, err.strip()[:60]))
+    check(out == "",
+          "stdout 一个字节都没有（旧实现 6 717 312 字节、单行 6 712 937 字符）",
+          "stdout %d 字节" % len(out))
+
+    # 只写 8 个 delta 的孪生文件没跨过 2^31，旧实现也报「未提取到音符」。
+    # 多加一个坏 delta 不该凭空变出音符——两个文件必须给同一个结论。
+    ok8 = os.path.join(tmp, "huge_delta8.mid")
+    with open(ok8, "wb") as f:
+        f.write(_huge_smf(4))
+    rc8, out8, _ = run(exe, ok8)
+    check(rc8 == 3 and out8 == "",
+          "8 个 delta（未跨 2^31）与 18 个 delta 结论一致：多写坏 delta 不「复活」音符",
+          "rc=%d stdout=%d 字节" % (rc8, len(out8)))
+
+    mix = os.path.join(tmp, "huge_delta_mixed.mid")
+    with open(mix, "wb") as f:
+        f.write(_huge_smf(9, warmup=True))
+    rc, out, err = run(exe, mix)
+    check(rc == 0, "前半正常、后半越界的文件照常出谱", err[:200])
+    check("共提取 2 个音符" in out, "只有开头两个正常音出谱",
+          out.splitlines()[:6])
+    check("已截断 9 个越界音符" in out, "9 个越界音各计一次截断（2 + 9 = 事件总数）",
+          out.splitlines()[:3])
+    widest = max((len(ln) for ln in out.splitlines()), default=0)
+    check(widest < 2000, "最长行 %d 字符（旧实现 6 712 937 字符）" % widest)
+    check(len(out.encode("utf-8")) < 4096,
+          "文本谱 %d 字节（旧实现 6 717 312 字节）" % len(out.encode("utf-8")))
+
+    hmix = os.path.join(tmp, "huge_delta_mixed.html")
+    rc, _, err = run(exe, mix, "--html", hmix)
+    hsize = os.path.getsize(hmix) if os.path.exists(hmix) else -1
+    check(rc == 0 and 0 < hsize < 60 * 1024,
+          "HTML %d 字节（沿坏 tick 铺开就会是兆字节）" % hsize, err[:200])
+    xmix = os.path.join(tmp, "huge_delta_mixed.xml")
+    rc, _, err = run(exe, mix, "--musicxml", xmix)
+    xsize = os.path.getsize(xmix) if os.path.exists(xmix) else -1
+    check(rc == 0 and 0 < xsize < 20 * 1024,
+          "MusicXML %d 字节" % xsize, err[:200])
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

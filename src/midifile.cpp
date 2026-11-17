@@ -1105,6 +1105,20 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
         const size_t hardEnd = std::min<size_t>(trkEnd, size);
         if (trkEnd > size) out.truncatedTracks++;
 
+        // delta-time 是逐条累加的，累加器必须走 64 位：旧写法
+        // `absTick += (long)delta` 在 MSVC / WASM 的 32 位 long 上会翻负
+        // （VLQ 上限 0x0FFFFFFF，18 个就跨过 2^31）。负 tick 恰好躲过
+        // 「tick >= cap」这道单侧闸，于是留在谱里：两个负 tick 之间 5 亿
+        // tick 的空档被输出层铺成一整行 670 万字符的横线——152 字节的坏
+        // 文件吐出 6.7 MB，页眉还写着「已截断 9 个越界音符」而谱里留着
+        // 4 个幽灵音。Linux 的 long 是 64 位，同一份文件不翻负、直接报
+        // 「未提取到音符」，同一输入两个平台两种谱。
+        //
+        // 上限取 4 倍 cap 而不是 cap 本身：cap 之上仍可能有「起点在界内、
+        // 收尾越界」的合法长音，那个音的时长要留给 boundTimeline 按「超长
+        // 音」记一次截断（tickCeil 恒大于 maxDur=cap/2，所以夹取吞不掉这声
+        // 截断）；起点 >= cap 的音下游一律丢弃，夹到哪里都一样。
+        const long tickCeil = 4 * timelineCapTicks(out.division);
         long absTick = 0;
         uint8_t runningStatus = 0;
         // FF 21 的端口是轨内上下文，每条轨开头重置为 0：SMF 不跨轨继承端口
@@ -1122,7 +1136,8 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
 
         while (pos < hardEnd) {
             uint32_t delta = readVarLen(d, hardEnd, pos);
-            absTick += (long)delta;
+            absTick = (long)std::min<long long>((long long)absTick + (long long)delta,
+                                               (long long)tickCeil);
             // VLQ 本身可能一路吃到文件末尾；不挡住的话 b = d[pos] 就越界。
             if (pos >= hardEnd) { out.truncatedEvents++; break; }
 

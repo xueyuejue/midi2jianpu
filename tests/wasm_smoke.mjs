@@ -2985,6 +2985,51 @@ if (existsSync(twoLyrics76)) {
   mod._midi2jianpu_set_track(-1);
 }
 
+// ---- 85. v1.125.0 巨额 delta 不翻负 ----
+// 每条事件前都写满 4 字节 VLQ 上限（0x0FFFFFFF）：18 个 delta 累到 4.83e9，
+// 32 位 long 会在第 9 个 delta 之后翻负。负 tick 躲过「tick >= cap」这道
+// 单侧闸，网页版曾把 4 个幽灵音（tick ≈ -1.88e9）画进谱面，两段之间
+// 5 亿 tick 的空档被铺成一整行 670 万字符的横线。
+{
+  const bodyU = [];
+  for (let i = 0; i < 9; i++) {
+    bodyU.push(0xff, 0xff, 0xff, 0x7f, 0x90, 60 + i, 0x64);   // delta, note-on
+    bodyU.push(0xff, 0xff, 0xff, 0x7f, 0x80, 60 + i, 0x00);   // delta, note-off
+  }
+  bodyU.push(0x00, 0xff, 0x2f, 0x00);                          // EOT
+  const hb = new Uint8Array(bodyU);
+  const hchunk = new Uint8Array(8 + hb.length);
+  hchunk.set([0x4d, 0x54, 0x72, 0x6b], 0);                     // "MTrk"
+  new DataView(hchunk.buffer).setUint32(4, hb.length);
+  hchunk.set(hb, 8);
+
+  const huge = new Uint8Array(14 + hchunk.length);
+  huge.set([0x4d, 0x54, 0x68, 0x64], 0);                       // "MThd"
+  const hh = new DataView(huge.buffer, 4, 10);
+  hh.setUint32(0, 6);
+  hh.setUint16(4, 1);            // format 1
+  hh.setUint16(6, 1);            // 1 条轨
+  hh.setUint16(8, 480);          // division
+  huge.set(hchunk, 14);
+
+  const phHuge = mod._malloc(huge.length);
+  mod.HEAPU8.set(huge, phHuge);
+  const tlHuge = JSON.parse(
+    mod.UTF8ToString(mod._midi2jianpu_track_list(phHuge, huge.length)));
+  mod._free(phHuge);
+  check(tlHuge.length === 1 && tlHuge[0].notes === 0,
+    '9 个巨额 delta 的音一个都不进谱（旧实现漏出 4 个 tick 为负的幽灵音）',
+    JSON.stringify(tlHuge.map((t) => t.notes)));
+
+  const cHuge = makeCaller(mod);
+  cHuge.setMidi(huge);
+  const txtHuge = cHuge.call('midi2jianpu_parse', -1, 1) || '';
+  // 网页版没有音符时返回那句短提示（CLI 走 stderr，网页走返回值）
+  check(txtHuge.length < 100 && /未提取到音符/.test(txtHuge),
+    '网页谱面只回一句「未提取到音符」，不吐那行 670 万字符的横线',
+    txtHuge.slice(0, 80));
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

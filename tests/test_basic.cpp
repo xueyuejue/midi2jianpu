@@ -8827,6 +8827,92 @@ int main() {
         check(dsel.trackCount == 3,
               "按轨隔离时 trackCount 仍是全文件的真实块数，不被过滤成 1");
     }
+
+    // ---- v1.125.0 delta-time 累加饱和 ----
+    //
+    // SMF 的 delta-time 上限是 4 字节 VLQ（0x0FFFFFFF）。解析循环旧写法
+    // `absTick += (long)delta` 在 32 位 long 上累 18 次就跨过 2^31 翻负；
+    // 负 tick 恰好躲过「tick >= cap」这道单侧闸，两个负 tick 之间 5 亿 tick
+    // 的空档被输出层铺成一整行 670 万字符的横线。现在累加饱和到 cap。
+    // 这些样本一律手工拼字节：buildSmf() 的 tick 是 long，在 64 位平台上
+    // 根本表达不出「32 位翻负」这件事，也就抓不到这个缺陷。
+    std::cout << "\n测试 delta-time 累加饱和（v1.125）\n";
+    {
+        auto pushHuge = [](std::vector<uint8_t>& b) {
+            b.push_back(0xFF); b.push_back(0xFF);
+            b.push_back(0xFF); b.push_back(0x7F);   // VLQ(0x0FFFFFFF)
+        };
+        // 拼一条「每条事件前都写满 4 字节 VLQ 上限」的单轨 SMF。
+        // prefix 是轨首两对正常音（第二段测试要用），0 就纯坏文件。
+        auto hugeDeltaSmf = [&pushHuge](int nNotes, bool warmUp) {
+            std::vector<uint8_t> body;
+            if (warmUp) {
+                body.push_back(0x00); body.push_back(0x90); body.push_back(0x3C); body.push_back(100);
+                putVlq(body, 480);    body.push_back(0x80); body.push_back(0x3C); body.push_back(0);
+                body.push_back(0x00); body.push_back(0x90); body.push_back(0x3E); body.push_back(100);
+                putVlq(body, 480);    body.push_back(0x80); body.push_back(0x3E); body.push_back(0);
+            }
+            for (int i = 0; i < nNotes; i++) {
+                pushHuge(body);
+                body.push_back(0x90); body.push_back((uint8_t)(64 + i)); body.push_back(100);
+                pushHuge(body);
+                body.push_back(0x80); body.push_back((uint8_t)(64 + i)); body.push_back(0);
+            }
+            body.push_back(0x00);
+            body.push_back(0xFF); body.push_back(0x2F); body.push_back(0x00);
+
+            std::vector<uint8_t> out;
+            const char hdr[] = {'M','T','h','d'};
+            out.insert(out.end(), hdr, hdr + 4);
+            put32(out, 6);
+            put16(out, 1); put16(out, 1); put16(out, 480);
+            const char trk[] = {'M','T','r','k'};
+            out.insert(out.end(), trk, trk + 4);
+            put32(out, (uint32_t)body.size());
+            out.insert(out.end(), body.begin(), body.end());
+            return out;
+        };
+
+        // 1) 纯坏文件：每个音都落在 512 小节之外，多写几个 delta 不能
+        //    「复活」任何一个音。旧实现在第 9 个 delta 之后翻负，谱里反而
+        //    多出 4 个幽灵音（tick 是 -1879048200 这类负数）。
+        const long kCap = 512L * 1920L;
+        for (int n : {1, 2, 4, 5, 9}) {
+            auto bytes = hugeDeltaSmf(n, false);
+            MidiData d;
+            check(loadMidiFromMemory(bytes.data(), bytes.size(), d),
+                  "巨额 delta 的 SMF 仍能解析（" + std::to_string(n) + " 个音）");
+            check(d.notes.empty(),
+                  "越界音一个都不留在谱里（" + std::to_string(n) + " 个音）, 实际: " +
+                  std::to_string(d.notes.size()));
+            check(d.timelineClamped == n,
+                  "每个越界音各计一次截断（" + std::to_string(n) + " 个音）, 实际: " +
+                  std::to_string(d.timelineClamped));
+        }
+
+        // 2) 前半正常、后半全是巨额 delta：正常音照常出谱，越界音照常丢弃。
+        //    旧版页眉写「已截断 9 个越界音符」却又「共提取 4 个音符」，
+        //    那 4 个正是翻负后的幽灵音——两个数加起来并不等于事件数。
+        auto mixed = hugeDeltaSmf(9, true);
+        MidiData dm;
+        check(loadMidiFromMemory(mixed.data(), mixed.size(), dm),
+              "前正常后越界的 SMF 解析成功");
+        check(dm.notes.size() == 2,
+              "只有开头两个正常音出谱, 实际: " + std::to_string(dm.notes.size()));
+        check(dm.timelineClamped == 9,
+              "9 个越界音各计一次, 实际: " + std::to_string(dm.timelineClamped));
+        bool anyNegative = false, anyBeyondCap = false;
+        long maxEnd = 0;
+        for (const auto& n : dm.notes) {
+            if (n.startTicks < 0) anyNegative = true;
+            if (n.startTicks >= kCap) anyBeyondCap = true;
+            maxEnd = std::max(maxEnd, n.startTicks + n.durationTicks);
+        }
+        check(!anyNegative, "谱面里没有任何负 tick 的音（旧版有 4 个）");
+        check(!anyBeyondCap, "谱面里没有任何越过 512 小节的音");
+        check(maxEnd <= kCap,
+              "谱面末端收在 512 小节内, 实际: " + std::to_string(maxEnd));
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";
