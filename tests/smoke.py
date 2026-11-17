@@ -5328,6 +5328,63 @@ def main():
           "MusicXML sound tempo / per-minute / 文本谱三者速度一致",
           "sound=%d per-minute=%d text=%d" % (xbpm_sound, xbpm, txt_bpm))
 
+    group("[127] v1.131.0 CC121 Reset All Controllers 释放踏板")
+
+    def _vlq127(n):
+        out = [n & 0x7F]
+        n >>= 7
+        while n:
+            out.insert(0, (n & 0x7F) | 0x80)
+            n >>= 7
+        return bytes(out)
+
+    # 踩下延音踏板 -> 音 A 抬键 -> 释放(CC121 或 CC64=0) -> 尾部音 B 撑 maxTick。
+    # 修复前 CC121 被跳过，A 延到曲尾；修复后与 CC64=0 一样在释放点收束。
+    def _pedal_mid(release_cc):
+        evs = [
+            b"\x00\xb0\x40\x7f",                    # tick 0 踏板踩下
+            b"\x00\x90\x3c\x64",                    # tick 0 音 A 起
+            _vlq127(240) + b"\x80\x3c\x00",         # 音 A 抬键
+            _vlq127(960) + release_cc,              # 释放点（绝对 tick 1200）
+            _vlq127(240) + b"\x90\x3e\x64",         # 音 B 起
+            _vlq127(240) + b"\x80\x3e\x00",         # 音 B 抬键
+            b"\x00\xff\x2f\x00",
+        ]
+        return b"MThd" + struct.pack(">IHHH", 6, 0, 1, 480) + _trk(evs)
+
+    mid121 = os.path.join(tmp, "cc121_pedal.mid")
+    mid64 = os.path.join(tmp, "cc64_pedal.mid")
+    with open(mid121, "wb") as f:
+        f.write(_pedal_mid(b"\xb0\x79\x00"))        # CC121
+    with open(mid64, "wb") as f:
+        f.write(_pedal_mid(b"\xb0\x40\x00"))        # CC64=0
+
+    def _play_notes(mid, html):
+        rc, out, err = run(exe, mid, "--html", html, "--player")
+        if not (rc == 0 and os.path.exists(html)):
+            return rc, out, err, []
+        h = open(html, encoding="utf-8").read()
+        pm = re.search(r"var M2J_PLAY = (\{.*?\});\r?\n", h, re.S)
+        play = json.loads(pm.group(1)) if pm else {}
+        return rc, out, err, play.get("notes") or []
+
+    ph121 = os.path.join(tmp, "cc121.html")
+    ph64 = os.path.join(tmp, "cc64.html")
+    rc_a, out_a, err_a, n121 = _play_notes(mid121, ph121)
+    rc_b, out_b, err_b, n64 = _play_notes(mid64, ph64)
+    check(rc_a == 0 and rc_b == 0 and len(n121) == 2 and len(n64) == 2,
+          "CC121 与 CC64=0 两样本都正常出谱（各 2 音）",
+          "rc=%d/%d" % (rc_a, rc_b))
+    a_dur = n121[0][1] if n121 else -1
+    b_dur = n64[0][1] if n64 else -1
+    # 旧版 CC121 被跳过时音 A 会拖到曲尾（maxTick=1680）；修复后与 CC64=0
+    # 同为 960 tick（PLAY 的量化口径），关键是两者相等且明显未拖到曲尾。
+    check(a_dur == b_dur and 0 < a_dur < 1680,
+          "CC121 释放的音 A 时长与 CC64=0 一致，且未被拖到曲尾 1680",
+          "cc121=%d cc64=%d" % (a_dur, b_dur))
+    check("延音踏板：补长 1 个音（2 个踏板事件）" in open(ph121, encoding="utf-8").read(),
+          "CC121 释放后诊断文字与标准踏板抬起同口径", err_a[:160])
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

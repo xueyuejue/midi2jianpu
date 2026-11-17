@@ -2922,6 +2922,65 @@ int main() {
               "踏板写在别的轨上也能补时值（按 tick 而非按轨顺序）");
     }
 
+    // ---- 控制器语义：CC121 Reset All Controllers 释放三种踏板（v1.131.0）----
+    {
+        std::cout << "\n测试控制器语义：CC121 复位踏板\n";
+        // 踩下延音踏板 -> 音 A 抬键 -> CC121 应释放踏板 -> 尾部音 B 撑住 maxTick。
+        // 修复前 CC121 被跳过，A 一路延到曲尾（maxTick）；修复后与标准 CC64=0
+        // 一样在 CC121 的 tick 1200 收束（时长 1200 tick）。
+        auto buildRelease = [](bool useCc121) {
+            SmfTrack t;
+            t.at(0, ev({0xB0, 0x40, 127}));       // 延音踏板踩下
+            t.at(0, ev({0x90, 60, 96}));          // 音 A 起
+            t.at(240, ev({0x80, 60, 0x40}));      // 音 A 抬键（踏板仍踩着）
+            if (useCc121) t.at(1200, ev({0xB0, 0x79, 0}));   // CC121 复位
+            else          t.at(1200, ev({0xB0, 0x40, 0}));   // 标准 CC64=0
+            t.at(1440, ev({0x90, 62, 96}));       // 音 B 起（撑 maxTick）
+            t.at(1680, ev({0x80, 62, 0x40}));     // 音 B 抬键
+            auto bytes = buildSmf(1, 480, {t});
+            MidiData d;
+            loadMidiFromMemory(bytes.data(), bytes.size(), d);
+            return d;
+        };
+        MidiData d121 = buildRelease(true);
+        MidiData d64 = buildRelease(false);
+        check(d121.notes.size() == 2 && d64.notes.size() == 2,
+              "两种释放方式都解析出 2 个音");
+        check(d121.notes[0].durationTicks == 1200 &&
+              d121.notes[0].durationTicks == d64.notes[0].durationTicks,
+              "CC121 释放的音符在正确 tick 收束（1200），与 CC64=0 一致，实际: " +
+                  std::to_string(d121.notes[0].durationTicks));
+        check(d121.pedalEvents == 2 && d121.pedalExtendedNotes == 1,
+              "CC121 注入抬起后记下 2 个踏板事件 / 补长 1 个音，实际: " +
+                  std::to_string(d121.pedalEvents) + " / " +
+                  std::to_string(d121.pedalExtendedNotes));
+        check(controllerLabel(d121).find("延音踏板：补长 1 个音") != std::string::npos,
+              "CC121 释放的控制器提示与标准 CC64=0 同口径");
+
+        // 通道隔离：通道 0 踩踏板不释放、通道 1 用 CC121 释放，
+        // 只有通道 1 的音被收束，通道 0 仍延到曲尾。
+        SmfTrack two;
+        two.at(0, ev({0xB0, 0x40, 127}));       // 通道 0 踩
+        two.at(0, ev({0x90, 60, 96}));          // 通道 0 音 A
+        two.at(240, ev({0x80, 60, 0x40}));
+        two.at(480, ev({0xB1, 0x40, 127}));     // 通道 1 踩
+        two.at(480, ev({0x91, 62, 96}));        // 通道 1 音 B
+        two.at(720, ev({0x81, 62, 0x40}));
+        two.at(1200, ev({0xB1, 0x79, 0}));      // 只复位通道 1
+        two.at(1440, ev({0x90, 64, 96}));       // 通道 0 尾部音撑 maxTick
+        two.at(1680, ev({0x80, 64, 0x40}));
+        auto b2 = buildSmf(1, 480, {two});
+        MidiData d2;
+        loadMidiFromMemory(b2.data(), b2.size(), d2);
+        bool ch0Long = false, ch1Short = false;
+        for (const auto& n : d2.notes) {
+            if (n.pitch == 60 && n.durationTicks > 1000) ch0Long = true;
+            if (n.pitch == 62 && n.durationTicks == 720) ch1Short = true;
+        }
+        check(ch0Long && ch1Short,
+              "CC121 只释放本通道踏板，未踩 CC121 的通道音符仍延长");
+    }
+
     // ---- 控制器语义：踏板按通道隔离 ----
     {
         std::cout << "\n测试控制器语义：踏板按通道隔离\n";

@@ -282,6 +282,7 @@ static PedalRangeMap buildPedalRanges(const std::vector<PedalPoint>& src,
 //   CC66 持音踏板：只保持踩下那一刻正按着的键，之后新弹的音不受影响；
 //   CC67 软踏板：踩下期间起音的音符力度衰减，不动时值、不动 CC11/CC7 力度表；
 //   CC120/123：强制清音，某些导出器拿它代替 note-off；
+//   CC121：复位所有控制器，三个踏板都要抬起（解析层已按通道注入 value=0）；
 //   CC7：主音量，与 CC11 一样是渐强渐弱的来源。
 // 全部轨解析完之后才做：踏板事件可能写在另一条轨上，按轨顺序处理会读成
 // 「先处理轨 0 的所有未来事件，再处理轨 1 的过去事件」。
@@ -1358,6 +1359,17 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                         softPedalEvents.push_back({absTick, (int)channel, (int)val, ctrlSeq++});
                     } else if (ctrl == 0x78u || ctrl == 0x7Bu) {  // All Sound/Notes Off
                         allOffEvents.push_back({absTick, (int)channel, ctrlSeq++});
+                    } else if (ctrl == 0x79u) {  // CC121 Reset All Controllers
+                        // 规范：CC121 把所有控制器复位，其中 CC64/66/67 三个踏板
+                        // 都要回到「抬起」(0)。旧实现把它当普通控制器跳过，踩下的
+                        // 踏板永远等不到抬起事件，音符被一路延到曲尾——同样素材
+                        // CC121 释放比标准 CC64=0 释放长 4 倍（探针实测）。
+                        // 往三条踏板流各注入一个 value=0 点，复用 buildPedalRanges
+                        // 的迟滞判定与区间配对；同一 tick 的先后由共享 ctrlSeq 定序。
+                        // 表情 / 音量 / 弯音复位不改变简谱的时值判定，本轮不引入。
+                        pedalEvents.push_back({absTick, (int)channel, 0, ctrlSeq++});
+                        sostenutoEvents.push_back({absTick, (int)channel, 0, ctrlSeq++});
+                        softPedalEvents.push_back({absTick, (int)channel, 0, ctrlSeq++});
                     }
                 }
                 // CC0 Bank MSB / CC32 Bank LSB：XG 用 MSB 127 指定鼓组，
