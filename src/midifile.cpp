@@ -25,13 +25,23 @@ static uint32_t rd32(const uint8_t* p) {
 }
 
 // 可变长度值解码，pos 会被推进
-static uint32_t readVarLen(const uint8_t* data, size_t size, size_t& pos) {
+// SMF 规范：VLQ 最多 4 字节（28 位，上限 0x0FFFFFFF）。旧实现 while 一路
+// 吃、value 在 uint32 上回绕，5+ 字节的非法 VLQ 被静默接受成另一个值：
+// delta 回绕成小值就凭空造出一个假音符（rc=0 正常出谱），meta / SysEx
+// 长度回绕就吞掉真实事件字节，页面上只留一句「未提取到音符」。现在
+// 4 字节封顶，越界时 *ok = false，由调用方按损坏事件计数并停在本轨。
+static uint32_t readVarLen(const uint8_t* data, size_t size, size_t& pos,
+                           bool* ok = nullptr) {
     uint32_t value = 0;
-    while (pos < size) {
+    for (int i = 0; i < 4 && pos < size; ++i) {
         uint8_t b = data[pos++];
         value = (value << 7) | (b & 0x7Fu);
-        if (!(b & 0x80u)) break;
+        if (!(b & 0x80u)) {
+            if (ok) *ok = true;
+            return value;
+        }
     }
+    if (ok) *ok = false;  // 4 字节仍在继续，或半途被轨末截断
     return value;
 }
 
@@ -1135,7 +1145,11 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
         uint8_t lastChannelStatus = 0;
 
         while (pos < hardEnd) {
-            uint32_t delta = readVarLen(d, hardEnd, pos);
+            bool vlqOk = false;
+            uint32_t delta = readVarLen(d, hardEnd, pos, &vlqOk);
+            // 超过 4 字节的 VLQ 是非法文件：真实值早已回绕，继续解析只会
+            // 凭空造音符或吞字节，按损坏事件计数并停在本轨。
+            if (!vlqOk) { out.truncatedEvents++; break; }
             absTick = (long)std::min<long long>((long long)absTick + (long long)delta,
                                                (long long)tickCeil);
             // VLQ 本身可能一路吃到文件末尾；不挡住的话 b = d[pos] 就越界。
@@ -1240,7 +1254,10 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
             } else if (status == 0xFFu) {
                 if (pos >= hardEnd) break;
                 uint8_t metaType = d[pos++];
-                uint32_t metaLen = readVarLen(d, hardEnd, pos);
+                bool vlqOk = false;
+                uint32_t metaLen = readVarLen(d, hardEnd, pos, &vlqOk);
+                // 长度 VLQ 超过 4 字节同样非法：回绕值不可信，停在本轨。
+                if (!vlqOk) { out.truncatedEvents++; break; }
                 // 越界保护：损坏文件里 meta 长度可能超出轨道范围。
                 // 整份文件已被截断时（trkEnd > size）这条事件本身就是残骸：
                 // 夹紧后把残字节当歌词读会多出乱码音节，直接丢弃并停在本轨。
@@ -1389,7 +1406,10 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                 // SysEx：按长度整体跳过，否则会把后续事件错位解析。
                 // 但 GS/XG 的「Use for Rhythm Part / Part Mode」与 GM/GS/XG
                 // Reset 就藏在这些字节里，先看一眼再跳。
-                uint32_t sxLen = readVarLen(d, hardEnd, pos);
+                bool vlqOk = false;
+                uint32_t sxLen = readVarLen(d, hardEnd, pos, &vlqOk);
+                // 长度 VLQ 超过 4 字节同样非法：回绕值不可信，停在本轨。
+                if (!vlqOk) { out.truncatedEvents++; break; }
                 // hardEnd 已提到轨级（原先只有 SysEx 分支自己夹了一次），
                 // meta / 通道消息现在同样不会越过 buffer 末尾。
                 if (pos + sxLen > hardEnd) {

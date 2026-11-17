@@ -5090,6 +5090,74 @@ def main():
     check(rc == 0 and 0 < xsize < 20 * 1024,
           "MusicXML %d 字节" % xsize, err[:200])
 
+    # SMF 规范：VLQ 最多 4 字节（28 位）。旧实现 while 一路吃、uint32 回绕：
+    # 5 字节 VLQ 的真实 35 位值 0x1_0000_0005 被悄悄当成 5——delta 回绕成
+    # 小值就凭空造音符（rc=0 正常出谱），meta / SysEx 长度回绕就吞掉真实
+    # 事件字节，轨名变成二进制垃圾。现在 4 字节封顶，越界计损坏事件。
+    group("[123] v1.126.0 VLQ 超过 4 字节：非法值不再回绕成合法时间")
+
+    WRAP5 = b"\x90\x80\x80\x80\x05"    # 35 位 0x1_0000_0005，旧实现回绕成 5
+
+    def _wrap5_smf(tail):
+        evs = [b"\x00\x90\x3c\x64", _vlq(480) + b"\x80\x3c\x00"]
+        evs += tail + [b"\x00\xff\x2f\x00"]
+        return b"MThd" + struct.pack(">IHHH", 6, 1, 1, 480) + _trk(evs)
+
+    # delta 回绕：基线 v1.125.0 实测「2 音符」且零诊断。
+    d1 = os.path.join(tmp, "vlq_delta_wrap.mid")
+    with open(d1, "wb") as f:
+        f.write(_wrap5_smf([WRAP5 + b"\x90\x3e\x64"]))
+    rc, out, err = run(exe, d1)
+    check(rc == 0 and "共提取 1 个音符" in out,
+          "非法 VLQ 之后的假音符不再出谱（旧实现凭空 2 个音符）",
+          "rc=%d %s" % (rc, out.splitlines()[:4]))
+    check("丢弃 1 个不完整事件" in out,
+          "页眉如实计一次损坏事件", out.splitlines()[:3])
+
+    # meta 长度回绕：旧实现轨名吞掉 note-on 头两字节，轨名变二进制垃圾。
+    m1 = os.path.join(tmp, "vlq_meta_wrap.mid")
+    with open(m1, "wb") as f:
+        f.write(_wrap5_smf([b"\x00\xff\x03", WRAP5, b"\x90\x3c\x64"]))
+    rc, out, err = run(exe, m1)
+    check(rc == 0 and "共提取 1 个音符" in out,
+          "回绕的 meta 长度不再吞真实事件字节",
+          "rc=%d %s" % (rc, out.splitlines()[:4]))
+    check("\x90" not in out and "[旋律轨]" in out,
+          "轨名不再混进事件字节（旧实现轨名是二进制垃圾）",
+          out.splitlines()[:6])
+
+    # SysEx 长度回绕：同样停在本轨并计数。
+    s1 = os.path.join(tmp, "vlq_sysex_wrap.mid")
+    with open(s1, "wb") as f:
+        f.write(_wrap5_smf([b"\x00\xf0", WRAP5,
+                            b"\x7e\x7f\x09\xf7"]))
+    rc, out, err = run(exe, s1)
+    check(rc == 0 and "共提取 1 个音符" in out and "丢弃 1 个不完整事件" in out,
+          "SysEx 长度 VLQ 越界停轨并计数",
+          "rc=%d %s" % (rc, out.splitlines()[:4]))
+
+    # 对照：4 字节前导零 VLQ 仍是合法编码，一个字节都不能误伤。
+    l1 = os.path.join(tmp, "vlq_legal4.mid")
+    with open(l1, "wb") as f:
+        f.write(_wrap5_smf([b"\x00\xff\x03", b"\x80\x80\x80\x05",
+                            b"hello"]))
+    rc, out, err = run(exe, l1)
+    check(rc == 0 and "[hello]" in out and "丢弃" not in out,
+          "4 字节 VLQ 照常解析，轨名原样读出，零损坏计数",
+          out.splitlines()[:6])
+
+    # VLQ 半途被轨末截断（轨尾没有 EOT 兜底）：照旧计一次损坏事件
+    # （旧实现靠「pos 越过轨尾」兜底，新实现从 ok 出参计数，行为一致）。
+    t1 = os.path.join(tmp, "vlq_mid_trunc.mid")
+    evs_t = [b"\x00\x90\x3c\x64", _vlq(480) + b"\x80\x3c\x00",
+             b"\x80\x80"]                     # delta 只写一半，无 EOT
+    with open(t1, "wb") as f:
+        f.write(b"MThd" + struct.pack(">IHHH", 6, 1, 1, 480) + _trk(evs_t))
+    rc, out, err = run(exe, t1)
+    check(rc == 0 and "共提取 1 个音符" in out and "丢弃 1 个不完整事件" in out,
+          "半途截断的 VLQ 照旧计一次损坏事件",
+          "rc=%d %s" % (rc, out.splitlines()[:4]))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

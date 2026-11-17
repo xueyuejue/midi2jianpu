@@ -3,3 +3,8 @@
 # 这里只固定脚本类文件，其余源码沿用各平台默认行尾，不做全库重新归一化。
 .githooks/* text eol=lf
 *.sh        text eol=lf
+
+# WASM 产物按字节原样入库：core.autocrlf=true 会把工作区里偶尔出现的
+# CRLF 归一成 LF 存进索引，Pages 部署的 .js 就和本地测试的差 2 字节，
+# 核对部署哈希时极易误判成「没部署」。.wasm 本来就不做行尾归一化。
+docs/wasm/*.js -text

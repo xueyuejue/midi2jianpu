@@ -3030,6 +3030,51 @@ if (existsSync(twoLyrics76)) {
     txtHuge.slice(0, 80));
 }
 
+// ---- 86. v1.126.0 VLQ 最多 4 字节 ----
+// SMF 规范：VLQ 上限 4 字节。旧实现 while 一路吃、uint32 回绕：5 字节
+// VLQ 的真实 35 位值 0x1_0000_0005 被悄悄当成 5，delta 回绕成小值就
+// 凭空造音符（网页谱面多出一个音、零诊断）。现在 4 字节封顶，越界
+// 按损坏事件计数并停在本轨。
+{
+  const bodyU = [
+    0x00, 0x90, 0x3c, 0x64,                       // note-on 60
+    0x83, 0x60, 0x80, 0x3c, 0x00,                 // delta 480, note-off
+    0x90, 0x80, 0x80, 0x80, 0x05,                 // 5 字节 VLQ（非法，回绕成 5）
+    0x90, 0x3e, 0x64,                             // 旧实现凭空多出的音
+    0x00, 0xff, 0x2f, 0x00,                       // EOT
+  ];
+  const hb = new Uint8Array(bodyU);
+  const chunk = new Uint8Array(8 + hb.length);
+  chunk.set([0x4d, 0x54, 0x72, 0x6b], 0);         // "MTrk"
+  new DataView(chunk.buffer).setUint32(4, hb.length);
+  chunk.set(hb, 8);
+
+  const mid = new Uint8Array(14 + chunk.length);
+  mid.set([0x4d, 0x54, 0x68, 0x64], 0);           // "MThd"
+  const mh = new DataView(mid.buffer, 4, 10);
+  mh.setUint32(0, 6);
+  mh.setUint16(4, 1);                             // format 1
+  mh.setUint16(6, 1);                             // 1 条轨
+  mh.setUint16(8, 480);                           // division
+  mid.set(chunk, 14);
+
+  const ph = mod._malloc(mid.length);
+  mod.HEAPU8.set(mid, ph);
+  const tl = JSON.parse(
+    mod.UTF8ToString(mod._midi2jianpu_track_list(ph, mid.length)));
+  mod._free(ph);
+  check(tl.length === 1 && tl[0].notes === 1,
+    '非法 5 字节 VLQ 之后的假音符不再进谱（旧实现 2 个音）',
+    JSON.stringify(tl.map((t) => t.notes)));
+
+  const c = makeCaller(mod);
+  c.setMidi(mid);
+  const txt = c.call('midi2jianpu_parse', -1, 1) || '';
+  check(/\(1 音符\)/.test(txt) && !/\(2 音符\)/.test(txt),
+    '网页谱面只有真实的那 1 个音',
+    txt.slice(0, 60));
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

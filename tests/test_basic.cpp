@@ -8913,6 +8913,141 @@ int main() {
         check(maxEnd <= kCap,
               "谱面末端收在 512 小节内, 实际: " + std::to_string(maxEnd));
     }
+
+    // ---- v1.126.0 VLQ 最多 4 字节 ----
+    //
+    // SMF 规范：VLQ 上限 4 字节（28 位，0x0FFFFFFF）。旧实现 while 一路吃、
+    // uint32 回绕：5 字节 VLQ 的真实 35 位值 0x1_0000_0005 被悄悄当成 5。
+    // delta 回绕成小值就凭空造音符（rc=0 正常出谱），meta / SysEx 长度回绕
+    // 就吞掉真实事件字节。现在 4 字节封顶，越界按损坏事件计数并停在本轨。
+    std::cout << "\n测试 VLQ 四字节上限（v1.126）\n";
+    {
+        auto rawSmf = [](const std::vector<uint8_t>& body) {
+            std::vector<uint8_t> out;
+            const char hdr[] = {'M','T','h','d'};
+            out.insert(out.end(), hdr, hdr + 4);
+            put32(out, 6);
+            put16(out, 1); put16(out, 1); put16(out, 480);
+            const char trk[] = {'M','T','r','k'};
+            out.insert(out.end(), trk, trk + 4);
+            put32(out, (uint32_t)body.size());
+            out.insert(out.end(), body.begin(), body.end());
+            return out;
+        };
+        auto pushWrap5 = [](std::vector<uint8_t>& b) {
+            // 5 字节 VLQ：35 位真实值 0x1_0000_0005，旧实现回绕成 5。
+            b.push_back(0x90); b.push_back(0x80);
+            b.push_back(0x80); b.push_back(0x80); b.push_back(0x05);
+        };
+        std::vector<uint8_t> goodNote;
+        goodNote.push_back(0x00); goodNote.push_back(0x90);
+        goodNote.push_back(0x3C); goodNote.push_back(100);
+        putVlq(goodNote, 480);
+        goodNote.push_back(0x80); goodNote.push_back(0x3C);
+        goodNote.push_back(0x00);
+        auto endMeta = [](std::vector<uint8_t>& b) {
+            b.push_back(0x00); b.push_back(0xFF);
+            b.push_back(0x2F); b.push_back(0x00);
+        };
+
+        // 1) delta 用回绕 VLQ：旧实现把非法文件当正常文件，凭空多出一个音
+        //    （基线 v1.125.0 实测报「2 音符」且零诊断）。
+        {
+            std::vector<uint8_t> body = goodNote;
+            pushWrap5(body);
+            body.push_back(0x90); body.push_back(0x3E); body.push_back(100);
+            endMeta(body);
+            auto bytes = rawSmf(body);
+            MidiData d;
+            check(loadMidiFromMemory(bytes.data(), bytes.size(), d),
+                  "delta 用 5 字节 VLQ 的 SMF 仍能解析（不崩）");
+            check(d.notes.size() == 1,
+                  "非法 VLQ 之后的假音符不再出谱, 实际: " +
+                  std::to_string(d.notes.size()));
+            check(d.truncatedEvents == 1,
+                  "非法 VLQ 按损坏事件计数, 实际: " +
+                  std::to_string(d.truncatedEvents));
+        }
+
+        // 2) meta 长度用回绕 VLQ：旧实现轨名吞掉 note-on 头两字节、把数据
+        //    字节当音符，轨名变成二进制垃圾（基线实测「\x90<d\xff」）。
+        {
+            std::vector<uint8_t> body = goodNote;
+            body.push_back(0x00); body.push_back(0xFF); body.push_back(0x03);
+            pushWrap5(body);
+            body.push_back(0x90); body.push_back(0x3C); body.push_back(100);
+            endMeta(body);
+            auto bytes = rawSmf(body);
+            MidiData d;
+            check(loadMidiFromMemory(bytes.data(), bytes.size(), d),
+                  "meta 长度用 5 字节 VLQ 的 SMF 仍能解析（不崩）");
+            check(d.notes.size() == 1,
+                  "回绕的 meta 长度不再吞真实事件字节, 实际: " +
+                  std::to_string(d.notes.size()));
+            check(d.truncatedEvents == 1,
+                  "meta 长度 VLQ 越界按损坏事件计数, 实际: " +
+                  std::to_string(d.truncatedEvents));
+            const auto sums = trackSummaries(d);
+            // 默认轨名是空串（「旋律轨」是 CLI 展示层补的），关键是不混进事件字节。
+            check(sums.size() == 1 && sums[0].name.empty(),
+                  "轨名不再混进事件字节, 实际: '" + sums[0].name + "'");
+        }
+
+        // 3) SysEx 长度用回绕 VLQ：同样停在本轨并计数。
+        {
+            std::vector<uint8_t> body = goodNote;
+            body.push_back(0x00); body.push_back(0xF0);
+            pushWrap5(body);
+            body.push_back(0x7E); body.push_back(0x7F);
+            body.push_back(0x09); body.push_back(0xF7);
+            endMeta(body);
+            auto bytes = rawSmf(body);
+            MidiData d;
+            check(loadMidiFromMemory(bytes.data(), bytes.size(), d),
+                  "SysEx 长度用 5 字节 VLQ 的 SMF 仍能解析（不崩）");
+            check(d.notes.size() == 1 && d.truncatedEvents == 1,
+                  "SysEx 长度 VLQ 越界停轨并计数, 实际: " +
+                  std::to_string(d.notes.size()) + " 音 " +
+                  std::to_string(d.truncatedEvents) + " 损坏");
+        }
+
+        // 4) 对照：4 字节（含前导零组）仍是合法 VLQ，一个字节都不能误伤。
+        {
+            std::vector<uint8_t> body = goodNote;
+            body.push_back(0x00); body.push_back(0xFF); body.push_back(0x03);
+            body.push_back(0x80); body.push_back(0x80);
+            body.push_back(0x80); body.push_back(0x05);   // VLQ(5)，4 字节
+            const char name5[] = {'h','e','l','l','o'};
+            body.insert(body.end(), name5, name5 + 5);
+            endMeta(body);
+            auto bytes = rawSmf(body);
+            MidiData d;
+            check(loadMidiFromMemory(bytes.data(), bytes.size(), d),
+                  "4 字节前导零 VLQ 仍是合法编码");
+            check(d.notes.size() == 1 && d.truncatedEvents == 0,
+                  "4 字节 VLQ 照常解析且零损坏计数, 实际: " +
+                  std::to_string(d.notes.size()) + " 音 " +
+                  std::to_string(d.truncatedEvents) + " 损坏");
+            const auto sums = trackSummaries(d);
+            check(sums.size() == 1 && sums[0].name == "hello",
+                  "4 字节 VLQ 的轨名原样读出, 实际: '" + sums[0].name + "'");
+        }
+
+        // 5) VLQ 半途被轨末截断：旧实现靠「pos 越过轨尾」兜底计数，新实现
+        //    从 readVarLen 的 ok 出参计数，行为保持一致。
+        {
+            std::vector<uint8_t> body = goodNote;
+            body.push_back(0x80); body.push_back(0x80);   // delta 只写一半
+            auto bytes = rawSmf(body);
+            MidiData d;
+            check(loadMidiFromMemory(bytes.data(), bytes.size(), d),
+                  "VLQ 半途截断的 SMF 仍能解析（不崩）");
+            check(d.notes.size() == 1 && d.truncatedEvents == 1,
+                  "半途截断的 VLQ 照旧计一次损坏事件, 实际: " +
+                  std::to_string(d.notes.size()) + " 音 " +
+                  std::to_string(d.truncatedEvents) + " 损坏");
+        }
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";
