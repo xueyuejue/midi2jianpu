@@ -104,11 +104,40 @@ def load_make_fixture():
     return mod
 
 
+# 带参 builder：名字 -> 模块内 spec 常量名列表。
+# 这些 builder 不能用 fn() 无参调用——旧版 collect_seeds() 一律无参调用，
+# 于是 build_legacy_encoding(spec) 抛 TypeError、只留一行 [skip]，3 份旧编码
+# 素材（GBK/SJIS/UTF8）从未进过 fuzz。在这里显式登记，逐个 spec 展开成
+# 具名种子；新增带参 builder 时必须同时登记，self_test 会守住这一点。
+BUILDER_SPECS = {
+    "build_legacy_encoding": ("LEGACY_GBK", "LEGACY_SJIS", "LEGACY_UTF8"),
+}
+
+
 def collect_seeds(mod):
-    """收集所有 build_xxx() 返回的原始 MIDI 字节，过滤掉 LRC/非字节产物。"""
+    """收集所有 build_xxx() 返回的原始 MIDI 字节，过滤掉 LRC/非字节产物。
+
+    无参 builder 直接调用；带参 builder 按 BUILDER_SPECS 登记的每个 spec
+    展开成「build_xxx_spec名」的独立种子（spec 名去掉 LEGACY_ 前缀转小写）。
+    """
     seeds = {}
     for name, fn in inspect.getmembers(mod, inspect.isfunction):
         if not name.startswith("build_"):
+            continue
+        if name in BUILDER_SPECS:
+            for spec_name in BUILDER_SPECS[name]:
+                if not hasattr(mod, spec_name):
+                    raise SystemExit(
+                        f"builder {name} 登记的 spec 常量 {spec_name} 不存在于 make_fixture")
+                spec = getattr(mod, spec_name)
+                try:
+                    data = fn(spec)
+                except Exception as e:
+                    raise SystemExit(f"带参 builder {name}({spec_name}) 构建失败: {e}")
+                if not (isinstance(data, (bytes, bytearray)) and data[:4] == b"MThd"):
+                    raise SystemExit(f"带参 builder {name}({spec_name}) 未产出 MThd")
+                suffix = spec_name.lower().replace("legacy_", "")
+                seeds[f"{name}_{suffix}"] = bytes(data)
             continue
         try:
             data = fn()
@@ -542,6 +571,18 @@ def self_test():
     st(parse_seeds("0x5EED,1,42") == [0x5EED, 1, 42], "种子列表解析 0x5EED,1,42")
     st(parse_seeds(" 7 , 8 ") == [7, 8], "种子列表容错空格")
     st(parse_seeds("") == [], "空种子串解析为空列表")
+
+    # 带参 builder 必须全部展开：旧版 collect_seeds() 漏掉
+    # build_legacy_encoding(spec)，3 份旧编码素材从未进 fuzz，这里守住。
+    real = load_make_fixture()
+    all_seeds = collect_seeds(real)
+    for spec_name in BUILDER_SPECS["build_legacy_encoding"]:
+        suffix = spec_name.lower().replace("legacy_", "")
+        key = "build_legacy_encoding_" + suffix
+        st(key in all_seeds and all_seeds[key][:4] == b"MThd",
+           f"带参 builder 展开为 {key}（旧版静默漏收）")
+    st(len(all_seeds) == 104 + len(BUILDER_SPECS["build_legacy_encoding"]),
+       f"种子总数含全部 legacy 变体（{len(all_seeds)} 份）")
 
     # 定点选种子：语法感知算子必须挑到含对应字段的种子
     pool = {"a": b"MThd" + b"\x00" * 8, "b": SAMPLE}
