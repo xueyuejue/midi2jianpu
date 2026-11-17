@@ -5279,6 +5279,55 @@ def main():
               "now > evts.length" not in html,
               "旧的「末尾事件 / 事件个数」停止条件已移除")
 
+    group("[126] v1.130.0 MusicXML 谱头速度与文本谱/HTML 同源")
+
+    def _vlq126(n):
+        out = [n & 0x7F]
+        n >>= 7
+        while n:
+            out.insert(0, (n & 0x7F) | 0x80)
+            n >>= 7
+        return bytes(out)
+
+    # format 1：conductor 轨在 tick 0 先写 60 BPM 再写 120 BPM（同 tick 后写
+    # 覆盖，生效速度应是 120）。旧实现只有 MusicXML 谱头取“第一个”= 60。
+    _cond = (
+        _vlq126(0) + b"\xff\x51\x03" + (1000000).to_bytes(3, "big") +  # 60 BPM
+        _vlq126(0) + b"\xff\x51\x03" + (500000).to_bytes(3, "big") +   # 120 BPM（后写）
+        _vlq126(0) + b"\xff\x2f\x00"
+    )
+    _mel = (
+        _vlq126(0) + b"\x90\x3c\x64" +                          # C4 按下
+        _vlq126(480) + b"\x80\x3c\x00" +                        # 抬手
+        _vlq126(0) + b"\xff\x2f\x00"
+    )
+    dup_tempo = os.path.join(tmp, "same_tick_tempo.mid")
+    with open(dup_tempo, "wb") as f:
+        f.write(b"MThd" + struct.pack(">IHHH", 6, 1, 2, 480) +
+                _trk([_cond]) + _trk([_mel]))
+    rc, out, err = run(exe, dup_tempo)
+    mtxt = re.search(r"♩=([0-9]+)", out)
+    txt_bpm = int(mtxt.group(1)) if mtxt else -1
+    check(rc == 0 and txt_bpm == 120,
+          "文本谱曲首速度取同 tick 后写的 120", "rc=%d bpm=%d %s" % (rc, txt_bpm, err[:160]))
+
+    xpath = os.path.join(tmp, "same_tick_tempo.xml")
+    rc2, _, err2 = run(exe, dup_tempo, "--musicxml", xpath)
+    xbpm = -1
+    xbpm_sound = -1
+    if os.path.exists(xpath):
+        xtext = open(xpath, encoding="utf-8").read()
+        mp = re.search(r"<per-minute>(\d+)</per-minute>", xtext)
+        ms = re.search(r'<sound tempo="(\d+)"', xtext)
+        xbpm = int(mp.group(1)) if mp else -1
+        xbpm_sound = int(ms.group(1)) if ms else -1
+    check(rc2 == 0 and xbpm == 120,
+          "MusicXML 谱头 per-minute 取 120，不再是旧口径的 60",
+          "rc=%d bpm=%d %s" % (rc2, xbpm, err2[:160]))
+    check(xbpm_sound == xbpm and xbpm_sound == txt_bpm,
+          "MusicXML sound tempo / per-minute / 文本谱三者速度一致",
+          "sound=%d per-minute=%d text=%d" % (xbpm_sound, xbpm, txt_bpm))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

@@ -9156,6 +9156,51 @@ int main() {
               sh.find("now > evts.length") == std::string::npos,
               "不再拿排序后末尾事件 / 事件个数当停止时刻");
     }
+    // -------------------------------------------------------------------
+    // MusicXML 谱头速度必须与文本谱 / HTML 同源（v1.130.0）
+    // 旧实现谱头读 data.tempo——解析层取「排序后第一个有效点」，同 tick
+    // 重复声明（多轨都在 tick0 写 set_tempo，format 1 很常见）时绕过
+    // 后写覆盖，谱头比另两端慢一倍。现在统一取 tempoMarksOf 首项。
+    // -------------------------------------------------------------------
+    std::cout << "\n测试 MusicXML 谱头速度与三端同源 (v1.130.0)\n";
+    {
+        const KeyEstimate key{0, true};
+        auto headBpm = [](const std::string& mx) {
+            size_t p = mx.find("<per-minute>");
+            if (p == std::string::npos) return -1;
+            p += std::string("<per-minute>").size();
+            size_t e = mx.find("</per-minute>", p);
+            return e == std::string::npos ? -1 : std::atoi(mx.substr(p, e - p).c_str());
+        };
+
+        // 同 tick 重复声明：先 60 后 120，后写覆盖应得 120；data.tempo 故意
+        // 留成旧口径的 60（1000000us），验证谱头不再读那个字段。
+        MidiData dup;
+        dup.division = 480;
+        dup.timeSig.valid = true;
+        dup.tempo = 1000000.0;                       // 旧口径：60 BPM 的微秒数
+        dup.tempoChanges = {{0, 60.0}, {0, 120.0}};
+        NoteEvent n;
+        n.track = 0; n.channel = 0; n.velocity = 96;
+        n.startTicks = 0; n.durationTicks = 480; n.pitch = 60;
+        dup.notes.push_back(n);
+        const std::string mx = renderMusicXml(dup, key);
+        const auto marks = tempoMarksOf(dup);
+        check(!marks.empty() && marks[0].bpm == 120,
+              "同 tick 重复 tempo 的折叠首项是后写的 120");
+        check(headBpm(mx) == 120,
+              "MusicXML 谱头取折叠首项 120，不是 data.tempo 的 60");
+        check(mx.find("<sound tempo=\"120\"/>") != std::string::npos,
+              "sound tempo 同样是 120，与 per-minute 一致");
+
+        // 对照：单一速度时谱头仍取该值（防回归）
+        MidiData one = dup;
+        one.tempo = 500000.0;                        // 120 BPM
+        one.tempoChanges = {{0, 120.0}};
+        check(headBpm(renderMusicXml(one, key)) == 120,
+              "单一速度时谱头仍取该速度（零回归对照）");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

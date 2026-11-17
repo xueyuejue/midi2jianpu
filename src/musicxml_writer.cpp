@@ -290,10 +290,15 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
     // 导进 MuseScore 后「网页上有 mf、谱上什么都没有」。
     const ExpressionMap expr(data);
 
-    // 速度：MIDI 里 tempo 是「每四分音符的微秒数」，取首个非零值
+    // 折叠后的速度记号，与文本谱、HTML 三端共用；谱头速度也取它的首项。
+    // 旧实现读 data.tempo（排序后第一个有效点），同 tick 重复声明时绕过
+    // 「后写覆盖」，MusicXML 谱头比另两端慢一倍（60 vs 120）。
+    const std::vector<TempoMark> tempoMarks = tempoMarksOf(data);
+
+    // 速度：MIDI 里 tempo 是「每四分音符的微秒数」。曲首速度必须与文本谱
+    // 页眉、HTML 页眉同源，都取 tempoMarksOf 折叠后的第一个记号。
     double bpm = 120.0;
-    if (data.tempo > 0) bpm = 60000000.0 / data.tempo;
-    else if (!data.tempoChanges.empty() && data.tempoChanges[0].bpm > 0) bpm = data.tempoChanges[0].bpm;
+    if (!tempoMarks.empty() && tempoMarks[0].bpm > 0) bpm = tempoMarks[0].bpm;
 
     // 歌词只挂旋律轨。来源可能是 --lyrics 给的 LRC，也可能是 MIDI 自带的
     // 0x05 歌词；两者都走同一套 pickMelodyTrack（内置歌词还会给出人声轨证据）。
@@ -322,7 +327,6 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
     // map<bar, mark*> 只留最后一个，一小节内 120→90→60 会被吞成 60，
     // 播放时整小节都按 60 走。位置信息也不许丢：变速点很少正好落在小节线
     // 上（DAW 导出的 tempo map 常在第 3 拍），落点交给 <offset> 表达。
-    const std::vector<TempoMark> tempoMarks = tempoMarksOf(data);
     std::map<int, std::vector<const TempoMark*>> stepAtBar;  // 阶跃记号（按 tick 升序）
     std::map<int, const TempoMark*> rampStartAtBar;  // 渐变起点
     std::map<int, const TempoMark*> rampEndAtBar;    // 渐变落定处
