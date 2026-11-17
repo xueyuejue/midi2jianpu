@@ -8683,6 +8683,51 @@ int main() {
                   "空轨提示点出具体鼓件，仍保留简谱不支持鼓谱的说法：" + hd);
         }
 
+        // ---- 轨号超过 255：音符归属（v1.124）----
+        // active 表把 (通道, 音高, 轨号) 压成一个 64 位 key，轨号原本只占低
+        // 8 位：第 256 条轨起，同一个 (通道, 音高) 会和轨 0 撞成同一个 key。
+        // 症状是轨 0 报「2 音」、轨 256 报「0 音」，--track 256 说无音符，
+        // 而全量转换把那个音并进轨 0（声部列表里干脆没有轨 256）。
+        {
+            std::vector<SmfTrack> many;
+            for (int i = 0; i < 257; ++i) {
+                SmfTrack t;   // 每条轨一个 C4，同一条通道、同一个 tick
+                t.at(0, ev({0x90, 60, 90}));
+                t.at(480, ev({0x80, 60, 0}));
+                many.push_back(t);
+            }
+            auto smfMany = buildSmf(257, 480, many);
+            MidiData dmany;
+            check(loadMidiFromMemory(smfMany.data(), smfMany.size(), dmany),
+                  "257 条 MTrk 的文件照常解析");
+            check(dmany.trackCount == 257 && dmany.notes.size() == 257,
+                  "257 轨各 1 个音，一个都不吞");
+            std::vector<int> perTrack(257, 0);
+            int outOfRange = 0;
+            for (const auto& n : dmany.notes) {
+                if (n.track >= 0 && n.track < 257) perTrack[(size_t)n.track]++;
+                else outOfRange++;
+            }
+            int maxPerTrack = 0, wrongTracks = 0;
+            for (int c : perTrack) {
+                if (c > maxPerTrack) maxPerTrack = c;
+                if (c != 1) wrongTracks++;
+            }
+            check(outOfRange == 0 && wrongTracks == 0 && maxPerTrack == 1,
+                  "每轨恰好 1 个音：轨 0 不吞轨 256 的音符，轨号也不越界");
+            const auto smany = trackSummaries(dmany);
+            check(smany.size() == 257 && smany[0].notes == 1 &&
+                  smany[256].notes == 1,
+                  "诊断里轨 0 与轨 256 各报 1 音（旧实现报 2 与 0）");
+
+            MidiData dfilter;
+            check(loadMidiFromMemory(smfMany.data(), smfMany.size(), dfilter,
+                                     false, 256),
+                  "按轨隔离取第 256 轨能解析出内容");
+            check(dfilter.notes.size() == 1 && dfilter.notes[0].track == 256,
+                  "--track 256 拿到自己那个音（旧实现 0 个音、exit 4）");
+        }
+
         // ---- 每轨的通道布局（v1.117）----
         // 一条轨混多个通道是常态：format 0 把整首曲子塞进一条轨，DAW 也常把
         // 主旋律与伴奏放进同一条轨的不同通道。诊断原来一个字都不提，于是

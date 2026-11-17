@@ -4965,6 +4965,62 @@ def main():
         err = str(e)
     check(xml_ok120, "控制字符一路丢干净，MusicXML 仍可被严格解析", err)
 
+    # ---- 轨号超过 255：音符归属（v1.124）----
+    # 解析器的 active 表把 (通道, 音高, 轨号) 压成一个 64 位 key，轨号原本只
+    # 占低 8 位：第 256 条轨的同一个 (通道, 音高) 会和轨 0 撞成一个 key——
+    # 轨 0 报「2 音」、轨 256 报「0 音」，--track 256 说「旋律在轨 0（2 音）」，
+    # 全量转换的声部列表里干脆没有轨 256。现场拼一份 257 轨的 SMF：每条轨
+    # 都在同一条通道、同一个 tick 上按同一个音高，最容易撞。
+    group("[121] v1.124.0 轨号超过 255：音符归属不串轨")
+
+    def _vlq(n):
+        out = [n & 0x7F]
+        n >>= 7
+        while n:
+            out.append((n & 0x7F) | 0x80)
+            n >>= 7
+        return bytes(reversed(out))
+
+    def _trk(events):
+        body = b"".join(events)
+        return b"MTrk" + struct.pack(">I", len(body)) + body
+
+    body = [b"\x00\x90\x3c\x64",                      # tick 0 按下 C4
+            _vlq(480) + b"\x80\x3c\x00",              # tick 480 抬手
+            b"\x00\xff\x2f\x00"]                      # EOT
+    many_midi = os.path.join(tmp, "many_tracks.mid")
+    with open(many_midi, "wb") as f:
+        f.write(b"MThd" + struct.pack(">IHHH", 6, 1, 257, 480) +
+                b"".join(_trk(body) for _ in range(257)))
+
+    rc, out, err = run(exe, many_midi, "--list-tracks")
+    check(rc == 0, "257 条 MTrk 的文件照常列出", err[:300])
+    rows = [ln for ln in out.splitlines() if ln.startswith("  #")]
+    check(len(rows) == 257, "列表给出 257 行", str(len(rows)))
+    check("共 257 轨" in out, "表头按真实块数报 257 轨",
+          out.splitlines()[0] if out else "")
+    bad_rows = [ln for ln in rows if "旋律 1 音" not in ln]
+    check(not bad_rows,
+          "257 条轨每轨都报「旋律 1 音」（旧实现轨 0 报 2 音、轨 256 报 0 音）",
+          " / ".join(bad_rows[:3]))
+
+    rc, out, err = run(exe, many_midi, "--track", "256")
+    check(rc == 0, "--track 256 有音符可用（旧实现 exit 4 说无音符）", err[:300])
+    check("共提取 1 个音符" in out and "声部：轨 256" in out,
+          "第 256 轨拿到自己那 1 个音", out.splitlines()[:6])
+
+    rc, out, err = run(exe, many_midi, "--track", "0")
+    check(rc == 0 and "共提取 1 个音符" in out,
+          "轨 0 只算自己那 1 个音（旧实现把轨 256 的并入，报 2 音）",
+          out.splitlines()[:6])
+    check("丢弃 256 个音符" in out,
+          "按轨隔离如实说丢了别轨的 256 个音（旧实现只说 255）", out[:300])
+
+    rc, out, err = run(exe, many_midi)
+    phead = next((ln for ln in out.splitlines() if "声部：" in ln), "")
+    check(rc == 0 and "轨 256" in phead,
+          "全量转换的声部列表里有轨 256（旧实现只列到轨 255）", phead[:200])
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

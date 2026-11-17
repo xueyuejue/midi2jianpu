@@ -2937,6 +2937,54 @@ if (existsSync(twoLyrics76)) {
     String(tlh[2].name.length));
 }
 
+// ---- 84. v1.124.0 轨号超过 255：音符归属不串轨 ----
+// active 表把 (通道, 音高, 轨号) 压成一个 64 位 key，轨号原本只占低 8 位：
+// 第 256 条轨的同一个 (通道, 音高) 会和轨 0 撞成一个 key —— 网页的段落
+// 下拉框会显示轨 0「2 音」、轨 256「0 音」，选中轨 256 后谱面一片空白。
+// 这里现场拼一份 257 轨的 SMF：每轨同通道、同 tick、同音高，最容易撞。
+{
+  const tracks = 257;
+  const body = new Uint8Array([
+    0x00, 0x90, 0x3c, 0x64,   // tick 0 按下 C4
+    0x83, 0x60, 0x80, 0x3c, 0x00,  // tick 480 抬手
+    0x00, 0xff, 0x2f, 0x00,   // EOT
+  ]);
+  const chunk = new Uint8Array(8 + body.length);
+  chunk.set([0x4d, 0x54, 0x72, 0x6b], 0);            // "MTrk"
+  new DataView(chunk.buffer).setUint32(4, body.length);
+  chunk.set(body, 8);
+
+  const many = new Uint8Array(14 + tracks * chunk.length);
+  many.set([0x4d, 0x54, 0x68, 0x64], 0);             // "MThd"
+  const hv = new DataView(many.buffer, 4, 10);
+  hv.setUint32(0, 6);
+  hv.setUint16(4, 1);            // format 1
+  hv.setUint16(6, tracks);       // 头里的 16 位轨数
+  hv.setUint16(8, 480);          // division
+  for (let i = 0; i < tracks; i++) many.set(chunk, 14 + i * chunk.length);
+
+  const pmany = mod._malloc(many.length);
+  mod.HEAPU8.set(many, pmany);
+  const tlm = JSON.parse(mod.UTF8ToString(mod._midi2jianpu_track_list(pmany, many.length)));
+  mod._free(pmany);
+  check(tlm.length === tracks, 'track_list 给出 257 条（下拉框不会少一段）',
+    String(tlm.length));
+  const badM = tlm.filter((t) => t.notes !== 1);
+  check(badM.length === 0,
+    '257 条轨每轨 1 个音（旧实现轨 0 报 2、轨 256 报 0）',
+    JSON.stringify(badM.slice(0, 3).map((t) => t.notes)));
+
+  mod._midi2jianpu_set_track(tracks - 1);
+  const callerM = makeCaller(mod);
+  callerM.setMidi(many);
+  const txtM = callerM.call('midi2jianpu_parse', -1, 1) || '';
+  // WASM 的 parse 不带 CLI 那行「共提取 N 个音符」，谱面自己写着音数
+  check(/声部：轨 256/.test(txtM) && /\(1 音符\)/.test(txtM),
+    '选中第 256 段时网页谱面拿到自己那 1 个音（旧实现是空的）',
+    txtM.slice(0, 120));
+  mod._midi2jianpu_set_track(-1);
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

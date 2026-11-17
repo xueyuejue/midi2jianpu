@@ -1032,7 +1032,7 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
         ne.rawDurationTicks = ne.durationTicks;
         ne.pitch = (int)((key >> 8) & 0xFFu);
         ne.channel = (int)((key >> 24) & 0xFFFFu);
-        ne.track = (int)(key & 0xFFu);
+        ne.track = (int)((key >> 40) & 0xFFFFFFu);
         out.notes.push_back(ne);
         active.erase(it);
     };
@@ -1192,8 +1192,15 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                     out.drumPitchesByTrack[trackIdx][note]++;
                 }
                 {
-                    uint64_t key = ((uint64_t)channel << 24) |
-                                   ((uint64_t)note << 8) | (uint64_t)trackIdx;
+                    // key = 轨号 | 通道 | 音高：轨号本来挤在低 8 位，
+                    // 第 256 条轨起就会和轨 0 的同一个 (通道, 音高)
+                    // 撞成同一个 key：轨 0 报「2 音」、轨 256 报「0 音」，
+                    // --track 256 说「无音符」而全量转换把那个音并进轨 0。
+                    // 通道最多 12 位（端口 1 字节 × 16 + 15）、音高 7 位，
+                    // 剩下的位全留给轨号。
+                    const uint64_t key = ((uint64_t)trackIdx << 40) |
+                                         ((uint64_t)channel << 24) |
+                                         ((uint64_t)note << 8);
                     if (type == 0x90u && vel > 0) {
                         // 通道布局与 --track 无关，按全部轨统计：--list-tracks
                         // 说的是「这个文件长什么样」，不是「当前选中轨长什么样」。
