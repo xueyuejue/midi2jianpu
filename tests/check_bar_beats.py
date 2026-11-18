@@ -101,7 +101,7 @@ def parse_meters(lines):
 
 
 def score_bars(lines):
-    """返回每个小节的 {meter, text, beats, last}；一行可以有多个小节。"""
+    """返回每个小节的 {meter, text, beats, last, bar, track}；一行可以有多个小节。"""
     base, changes, pickup, has_pickup = parse_meters(lines)
     track_bars = []
     for l in lines:
@@ -113,7 +113,7 @@ def score_bars(lines):
         for s in l.split("|")[:-1]:
             track_bars[-1].append(s)
     out = []
-    for bars in track_bars:
+    for ti, bars in enumerate(track_bars):
         n = 0 if has_pickup else 1
         for i, s in enumerate(bars):
             meter = pickup if (n == 0 and pickup > 0) else base
@@ -122,16 +122,34 @@ def score_bars(lines):
                     meter = changes[at]
             out.append({"meter": meter, "text": s.strip(),
                         "beats": bar_beats(s), "last": i == len(bars) - 1,
-                        "bar": n})
+                        "bar": n, "track": ti})
             n += 1
     return out
 
 
 def violations(lines):
-    """非末小节不守恒的项；最后一小节按惯例允许尾上休止不满。"""
-    return [b for b in score_bars(lines)
-            if not b["last"] and
-            (b["beats"] is None or abs(b["beats"] - b["meter"]) > 0.01)]
+    """非末小节不守恒的项；最后一小节按惯例允许尾上休止不满。
+
+    变拍号截断小节豁免：0x58 落在小节中途时，barGridOf() **有意**在当前
+    小节中间截断，让新拍号从事件 tick 起生效（导出器把拍号写歪很常见），
+    于是这一小节比自己的拍号短——那是设计结果，不是漏拍。判据收紧到三条
+    同时成立：紧跟其后的同轨小节拍号不同、这一小节比拍号**短**、并且不是
+    末小节。别处的短小节仍然一律算错（素材 midbar_meter.mid 守卫这一条）。
+    """
+    bars = score_bars(lines)
+    out = []
+    for i, b in enumerate(bars):
+        if b["last"]:
+            continue
+        if b["beats"] is not None and abs(b["beats"] - b["meter"]) <= 0.01:
+            continue
+        nxt = bars[i + 1] if i + 1 < len(bars) else None
+        if (nxt is not None and nxt["track"] == b["track"]
+                and abs(nxt["meter"] - b["meter"]) > 0.01
+                and b["beats"] is not None and b["beats"] < b["meter"]):
+            continue
+        out.append(b)
+    return out
 
 
 def all_bar_beats(lines):
@@ -287,6 +305,14 @@ def self_test():
     ck(violations(lines) == [], "末小节短一拍按惯例豁免")
     lines2 = ["拍号=4/4", "[Vocal] (7 音符)", "1 2 3  |", "1 2 3 4  |"]
     ck(len(violations(lines2)) == 1, "非末小节不守恒必须被抓到")
+    # v1.134.0：变拍号截断小节。第 2 小节只有 2 拍（4/4），紧跟着第 3 小节
+    # 换成 6/8 —— 这是 barGridOf 有意截断的结果，豁免；但同样短的第 4 小节
+    # 后面没换拍号，照样算错。
+    lines3 = ["拍号=4/4", "4/4 -> 6/8(第3小节)", "[Vocal] (9 音符)",
+              "1 2 3 4  |", "1 2  |", "[6/8] 1 2 3  |"]
+    ck(violations(lines3) == [], "变拍号截断小节按设计豁免")
+    lines4 = lines3 + ["1 2  |", "1 2 3  |"]
+    ck(len(violations(lines4)) == 1, "不换拍号处的短小节仍必须被抓到")
 
     print("check_bar_beats self-test: %d 项，%d 失败" % (n, len(failed)))
     for f in failed:

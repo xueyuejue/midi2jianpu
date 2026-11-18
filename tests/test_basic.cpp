@@ -9308,6 +9308,54 @@ int main() {
               "单一速度时谱头仍取该速度（零回归对照）");
     }
 
+    // -------------------------------------------------------------------
+    // 被 0x58 截短的小节必须标 implicit="yes"（v1.134.0）
+    //
+    // barGridOf() 遇到「拍号落在小节中途」时有意在当前小节中间截断，让新
+    // 拍号从事件 tick 起生效（导出器把拍号写歪很常见）。截出来的小节比它
+    // 自己声明的拍号短，MusicXML 里只能用 implicit="yes" 表达——旧版只认
+    // 弱起那一种，于是这种小节在导入器眼里时长对不上拍号，会被补一串休止
+    // 撑满，节奏与屏幕上的简谱不一致。tests/check_xml_structure.py 的
+    // 「逐声部时值 == 拍号长度」本来就能判它非法，只是素材库里没有这种文件。
+    // -------------------------------------------------------------------
+    std::cout << "\n测试变拍号截短小节的 implicit (v1.134.0)\n";
+    {
+        const KeyEstimate key{0, true};
+        auto midBar = [](long changeTick) {
+            MidiData d;
+            d.division = 480;
+            d.timeSig.valid = true;                 // 4/4
+            d.tempoChanges = {{0, 120.0}};
+            TimeSignature sixEight;
+            sixEight.numerator = 6;
+            sixEight.denomPow = 3;                  // 6/8
+            sixEight.valid = true;
+            d.timeSigChanges = {{0, d.timeSig}, {changeTick, sixEight}};
+            NoteEvent n;
+            n.track = 0; n.channel = 0; n.velocity = 90;
+            for (int i = 0; i < 8; i++) {
+                n.pitch = 72 + i;
+                n.startTicks = i * 480; n.durationTicks = 480;
+                d.notes.push_back(n);
+            }
+            return d;
+        };
+
+        // 2880 落在第 2 小节（[1920,3840)）第 3 拍：第 2 小节只剩 2 拍。
+        const std::string x1 = renderMusicXml(midBar(2880), key);
+        check(x1.find("<measure number=\"2\" implicit=\"yes\">") != std::string::npos,
+              "拍号落在小节中途时，截短的小节标 implicit=\"yes\"");
+        check(occurrences(x1, "implicit=\"yes\"") == 1,
+              "只有截短的那一小节标 implicit（首节满拍、6/8 小节都不标）");
+        check(x1.find("<measure number=\"3\">") != std::string::npos &&
+              x1.find("<time><beats>6</beats><beat-type>8</beat-type></time>") != std::string::npos,
+              "新拍号仍从截断点之后的下一小节起生效（小节线不动）");
+
+        // 对照：拍号正好落在小节线上时不产生短小节，一个 implicit 都不该有。
+        const std::string x2 = renderMusicXml(midBar(3840), key);
+        check(occurrences(x2, "implicit=\"yes\"") == 0,
+              "拍号落在小节线上时没有截短小节，不标 implicit（零回归对照）");
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

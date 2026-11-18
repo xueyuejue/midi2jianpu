@@ -861,11 +861,30 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             }
         };
 
-        // 弱起小节要标 implicit="yes"，否则 MuseScore 会把它当成一个完整小节，
-        // 并要求补齐 4 拍；小节号也从 0 起算，第一个完整小节显示成 1。
+        // 一小节的实际跨度短于它自己拍号应有的长度时，MusicXML 只能用
+        // implicit="yes" 表达：否则 <measure> 里的时值总和与声明的拍号对不上，
+        // 导入器（MuseScore / Finale）会按拍号补一串休止把小节撑满，谱面节奏
+        // 就和屏幕上这份简谱不是一回事了。两种来路：
+        //   1) 弱起小节（bar 0 被网格截短；小节号也从 0 起算，第一个完整小节
+        //      显示成 1）；
+        //   2) 0x58 落在小节中途——barGridOf() 有意在当前小节中间截断，让新
+        //      拍号从事件 tick 起生效（导出器把拍号写歪很常见）。旧版只认
+        //      弱起这一种，于是变拍号截断出来的短小节在 MusicXML 里是非法小节
+        //      （tests/check_xml_structure.py 的「逐声部时值 == 拍号长度」当场
+        //      能判出来，只是素材库里从来没有这种文件）。
+        auto shortBar = [&](int bar) {
+            long want = grid.barLen;            // 兜底：没有拍号表时按曲首小节长
+            if (!grid.sigs.empty()) {
+                const TimeSignature s = grid.sigForBar(bar);
+                const long w = (long)std::llround(s.barLengthTicks(data.division));
+                if (w > 0) want = w;
+            }
+            const long span = grid.barSpan(bar);
+            return want > 0 && span > 0 && span < want;
+        };
         auto openMeasure = [&](int bar) {
             xml << "    <measure number=\"" << grid.measureNumber(bar) << "\"";
-            if (grid.pickup > 0 && bar == 0) xml << " implicit=\"yes\"";
+            if (shortBar(bar)) xml << " implicit=\"yes\"";
             xml << ">\n";
             emitAttributes(bar);
             emitDirections(bar);
@@ -917,9 +936,10 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                 // 补齐中间完全空的小节，否则小节编号会跳号
                 for (int b = curBar + 1; b < seg.bar; b++) {
                     xml << "    <measure number=\"" << grid.measureNumber(b) << "\"";
-                    // 弱起小节在别的声部里是空小节，同样要标 implicit，
-                    // 否则各声部的小节号与 MuseScore 的编号对不上
-                    if (grid.pickup > 0 && b == 0) xml << " implicit=\"yes\"";
+                    // 弱起小节在别的声部里是空小节，同样要标 implicit，否则
+                    // 各声部的小节号与 MuseScore 的编号对不上；被 0x58 截短的
+                    // 空小节同理（判据与 openMeasure 共用 shortBar）。
+                    if (shortBar(b)) xml << " implicit=\"yes\"";
                     xml << ">\n";
                     emitAttributes(b);   // 开头就是空小节时，属性要写在这里
                     emitDirections(b);  // 段落标记可能落在纯休止的前奏

@@ -5449,6 +5449,47 @@ def main():
         check("delete litAt[active[i].tick];" in dhtml,
               "清除高亮时同步删掉 tick 索引")
 
+    group("[130] v1.134.0 拍号落在小节中途时截短的小节标 implicit")
+    # midbar_meter.mid：4/4 起，第 2880 tick 换成 6/8 —— 落点在第 2 小节
+    # （[1920,3840)）第 3 拍，于是第 2 小节只剩 2 拍（960 tick）。barGridOf()
+    # 有意在当前小节中间截断，让新拍号从事件 tick 起生效。旧版只给弱起小节
+    # 标 implicit="yes"，这种被拍号截断的小节在 MusicXML 里时值总和（960）
+    # 对不上它声明的 4/4（1920），导入器会补两拍休止把小节撑满。
+    mm_mid = os.path.join(FIXTURES, "midbar_meter.mid")
+    if not os.path.exists(mm_mid):
+        check(False, "素材 midbar_meter.mid 存在（先跑 make_fixture.py）")
+    else:
+        mmx = os.path.join(tmp, "midbar_meter.xml")
+        mtx = os.path.join(tmp, "midbar_meter.txt")
+        rc, out, err = run(exe, mm_mid, "--musicxml", mmx, "--output", mtx)
+        check(rc == 0 and os.path.exists(mmx),
+              "变拍号截断素材正常出谱", "rc=%d %s" % (rc, err[:200]))
+        if os.path.exists(mmx):
+            mmxml = open(mmx, encoding="utf-8").read()
+            check('<measure number="2" implicit="yes">' in mmxml,
+                  "被拍号截断的小节标 implicit=\"yes\"")
+            check(mmxml.count('implicit="yes"') == 1,
+                  "只有截断的那一小节标 implicit（首节满拍不标）",
+                  "count=%d" % mmxml.count('implicit="yes"'))
+            m2 = re.search(r'<measure number="2"[^>]*>(.*?)</measure>',
+                           mmxml, re.S)
+            body = m2.group(1) if m2 else ""
+            dur2 = 0
+            for nb in re.findall(r"<note>(.*?)</note>", body, re.S):
+                if "<chord/>" in nb:
+                    continue
+                dm = re.search(r"<duration>(\d+)</duration>", nb)
+                if dm:
+                    dur2 += int(dm.group(1))
+            check(dur2 == 960,
+                  "截断小节的时值总和 = 960 tick（2 拍），不再被撑成 4 拍",
+                  "dur=%d" % dur2)
+            m3 = re.search(r'<measure number="3"[^>]*>(.*?)</measure>',
+                           mmxml, re.S)
+            check(m3 is not None and
+                  "<beats>6</beats><beat-type>8</beat-type>" in m3.group(1),
+                  "6/8 从截断点之后的下一小节起生效（小节线不挪）")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

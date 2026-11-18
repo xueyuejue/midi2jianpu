@@ -581,7 +581,7 @@ def self_test():
         key = "build_legacy_encoding_" + suffix
         st(key in all_seeds and all_seeds[key][:4] == b"MThd",
            f"带参 builder 展开为 {key}（旧版静默漏收）")
-    st(len(all_seeds) == 104 + len(BUILDER_SPECS["build_legacy_encoding"]),
+    st(len(all_seeds) == 105 + len(BUILDER_SPECS["build_legacy_encoding"]),
        f"种子总数含全部 legacy 变体（{len(all_seeds)} 份）")
 
     # 定点选种子：语法感知算子必须挑到含对应字段的种子

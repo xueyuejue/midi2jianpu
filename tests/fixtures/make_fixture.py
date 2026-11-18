@@ -3499,6 +3499,13 @@ def main() -> None:
         f.write(hdata)
     print(f"wrote {hpath} ({len(hdata)} bytes)")
 
+    # v1.134.0：拍号落在小节中途（截短小节必须标 implicit）
+    mmpath = os.path.join(here, "midbar_meter.mid")
+    with open(mmpath, "wb") as f:
+        mmdata = build_midbar_meter()
+        f.write(mmdata)
+    print(f"wrote {mmpath} ({len(mmdata)} bytes)")
+
 def build_utf8_marker() -> bytes:
     """段落名截断必须落在 UTF-8 字符边界上（v1.79.0）。
 
@@ -3926,6 +3933,49 @@ def build_hostile_name() -> bytes:
         t2.note(1, p, 90, i * DIV, DIV)
 
     return b"MThd" + struct.pack(">IHHH", 6, 1, 3, DIV) + t0.render() + t1.render() + t2.render()
+
+
+def build_midbar_meter() -> bytes:
+    """拍号落点不在小节线上（v1.134.0）。
+
+    4/4 起，第 2880 tick 换成 6/8 —— 第 2 小节是 [1920, 3840)，2880 落在
+    它第 3 拍，于是这一小节只剩 2 拍（960 tick）。barGridOf() 有意在当前
+    小节中间截断，让新拍号从事件 tick 起生效（导出器把拍号写歪很常见），
+    文本谱 / HTML 按截短后的小节长排版，三端的小节线因此对齐。
+
+    问题在 MusicXML 这一端：<measure> 里的时值总和（960）对不上它声明的
+    拍号（4/4 = 1920），而旧版只给「弱起小节」标 implicit="yes"，这种被
+    拍号截断的小节没标 —— 导入器会按 4/4 补两拍休止把小节撑满，MuseScore
+    里听到的节奏就和屏幕上的简谱不是一回事。本项目自己的
+    tests/check_xml_structure.py（「逐声部时值 == 拍号长度」）也能当场判它
+    非法，只是素材库里从来没有这种文件，守卫一直在盲区里。
+
+    小节布局（division=480，末音收在小节线上）：
+        第 1 小节  0    ~ 1920  4/4，四个四分音符，铺满
+        第 2 小节  1920 ~ 2880  4/4 但只有 2 拍（被 6/8 截断）→ implicit
+        第 3 小节  2880 ~ 4320  6/8，三个四分音符
+        第 4 小节  4320 ~ 5760  6/8，三个四分音符，收在小节线上
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))    # 500000us -> 120 BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))         # 4/4
+    t0.add(2880, meta(0x58, bytes([6, 3, 24, 8])))      # 6/8，落在第 2 小节第 3 拍
+    t0.add(0, meta(0x59, bytes([0, 0])))                # C 大调
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Melody"))
+    t1.program(0, 73, 0)                                # Flute
+    for i, p in enumerate((72, 74, 76, 77)):            # 第 1 小节：4/4 铺满
+        t1.note(0, p, 90, i * DIV, DIV)
+    for i, p in enumerate((79, 81)):                    # 第 2 小节：只有 2 拍
+        t1.note(0, p, 90, 1920 + i * DIV, DIV)
+    for i, p in enumerate((83, 84, 86)):                # 第 3 小节：6/8
+        t1.note(0, p, 90, 2880 + i * DIV, DIV)
+    for i, p in enumerate((88, 89, 91)):                # 第 4 小节：6/8
+        t1.note(0, p, 90, 4320 + i * DIV, DIV)
+
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
 
 
 if __name__ == "__main__":
