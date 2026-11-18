@@ -9437,6 +9437,108 @@ int main() {
         check(occurrences(x2, "implicit=\"yes\"") == 0,
               "拍号落在小节线上时没有截短小节，不标 implicit（零回归对照）");
     }
+
+    // -------------------------------------------------------------------
+    // 和弦列的歌词不能再被 HTML 吞掉（v1.137.0）
+    //
+    // 简谱里一列只有一个词位，MusicXML 把该列的歌词写在整列的第一个音上
+    // （`!isChordMember`），两端落点本就一致。但 html_writer.cpp 的和弦分支
+    // 一直把 chordColumn() 的歌词形参写死成空串——这个形参从 v1.8.0 引入
+    // 和弦竖排起就没被赋过值。结果「主旋律轨本身就是和弦」的曲子（钢琴独奏、
+    // 人声加一句双音、或用 --track 指到伴奏轨）在 HTML 里整行歌词凭空消失，
+    // 命令行却照样报「挂上 N 字」，三端只剩 MusicXML 留着字。
+    // -------------------------------------------------------------------
+    std::cout << "\n测试和弦列的歌词落位 (v1.137.0)\n";
+    {
+        const KeyEstimate key{0, true};
+        auto chordData = []() {
+            // 4/4 两小节，每小节两个三音和弦（各 2 拍）：C 大三 / F 大三。
+            MidiData d;
+            d.division = 480;
+            d.timeSig.valid = true;
+            d.tempoChanges = {{0, 120.0}};
+            d.trackNames[0] = "Piano";
+            const int chords[4][3] = {{60, 64, 67}, {65, 69, 72},
+                                      {67, 71, 74}, {60, 64, 67}};
+            NoteEvent n;
+            n.track = 0; n.channel = 0; n.velocity = 90;
+            for (int i = 0; i < 4; i++) {
+                for (int k = 0; k < 3; k++) {
+                    n.pitch = chords[i][k];
+                    n.startTicks = (long)i * 960;
+                    n.durationTicks = 960;
+                    d.notes.push_back(n);
+                }
+            }
+            return d;
+        };
+        // 只取非空的 .lyric 内容并按序拼起来（空列是延续段 / 休止，不该有词）
+        auto htmlLyrics = [](const std::string& s) {
+            std::string out;
+            const std::string key = "class='lyric'>";
+            size_t p = 0;
+            while ((p = s.find(key, p)) != std::string::npos) {
+                size_t b = p + key.size();
+                size_t e = s.find('<', b);
+                if (e == std::string::npos) break;
+                out += s.substr(b, e - b);
+                p = e;
+            }
+            return out;
+        };
+        auto xmlLyrics = [](const std::string& s) {
+            std::string out;
+            const std::string a = "<text>", b = "</text>";
+            size_t p = 0;
+            while ((p = s.find(a, p)) != std::string::npos) {
+                size_t from = p + a.size();
+                size_t to = s.find(b, from);
+                if (to == std::string::npos) break;
+                out += s.substr(from, to - from);
+                p = to + b.size();
+            }
+            return out;
+        };
+
+        const MidiData d = chordData();
+        // 没有歌词时整列照旧空着（零回归对照）
+        const std::string plain = renderHtml(d, key, "t");
+        check(occurrences(plain, "class='note chordcol") == 4,
+              "素材确实是 4 个和弦列");
+        check(htmlLyrics(plain).empty(), "不带歌词时和弦列照旧没有词");
+
+        std::vector<LyricLine> lv = {{0, "甲乙丙丁"}};
+        const std::string h = renderHtml(d, key, "t", &lv);
+        check(occurrences(h, "class='note chordcol") == 4, "仍是 4 个和弦列");
+        check(htmlLyrics(h) == "甲乙丙丁",
+              "四个和弦列各挂一个字：旧版这里是空串 -> " + htmlLyrics(h));
+        const std::string x = renderMusicXml(d, key, &lv);
+        check(xmlLyrics(x) == "甲乙丙丁",
+              "MusicXML 同样四个字：" + xmlLyrics(x));
+        check(htmlLyrics(h) == xmlLyrics(x),
+              "两端歌词序列逐字一致（和弦列不再单边丢词）");
+
+        // 非主轨的和弦列仍然一个字都不挂：HTML 的 isMain 与 MusicXML 的
+        // 「只给旋律轨建歌词分配」是同一条口径，别把词铺到伴奏轨上。
+        MidiData two = chordData();
+        two.trackNames[1] = "Comp";
+        NoteEvent m;
+        m.track = 1; m.channel = 1; m.velocity = 90;
+        for (int i = 0; i < 16; i++) {
+            m.pitch = 72 + (i % 4);
+            m.startTicks = (long)i * 480;
+            m.durationTicks = 480;
+            two.notes.push_back(m);
+        }
+        std::vector<LyricLine> lv2 = {{0, "一二三四五六七八九十甲乙丙丁戊己"}};
+        const std::string h2 = renderHtml(two, key, "t", &lv2);
+        const std::string x2b = renderMusicXml(two, key, &lv2);
+        check(htmlLyrics(h2) == xmlLyrics(x2b),
+              "有伴奏轨时两端仍逐字一致 -> html=" + htmlLyrics(h2) +
+              " xml=" + xmlLyrics(x2b));
+        check(htmlLyrics(h2) == "一二三四五六七八九十甲乙丙丁戊己",
+              "16 个音头各一个字：" + htmlLyrics(h2));
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

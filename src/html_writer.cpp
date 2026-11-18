@@ -1188,8 +1188,17 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                     }
                     tones.push_back({num, {hi, lo}});
                 }
+                // 和弦列也要挂歌词：简谱里一列只有一个词位，落点和 MusicXML
+                // 一致（那边写在整列的第一个音上）。早先这里把歌词参数写死成
+                // 空串，于是「主旋律轨本身就是和弦」的曲子（钢琴独奏、人声
+                // 加一句双音、或者用 --track 指到伴奏轨）整行歌词在 HTML 里
+                // 凭空消失，命令行却照样报「挂上 N 字」——三端里只有 MusicXML
+                // 留下这些字。chordColumn() 从 v1.8.0 起就带着 lyric 形参，
+                // 这个调用点一直没给它传过值。
+                std::string csyl = (isMain && !lyrics.empty())
+                                   ? lyricForNote(n.startTicks) : std::string();
                 std::string ccol = graceHtml + withArticulation(
-                         withDyn(withChord(chordColumn(tones, beats, ""),
+                         withDyn(withChord(chordColumn(tones, beats, csyl),
                                            chordMarkFor(n.startTicks)),
                                  dynMarkFor(n.startTicks)),
                          ne.symbol());

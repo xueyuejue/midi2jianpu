@@ -5552,6 +5552,51 @@ def main():
             check("&lt;" not in exml and "<text>&lt;" not in exml,
                   "MusicXML 里没有转义后的尖括号残渣")
 
+    group("[133] v1.137.0 和弦列的歌词不再被 HTML 吞掉")
+    # pedal.mid 的主旋律轨本身就是和弦（两个三音和弦，共 6 个音符）。简谱里
+    # 一列只有一个词位，MusicXML 把词写在整列的第一个音上，两端落点本就一致；
+    # 但 HTML 的和弦分支一直把歌词参数写死成空串，于是命令行说「挂上 2 字」，
+    # 谱面上一个字都没有——三端只剩 MusicXML 留着字。
+    cl = os.path.join(tmp, "chord_lyric.lrc")
+    with open(cl, "w", encoding="utf-8") as f:
+        f.write("[00:00.00]甲乙\n")
+    # sostenuto.mid 的主旋律只有 1 个音头，单独准备一字的歌词，免得「字比音多」
+    cl1 = os.path.join(tmp, "chord_lyric1.lrc")
+    with open(cl1, "w", encoding="utf-8") as f:
+        f.write("[00:00.00]甲\n")
+    for fname, lrc, expect, note in (
+            ("pedal.mid", cl, "甲乙", "两个和弦列各一个字"),
+            ("sostenuto.mid", cl1, "甲", "声部1 只有一个和弦列")):
+        cmid = os.path.join(FIXTURES, fname)
+        if not os.path.exists(cmid):
+            check(False, "素材 %s 存在（先跑 make_fixture.py）" % fname)
+            continue
+        chtml = os.path.join(tmp, "chord_%s.html" % fname[:-4])
+        cxml = os.path.join(tmp, "chord_%s.xml" % fname[:-4])
+        rc, out, err = run(exe, cmid, "--lyrics", lrc,
+                           "--html", chtml, "--musicxml", cxml)
+        check(rc == 0, "%s 和弦轨 + 歌词正常出谱" % fname,
+              "rc=%d %s" % (rc, err[:200]))
+        check("没有音头可挂" not in out, "%s 的字全部挂上音头" % fname, out[:300])
+        if os.path.exists(chtml) and os.path.exists(cxml):
+            cbody = open(chtml, encoding="utf-8").read()
+            chw = "".join(w for w in re.findall(r"class='lyric'>([^<]*)<", cbody)
+                          if w.strip())
+            cxt = "".join(re.findall(r"<text>([^<]*)</text>",
+                                     open(cxml, encoding="utf-8").read()))
+            check(chw == expect, "%s：HTML 的%s（旧版这里是空串）" % (fname, note), chw)
+            check(chw == cxt, "%s 两端歌词逐字一致" % fname, (chw, cxt))
+    # 用 --track 把一条纯和弦的伴奏轨当成主旋律轨时走的是同一条路径
+    kt = os.path.join(tmp, "chord_track.html")
+    rc, out, err = run(exe, os.path.join(FIXTURES, "karaoke.mid"),
+                       "--track", "2", "--lyrics", cl, "--html", kt)
+    check(rc == 0, "--track 指到纯和弦轨也能出谱", "rc=%d %s" % (rc, err[:200]))
+    if os.path.exists(kt):
+        kbody = open(kt, encoding="utf-8").read()
+        kw = "".join(w for w in re.findall(r"class='lyric'>([^<]*)<", kbody)
+                     if w.strip())
+        check(kw == "甲乙", "--track 到和弦轨时歌词照样落位", kw)
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")
