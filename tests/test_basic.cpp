@@ -9539,6 +9539,97 @@ int main() {
         check(htmlLyrics(h2) == "一二三四五六七八九十甲乙丙丁戊己",
               "16 个音头各一个字：" + htmlLyrics(h2));
     }
+
+    // -------------------------------------------------------------------
+    // 带词的同音不再合并（v1.138.0）
+    //
+    // 同音合并（`5 5` -> `5 -`）是谱面可读性上的取舍，不带词时照旧。但简谱
+    // 一列只有一个词位：第二个音自带音节时并进 `-`，那个字就无处可放——
+    // 命令行照报「挂上 N 字」、MusicXML 也照样写满，只有 HTML 少一个字。
+    // 一字多音（第二个音只是继续唱同一个字）不受影响：`lyrics.at` 里没有
+    // 它自己的条目，合并后正好是这个字的长音。
+    // -------------------------------------------------------------------
+    std::cout << "\n测试带词的同音不再合并 (v1.138.0)\n";
+    {
+        const KeyEstimate key{0, true};
+        auto retrigData = []() {
+            // 4/4 一小节四个四分音符，头两个是同一个 C4（首尾相接）。
+            MidiData d;
+            d.division = 480;
+            d.timeSig.valid = true;
+            d.tempoChanges = {{0, 120.0}};
+            d.trackNames[0] = "Vocal";
+            const int pitches[4] = {60, 60, 62, 64};
+            NoteEvent n;
+            n.track = 0; n.channel = 0; n.velocity = 90;
+            n.durationTicks = 480;
+            for (int i = 0; i < 4; i++) {
+                n.pitch = pitches[i];
+                n.startTicks = (long)i * 480;
+                d.notes.push_back(n);
+            }
+            return d;
+        };
+        auto lyricSlots = [](const std::string& s) {
+            const std::string key = "class='lyric'>";
+            size_t p = 0, c = 0;
+            while ((p = s.find(key, p)) != std::string::npos) { c++; p += key.size(); }
+            return c;
+        };
+        auto htmlWords = [](const std::string& s) {
+            std::string out;
+            const std::string key = "class='lyric'>";
+            size_t p = 0;
+            while ((p = s.find(key, p)) != std::string::npos) {
+                size_t b = p + key.size();
+                size_t e = s.find('<', b);
+                if (e == std::string::npos) break;
+                out += s.substr(b, e - b);
+                p = e;
+            }
+            return out;
+        };
+        auto xmlWords = [](const std::string& s) {
+            std::string out;
+            const std::string a = "<text>", b = "</text>";
+            size_t p = 0;
+            while ((p = s.find(a, p)) != std::string::npos) {
+                size_t from = p + a.size();
+                size_t to = s.find(b, from);
+                if (to == std::string::npos) break;
+                out += s.substr(from, to - from);
+                p = to + b.size();
+            }
+            return out;
+        };
+
+        const MidiData d = retrigData();
+        // 零回归对照：不带词时两个同音照旧并成一个两拍长音，只剩 3 个词位
+        const std::string plain = renderHtml(d, key, "t");
+        check(occurrences(plain, "class='note half") == 1 &&
+              occurrences(plain, "class='note quarter") == 2,
+              "不带词时同音照旧合并成一个长音（零回归对照）");
+        check(lyricSlots(plain) == 3, "不带词时是 3 个词位");
+
+        std::vector<LyricLine> lv = {{0, "甲乙丙丁"}};
+        const std::string h = renderHtml(d, key, "t", &lv);
+        check(lyricSlots(h) == 4 && occurrences(h, "class='note half") == 0,
+              "第二个音自带音节时不合并：词位 3 -> 4");
+        check(htmlWords(h) == "甲乙丙丁",
+              "四个音各一个字：旧版这里少一个 -> " + htmlWords(h));
+        const std::string x = renderMusicXml(d, key, &lv);
+        check(xmlWords(x) == "甲乙丙丁", "MusicXML 同样是四个字：" + xmlWords(x));
+        check(htmlWords(h) == xmlWords(x),
+              "两端歌词序列逐字一致（HTML 不再被合并吞掉一个字）");
+
+        // 一字多音：2 个字铺到 4 个音上，第二个音没有自己的字，仍应并成长音
+        std::vector<LyricLine> melt = {{0, "甲乙"}};
+        const std::string hm = renderHtml(d, key, "t", &melt);
+        check(lyricSlots(hm) == 3 && htmlWords(hm) == "甲乙",
+              "一字多音仍合并成 3 个词位、两个字：" + htmlWords(hm));
+        check(htmlWords(hm) == xmlWords(renderMusicXml(d, key, &melt)),
+              "一字多音下两端仍逐字一致");
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

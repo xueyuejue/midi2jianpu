@@ -5597,6 +5597,59 @@ def main():
                      if w.strip())
         check(kw == "甲乙", "--track 到和弦轨时歌词照样落位", kw)
 
+    group("[134] v1.138.0 带词的同音不再合并")
+    # retrigger.mid 的头两个音是同一个 C4、首尾相接，文本谱里并成 `1 -`。
+    # 合并本身是谱面可读性上的取舍（不带词时照旧），但简谱一列只有一个
+    # 词位——第二个音自带音节时并进去，那个字就无处可放：命令行照报
+    # 「挂上 8 字」、MusicXML 也写满 8 个 <text>，只有 HTML 少一个字。
+    eight = os.path.join(tmp, "eight.lrc")
+    with open(eight, "w", encoding="utf-8") as f:
+        f.write("[00:00.00]一二三四五六七八\n")
+    rt = os.path.join(FIXTURES, "retrigger.mid")
+    if not os.path.exists(rt):
+        check(False, "素材 retrigger.mid 存在（先跑 make_fixture.py）")
+    else:
+        rt_html = os.path.join(tmp, "retrig.html")
+        rt_xml = os.path.join(tmp, "retrig.xml")
+        rc, out, err = run(exe, rt, "--lyrics", eight,
+                           "--html", rt_html, "--musicxml", rt_xml)
+        check(rc == 0, "同音重复素材 + 8 字歌词正常出谱",
+              "rc=%d %s" % (rc, err[:200]))
+        check("1 - 3 4" in out, "文本谱照旧合并成 `1 -`（--lyrics 不影响文本谱）",
+              out[:200])
+        if os.path.exists(rt_html) and os.path.exists(rt_xml):
+            body = open(rt_html, encoding="utf-8").read()
+            hw = [w for w in re.findall(r"class='lyric'>([^<]*)<", body) if w.strip()]
+            xw = [w for w in re.findall(r"<text>([^<]*)</text>",
+                                        open(rt_xml, encoding="utf-8").read()) if w.strip()]
+            check(len(hw) == 8 and "".join(hw) == "一二三四五六七八",
+                  "第二个音自带音节时不再合并，8 个字全部落位", "".join(hw))
+            check(hw == xw, "两端歌词逐字一致（旧版 HTML 少「二」）", (hw, xw))
+        # 不给歌词时合并照旧（零回归对照）
+        plain_html = os.path.join(tmp, "retrig_plain.html")
+        rc, out, err = run(exe, rt, "--html", plain_html)
+        if os.path.exists(plain_html):
+            pw = re.findall(r"class='lyric'>",
+                            open(plain_html, encoding="utf-8").read())
+            check(len(pw) == 7, "不带歌词时同音照旧合并（7 个词位）", len(pw))
+    # sample.mid 第 3 小节也有一对同音，旧版 HTML 少最后一个「丈」
+    smp = os.path.join(FIXTURES, "sample.mid")
+    if os.path.exists(smp):
+        long_lrc = os.path.join(tmp, "forty.lrc")
+        with open(long_lrc, "w", encoding="utf-8") as f:
+            f.write("[00:00.00]" + "".join(chr(0x4E00 + i) for i in range(40)) + "\n")
+        s_html = os.path.join(tmp, "sample_lyric.html")
+        s_xml = os.path.join(tmp, "sample_lyric.xml")
+        rc, out, err = run(exe, smp, "--lyrics", long_lrc,
+                           "--html", s_html, "--musicxml", s_xml)
+        if os.path.exists(s_html) and os.path.exists(s_xml):
+            hw = [w for w in re.findall(r"class='lyric'>([^<]*)<",
+                                        open(s_html, encoding="utf-8").read()) if w.strip()]
+            xw = [w for w in re.findall(r"<text>([^<]*)</text>",
+                                        open(s_xml, encoding="utf-8").read()) if w.strip()]
+            check(hw == xw and len(hw) == 15,
+                  "sample.mid 两端 15 字逐字一致（旧版 HTML 少「丈」）", (hw, xw))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

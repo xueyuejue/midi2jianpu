@@ -16,15 +16,17 @@
 
 本脚本钉两件事：
 
-  1. 表内每份素材（主旋律轨含和弦列）的 HTML 非空 .lyric 序列必须与 MusicXML
-     的 <text> 序列逐字相同。
-  2. 表内每份素材至少有一个**挂着词的和弦列**。这一条是本闸的自检：素材若被
-     换掉、或和弦列重新丢词，第 2 条会先红，不至于让第 1 条在「两边都空」的
-     情况下空转通过。
+  1. 表内每份素材的 HTML 非空 .lyric 序列必须与 MusicXML 的 <text> 序列逐字
+     相同。
+  2. 每份素材各带一条**自检**，防止本闸空转：
+     - `chord` 类（主旋律轨含和弦列）：至少有一个**挂着词的和弦列**。素材若被
+       换掉、或和弦列重新丢词，这一条会先红。
+     - `merge` 类（主旋律轨含首尾相接的同音）：带词时的词位必须**多于**不带词
+       时，也就是同音合并确实被第二个字的音节挡住了。素材若不再含同音相接，
+       这一条先红。
 
-为什么不把全部素材都扫一遍：同音合并（`5 5` -> `5 -`）会让 HTML 少一列，
-MusicXML 仍按原音符写词，这是谱面可读性上的有意取舍（两边列数本就不同），
-不属于本闸的范围。表内素材都是**不含同音合并**的，所以能要求严格相等。
+为什么不把全部素材都扫一遍：只有「主旋律轨本身含和弦列」或「含同音相接」的
+素材才会踩到这两条路径，其余素材的歌词序列天然一致，扫了也只是空转。
 
 用法：
   python tests/check_lyric_sync.py              # 校验表内素材
@@ -40,19 +42,22 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIX = os.path.join(ROOT, "tests", "fixtures")
 
-# 表内素材：主旋律轨（或 --track 指到的那条轨）含和弦列，且没有同音合并。
+# 表内素材：`kind` 决定这条用例的自检口径（见文件头）。
 CASES = [
-    ("pedal.mid", [], "主旋律轨是两个三音和弦"),
-    ("sostenuto.mid", [], "声部1 只有一个和弦列"),
-    ("html_dots.mid", [], "主旋律轨混有 3 个和弦列"),
-    ("xml_structure.mid", [], "主旋律轨混有 1 个和弦列"),
-    ("karaoke.mid", ["--track", "2"], "用 --track 指到纯和弦的钢琴轨"),
-    ("parts.mid", ["--track", "2"], "多声部素材里的伴奏轨"),
+    ("pedal.mid", [], "主旋律轨是两个三音和弦", "chord"),
+    ("sostenuto.mid", [], "声部1 只有一个和弦列", "chord"),
+    ("html_dots.mid", [], "主旋律轨混有 3 个和弦列", "chord"),
+    ("xml_structure.mid", [], "主旋律轨混有 1 个和弦列", "chord"),
+    ("karaoke.mid", ["--track", "2"], "用 --track 指到纯和弦的钢琴轨", "chord"),
+    ("parts.mid", ["--track", "2"], "多声部素材里的伴奏轨", "chord"),
+    ("retrigger.mid", [], "主旋律轨头两个音同音相接", "merge"),
+    ("sample.mid", [], "第 3 小节有一对同音相接", "merge"),
 ]
 
 COL_SPLIT = "<span class='note "
 LYRIC = re.compile(r"class='lyric'>(.*?)</span>")
 XML_TEXT = re.compile(r"<text>(.*?)</text>")
+SLOT = re.compile(r"class='lyric'>")
 
 
 def default_exe():
@@ -77,6 +82,11 @@ def compare(html_body, xml_body):
     chord_lyrics = sum(1 for is_chord, t in cols if is_chord and t.strip())
     xw = [t for t in XML_TEXT.findall(xml_body) if t.strip()]
     return hw, xw, chord_lyrics
+
+
+def slot_count(html_body):
+    """HTML 里的词位总数（含空词位）。判同音合并有没有被抑制就看它。"""
+    return len(SLOT.findall(html_body))
 
 
 def make_lrc(path):
@@ -128,7 +138,26 @@ def self_test():
         print("  [FAIL] 空白歌词列干扰了比对: %r / %r / %d" % (hw, xw, cl))
         fails += 1
 
-    print("自测 %d 项，失败 %d 项" % (4, fails))
+    # 词位计数：merge 类用例靠它判「同音合并有没有被抑制」
+    merged_html = good_html.replace(
+        "<span class='note quarter'><span class='core'></span>"
+        "<span class='lyric'></span></span>",
+        "<span class='note quarter'><span class='core'></span>"
+        "<span class='lyric'></span></span>"
+        "<span class='note quarter'><span class='core'></span>"
+        "<span class='lyric'>丙</span></span>")
+    if slot_count(good_html) == 3:
+        print("  [PASS] 词位计数只数 class='lyric' 的列")
+    else:
+        print("  [FAIL] 词位计数不对: %d" % slot_count(good_html))
+        fails += 1
+    if slot_count(merged_html) > slot_count(good_html):
+        print("  [PASS] 合并被抑制时词位变多，自检能判出来")
+    else:
+        print("  [FAIL] 词位没变多却判不出差异")
+        fails += 1
+
+    print("自测 %d 项，失败 %d 项" % (6, fails))
     return fails
 
 
@@ -149,7 +178,7 @@ def main():
 
     bad = 0
     checked = 0
-    for name, flags, note in CASES:
+    for name, flags, note, kind in CASES:
         mid = os.path.join(FIX, name)
         if not os.path.exists(mid):
             print("[FAIL] %s 缺失（先跑 tests/fixtures/make_fixture.py）" % name)
@@ -166,12 +195,28 @@ def main():
             bad += 1
             continue
         checked += 1
-        hw, xw, cl = compare(open(h, encoding="utf-8").read(),
-                             open(x, encoding="utf-8").read())
+        hbody = open(h, encoding="utf-8").read()
+        hw, xw, cl = compare(hbody, open(x, encoding="utf-8").read())
         tag = "%s %s" % (name, " ".join(flags)) if flags else name
-        if cl == 0:
-            print("[FAIL] %s：没有挂着词的和弦列（%s）——本闸空转" % (tag, note))
-            bad += 1
+        if kind == "chord":
+            if cl == 0:
+                print("[FAIL] %s：没有挂着词的和弦列（%s）——本闸空转" % (tag, note))
+                bad += 1
+        else:
+            # merge 类：同一份素材不带词时的词位数必然更少，否则说明它已经
+            # 不含同音相接，这条用例也就测不到东西了。
+            ph = os.path.join(tmp, name.replace(".mid", "_plain.html"))
+            subprocess.run([exe, mid, "--html", ph] + flags, capture_output=True)
+            if os.path.exists(ph):
+                n0 = slot_count(open(ph, encoding="utf-8").read())
+                n1 = slot_count(hbody)
+                if n1 <= n0:
+                    print("[FAIL] %s：带词 %d 个词位、不带词 %d 个（%s）——"
+                          "同音合并没被抑制，本闸空转" % (tag, n1, n0, note))
+                    bad += 1
+            else:
+                print("[FAIL] %s：不带词的那份没出谱——本闸空转" % tag)
+                bad += 1
         if hw != xw:
             print("[FAIL] %s：HTML 歌词 %r 与 MusicXML %r 不一致" % (tag, hw, xw))
             bad += 1

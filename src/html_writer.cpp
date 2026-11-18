@@ -694,12 +694,21 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         //
         // 也不能跨小节线合并：真实演奏里同音相邻几乎都是两次发音而不是延音，
         // 合并会把小节线上的音吞掉（第 15 小节开头的 6 变成 `-`）。
+        //
+        // 带词的同音更不合并（v1.138.0）：简谱一列只有一个词位，第二个音自带
+        // 音节时并进 `-` 会让那个字无处可放——命令行照报「挂上 N 字」、
+        // MusicXML 也照样写满 N 个 <text>，只有 HTML 少一行里的一个字。
+        // 一字多音（第二个音只是继续唱同一个字）不受影响：那时 `lyrics.at`
+        // 里没有它自己的条目，合并后正好是这个字的长音。
         auto triplets0 = detectTriplets(ns, data.division);
         std::map<long, int> onsetCount;
         for (const auto& n : ns) onsetCount[n.startTicks]++;
         auto isSingle = [&](long tick) {
             auto cit = onsetCount.find(tick);
             return cit == onsetCount.end() || cit->second <= 1;
+        };
+        auto ownsSyllable = [&](long tick) {
+            return isMain && lyrics.at.find(tick) != lyrics.at.end();
         };
 
         std::vector<NoteEvent> merged;
@@ -709,6 +718,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 ns[i].pitch == merged.back().pitch &&
                 ns[i].startTicks == merged.back().startTicks + merged.back().durationTicks &&
                 isSingle(ns[i].startTicks) && isSingle(merged.back().startTicks) &&
+                !ownsSyllable(ns[i].startTicks) &&
                 grid.barIndex(ns[i].startTicks) == grid.barIndex(merged.back().startTicks)) {
                 merged.back().durationTicks += ns[i].durationTicks;
                 merged.back().durationSeconds += ns[i].durationSeconds;
