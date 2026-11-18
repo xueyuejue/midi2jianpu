@@ -5415,6 +5415,40 @@ def main():
         check("var s = 0, prev = 0, us = tempo[0][1]" not in html,
               "旧的「首速度点当曲首速度」线性换算已移除")
 
+    group("[129] v1.133.0 同 tick 多音符高亮不再被短音提前清掉")
+    # 同一 tick 两个音、时长不同（480 vs 1920），它们共用 data-t，HTML 画成两列。
+    # 旧 mark() 按事件逐个 push，短音 end 到就把两列 playing 全清，长音列提前熄灯。
+    dup = os.path.join(tmp, "hl_sametick.mid")
+    dup_evs = [
+        b"\x00\x90\x48\x64",                  # tick0 起 C5
+        b"\x00\x90\x30\x64",                  # 同 tick 起 C3（长音）
+        _vlq(480) + b"\x80\x48\x00",          # tick480 停 C5
+        _vlq(1440) + b"\x80\x30\x00",         # tick1920 停 C3
+        b"\x00\xff\x2f\x00",
+    ]
+    with open(dup, "wb") as f:
+        f.write(b"MThd" + struct.pack(">IHHH", 6, 0, 1, 480) + _trk(dup_evs))
+    dh = os.path.join(tmp, "hl_sametick.html")
+    rc, out, err = run(exe, dup, "--html", dh, "--player")
+    check(rc == 0 and os.path.exists(dh),
+          "同 tick 多音符样本正常出谱", "rc=%d %s" % (rc, err[:200]))
+    if os.path.exists(dh):
+        dhtml = open(dh, encoding="utf-8").read()
+        pm = re.search(r"var M2J_PLAY = (\{.*?\});\r?\n", dhtml, re.S)
+        play = json.loads(pm.group(1)) if pm else {}
+        notes = play.get("notes") or []
+        by_start = {}
+        for n in notes:
+            by_start.setdefault(n[0], []).append(n[1])
+        has_dup = any(len(ds) > 1 and len(set(ds)) > 1 for ds in by_start.values())
+        check(has_dup, "PLAY 里确实有同 tick、不同时长的两个音",
+              "notes=%s" % (notes[:4],))
+        check("var cur = litAt[ev.tick];" in dhtml and
+              "if (ev.end > cur.end) cur.end = ev.end;" in dhtml,
+              "mark 按 tick 合并活跃项，熄灯时刻取最晚结束")
+        check("delete litAt[active[i].tick];" in dhtml,
+              "清除高亮时同步删掉 tick 索引")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

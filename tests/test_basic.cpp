@@ -9239,6 +9239,30 @@ int main() {
         check(sh.find("var s = 0, prev = 0, us = tempo[0][1]") == std::string::npos,
               "不再把首速度点当曲首默认速度");
     }
+    // v1.133.0 --player 高亮按 tick 合并：同一 tick 有多个音符（和弦、或
+    // 同轨不同声部的同起点音）时，它们共用 data-t，querySelectorAll 会取到
+    // 该 tick 的全部列。旧版按事件逐个 push，短音先到 end 就把整列 playing
+    // 清掉，长音列提前熄灯（polyphony.mid 实测 4 处提前 1.5 秒）。
+    {
+        MidiData sd;
+        sd.division = 480;
+        sd.timeSig.valid = true;
+        NoteEvent n;
+        n.track = 1; n.channel = 0; n.startTicks = 0;
+        n.durationTicks = 480; n.pitch = 72;
+        sd.notes.push_back(n);
+        n.startTicks = 0; n.durationTicks = 1920; n.pitch = 48;
+        sd.notes.push_back(n);
+        const std::string sh = renderHtml(sd, estimateKey(sd), "t", nullptr, true);
+        check(sh.find("var cur = litAt[ev.tick];") != std::string::npos,
+              "mark 按 tick 查已有活跃项（同列不重复点亮）");
+        check(sh.find("if (ev.end > cur.end) cur.end = ev.end;") != std::string::npos,
+              "同一 tick 的熄灯时刻取最晚结束的音符");
+        check(sh.find("delete litAt[active[i].tick];") != std::string::npos,
+              "清除高亮时同步删掉 tick 索引");
+        check(sh.find("var item = { tick: ev.tick, end: ev.end, els: ev.els };") != std::string::npos,
+              "活跃项按 tick 记一份（旧版按事件逐个 push 已移除）");
+    }
     // -------------------------------------------------------------------
     // MusicXML 谱头速度必须与文本谱 / HTML 同源（v1.130.0）
     // 旧实现谱头读 data.tempo——解析层取「排序后第一个有效点」，同 tick

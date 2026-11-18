@@ -359,7 +359,7 @@ static std::string playerBlock(const std::string& playJson) {
   // 曲首一条 16 秒的长音后面跟一条 10.5 秒的短音时，最后那个事件结束得
   // 更早，旧条件会让播放器在长音还剩 5 秒时就停掉（.probe/probe_player_stop.py）。
   var evts = [], cursor = 0, active = [], t0 = 0, speed = 1, playing = false,
-      stopAt = 0;
+      stopAt = 0, litAt = {};
 
   function mmss(sec) {
     var m = Math.floor(sec / 60), s = Math.round(sec - m * 60);
@@ -374,6 +374,7 @@ static std::string playerBlock(const std::string& playJson) {
         active[i].els[k].classList.remove('playing');
     }
     active = [];
+    litAt = {};
   }
 
   function hush() {
@@ -394,12 +395,24 @@ static std::string playerBlock(const std::string& playJson) {
     if (btn) btn.textContent = '\u25b6 试听';
   }
 
+  // 同一 tick 可能有多个音符（和弦，或同一轨不同声部的同起点音）。它们共用
+  // data-t，querySelectorAll 会一次取到该 tick 的全部列；若按事件逐个 push，
+  // 短音先到 end 时会把整列 playing 清掉，长音列就在还剩几秒时提前熄灯
+  // （.probe/probe_hl_sametick.mjs：polyphony.mid 4 处提前消失）。所以这里
+  // 按 tick 合并成一个活跃项，end 取该 tick 里最晚结束的那个。
   function mark(ev) {
+    var cur = litAt[ev.tick];
+    if (cur) {
+      if (ev.end > cur.end) cur.end = ev.end;   // 同一列：只把熄灯时刻往后推
+      return;
+    }
     for (var k = 0; k < ev.els.length; k++) ev.els[k].classList.add('playing');
-    active.push(ev);
+    var item = { tick: ev.tick, end: ev.end, els: ev.els };
+    litAt[ev.tick] = item;
+    active.push(item);
     // 只在这一列已经滚出视口时才滚回来，否则播放时页面会一直上下跳
-    if (ev.els.length) {
-      var el = ev.els[0], r = el.getBoundingClientRect();
+    if (item.els.length) {
+      var el = item.els[0], r = el.getBoundingClientRect();
       if (r.top < 60 || r.bottom > (window.innerHeight - 40)) {
         try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
         catch (e) { el.scrollIntoView(); }
@@ -438,6 +451,7 @@ static std::string playerBlock(const std::string& playJson) {
       if (active[i].end <= now) {
         for (var k = 0; k < active[i].els.length; k++)
           active[i].els[k].classList.remove('playing');
+        delete litAt[active[i].tick];
         active.splice(i, 1);
       }
     }
@@ -483,6 +497,7 @@ static std::string playerBlock(const std::string& playJson) {
     evts.sort(function (a, b) { return a.start - b.start || a.pitch - b.pitch; });
     cursor = 0;
     active = [];
+    litAt = {};
     t0 = ctx.currentTime + 0.12;
     for (var j = 0; j < evts.length; j++) {
       var ev = evts[j];
