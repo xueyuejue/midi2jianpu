@@ -5517,6 +5517,41 @@ def main():
     check(rc == 0, "只给 --soft-pedal-scale 0.5 仍放行",
           "rc=%d %s" % (rc, err[:120]))
 
+    group("[132] v1.136.0 增强型 LRC 的逐字时间标签不再被当成歌词字")
+    # 增强型 LRC（Enhanced LRC / A2 扩展）在行内用 <mm:ss.xx> 标每个字的时刻：
+    #   [00:12.00]<00:12.00>你<00:12.40>好
+    # 旧版把这串标签当歌词文字，于是谱面上印出 "<" "0" "0" ":" 一串假字，
+    # 「共 N 字」从 8 撑到 36，还误报「这一段的字比旋律音多」。
+    en_mid = os.path.join(FIXTURES, "karaoke.mid")
+    en_lrc = os.path.join(FIXTURES, "enhanced.lrc")
+    if not os.path.exists(en_lrc):
+        check(False, "素材 enhanced.lrc 存在（先跑 make_fixture.py）")
+    else:
+        enh = os.path.join(tmp, "enhanced.html")
+        rc, out, err = run(exe, en_mid, "--html", enh, "--lyrics", en_lrc)
+        check(rc == 0, "增强型 LRC 正常出谱", "rc=%d %s" % (rc, err[:200]))
+        if os.path.exists(enh):
+            ebody = open(enh, encoding="utf-8").read()
+            ewords = [w for w in re.findall(r"class='lyric'>([^<]*)<", ebody)
+                      if w.strip()]
+            check("".join(ewords) == "一二三四五六七八",
+                  "HTML 谱面只有这 8 个歌词字，标签一个不剩",
+                  "".join(ewords))
+            check("<" not in "".join(ewords) and "&lt;" not in "".join(ewords),
+                  "歌词列里没有尖括号残渣", "".join(ewords))
+        check("没有音头可挂" not in out,
+              "8 个字全部挂上音头，不再误报「字比旋律音多」", out[:200])
+        check("歌词已加载: 2 行" in out, "两行歌词都读到了", out[:200])
+        enx = os.path.join(tmp, "enhanced.xml")
+        rc, out, err = run(exe, en_mid, "--musicxml", enx, "--lyrics", en_lrc)
+        if rc == 0 and os.path.exists(enx):
+            exml = open(enx, encoding="utf-8").read()
+            etexts = "".join(re.findall(r"<text>([^<]*)</text>", exml))
+            check(etexts == "一二三四五六七八",
+                  "MusicXML 的 <text> 同样是这 8 个字", etexts)
+            check("&lt;" not in exml and "<text>&lt;" not in exml,
+                  "MusicXML 里没有转义后的尖括号残渣")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

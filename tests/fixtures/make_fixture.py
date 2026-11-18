@@ -1103,6 +1103,14 @@ def build_tempolrc_multi_lrc() -> str:
             "[00:02.00]第二段词\n")
 
 
+def build_enhanced_lrc() -> str:
+    # 增强型 LRC（Enhanced LRC / A2 扩展）：行内 <mm:ss.xx> 标每个字时刻。
+    # 这些标签不是歌词字——旧版会把它拆成 "<" "0" ":" 等字符印进谱面。
+    return ("[ti:增强型歌词]\n"
+            "[00:00.00]<00:00.00>一<00:00.30>二<00:00.60>三<00:00.90>四\n"
+            "[00:02.00]<00:02.00>五<00:02.30>六<00:02.60>七<00:02.90>八\n")
+
+
 def build_tempolrc() -> bytes:
     """8 小节 4/4，tick 7680（第 5 小节）把 120 BPM 降到 60 BPM。"""
     t0 = Track()
@@ -2979,6 +2987,7 @@ def main() -> None:
         ("tempolrc.lrc", build_tempolrc_lrc()),
         ("tempolrc_offset.lrc", build_tempolrc_offset_lrc()),
         ("tempolrc_multi.lrc", build_tempolrc_multi_lrc()),
+        ("enhanced.lrc", build_enhanced_lrc()),
     ):
         path = os.path.join(here, name)
         with open(path, "w", encoding="utf-8", newline="\n") as f:

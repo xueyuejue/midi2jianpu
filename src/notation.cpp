@@ -2789,6 +2789,43 @@ static bool parseLrcTimestamp(const std::string& tag, double& outSec) {
     return true;
 }
 
+// 增强型 LRC（Enhanced LRC / A2 扩展）在行内用 <mm:ss.xx> 标每个字的时刻：
+//   [00:12.00]<00:12.00>你<00:12.40>好<00:12.80>吗
+// 这些标签不是歌词字。旧版把行内剩余原串整段当文字，于是 <00:00.00> 被拆成
+// 一串 "<" "0" "0" ":" 音节印进谱面（HTML 里能看到 &lt; 0 0 :），还把「共 N
+// 字」撑大——实测 8 个字变 36 个字，连带触发「这一段的字比旋律音多」误报。
+// 这里只剥掉**能解析成时间戳**的尖括号标签；歌词正文里偶尔出现的其它尖括号
+// 原样保留，不擅自吞字符。
+static std::string stripEnhancedLrcTags(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    size_t i = 0;
+    while (i < s.size()) {
+        if (s[i] != '<') {
+            out.push_back(s[i++]);
+            continue;
+        }
+        const size_t close = s.find('>', i + 1);
+        if (close == std::string::npos) {
+            // 截断的尾标签（`<00:00.50` 没了右尖括号）：形如「数字打头且带
+            // 冒号」就按时间标签丢掉，否则（`<3` 这种正文）原样保留。
+            const size_t j = i + 1;
+            if (j < s.size() && s[j] >= '0' && s[j] <= '9' &&
+                s.find(':', j) != std::string::npos)
+                break;
+            out.append(s, i, std::string::npos);
+            break;
+        }
+        double sec = 0;
+        if (parseLrcTimestamp(s.substr(i + 1, close - i - 1), sec)) {
+            i = close + 1;                     // 逐字时间标签：丢掉
+            continue;
+        }
+        out.push_back(s[i++]);                 // 不是时间戳，按普通字符处理
+    }
+    return out;
+}
+
 // 一行里可以有多个 [mm:ss.xx]（同一句词在副歌重复出现），也可以有
 // [ti:] / [ar:] / [offset:] 这类元数据。首个标签不是时间戳时整行跳过。
 static void lrcTimestamps(const std::string& line,
@@ -2806,7 +2843,7 @@ static void lrcTimestamps(const std::string& line,
         }
         p = close + 1;
     }
-    text = line.substr(p);
+    text = stripEnhancedLrcTags(line.substr(p));
     while (!text.empty() &&
            (text.back() == '\r' || text.back() == ' ' || text.back() == '\t'))
         text.pop_back();
