@@ -383,6 +383,13 @@ int main(int argc, char** argv) {
         std::cerr << "错误: " << pue << "\n";
         return 1;
     }
+    // --soft-pedal-scale 与 --no-soft-pedal 同理：v1.135.0 之前后者恒赢，
+    // 用户给的系数被无声丢掉（rc=0、零提示，输出与只给 --no-soft-pedal 相同）。
+    const std::string spe = m2j::cli::validateSoftPedalOptions(noSoftPedal, softPedalScale);
+    if (!spe.empty()) {
+        std::cerr << "错误: " << spe << "\n";
+        return 1;
+    }
     // 输出路径预检：与输入 .mid 同路径会毁掉源文件，三端互相撞路径
     // 会静默覆盖先写的那份。放在读 MIDI 之前，越界一律不干活。
     {

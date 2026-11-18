@@ -8146,6 +8146,39 @@ int main() {
               "报错文案给出修复指引");
     }
 
+    // ---- v1.135.0 软踏板矛盾选项（与弱起那组同口径） ----
+    // 缺陷：main.cpp 先判 noSoftPedal 再赋 softPedalScale，
+    // `--soft-pedal-scale 0.5 --no-soft-pedal` 里 0.5 无声消失，
+    // rc=0、零提示，输出与只给 --no-soft-pedal 逐字节相同。
+    {
+        using m2j::cli::validateSoftPedalOptions;
+
+        check(validateSoftPedalOptions(false, -1.0).empty(),
+              "两个软踏板开关都不给：放行（走默认 0.7）");
+        check(validateSoftPedalOptions(true, -1.0).empty(),
+              "只给 --no-soft-pedal：放行");
+        check(validateSoftPedalOptions(false, 0.5).empty(),
+              "只给 --soft-pedal-scale 0.5：放行");
+        check(validateSoftPedalOptions(false, 0.0).empty(),
+              "只给 --soft-pedal-scale 0：放行（0 是合法边界）");
+        check(validateSoftPedalOptions(false, 1.0).empty(),
+              "只给 --soft-pedal-scale 1：放行（上边界）");
+        check(!validateSoftPedalOptions(true, 0.5).empty(),
+              "--soft-pedal-scale 0.5 + --no-soft-pedal 必须拒绝");
+        check(!validateSoftPedalOptions(true, 0.0).empty(),
+              "系数取 0 的矛盾组合同样拒绝（不得因为「0 等于关闭」放行）");
+        check(!validateSoftPedalOptions(true, 1.0).empty(),
+              "系数取 1 的矛盾组合同样拒绝");
+        const std::string se = validateSoftPedalOptions(true, 0.5);
+        check(se.find("--soft-pedal-scale") != std::string::npos &&
+              se.find("--no-soft-pedal") != std::string::npos,
+              "报错文案点名两个冲突选项");
+        check(se.find("只保留一个") != std::string::npos,
+              "报错文案给出修复指引");
+        check(se.find("不能同时使用") != std::string::npos,
+              "报错文案与 --key/--gong、--pickup/--no-pickup 同一句式");
+    }
+
     // ---- v1.98.0：排版/显示类开关不得改变 PLAY JSON（C++ 层钉死） ----
     // 播放数据取自「谱面上真正画出来的那份音符」+ tempo 表，与每行几小节、
     // 要不要画力度记号、歌词来自哪里都无关。此前 check_html_player.py 只审

@@ -79,6 +79,11 @@ CLI_CONTRACTS = [
     (["--pickup", "1", "--no-pickup"], 1, "--pickup 与 --no-pickup 冲突"),
     (["--no-pickup", "--pickup", "99"], 1, "冲突组合不得绕过越界校验"),
     (["--key", "C", "--gong", "D"], 1, "--key 与 --gong 冲突"),
+    # v1.135.0：--no-soft-pedal 此前恒赢，用户给的系数无声消失（rc=0、零提示）
+    (["--soft-pedal-scale", "0.5", "--no-soft-pedal"], 1,
+     "--soft-pedal-scale 与 --no-soft-pedal 冲突"),
+    (["--no-soft-pedal", "--soft-pedal-scale", "0"], 1,
+     "软踏板冲突换顺序同样拒绝（不是 last-wins）"),
     # ---- 合法边界内：rc=0（--track 0 允许空轨的 4） ----
     (["--bars", "1"], 0, "--bars 下界内"),
     (["--bars", "8"], 0, "--bars 上界内"),
@@ -92,6 +97,7 @@ CLI_CONTRACTS = [
     (["--transpose", "-60"], 0, "--transpose 恰好下界"),
     (["--key", "C"], 0, "--key 合法调名"),
     (["--no-pickup"], 0, "--no-pickup 单独使用"),
+    (["--no-soft-pedal"], 0, "--no-soft-pedal 单独使用"),
     # ---- 同一带值选项重复给：明确拒绝 rc=1（v1.99.0） ----
     # 旧版清一色 last-wins：--html a --html b 只写 b、--key C --key D 把
     # 调性改成 D，全程 rc=0、零提示。{OUT} / {OUT2} / {LRC} 在
@@ -408,6 +414,12 @@ def self_test():
     ck(any("--no-pickup" in a and "--pickup" in a
            for a, w, d in CLI_CONTRACTS),
        "契约表含 --pickup / --no-pickup 矛盾组合")
+    ck(any("--soft-pedal-scale" in a and "--no-soft-pedal" in a
+           for a, w, d in CLI_CONTRACTS),
+       "契约表含 --soft-pedal-scale / --no-soft-pedal 矛盾组合")
+    ck(any(a == ["--no-soft-pedal"] and wants_of(w) == {0}
+           for a, w, d in CLI_CONTRACTS),
+       "契约表含 --no-soft-pedal 单独放行用例")
     ck(any(a.count("--key") == 2 for a, w, d in CLI_CONTRACTS),
        "契约表含同一带值选项重复给用例")
     ck(any("--lyrics" in a and "{LRC}" in a and wants_of(w) == {1}

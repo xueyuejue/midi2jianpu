@@ -5490,6 +5490,33 @@ def main():
                   "<beats>6</beats><beat-type>8</beat-type>" in m3.group(1),
                   "6/8 从截断点之后的下一小节起生效（小节线不挪）")
 
+    group("[131] v1.135.0 --soft-pedal-scale 与 --no-soft-pedal 不再静默冲突")
+    # 旧版 main.cpp 先判 noSoftPedal 再赋 softPedalScale：两个一起给时
+    # --no-soft-pedal 恒赢，用户给的系数无声消失（rc=0、零提示，输出与
+    # 只给 --no-soft-pedal 逐字节相同）。与 --pickup/--no-pickup 同一类
+    # 静默覆盖，v1.135.0 起在解析后、读 MIDI 前直接拒绝。
+    sp_mid = os.path.join(FIXTURES, "soft_pedal.mid")
+    sp_out = os.path.join(tmp, "pedal_conflict.txt")
+    rc, out, err = run(exe, sp_mid, "--output", sp_out,
+                       "--soft-pedal-scale", "0.5", "--no-soft-pedal")
+    check(rc == 1, "系数 + --no-soft-pedal 被拒绝（rc=1）", "rc=%d" % rc)
+    check("不能同时使用" in err and "--soft-pedal-scale" in err
+          and "--no-soft-pedal" in err,
+          "报错文案点名两个冲突选项", err.strip()[:160])
+    check(not os.path.exists(sp_out), "拒绝发生在写盘之前（不留半份输出）")
+    rc, out, err = run(exe, sp_mid, "--output", sp_out,
+                       "--no-soft-pedal", "--soft-pedal-scale", "0.5")
+    check(rc == 1, "换顺序同样拒绝（不是 last-wins）", "rc=%d" % rc)
+    rc, out, err = run(exe, sp_mid, "--output", sp_out,
+                       "--soft-pedal-scale", "0", "--no-soft-pedal")
+    check(rc == 1, "系数取 0 也拒绝（不得因「0 等于关闭」放行）", "rc=%d" % rc)
+    rc, out, err = run(exe, sp_mid, "--output", sp_out, "--no-soft-pedal")
+    check(rc == 0, "只给 --no-soft-pedal 仍放行", "rc=%d %s" % (rc, err[:120]))
+    rc, out, err = run(exe, sp_mid, "--output", sp_out,
+                       "--soft-pedal-scale", "0.5")
+    check(rc == 0, "只给 --soft-pedal-scale 0.5 仍放行",
+          "rc=%d %s" % (rc, err[:120]))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

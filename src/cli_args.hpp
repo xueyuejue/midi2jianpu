@@ -282,6 +282,21 @@ inline std::string validatePickupOptions(bool noPickup, double pickupBeats) {
     return {};
 }
 
+// ---- 两个「软踏板」入口不能同时给（v1.135.0） ----
+// --soft-pedal-scale 给衰减系数、--no-soft-pedal 整体关掉 CC67，语义直接
+// 冲突。旧版 main.cpp 先看 noSoftPedal 再赋 softPedalScale，于是
+// `--soft-pedal-scale 0.5 --no-soft-pedal` 里用户给的 0.5 无声消失：rc=0、
+// 零提示，输出与「只给 --no-soft-pedal」逐字节相同。与 --pickup/--no-pickup
+// 同一类静默覆盖，按同一口径在解析后、读 MIDI 前拒绝。
+// 入参口径与 main.cpp 一致：softPedalScale < 0 表示「未指定」（默认 0.7）。
+inline std::string validateSoftPedalOptions(bool noSoftPedal, double softPedalScale) {
+    if (noSoftPedal && softPedalScale >= 0.0)
+        return "--soft-pedal-scale 与 --no-soft-pedal 不能同时使用（一个设定"
+               "衰减系数、一个整体关闭软踏板，--no-soft-pedal 会把系数直接"
+               "置 0，用户给的系数无声消失）；请只保留一个";
+    return {};
+}
+
 // ---- 同一带值选项重复给（v1.99.0） ----
 // 位置参数早在 v1.81 就只允许一个；11 个带值选项却一直是 last-wins：
 // `--html a.html --html b.html` 只写 b.html，`--key C --key D` 把调性直接

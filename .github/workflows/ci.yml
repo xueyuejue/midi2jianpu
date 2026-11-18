@@ -30,7 +30,7 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 2
 
-      - name: 单元测试（1586 项）
+      - name: 单元测试（1597 项）
         working-directory: build
         run: ctest --output-on-failure
 
@@ -126,7 +126,7 @@ jobs:
           python3 tests/check_utf8.py --self-test
           python3 tests/check_utf8.py
 
-      - name: CLI 参数矩阵 × 全素材（34 项自测 + 107 份素材）
+      - name: CLI 参数矩阵 × 全素材（36 项自测 + 107 份素材）
         # fuzz 侧重「畸形输入下的健壮性」、只在随机开关下抽查；这里逐份素材
         # 覆盖一组开关（--no-quantize / --no-dynamics / --no-key-changes /
         # --bar-numbers / --transpose），断言 rc ∈ {0,1,2,3,4}、rc==0 的 MusicXML 可解析、
