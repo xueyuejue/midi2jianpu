@@ -676,11 +676,38 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         playJson = pj.str();
     }
 
+    // 歌词挂在哪个声部：每个音头归「该音头上最靠上的那一行」。
+    //
+    // 一条轨被拆成多行（同轨复调）后，同一个音头只会出现在其中一行里。早先
+    // 只给声部 1 印词，其余声部的字就凭空消失——命令行照报「挂上 N 字」，
+    // 谱面上却只剩声部 1 的那几个字（`track_pedal.mid` 8 字只印 3 字）。
+    // 按音头归行之后：字随音走，一个都没少；同一个音头在两行上都有音时也只
+    // 印一次（取最靠上的那行），不会把同一个字画两遍。MusicXML 用同一张表。
+    std::map<long, int> wordVoice;
+    if (mainTrack >= 0)
+        for (const auto& pv : parts) {
+            if (pv.track != mainTrack) continue;
+            for (const auto& n : pv.notes) {
+                auto wit = wordVoice.find(n.startTicks);
+                if (wit == wordVoice.end() || pv.voice < wit->second)
+                    wordVoice[n.startTicks] = pv.voice;
+            }
+        }
+
     for (size_t pi = 0; pi < parts.size(); pi++) {
         const int t = parts[pi].track;
         const auto& ns = parts[pi].notes;
         const int partChannel = parts[pi].channel;
-        const bool isMain = (t == mainTrack && parts[pi].voice == 0);
+        const int partVoice = parts[pi].voice;
+        const bool isMain = (t == mainTrack);
+        // 和弦记号按「事件」记，一条轨上只能印一次，仍只给最靠上的那一行。
+        const bool isMainTop = (isMain && partVoice == 0);
+        // 这个词位归不归本行：主旋律轨 + 该音头上最靠上的声部。
+        auto ownsWord = [&](long tick) {
+            if (!isMain) return false;
+            auto wit = wordVoice.find(tick);
+            return wit != wordVoice.end() && wit->second == partVoice;
+        };
         // 速度标记属于整份谱，只在第一行谱上印一次。每轨都印一遍是噪音，
         // 而且同一页上会出现好几个一模一样的 ♩=90。
         const bool showTempo = (pi == 0);
@@ -708,7 +735,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             return cit == onsetCount.end() || cit->second <= 1;
         };
         auto ownsSyllable = [&](long tick) {
-            return isMain && lyrics.at.find(tick) != lyrics.at.end();
+            return ownsWord(tick) && lyrics.at.find(tick) != lyrics.at.end();
         };
 
         std::vector<NoteEvent> merged;
@@ -730,7 +757,10 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
 
         // 只有旋律轨、且真的存在一字多音时才抬高和弦带：其余谱面的行距
         // 保持原样，不因为一个新功能把整页撑高。
-        const bool hasSlur = (isMain && !lyrics.melismas.empty());
+        bool partOwnsWord = false;
+        for (const auto& n : ns)
+            if (ownsWord(n.startTicks)) { partOwnsWord = true; break; }
+        const bool hasSlur = (partOwnsWord && !lyrics.melismas.empty());
         body << "<div class='track'><h3>";
         auto it = data.trackNames.find(t);
         if (it != data.trackNames.end() && !it->second.empty()) body << htmlEscape(it->second);
@@ -818,7 +848,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         // 这两种情况都不会漏标。
         auto chordIt = chordAt.begin();
         auto chordMarkFor = [&](long tick) -> std::string {
-            if (!isMain) return std::string();
+            if (!isMainTop) return std::string();
             std::string label;
             while (chordIt != chordAt.end() && chordIt->first <= tick) {
                 if (chordIt->second != lastChord) label = chordIt->second;
@@ -1124,7 +1154,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 // 不要再排除第一个音：休止符是单独插入的列，本来就不参与歌词分配，
                 // 多一个 !firstNote 只会把一句词的第一个字吞掉（"风霜染尽客行袍"
                 // 变成"风霜染尽客行"+下一小节的"袍"）。
-                std::string syl = (isMain && !lyrics.empty() && n.pitch != 0)
+                std::string syl = (ownsWord(n.startTicks) && !lyrics.empty() && n.pitch != 0)
                                   ? lyricForNote(n.startTicks) : std::string();
                 // 三连音走单独的时值档位，避免 1/3 拍被当成附点十六分
                 DurStyle ds = grp[0]->trip ? tripletStyleOf(beats) : durStyleOf(beats);
@@ -1205,7 +1235,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 // 凭空消失，命令行却照样报「挂上 N 字」——三端里只有 MusicXML
                 // 留下这些字。chordColumn() 从 v1.8.0 起就带着 lyric 形参，
                 // 这个调用点一直没给它传过值。
-                std::string csyl = (isMain && !lyrics.empty())
+                std::string csyl = (ownsWord(n.startTicks) && !lyrics.empty())
                                    ? lyricForNote(n.startTicks) : std::string();
                 std::string ccol = graceHtml + withArticulation(
                          withDyn(withChord(chordColumn(tones, beats, csyl),

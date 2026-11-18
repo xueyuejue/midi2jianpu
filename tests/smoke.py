@@ -5650,6 +5650,56 @@ def main():
             check(hw == xw and len(hw) == 15,
                   "sample.mid 两端 15 字逐字一致（旧版 HTML 少「丈」）", (hw, xw))
 
+    group("[135] v1.139.0 同轨复调的副声部也要挂词")
+    # track_pedal.mid 一条轨被延音踏板撑成 3 个声部（3+2+3 个音）。旧版把 8 个
+    # 字全铺在「旋律轨的全部音头」上，却只给声部 1 印词：命令行报「挂上 8 字」，
+    # 页面上只剩 3 个。倚音同理——它不占一列、却算了一个音头，整句词从那里
+    # 往后错开一个音。
+    tp = os.path.join(FIXTURES, "track_pedal.mid")
+    if not os.path.exists(tp):
+        check(False, "素材 track_pedal.mid 存在（先跑 make_fixture.py）")
+    else:
+        tp_lrc = os.path.join(tmp, "tp8.lrc")
+        with open(tp_lrc, "w", encoding="utf-8") as f:
+            f.write("[00:00.00]一二三四五六七八\n")
+        tp_html = os.path.join(tmp, "tp.html")
+        tp_xml = os.path.join(tmp, "tp.xml")
+        rc, out, err = run(exe, tp, "--lyrics", tp_lrc,
+                           "--html", tp_html, "--musicxml", tp_xml)
+        check(rc == 0, "同轨复调素材 + 8 字歌词正常出谱", "rc=%d %s" % (rc, err[:200]))
+        if os.path.exists(tp_html) and os.path.exists(tp_xml):
+            tb = open(tp_html, encoding="utf-8").read()
+            hw = [w for w in re.findall(r"class='lyric'>([^<]*)<", tb) if w.strip()]
+            xw = [w for w in re.findall(r"<text>([^<]*)</text>",
+                                        open(tp_xml, encoding="utf-8").read()) if w.strip()]
+            rows = [b for b in tb.split("class='track'")[1:]
+                    if any(w.strip() for w in re.findall(r"class='lyric'>([^<]*)<", b))]
+            check(len(hw) == 8, "八个字一个不少（旧版只印声部1 上的 3 个）",
+                  "".join(hw))
+            check(sorted(hw) == sorted("一二三四五六七八"),
+                  "八个字各出现一次，没有重复画", "".join(hw))
+            check(len(rows) >= 2, "字确实铺到了副声部上（%d 行挂着词）" % len(rows))
+            check(sorted(hw) == sorted(xw),
+                  "两端字数与内容一致（行内顺序可因分块不同而异）", (hw, xw))
+        # 倚音：overfull.mid 的 8 个音里有 1 个是倚音，它不占一列
+        ov = os.path.join(FIXTURES, "overfull.mid")
+        if os.path.exists(ov):
+            ov_html = os.path.join(tmp, "ov.html")
+            ov_plain = os.path.join(tmp, "ov_plain.html")
+            rc, out, err = run(exe, ov, "--lyrics", tp_lrc, "--html", ov_html)
+            run(exe, ov, "--html", ov_plain)
+            if os.path.exists(ov_html) and os.path.exists(ov_plain):
+                n1 = len(re.findall(r"class='lyric'>",
+                                    open(ov_html, encoding="utf-8").read()))
+                n0 = len(re.findall(r"class='lyric'>",
+                                    open(ov_plain, encoding="utf-8").read()))
+                check(n1 == n0, "倚音不多占词位（带词 %d / 不带词 %d）" % (n1, n0))
+                hw = [w for w in re.findall(r"class='lyric'>([^<]*)<",
+                                            open(ov_html, encoding="utf-8").read())
+                      if w.strip()]
+                check(len(hw) == 7, "7 个真音各一个字（旧版把词错到倚音上，只印 7 个却是错的字）",
+                      "".join(hw))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

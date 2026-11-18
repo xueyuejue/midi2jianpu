@@ -9630,6 +9630,138 @@ int main() {
         check(htmlWords(hm) == xmlWords(renderMusicXml(d, key, &melt)),
               "一字多音下两端仍逐字一致");
     }
+
+    // -------------------------------------------------------------------
+    // 同轨复调：歌词要落到真正写着那个音的那一行（v1.139.0）
+    //
+    // assignLyrics 把一行词铺在「旋律轨的全部音头」上，但三个输出层只给
+    // 声部 1 印词。同轨复调被拆成多行后，落在声部 2/3 上的字一个都印不出来，
+    // 命令行却照报「挂上 N 字」——track_pedal.mid 的 8 个字只印出 3 个。
+    // 现在按音头归行：字随音走，同一个音头两行都有音时只归最靠上的那行，
+    // 一个字也不会画两遍。
+    // -------------------------------------------------------------------
+    std::cout << "\n测试同轨复调的歌词落位 (v1.139.0)\n";
+    {
+        const KeyEstimate key{0, true};
+        auto htmlWords = [](const std::string& s) {
+            std::string out;
+            const std::string tag = "class='lyric'>";
+            size_t p = 0;
+            while ((p = s.find(tag, p)) != std::string::npos) {
+                size_t b = p + tag.size();
+                size_t e = s.find('<', b);
+                if (e == std::string::npos) break;
+                out += s.substr(b, e - b);
+                p = e;
+            }
+            return out;
+        };
+        auto xmlWords = [](const std::string& s) {
+            std::string out;
+            const std::string a = "<text>", b = "</text>";
+            size_t p = 0;
+            while ((p = s.find(a, p)) != std::string::npos) {
+                size_t from = p + a.size();
+                size_t to = s.find(b, from);
+                if (to == std::string::npos) break;
+                out += s.substr(from, to - from);
+                p = to + b.size();
+            }
+            return out;
+        };
+        // 逐字排序后比较：HTML 按声部成块、MusicXML 按小节 + 声部交错，
+        // 两边的整体顺序本就不同，能对齐的是「字都在、且各出现一次」。
+        auto sortedSyl = [](const std::string& s) {
+            std::vector<std::string> v;
+            for (size_t i = 0; i + 3 <= s.size(); i += 3) v.push_back(s.substr(i, 3));
+            std::sort(v.begin(), v.end());
+            std::string out;
+            for (const auto& x : v) out += x;
+            return out;
+        };
+
+        // 一条轨两个声部：声部1 是两个全音符（高音），声部2 是八个四分音符
+        // （低音）。splitVoices 按「交叠」分道，正好分成两行。
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.tempoChanges = {{0, 120.0}};
+        d.trackNames[0] = "Piano";
+        NoteEvent n;
+        n.track = 0; n.channel = 0; n.velocity = 90;
+        n.pitch = 72; n.startTicks = 0;    n.durationTicks = 1920; d.notes.push_back(n);
+        n.pitch = 74; n.startTicks = 1920; n.durationTicks = 1920; d.notes.push_back(n);
+        for (int i = 0; i < 8; i++) {
+            n.pitch = 48 + i;
+            n.startTicks = (long)i * 480;
+            n.durationTicks = 480;
+            d.notes.push_back(n);
+        }
+
+        const std::string plain = renderHtml(d, key, "t");
+        check(occurrences(plain, "class='voiceTag'") == 2,
+              "素材被拆成两个声部（两行都带 voiceTag）");
+        check(htmlWords(plain).empty(), "不带歌词时两行都没有词");
+
+        std::vector<LyricLine> lv = {{0, "甲乙丙丁戊己庚辛"}};
+        const std::string h = renderHtml(d, key, "t", &lv);
+        const std::string x = renderMusicXml(d, key, &lv);
+        check(htmlWords(h).size() == 24,
+              "八行声部合起来一共八个字（旧版只印声部1 上的两个字）：" +
+              std::to_string(htmlWords(h).size() / 3) + " 字");
+        check(sortedSyl(htmlWords(h)) == sortedSyl("甲乙丙丁戊己庚辛"),
+              "八个字一个不少：" + htmlWords(h));
+        check(sortedSyl(xmlWords(x)) == sortedSyl("甲乙丙丁戊己庚辛"),
+              "MusicXML 同样是八个字：" + xmlWords(x));
+        // 同一个音头（tick 0 / 1920）两行都有音，只该印一次
+        check(htmlWords(h).find("甲") != std::string::npos &&
+              htmlWords(h).find("甲", htmlWords(h).find("甲") + 3) == std::string::npos,
+              "同一音头两行都有音时那个字只印一次");
+        check(htmlWords(h).size() == xmlWords(x).size(),
+              "两端字数一致（HTML " + std::to_string(htmlWords(h).size() / 3) +
+              " / XML " + std::to_string(xmlWords(x).size() / 3) + "）");
+
+        // 对照：单声部轨仍是「一音一字」，落位与前两轮完全一样
+        MidiData mono;
+        mono.division = 480;
+        mono.timeSig.valid = true;
+        mono.tempoChanges = {{0, 120.0}};
+        mono.trackNames[0] = "Vocal";
+        for (int i = 0; i < 4; i++) {
+            n.pitch = 60 + i;
+            n.startTicks = (long)i * 480;
+            n.durationTicks = 480;
+            mono.notes.push_back(n);
+        }
+        std::vector<LyricLine> lv1 = {{0, "甲乙丙丁"}};
+        check(htmlWords(renderHtml(mono, key, "t", &lv1)) == "甲乙丙丁",
+              "单声部轨照旧一音一字、按时间顺序（零回归对照）");
+
+        // ---- 倚音不占词位 ----
+        // 倚音是主音前面的装饰，谱面上写成小字上标，不占一列。把它算进音头
+        // 会让整句词从那里往后错开一个音，那个字还谁也印不出来。
+        MidiData g;
+        g.division = 480;
+        g.timeSig.valid = true;
+        g.tempoChanges = {{0, 120.0}};
+        g.trackNames[0] = "Vocal";
+        NoteEvent e;
+        e.track = 0; e.channel = 0; e.velocity = 90;
+        e.pitch = 62; e.startTicks = 0;  e.durationTicks = 30;  g.notes.push_back(e);
+        e.pitch = 64; e.startTicks = 30; e.durationTicks = 480; g.notes.push_back(e);
+        for (int i = 1; i <= 3; i++) {
+            e.pitch = 64 + i * 2;
+            e.startTicks = 30 + (long)i * 480;
+            e.durationTicks = 480;
+            g.notes.push_back(e);
+        }
+        std::vector<LyricLine> lvg = {{0, "甲乙丙丁"}};
+        const std::string hg = renderHtml(g, key, "t", &lvg);
+        const std::string xg = renderMusicXml(g, key, &lvg);
+        check(htmlWords(hg) == "甲乙丙丁",
+              "倚音不占词位，四个字落在四个真音上：" + htmlWords(hg));
+        check(xmlWords(xg) == "甲乙丙丁", "MusicXML 同样四个字：" + xmlWords(xg));
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

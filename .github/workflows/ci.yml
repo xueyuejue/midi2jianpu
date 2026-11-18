@@ -30,7 +30,7 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 2
 
-      - name: 单元测试（1625 项）
+      - name: 单元测试（1635 项）
         working-directory: build
         run: ctest --output-on-failure
 
@@ -135,19 +135,19 @@ jobs:
           python3 tests/check_cli_matrix.py --self-test
           python3 tests/check_cli_matrix.py
 
-      - name: 歌词三端一致（6 项自测 + 8 组素材）
-        # 简谱一列只有一个词位，MusicXML 把该列的歌词写在整列第一个音上，
-        # HTML 的和弦列也只留一个 .lyric。旧版 chordColumn() 的歌词形参一直
-        # 被传空串，「主旋律轨本身就是和弦」的曲子（钢琴独奏 / --track 指到
-        # 伴奏轨）在 HTML 里整行歌词凭空消失，命令行却照报「挂上 N 字」。
-        # 表内素材各带一条自检，否则本闸空转：chord 类要求至少有一个挂着
-        # 词的和弦列；merge 类（同音相接）要求带词时的词位多于不带词时，
-        # 也就是同音合并确实被第二个字的音节挡住了（v1.138.0）。
+      - name: 歌词三端一致（7 项自测 + 13 组素材）
+        # 钉三件事：① HTML 每一行的非空 .lyric 序列 == MusicXML 同一个
+        # <voice> 的 <text> 序列（两边分块方式不同，按行对齐）；② 两边字数
+        # 相同；③ 命令行说「挂上 N 字」时 N 必须等于谱面真正印出来的字数。
+        # 前两轮的缺陷（和弦列丢词 v1.137、带词同音仍合并 v1.138）和这一轮
+        # 的同轨复调副声部丢词 / 倚音占词位都栽在第 ③ 条上。表内素材各带一条
+        # 自检防空转：chord 类要求有挂着词的和弦列，merge 类要求带词时词位更
+        # 多，voice 类要求至少两行挂着词，grace 类要求倚音不多占词位。
         run: |
           python3 tests/check_lyric_sync.py --self-test
           python3 tests/check_lyric_sync.py
 
-      - name: CLI 端到端冒烟（134 组）
+      - name: CLI 端到端冒烟（135 组）
         # 失败项由 tests/ci_report.py 同步写进 annotations 与 step summary。
         run: python3 tests/smoke.py build/midi2jianpu
 

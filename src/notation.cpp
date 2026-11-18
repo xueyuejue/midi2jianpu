@@ -3301,10 +3301,16 @@ LyricAssignment assignLyrics(const MidiData& data,
     // 只统计旋律轨的音头。伴奏的和弦音也在同一 tick 上，混进来会让「一字
     // 多音」的组数翻倍——柱式伴奏三个音就是三个 onset（去重后虽仍是一个，
     // 但换轨会让歌词挂到错误的声部上）。
+    //
+    // 倚音不算音头（v1.139.0）：它是主音前面的装饰，谱面上写成小字上标，
+    // 压根不占一列（三个输出层都跳过它）。把它算进音头会让整句词从那里往后
+    // 错开一个音——那个字还谁也印不出来，命令行却把它记成「挂上」。
+    const ExpressionMap expr(data);
     std::vector<long> onsets;
     long songEnd = 0;
     for (const auto& n : data.notes) {
         if (n.track != mainTrack) continue;
+        if (expr.isGraceNote(n.startTicks, n.channel)) continue;
         onsets.push_back(n.startTicks);
         songEnd = std::max(songEnd, n.startTicks + std::max<long>(n.durationTicks, 1));
     }

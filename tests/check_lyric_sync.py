@@ -1,32 +1,31 @@
 #!/usr/bin/env python3
-"""和弦列的歌词三端一致（v1.137.0）。
+"""三端歌词落位一致：HTML / MusicXML / 命令行统计（v1.137.0 起）。
 
-简谱里一个和弦列只有一个词位，所以 MusicXML 把该列的歌词写在整列的第一个音
-上（`!isChordMember` 分支），HTML 的和弦列也只有一个 `<span class='lyric'>`。
-两端落点本就相同，非空歌词序列必须逐字一致。
+钉三件事：
 
-但 html_writer.cpp 的和弦分支从 v1.8.0 引入和弦竖排起就把 `chordColumn()` 的
-歌词形参写死成空串——那个形参一直没被赋过值。于是「主旋律轨本身就是和弦」的
-曲子（钢琴独奏、人声叠一句双音、或用 `--track` 指到伴奏轨）在 HTML 里整行歌词
-凭空消失，命令行却照样报「挂上 N 字」，三端只剩 MusicXML 留着字：
+  1. **每一行的词序列必须相同**。HTML 按「轨 + 声部」成块，MusicXML 在同一个
+     `<part>` 里按小节 + 声部交错，两边的整体顺序天生不同；能对齐的是每一行
+     （HTML 的 `.track` 块 ↔ MusicXML 的 `<voice>`）内部逐字相同。
+  2. **字数必须相同**。少了是丢词，多了是同一个字被画了两遍。
+  3. **命令行说「挂上 K 字」时，K 必须等于谱面上真正印出来的字数**。前两轮
+     的缺陷都栽在这一点上：字挂在「不印词的那一列」上，统计照算、页面全空。
 
-    pedal.mid --lyrics 甲乙.lrc --html x.html --musicxml x.xml
-    -> 命令行「挂上 2 字」，MusicXML 有 <text>甲</text><text>乙</text>，
-       HTML 两个和弦列的 .lyric 全是空的。
+历史上撞过的三个坑（都已闭环，表内素材分别守着）：
 
-本脚本钉两件事：
+  * v1.137.0 和弦列丢词：`chordColumn()` 的歌词形参被写死成空串，
+    「主旋律轨本身就是和弦」时整行歌词在 HTML 里凭空消失。
+  * v1.138.0 带词的同音仍合并：`5 5` -> `5 -` 之后第二个字的词位没了。
+  * v1.139.0 同轨复调的副声部丢词：`assignLyrics` 把词铺在「旋律轨的全部
+    音头」上，输出层却只给声部 1 印词——`track_pedal.mid` 的 8 个字只印 3 个。
+  * v1.139.0 倚音占词位：倚音不占一列，却算了一个音头，整句词从那里往后错开。
 
-  1. 表内每份素材的 HTML 非空 .lyric 序列必须与 MusicXML 的 <text> 序列逐字
-     相同。
-  2. 每份素材各带一条**自检**，防止本闸空转：
-     - `chord` 类（主旋律轨含和弦列）：至少有一个**挂着词的和弦列**。素材若被
-       换掉、或和弦列重新丢词，这一条会先红。
-     - `merge` 类（主旋律轨含首尾相接的同音）：带词时的词位必须**多于**不带词
-       时，也就是同音合并确实被第二个字的音节挡住了。素材若不再含同音相接，
-       这一条先红。
+每份素材各带一条**自检**，防止本闸空转：
 
-为什么不把全部素材都扫一遍：只有「主旋律轨本身含和弦列」或「含同音相接」的
-素材才会踩到这两条路径，其余素材的歌词序列天然一致，扫了也只是空转。
+  * `chord`：至少有一个**挂着词的和弦列**。素材被换掉、或和弦列重新丢词，
+    这一条先红。
+  * `merge`：带词时的词位必须**多于**不带词时，也就是同音合并确实被第二个
+    字的音节挡住了。
+  * `voice`：至少**两行**挂着词，也就是字确实铺到了副声部上。
 
 用法：
   python tests/check_lyric_sync.py              # 校验表内素材
@@ -52,12 +51,20 @@ CASES = [
     ("parts.mid", ["--track", "2"], "多声部素材里的伴奏轨", "chord"),
     ("retrigger.mid", [], "主旋律轨头两个音同音相接", "merge"),
     ("sample.mid", [], "第 3 小节有一对同音相接", "merge"),
+    ("track_pedal.mid", [], "延音踏板把单线旋律撑成 3 个声部", "voice"),
+    ("poly_gate.mid", [], "同轨两条各 12 音的音线", "voice"),
+    ("stray_pedal.mid", [], "同轨 3 个声部、7 个音头", "voice"),
+    ("port_standard.mid", [], "同轨 2 个声部各 1 个音", "voice"),
+    ("overfull.mid", [], "主旋律轨里有一个倚音", "grace"),
 ]
 
 COL_SPLIT = "<span class='note "
 LYRIC = re.compile(r"class='lyric'>(.*?)</span>")
 XML_TEXT = re.compile(r"<text>(.*?)</text>")
+XML_NOTE = re.compile(r"<note>(.*?)</note>", re.S)
+XML_VOICE = re.compile(r"<voice>(\d+)</voice>")
 SLOT = re.compile(r"class='lyric'>")
+PLACED = re.compile(r"共\s*(\d+)\s*字，挂上\s*(\d+)\s*字")
 
 
 def default_exe():
@@ -75,13 +82,45 @@ def html_columns(body):
     return out
 
 
+def html_rows(body):
+    """HTML 按「轨 + 声部」成块，返回每个块里的非空词序列。"""
+    rows = []
+    for block in body.split("class='track'")[1:]:
+        words = tuple(t for t in LYRIC.findall(block) if t.strip())
+        if words:
+            rows.append(words)
+    return rows
+
+
+def xml_rows(body):
+    """MusicXML 按 `<part>` 分块、块内按 `<voice>` 分组，返回非空词序列。
+
+    单声部 part 不写 `<voice>`（旧版逐字节输出不能变），一律当声部 1。
+    """
+    rows = []
+    for part in body.split("<part ")[1:]:
+        groups = {}
+        order = []
+        for note in XML_NOTE.findall(part):
+            m = XML_TEXT.search(note)
+            if not m or not m.group(1).strip():
+                continue
+            v = XML_VOICE.search(note)
+            key = v.group(1) if v else "1"
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(m.group(1))
+        for key in order:
+            rows.append(tuple(groups[key]))
+    return rows
+
+
 def compare(html_body, xml_body):
-    """返回 (html 非空歌词序列, xml 歌词序列, 挂着词的和弦列数)。"""
-    cols = html_columns(html_body)
-    hw = [t for _, t in cols if t.strip()]
-    chord_lyrics = sum(1 for is_chord, t in cols if is_chord and t.strip())
-    xw = [t for t in XML_TEXT.findall(xml_body) if t.strip()]
-    return hw, xw, chord_lyrics
+    """返回 (html 行序列, xml 行序列, 挂着词的和弦列数)。"""
+    chord_lyrics = sum(1 for is_chord, t in html_columns(html_body)
+                       if is_chord and t.strip())
+    return html_rows(html_body), xml_rows(xml_body), chord_lyrics
 
 
 def slot_count(html_body):
@@ -97,67 +136,91 @@ def make_lrc(path):
 
 
 def self_test():
-    """比对逻辑必须能抓到「HTML 空词 / XML 有词」这一种失败。"""
     fails = 0
-    good_html = ("<span class='note chordcol'><span class='core'><span class='stack'>"
+    good_html = ("<div class='track'>"
+                 "<span class='note chordcol'><span class='core'><span class='stack'>"
                  "<span class='tone'></span></span></span>"
                  "<span class='lyric'>甲</span></span>"
                  "<span class='note quarter'><span class='core'></span>"
                  "<span class='lyric'></span></span>"
                  "<span class='note quarter'><span class='core'></span>"
-                 "<span class='lyric'>乙</span></span>")
-    bad_html = good_html.replace("<span class='lyric'>甲</span>",
-                                 "<span class='lyric'></span>")
-    xml = "<note><lyric><text>甲</text></lyric></note><note><lyric><text>乙</text></lyric></note>"
+                 "<span class='lyric'>乙</span></span>"
+                 "</div>")
+    good_xml = ('<part id="P1">'
+                "<note><lyric><text>甲</text></lyric></note>"
+                "<note><lyric><text>乙</text></lyric></note>"
+                "</part>")
 
-    hw, xw, cl = compare(good_html, xml)
-    if hw == xw == ["甲", "乙"] and cl == 1:
-        print("  [PASS] 正常的和弦列被识别为「挂着词的和弦列」")
-    else:
-        print("  [FAIL] 正常的和弦列未被识别: %r / %r / %d" % (hw, xw, cl))
-        fails += 1
+    def expect(name, cond, extra=""):
+        nonlocal fails
+        if cond:
+            print("  [PASS] " + name)
+        else:
+            print("  [FAIL] " + name + ("  " + extra if extra else ""))
+            fails += 1
 
-    hw, xw, cl = compare(bad_html, xml)
-    if hw != xw:
-        print("  [PASS] 和弦列丢词时序列比对报不一致")
-    else:
-        print("  [FAIL] 和弦列丢词却没被发现: %r / %r" % (hw, xw))
-        fails += 1
-    if cl == 0:
-        print("  [PASS] 丢词后「挂着词的和弦列」计数归零（自检生效）")
-    else:
-        print("  [FAIL] 丢词后计数仍为 %d" % cl)
-        fails += 1
+    hr, xr, cl = compare(good_html, good_xml)
+    expect("正常单声部：两行识别成一条词序列",
+           hr == xr == [("甲", "乙")] and cl == 1, "%r / %r / %d" % (hr, xr, cl))
 
-    # 空列（延续段 / 休止）不该被当成歌词，也不该算进和弦列计数
-    pad = "<span class='note chordcol'><span class='lyric'> </span></span>"
-    hw, xw, cl = compare(pad + good_html, xml)
-    if hw == xw == ["甲", "乙"] and cl == 1:
-        print("  [PASS] 空白歌词列被忽略")
-    else:
-        print("  [FAIL] 空白歌词列干扰了比对: %r / %r / %d" % (hw, xw, cl))
-        fails += 1
+    bad = good_html.replace("<span class='lyric'>甲</span>",
+                            "<span class='lyric'></span>")
+    hr, xr, cl = compare(bad, good_xml)
+    expect("和弦列丢词：行序列不等，且「挂着词的和弦列」归零",
+           hr != xr and cl == 0, "%r / %r / %d" % (hr, xr, cl))
+
+    pad = "<div class='track'><span class='note chordcol'>" \
+          "<span class='lyric'> </span></span></div>"
+    hr, xr, cl = compare(pad + good_html, good_xml)
+    expect("空白歌词列既不算词、也不算和弦列",
+           hr == xr == [("甲", "乙")] and cl == 1, "%r / %r / %d" % (hr, xr, cl))
+
+    # 多声部：HTML 按声部成块、XML 按小节 + 声部交错，整体顺序不同不算错
+    two_html = ("<div class='track'><span class='note quarter'>"
+                "<span class='lyric'>甲</span></span>"
+                "<span class='note quarter'><span class='lyric'>戊</span></span></div>"
+                "<div class='track'><span class='note quarter'>"
+                "<span class='lyric'>乙</span></span>"
+                "<span class='note quarter'><span class='lyric'>己</span></span></div>")
+    two_xml = ('<part id="P1">'
+               "<note><lyric><text>甲</text></lyric></note>"
+               "<note><voice>2</voice><lyric><text>乙</text></lyric></note>"
+               "<note><lyric><text>戊</text></lyric></note>"
+               "<note><voice>2</voice><lyric><text>己</text></lyric></note>"
+               "</part>")
+    hr, xr, _ = compare(two_html, two_xml)
+    expect("多声部：行间顺序不同不算错，按行对齐",
+           sorted(hr) == sorted(xr) == [("乙", "己"), ("甲", "戊")],
+           "%r / %r" % (hr, xr))
+
+    # 副声部丢词（v1.139 的形态）：XML 有两行、HTML 只剩一行
+    drop_html = ("<div class='track'><span class='note quarter'>"
+                 "<span class='lyric'>甲</span></span>"
+                 "<span class='note quarter'><span class='lyric'>戊</span></span></div>"
+                 "<div class='track'><span class='note quarter'>"
+                 "<span class='lyric'></span></span></div>")
+    hr, xr, _ = compare(drop_html, two_xml)
+    expect("副声部丢词：行序列不等",
+           sorted(hr) != sorted(xr), "%r / %r" % (hr, xr))
+
+    # 同一行内部顺序错乱必须报出来（行内是严格序列，不是集合）
+    swap_html = good_html.replace(">甲<", ">TMP<").replace(">乙<", ">甲<") \
+                         .replace(">TMP<", ">乙<")
+    hr, xr, _ = compare(swap_html, good_xml)
+    expect("同一行内两个字对调：行序列不等",
+           hr != xr, "%r / %r" % (hr, xr))
 
     # 词位计数：merge 类用例靠它判「同音合并有没有被抑制」
     merged_html = good_html.replace(
+        "<span class='lyric'>乙</span>",
+        "<span class='lyric'>乙</span></span>"
         "<span class='note quarter'><span class='core'></span>"
-        "<span class='lyric'></span></span>",
-        "<span class='note quarter'><span class='core'></span>"
-        "<span class='lyric'></span></span>"
-        "<span class='note quarter'><span class='core'></span>"
-        "<span class='lyric'>丙</span></span>")
-    if slot_count(good_html) == 3:
-        print("  [PASS] 词位计数只数 class='lyric' 的列")
-    else:
-        print("  [FAIL] 词位计数不对: %d" % slot_count(good_html))
-        fails += 1
-    if slot_count(merged_html) > slot_count(good_html):
-        print("  [PASS] 合并被抑制时词位变多，自检能判出来")
-    else:
-        print("  [FAIL] 词位没变多却判不出差异")
-        fails += 1
+        "<span class='lyric'>丙</span>")
+    expect("词位计数只数 class='lyric' 的列，合并被抑制时变多",
+           slot_count(good_html) == 3 and slot_count(merged_html) > 3,
+           "%d / %d" % (slot_count(good_html), slot_count(merged_html)))
 
-    print("自测 %d 项，失败 %d 项" % (6, fails))
+    print("自测 7 项，失败 %d 项" % fails)
     return fails
 
 
@@ -195,16 +258,35 @@ def main():
             bad += 1
             continue
         checked += 1
-        hbody = open(h, encoding="utf-8").read()
-        hw, xw, cl = compare(hbody, open(x, encoding="utf-8").read())
         tag = "%s %s" % (name, " ".join(flags)) if flags else name
+        hbody = open(h, encoding="utf-8").read()
+        hr, xr, cl = compare(hbody, open(x, encoding="utf-8").read())
+        hn = sum(len(t) for t in hr)
+        xn = sum(len(t) for t in xr)
+
+        if hn != xn:
+            print("[FAIL] %s：HTML %d 字与 MusicXML %d 字不等（%s）"
+                  % (tag, hn, xn, note))
+            bad += 1
+        if sorted(hr) != sorted(xr):
+            print("[FAIL] %s：逐行的词序列不一致（%s）\n       html=%r\n       xml =%r"
+                  % (tag, note, hr, xr))
+            bad += 1
+
+        # 命令行统计与谱面字数必须对得上：这一条正是前两轮缺陷的藏身处
+        out = (r.stdout + r.stderr).decode("utf-8", "replace")
+        m = PLACED.search(out)
+        if m and int(m.group(2)) != hn:
+            print("[FAIL] %s：命令行说「挂上 %s 字」，谱面只有 %d 字（%s）"
+                  % (tag, m.group(2), hn, note))
+            bad += 1
+
         if kind == "chord":
             if cl == 0:
                 print("[FAIL] %s：没有挂着词的和弦列（%s）——本闸空转" % (tag, note))
                 bad += 1
-        else:
-            # merge 类：同一份素材不带词时的词位数必然更少，否则说明它已经
-            # 不含同音相接，这条用例也就测不到东西了。
+        elif kind == "merge":
+            # 同一份素材不带词时的词位数必然更少，否则说明它已经不含同音相接。
             ph = os.path.join(tmp, name.replace(".mid", "_plain.html"))
             subprocess.run([exe, mid, "--html", ph] + flags, capture_output=True)
             if os.path.exists(ph):
@@ -217,9 +299,27 @@ def main():
             else:
                 print("[FAIL] %s：不带词的那份没出谱——本闸空转" % tag)
                 bad += 1
-        if hw != xw:
-            print("[FAIL] %s：HTML 歌词 %r 与 MusicXML %r 不一致" % (tag, hw, xw))
-            bad += 1
+        elif kind == "voice":
+            if len(hr) < 2:
+                print("[FAIL] %s：只有 %d 行挂着词（%s）——副声部的字又没了，"
+                      "本闸空转" % (tag, len(hr), note))
+                bad += 1
+        else:                                   # grace
+            ph = os.path.join(tmp, name.replace(".mid", "_plain.html"))
+            subprocess.run([exe, mid, "--html", ph] + flags, capture_output=True)
+            if not os.path.exists(ph):
+                print("[FAIL] %s：不带词的那份没出谱——本闸空转" % tag)
+                bad += 1
+            else:
+                n0 = slot_count(open(ph, encoding="utf-8").read())
+                n1 = slot_count(hbody)
+                if n1 != n0:
+                    print("[FAIL] %s：带词 %d 个词位、不带词 %d 个（%s）——"
+                          "倚音不该多占一列" % (tag, n1, n0, note))
+                    bad += 1
+                if hn == 0:
+                    print("[FAIL] %s：一个字都没挂上（%s）——本闸空转" % (tag, note))
+                    bad += 1
     print("校验 %d 份素材（%d 组），%d 处不一致" % (checked, len(CASES), bad))
     return 1 if bad else 0
 

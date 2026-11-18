@@ -402,6 +402,26 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
         std::vector<int> voiceChannel(voiceCount, -1);
         for (int v = 0; v < voiceCount; ++v)
             voiceChannel[v] = dominantChannel(voiceNotes[v]);
+
+        // 歌词挂在哪个 <voice>：每个音头归「该音头上最靠上的那一行」，与 HTML
+        // 的 wordVoice 是同一张表。早先写死 voice == 0，同轨复调里副声部的字
+        // 一个都不写（HTML 也只给声部 1 印），命令行却照报「挂上 N 字」。
+        // 按音头归行之后字随音走；同一个音头两行都有音时只归最靠上的那行，
+        // 一个字不会写成两份。
+        std::map<long, int> wordVoice;
+        if (t == mainTrack) {
+            for (int v = 0; v < voiceCount; ++v)
+                for (const auto& n : voiceNotes[v]) {
+                    auto wit = wordVoice.find(n.startTicks);
+                    if (wit == wordVoice.end() || v < wit->second)
+                        wordVoice[n.startTicks] = v;
+                }
+        }
+        auto ownsWord = [&](long tick, int voice) {
+            if (lyrics.empty()) return false;
+            auto wit = wordVoice.find(tick);
+            return wit != wordVoice.end() && wit->second == voice;
+        };
         // 每个 <voice> 归属哪个谱表：取该声部音符的多数音高侧（≥中音 C 在高音
         // 谱表 = 1，否则低音谱表 = 2）。大谱表下演奏记号要按此标 <staff>。
         std::vector<int> voiceStaff(voiceCount, 1);
@@ -1029,7 +1049,7 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             // 一个字唱多个音时：首音 syllabic=begin + slur start，中间音
             // middle，末音 end + slur stop；一音一字则写 single。
             std::string lyricXml, slurXml;
-            if (!lyrics.empty() && seg.voice == 0 && !seg.tieEnd && !isChordMember) {
+            if (ownsWord(seg.start, seg.voice) && !seg.tieEnd && !isChordMember) {
                 auto pit = lyrics.at.find(seg.start);
                 if (pit != lyrics.at.end()) {
                     const LyricPlacement& pl = pit->second;
