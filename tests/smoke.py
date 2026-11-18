@@ -5385,6 +5385,36 @@ def main():
     check("延音踏板：补长 1 个音（2 个踏板事件）" in open(ph121, encoding="utf-8").read(),
           "CC121 释放后诊断文字与标准踏板抬起同口径", err_a[:160])
 
+    group("[128] v1.132.0 播放器曲首无 set_tempo 时不再整体偏移")
+    # 曲首 0 无速度点，tick 960 才写 60BPM。旧 secAt 把首点当曲首速度，
+    # 0..960 段被按 60BPM 换算，整首秒数偏移 +1 秒（权威 120BPM 默认）。
+    late = os.path.join(tmp, "tempo_late.mid")
+    late_evs = [
+        b"\x00\x90\x3c\x60",                       # 0 拍起 C4
+        _vlq(960) + b"\xff\x51\x03\x0f\x42\x40",   # tick 960 写 1000000us (60BPM)
+        _vlq(960) + b"\x80\x3c\x00",               # tick 1920 停 C4
+        b"\x00\xff\x2f\x00",
+    ]
+    with open(late, "wb") as f:
+        f.write(b"MThd" + struct.pack(">IHHH", 6, 0, 1, 480) + _trk(late_evs))
+    lh = os.path.join(tmp, "tempo_late.html")
+    rc, out, err = run(exe, late, "--html", lh, "--player")
+    check(rc == 0 and os.path.exists(lh),
+          "曲首无 set_tempo 的样本正常出谱", "rc=%d %s" % (rc, err[:200]))
+    if os.path.exists(lh):
+        html = open(lh, encoding="utf-8").read()
+        pm = re.search(r"var M2J_PLAY = (\{.*?\});\r?\n", html, re.S)
+        play = json.loads(pm.group(1)) if pm else {}
+        ptempo = play.get("tempo") or [[0, 500000]]
+        check(len(ptempo) >= 1 and ptempo[0][0] == 960,
+              "PLAY 的 tempo 首点确实落在 tick 960（曲首无速度点）",
+              "tempo=%s" % (ptempo[:3],))
+        check("var out = [[0, 0.0, 500000.0]]" in html and
+              "if (segs[mid][0] <= tick) lo = mid; else hi = mid;" in html,
+              "播放器预编译速度分段表，曲首默认 500000us 且按段查找")
+        check("var s = 0, prev = 0, us = tempo[0][1]" not in html,
+              "旧的「首速度点当曲首速度」线性换算已移除")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

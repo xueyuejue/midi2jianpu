@@ -9215,6 +9215,30 @@ int main() {
               sh.find("now > evts.length") == std::string::npos,
               "不再拿排序后末尾事件 / 事件个数当停止时刻");
     }
+    // v1.132.0 --player 的 secAt 必须用与 C++ TempoTimeline 同源的分段表：
+    // 曲首默认 500000us，速度点只在自身 tick 起生效。旧版 us 初值取
+    // tempo[0][1]，曲首无 set_tempo 时（首点落在 tick N>0）把 0..N 段
+    // 按后面的速度换算，整首秒数整体偏移（探针实测 +1 秒）。
+    {
+        MidiData sd;
+        sd.division = 480;
+        sd.timeSig.valid = true;
+        NoteEvent n;
+        n.track = 1; n.channel = 0; n.startTicks = 0;
+        n.durationTicks = 480; n.pitch = 60;
+        sd.notes.push_back(n);
+        // 第一个速度点落在 tick 960（曲首 0 没有 set_tempo）
+        sd.tempoChanges.push_back({960, 60.0});
+        const std::string sh = renderHtml(sd, estimateKey(sd), "t", nullptr, true);
+        check(sh.find("var out = [[0, 0.0, 500000.0]]") != std::string::npos,
+              "播放器预编译速度分段表，曲首默认 500000us(120BPM)");
+        check(sh.find("if (segs[mid][0] <= tick) lo = mid; else hi = mid;") != std::string::npos,
+              "secAt 二分查找所在速度分段（速度点只在自身 tick 起生效）");
+        check(sh.find("if (out[out.length - 1][0] === cur) out[out.length - 1][2] = us;") != std::string::npos,
+              "同 tick 速度点后写覆盖，与 C++ TempoTimeline 同源");
+        check(sh.find("var s = 0, prev = 0, us = tempo[0][1]") == std::string::npos,
+              "不再把首速度点当曲首默认速度");
+    }
     // -------------------------------------------------------------------
     // MusicXML 谱头速度必须与文本谱 / HTML 同源（v1.130.0）
     // 旧实现谱头读 data.tempo——解析层取「排序后第一个有效点」，同 tick

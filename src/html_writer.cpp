@@ -311,16 +311,40 @@ static std::string playerBlock(const std::string& playJson) {
   var div = P.division > 0 ? P.division : 480;
   var tempo = (P.tempo && P.tempo.length) ? P.tempo : [[0, 500000]];
 
-  function secAt(tick) {
-    var s = 0, prev = 0, us = tempo[0][1] > 0 ? tempo[0][1] : 500000;
+  // 速度分段表，与 C++ TempoTimeline 完全同源：曲首默认 500000us(120BPM)，
+  // 每个速度点只在自己所在 tick 起生效，同 tick 后写覆盖，非法点丢弃。
+  // 旧版把 tempo[0][1] 当曲首速度：曲首没有 set_tempo、第一个点落在 tick N>0 时，
+  // 0..N 这段会被错按后面的速度换算，整首时长整体偏移（.probe/probe_secat_late.mjs）。
+  var segs = (function () {
+    var out = [[0, 0.0, 500000.0]];    // [tick, 该段起始秒, usPerQuarter]
+    var uniq = [];
     for (var i = 0; i < tempo.length; i++) {
-      var seg = tempo[i];
-      if (seg[0] > tick) break;
-      s += (seg[0] - prev) / div * us / 1e6;
-      prev = seg[0];
-      if (seg[1] > 0) us = seg[1];
+      var p = tempo[i];
+      if (!(p[1] > 0) || p[0] < 0) continue;
+      if (uniq.length && uniq[uniq.length - 1][0] === p[0]) uniq[uniq.length - 1] = p;
+      else uniq.push(p);
     }
-    return s + (tick - prev) / div * us / 1e6;
+    var sec = 0.0, cur = 0;
+    for (var i = 0; i < uniq.length; i++) {
+      var t = uniq[i][0], us = uniq[i][1];
+      sec += (t - cur) * out[out.length - 1][2] / 1e6 / div;
+      cur = t;
+      if (out[out.length - 1][0] === cur) out[out.length - 1][2] = us;
+      else out.push([cur, sec, us]);
+    }
+    return out;
+  })();
+
+  function secAt(tick) {
+    var head = segs[0];
+    if (tick <= head.tick) return head[1] + (tick - head.tick) * head[2] / 1e6 / div;
+    var lo = 0, hi = segs.length;
+    while (lo + 1 < hi) {
+      var mid = (lo + hi) >> 1;
+      if (segs[mid][0] <= tick) lo = mid; else hi = mid;
+    }
+    var s = segs[lo];
+    return s[1] + (tick - s[0]) * s[2] / 1e6 / div;
   }
 
   var lastEnd = 0;
