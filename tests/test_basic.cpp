@@ -9890,6 +9890,82 @@ int main() {
               "整份谱三列，没有补出多余的休止列，实际: " +
                   std::to_string(totalCols));
     }
+    // ---- v1.145.0 --no-dynamics 不许抹掉 MusicXML 的速度 ----
+    // 速度记号原先整块长在 emitDirections 里，而那个 lambda 的第一句是
+    // `if (!expr.enabled()) return;`。于是关掉表情连速度轨一起没了：谱头印着
+    // ♩=120，中途的 90 / 60 与 rit. 全被抹掉，MuseScore 一律按 120 播到底。
+    {
+        auto countOf = [](const std::string& s, const std::string& sub) {
+            size_t n = 0, pos = 0;
+            while ((pos = s.find(sub, pos)) != std::string::npos) {
+                n++; pos += sub.size();
+            }
+            return n;
+        };
+        const KeyEstimate key{0, true};
+
+        // 1) 两处阶跃变速 + 三档力度
+        MidiData d;
+        d.division = 480;
+        d.timeSig = TimeSignature{4, 2, true};
+        d.tempoChanges = {{0, 120.0}, {1920, 90.0}, {3840, 60.0}};
+        d.trackNames[0] = "Piano";
+        NoteEvent n;
+        n.track = 0; n.channel = 0; n.velocity = 96;
+        n.durationTicks = 480; n.startSeconds = 0; n.durationSeconds = 0.5;
+        for (int i = 0; i < 16; i++) {
+            n.pitch = 60 + (i % 4);
+            n.startTicks = i * 480;
+            d.notes.push_back(n);
+        }
+        d.dynamics = {{0, 20, 0}, {1920, 100, 0}, {3840, 60, 0}};
+
+        const std::string on = renderMusicXml(d, key);
+        MidiData off = d;
+        off.useDynamics = false;
+        const std::string no = renderMusicXml(off, key);
+
+        check(countOf(on, "<sound tempo=") == 3,
+              "开启表情时谱头 + 两处变速共 3 条 <sound tempo>，实际: " +
+                  std::to_string(countOf(on, "<sound tempo=")));
+        check(countOf(no, "<sound tempo=") == countOf(on, "<sound tempo="),
+              "--no-dynamics 后速度一条不少（旧版只剩谱头 1 条），实际: " +
+                  std::to_string(countOf(no, "<sound tempo=")));
+        check(countOf(no, "<metronome>") == 3,
+              "三条 <metronome> 都还在，实际: " +
+                  std::to_string(countOf(no, "<metronome>")));
+        check(no.find("<per-minute>90</per-minute>") != std::string::npos &&
+                  no.find("<per-minute>60</per-minute>") != std::string::npos,
+              "中途变速 90 / 60 仍在（旧版连它们一起被抹掉）");
+        check(countOf(on, "<dynamics>") > 0 && countOf(no, "<dynamics>") == 0,
+              "力度记号照旧被 --no-dynamics 关掉（本轮只放行速度）");
+
+        // 2) 渐慢：rit. 的 <words> 与落定处的终点速度也是速度，不是表情
+        MidiData r;
+        r.division = 480;
+        r.timeSig = TimeSignature{4, 2, true};
+        r.trackNames[0] = "Piano";
+        r.tempoChanges.push_back({0, 120.0});
+        for (int k = 0; k <= 12; k++)
+            r.tempoChanges.push_back({1920 + k * 240,
+                                      120.0 - 60.0 * (double)k / 12.0});
+        for (int i = 0; i < 24; i++) {
+            n.pitch = 60 + (i % 5);
+            n.startTicks = i * 240;
+            r.notes.push_back(n);
+        }
+        MidiData roff = r;
+        roff.useDynamics = false;
+        const std::string rx = renderMusicXml(r, key);
+        const std::string rn = renderMusicXml(roff, key);
+        check(countOf(rn, "<sound tempo=") == countOf(rx, "<sound tempo="),
+              "渐慢的每一条 <sound tempo> 都保留（含落定处的终点速度），实际: " +
+                  std::to_string(countOf(rn, "<sound tempo=")) + " vs " +
+                  std::to_string(countOf(rx, "<sound tempo=")));
+        check(rn.find("<words>rit.</words>") != std::string::npos,
+              "渐慢的 rit. 文字记号仍在（它是速度，不在 --no-dynamics 的范围内）");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

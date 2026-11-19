@@ -69,7 +69,7 @@ static void printHelp() {
         "  midi2jianpu <input.mid> --no-key-changes 忽略中途转调(全曲按一个调记谱)\n"
         "  midi2jianpu <input.mid> --gong C        手动指定五声调式的宫音(简谱 1)\n"
         "  midi2jianpu <input.mid> --no-pentatonic  关闭五声调式宫音自动校正\n"
-        "  midi2jianpu <input.mid> --no-dynamics   不写力度/断音/滑音/段落等演奏记号\n"
+        "  midi2jianpu <input.mid> --no-dynamics   不写力度/断音/滑音/段落等演奏记号(速度记号照写)\n"
         "  midi2jianpu <input.mid> --soft-pedal-scale 0.5  软踏板力度衰减系数(0~1, 默认 0.7)\n"
         "  midi2jianpu <input.mid> --no-soft-pedal   关闭 CC67 软踏板(还原被强制压暗的弱奏曲)\n"
         "  midi2jianpu <input.mid> --no-quantize    关闭时值量化(保留 MIDI 原始时长)\n"

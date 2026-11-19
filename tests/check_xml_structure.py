@@ -289,7 +289,7 @@ def structural_regress(old_exe, new_exe):
     <staff> 行（<note> 里的 <staff> 是大谱表游标语义，保留不动），其余
     结构一个字节都不许动。
     """
-    errors, changed, notes = [], [], []
+    errors, changed = [], []
     line = regress_skip.note()
     if line:
         print(line)
@@ -302,12 +302,6 @@ def structural_regress(old_exe, new_exe):
             n = render(new_exe, mid, td, "new")
             for i, ext in enumerate(("txt", "html", "xml")):
                 a, b = o[i], n[i]
-                if ext == "html" and regress_skip.html_changed(mid):
-                    # v1.144.0：倚音前的空拍补成休止列，HTML 有意变化；
-                    # txt / xml 仍逐字节比对，HTML 由 check_html_bars.py 逐
-                    # 小节证明只多出休止列。
-                    notes.append(name)
-                    continue
                 if ext != "xml":
                     # 打印块只决定纸面观感，跨版本比对时摘掉（v1.78.0
                     # 压深了 .barno/.footer 的打印色，由 smoke [91] 守）。
@@ -320,9 +314,6 @@ def structural_regress(old_exe, new_exe):
                 if a != b:
                     changed.append(name + "." + ext)
                     errors.append("%s: %s 与旧版不一致" % (name, ext))
-    if notes:
-        print("[NOTE] 本轮 HTML 有意变化的素材（只比 txt/xml）：%s"
-              % " / ".join(sorted(set(notes))))
     return changed, errors
 
 

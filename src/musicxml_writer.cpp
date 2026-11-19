@@ -723,6 +723,82 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             return voiceStaff[voice];
         };
 
+        // 速度记号（♩=N / rit. / accel.）与段落名原来整块长在
+        // emitDirections 里，而 emitDirections 的第一句就是
+        // `if (!expr.enabled()) return;`。于是 --no-dynamics 把整条速度轨
+        // 一起抹掉：txt 与 HTML 一字节不变，MusicXML 却少掉 <metronome> /
+        // <sound tempo>（midtempo.mid 4->1，tempo_ramp.mid 6->1 且
+        // rit./accel. 全丢）。速度是回放速度，不是演奏记号——帮助文案列的
+        // 是「力度/断音/滑音/段落」，从没提速度。少了它，任何 MusicXML
+        // 播放器都按默认 120 一路到底，跟谱头印的速度自相矛盾。
+        // 所以单独抽成这一支：表情开关只管表情，速度照写。段落名本就在
+        // 文档划定的关闭范围内，expr 关掉后 inRange 返回空表，自然不再写。
+        auto emitTempoDirections = [&](int bar, int ch) {
+            const long bs = grid.barStart(bar), be = grid.barEnd(bar);
+            // 速度记号：阶跃写 ♩=N；渐变写 rit. / accel.，并在它落定的
+            // 小节补一个终点速度（初始速度已在 emitAttributes 写）。
+            //
+            // 变速点很少正好落在小节线上：DAW 导出的 tempo map 常在
+            // 第 3 拍、渐慢的落定点也常在小节中途。旧实现一律写在小节
+            // 开头，MuseScore 于是把整小节都按新速度播放，前半小节被
+            // 提前变速。这里用 <offset>（单位 = divisions，即 tick）
+            // 把落点写回小节内的真实位置；正好落在小节线时不写，既有
+            // 素材输出逐字节不变。
+            auto tempoOffset = [&](long tick, bool ownLine) -> std::string {
+                const long off = tick - bs;
+                // 落在小节线上时返回空串：两种旧排版（阶跃 / 渐变落定
+                // 的 <sound> 紧贴 </direction-type>，rit. 起点的 <sound>
+                // 另起一行）逐字节保留，既有素材输出才不会变。
+                if (off <= 0) return ownLine ? "\n        " : std::string();
+                return "\n        <offset>" + std::to_string(off)
+                     + "</offset>\n        ";
+            };
+            if (auto it = rampStartAtBar.find(bar); it != rampStartAtBar.end()) {
+                const TempoMark& m = *it->second;
+                const char* word = (m.kind == TempoMarkKind::Ritardando)
+                                 ? "rit." : "accel.";
+                xml << "      <direction placement=\"above\">\n"
+                    << "        <direction-type><words>" << word
+                    << "</words></direction-type>"
+                    << tempoOffset(m.tick, true)
+                    << "<sound tempo=\"" << m.bpm << "\"/>\n"
+                    << "      </direction>\n";
+            }
+            if (auto it = stepAtBar.find(bar); it != stepAtBar.end()) {
+                // 同小节的多个阶跃各写一条，位置由各自的 <offset> 决定。
+                for (const TempoMark* sm : it->second) {
+                    xml << "      <direction placement=\"above\">\n"
+                        << "        <direction-type><metronome>"
+                        << "<beat-unit>quarter</beat-unit>"
+                        << "<per-minute>" << sm->bpm << "</per-minute>"
+                        << "</metronome></direction-type>"
+                        << tempoOffset(sm->tick, false)
+                        << "<sound tempo=\"" << sm->bpm << "\"/>\n"
+                        << "      </direction>\n";
+                }
+            } else if (auto rit = rampEndAtBar.find(bar); rit != rampEndAtBar.end() &&
+                       rampStartAtBar.find(bar) == rampStartAtBar.end()) {
+                // 渐变落定：写终点速度，MuseScore 播放在这里跳到目标 BPM。
+                // 与它同小节已有的阶跃记号不重复写（阶跃更权威）。
+                const TempoMark& m = *rit->second;
+                xml << "      <direction placement=\"above\">\n"
+                    << "        <direction-type><metronome>"
+                    << "<beat-unit>quarter</beat-unit>"
+                    << "<per-minute>" << m.toBpm << "</per-minute>"
+                    << "</metronome></direction-type>"
+                    << tempoOffset(m.endTick, false)
+                    << "<sound tempo=\"" << m.toBpm << "\"/>\n"
+                    << "      </direction>\n";
+            }
+            for (const auto& m : expr.inRange(bs, be, ch)) {
+                if (!m.section.empty())
+                    xml << "      <direction placement=\"above\">\n"
+                        << "        <direction-type><words>"
+                        << xmlEscape(m.section) << "</words></direction-type>\n"
+                        << "      </direction>\n";
+            }
+        };
+
         // 演奏表情写进 <direction>：必须排在 <attributes> 之后、第一个
         // <note> 之前，MuseScore 才会把它显示在小节上方而不是吞掉。
         // 每个 <voice> 各按自己的主导通道写力度与楔形、各记一份 lastDyn：
@@ -730,7 +806,13 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
         // MusicXML 4.0 的 <direction> 子元素顺序是 direction-type+ →
         // offset? → voice? → staff? → sound?，<voice> 只能插在 sound 之前。
         auto emitDirections = [&](int bar) {
-            if (!expr.enabled()) return;
+            // --no-dynamics：表情与段落全免，速度必须照写（见上）。这里不能
+            // 直接 return，否则又把速度轨一起吞掉——本轮修的正是这一处。
+            if (!expr.enabled()) {
+                if (partIdx == 1)
+                    emitTempoDirections(bar, voiceChannel.empty() ? -1 : voiceChannel[0]);
+                return;
+            }
             const long bs = grid.barStart(bar), be = grid.barEnd(bar);
             const int vmax = (int)voiceChannel.size();
             for (int v = 0; v < vmax; ++v) {
@@ -780,72 +862,9 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                         << "      </direction>\n";
                     lastDyn[v] = m.dynamic;
                 }
-                // 段落名 / 速度变化属于整份谱，只在第一个 part 的第一个
-                // 声部写一次；力度与渐强渐弱按各自声部的通道写。
-                if (partIdx == 1 && v == 0) {
-                    // 速度记号：阶跃写 ♩=N；渐变写 rit. / accel.，并在它落定的
-                    // 小节补一个终点速度（初始速度已在 emitAttributes 写）。
-                    //
-                    // 变速点很少正好落在小节线上：DAW 导出的 tempo map 常在
-                    // 第 3 拍、渐慢的落定点也常在小节中途。旧实现一律写在小节
-                    // 开头，MuseScore 于是把整小节都按新速度播放，前半小节被
-                    // 提前变速。这里用 <offset>（单位 = divisions，即 tick）
-                    // 把落点写回小节内的真实位置；正好落在小节线时不写，既有
-                    // 素材输出逐字节不变。
-                    auto tempoOffset = [&](long tick, bool ownLine) -> std::string {
-                        const long off = tick - bs;
-                        // 落在小节线上时返回空串：两种旧排版（阶跃 / 渐变落定
-                        // 的 <sound> 紧贴 </direction-type>，rit. 起点的 <sound>
-                        // 另起一行）逐字节保留，既有素材输出才不会变。
-                        if (off <= 0) return ownLine ? "\n        " : std::string();
-                        return "\n        <offset>" + std::to_string(off)
-                             + "</offset>\n        ";
-                    };
-                    if (auto it = rampStartAtBar.find(bar); it != rampStartAtBar.end()) {
-                        const TempoMark& m = *it->second;
-                        const char* word = (m.kind == TempoMarkKind::Ritardando)
-                                         ? "rit." : "accel.";
-                        xml << "      <direction placement=\"above\">\n"
-                            << "        <direction-type><words>" << word
-                            << "</words></direction-type>"
-                            << tempoOffset(m.tick, true)
-                            << "<sound tempo=\"" << m.bpm << "\"/>\n"
-                            << "      </direction>\n";
-                    }
-                    if (auto it = stepAtBar.find(bar); it != stepAtBar.end()) {
-                        // 同小节的多个阶跃各写一条，位置由各自的 <offset> 决定。
-                        for (const TempoMark* sm : it->second) {
-                            xml << "      <direction placement=\"above\">\n"
-                                << "        <direction-type><metronome>"
-                                << "<beat-unit>quarter</beat-unit>"
-                                << "<per-minute>" << sm->bpm << "</per-minute>"
-                                << "</metronome></direction-type>"
-                                << tempoOffset(sm->tick, false)
-                                << "<sound tempo=\"" << sm->bpm << "\"/>\n"
-                                << "      </direction>\n";
-                        }
-                    } else if (auto rit = rampEndAtBar.find(bar); rit != rampEndAtBar.end() &&
-                               rampStartAtBar.find(bar) == rampStartAtBar.end()) {
-                        // 渐变落定：写终点速度，MuseScore 播放在这里跳到目标 BPM。
-                        // 与它同小节已有的阶跃记号不重复写（阶跃更权威）。
-                        const TempoMark& m = *rit->second;
-                        xml << "      <direction placement=\"above\">\n"
-                            << "        <direction-type><metronome>"
-                            << "<beat-unit>quarter</beat-unit>"
-                            << "<per-minute>" << m.toBpm << "</per-minute>"
-                            << "</metronome></direction-type>"
-                            << tempoOffset(m.endTick, false)
-                            << "<sound tempo=\"" << m.toBpm << "\"/>\n"
-                            << "      </direction>\n";
-                    }
-                    for (const auto& m : expr.inRange(bs, be, ch)) {
-                        if (!m.section.empty())
-                            xml << "      <direction placement=\"above\">\n"
-                                << "        <direction-type><words>"
-                                << xmlEscape(m.section) << "</words></direction-type>\n"
-                                << "      </direction>\n";
-                    }
-                }
+                // 速度与段落名属于整份谱，只在第一个 part 的第一个声部写
+                // 一次；力度与渐强渐弱按各自声部的通道写。
+                if (partIdx == 1 && v == 0) emitTempoDirections(bar, ch);
                 // 渐强渐弱是通道级演奏表情：每个 part / 每个 voice 按自己的
                 // 主导通道各写一份，方向记号用 <voice> 标明归属。
                 // 一条楔形必须落同一谱表：以起点音头所在谱表为锚，stop 复用

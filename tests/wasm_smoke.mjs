@@ -3257,6 +3257,40 @@ if (existsSync(twoLyrics76)) {
   }
 }
 
+// ---- 90. v1.145.0 --no-dynamics 不再抹掉 MusicXML 的速度 ----
+// 速度记号原先整块长在 emitDirections 里，而那个 lambda 的第一句就是
+// `if (!expr.enabled()) return;`。网页端勾掉「力度与演奏法」后，MusicXML
+// 里的 <metronome> / <sound tempo> 跟着一起消失（midtempo.mid 4 -> 1），
+// 导进 MuseScore 一律按 120 播到底。速度是回放速度，不是演奏法。
+{
+  const temposOf = (frame, name) => {
+    const midi = new Uint8Array(readFileSync(path.join(FIXTURES, name)));
+    const p = mod._malloc(midi.length);
+    mod.HEAPU8.set(midi, p);
+    const xml = mod.UTF8ToString(
+      mod._midi2jianpu_musicxml(p, midi.length, frame[0], frame[1])) || '';
+    mod._free(p);
+    return [...xml.matchAll(/<sound tempo="(\d+)"\/>/g)].map((m) => m[1]).join(',');
+  };
+  for (const [name, want] of
+       [['midtempo.mid', '120,90,60,120'], ['tempo_ramp.mid', '']]) {
+    mod._midi2jianpu_set_use_dynamics(1);
+    const on = temposOf([-1, 1], name);
+    mod._midi2jianpu_set_use_dynamics(0);
+    const off = temposOf([-1, 1], name);
+    mod._midi2jianpu_set_use_dynamics(1);
+    check(on === off, `${name} 网页关掉「力度与演奏法」后速度序列一字不差`,
+      `${on} vs ${off}`);
+    if (want) {
+      check(off === want,
+        `${name} 的 120→90→60→120 全在（旧版只剩 120）`, off);
+    } else {
+      check(off.split(',').length === 6,
+        `${name} 六条速度全在（旧版 1 条）`, off);
+    }
+  }
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

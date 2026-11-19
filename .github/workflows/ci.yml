@@ -30,7 +30,7 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 2
 
-      - name: 单元测试（1655 项）
+      - name: 单元测试（1662 项）
         working-directory: build
         run: ctest --output-on-failure
 
@@ -117,6 +117,16 @@ jobs:
           python3 tests/check_xml_structure.py --self-test
           python3 tests/check_xml_structure.py
 
+      - name: 速度记号不受表情开关影响（10 项自测 + 109 份素材）
+        # 速度是回放速度，不是演奏记号。v1.144.0 之前它整块长在
+        # emitDirections 里，而那个 lambda 第一句是 `if (!expr.enabled())
+        # return;`——关掉表情，速度跟着一起没了（midtempo.mid 4 → 1），
+        # 导进 MuseScore 一律按 120 播到底。这里对每份素材各导一次 MusicXML
+        # （开 / 关表情），要求抽出的速度方向块序列逐字相同。
+        run: |
+          python3 tests/check_xml_tempo.py --self-test
+          python3 tests/check_xml_tempo.py
+
       - name: HTML 试听播放器（42 项自测 + 109 份素材 + 组合矩阵）
         # --player 必须只加播放数据与高亮锚点，不改谱面本身；不带开关时
         # 输出里不得残留 script / data-t / playerbar 任何痕迹。
@@ -202,5 +212,5 @@ jobs:
         # 五处导出符号没有漂移，不编译、不加载 wasm。
         run: python3 tests/check_wasm_exports.py
 
-      - name: WASM 产物冒烟（89 组，含版本号守护）
+      - name: WASM 产物冒烟（90 组，含版本号守护）
         run: node tests/wasm_smoke.mjs

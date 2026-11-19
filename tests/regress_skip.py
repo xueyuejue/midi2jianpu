@@ -31,18 +31,11 @@ import os
 # 的每一份基线，旧版对它的三端输出与新版一致，本就该参与逐字节比对。
 NEW_FIXTURES = {"pitch0.mid"}
 
-# v1.144.0 起，`--regress` 里允许 HTML 有意变化的两份**既有**素材：倚音前面
-# 那段空拍补成了休止列（parts.mid 的 [C] 和弦记号随之前移到新的 0 列上）。
-# 它们的 txt / xml 仍要求逐字节不变；HTML 的变化由 tests/check_html_bars.py
-# 逐小节证明「只多出休止列、列起点与小节起点对齐」。
-# 下一轮基线已含 v1.144.0 的输出，届时本表应清空（届时它们会照常参与比对）。
-HTML_CHANGED = {"parts.mid", "overfull.mid"}
-
-
-def html_changed(path):
-    """该素材的 HTML 是否允许在本轮 `--regress` 里有意变化。"""
-    return os.path.basename(str(path)) in HTML_CHANGED
-
+# v1.144.0 曾经有一张 HTML_CHANGED = {"parts.mid", "overfull.mid"}：那一版把
+# 倚音前面的空拍补成休止列，`--regress` 对这两份既有素材放行了「HTML 有意
+# 变化」。v1.145.0 的基线已经包含 v1.144 的输出，它们不再特殊——该机制连同
+# 两个守卫里的分支一并删除，恢复逐字节比对。以后若再有「本轮就是要改 HTML」
+# 的修复，按同样办法临时开一张表，并在下一轮基线里清掉。
 
 def skip(path):
     """该素材是否跳过零回归比对（本轮新增）。"""

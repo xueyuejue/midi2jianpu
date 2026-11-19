@@ -5841,6 +5841,48 @@ def main():
         check(want_text in out,
               "%s 同一小节文本谱仍是 %s" % (name, want_text))
 
+    group("[139] v1.145.0 --no-dynamics 不再抹掉 MusicXML 的速度")
+    # 速度记号原来整块长在 emitDirections 里，而那个 lambda 的第一句是
+    # `if (!expr.enabled()) return;`。于是关掉表情连速度轨一起没了：
+    # midtempo.mid 的 <sound tempo> 4 -> 1（120→90→60→120 只剩谱头 120）、
+    # tempo_ramp.mid 6 -> 1 且 rit./accel. 全丢，导进 MuseScore 一律按 120
+    # 播到底，跟谱头印着的速度自相矛盾。txt / HTML 完全不受影响，只有
+    # MusicXML 变——三端分歧就在这儿。
+    # 守两件事：开 / 关表情抽出来的速度序列逐字相同；表情本身照旧被关掉。
+    tempo_re = re.compile(r'<sound tempo="(\d+)"/>')
+    for name in ("midtempo.mid", "tempo_ramp.mid", "sample.mid"):
+        mid = os.path.join(FIXTURES, name)
+        if not os.path.exists(mid):
+            check(False, "素材 %s 存在（先跑 make_fixture.py）" % name)
+            continue
+        xa = os.path.join(tmp, name + ".on.xml")
+        xb = os.path.join(tmp, name + ".off.xml")
+        r1, _, e1 = run(exe, mid, "--musicxml", xa)
+        r2, _, e2 = run(exe, mid, "--musicxml", xb, "--no-dynamics")
+        check(r1 == 0 and r2 == 0, "%s 开 / 关表情都能出谱" % name,
+              "rc=%d/%d %s%s" % (r1, r2, e1[:100], e2[:100]))
+        if r1 != 0 or r2 != 0:
+            continue
+        a = open(xa, encoding="utf-8").read()
+        b = open(xb, encoding="utf-8").read()
+        ta, tb = tempo_re.findall(a), tempo_re.findall(b)
+        check(ta == tb, "%s 关掉表情后速度序列一字不差" % name,
+              "%r vs %r" % (ta, tb))
+        if name == "midtempo.mid":
+            check(tb == ["120", "90", "60", "120"],
+                  "midtempo 的 120→90→60→120 全在（旧版只剩 120）", "%r" % (tb,))
+        elif name == "tempo_ramp.mid":
+            check(len(tb) == 6 and "<words>rit.</words>" in b
+                  and "<words>accel.</words>" in b,
+                  "tempo_ramp 的六条速度与 rit./accel. 全在（旧版 1 条、文字全丢）",
+                  "%d 条 %r" % (len(tb), tb))
+        else:
+            check(a.count("<dynamics>") > 0 and b.count("<dynamics>") == 0,
+                  "力度记号照旧被关掉（本轮只放行速度）",
+                  "%d -> %d" % (a.count("<dynamics>"), b.count("<dynamics>")))
+            check("Intro" in a and "Intro" not in b,
+                  "段落名照旧被关掉（它本来就在 --no-dynamics 范围内）")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")
