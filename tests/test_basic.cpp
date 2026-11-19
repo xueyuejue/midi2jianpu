@@ -9805,6 +9805,43 @@ int main() {
         check(htmlWords(hg) == "甲乙丙丁",
               "倚音不占词位，四个字落在四个真音上：" + htmlWords(hg));
         check(xmlWords(xg) == "甲乙丙丁", "MusicXML 同样四个字：" + xmlWords(xg));
+
+        // ---- 合法 MIDI 音高 0 也挂词（v1.141.0）----
+        // 早期 HTML 渲染器拿 pitch 0 当休止符占位，留下 `n.pitch != 0`
+        // 这道门槛。现在休止符是 restColumns() 单独成列，pitch 0 就是 C-1；
+        // 命令行与 MusicXML 都认它，HTML 也必须认。
+        MidiData z;
+        z.division = 480;
+        z.timeSig.valid = true;
+        z.tempoChanges = {{0, 120.0}};
+        z.trackNames[0] = "Vocal";
+        NoteEvent zn;
+        zn.track = 0; zn.channel = 0; zn.velocity = 96;
+        for (int i = 0; i < 4; i++) {
+            zn.pitch = i;                       // 0/1/2/3：第 0 个是合法 C-1
+            zn.startTicks = (long)i * 480;
+            zn.durationTicks = 480;
+            z.notes.push_back(zn);
+        }
+        std::vector<LyricLine> lz = {{0, "甲乙丙丁"}};
+        const std::string hz = renderHtml(z, key, "t", &lz);
+        const std::string xz = renderMusicXml(z, key, &lz);
+        check(htmlWords(hz) == "甲乙丙丁",
+              "四个合法音高 0~3 各挂一字（旧版 HTML 丢掉「甲」）：" + htmlWords(hz));
+        check(xmlWords(xz) == "甲乙丙丁", "MusicXML 同样四个字：" + xmlWords(xz));
+        check(occurrences(hz, "<span class='lyric'></span>") == 0,
+              "HTML 没有空词位，pitch 0 那列不再被吞");
+        check(xz.find("<pitch><step>C</step><octave>-1</octave></pitch>") !=
+              std::string::npos && occurrences(xz, "<note>") == 4,
+              "pitch 0 在 MusicXML 里仍是 C-1 真音，四个音一个不少");
+        // 真曲子的 --transpose -60 会把 C4 降到 pitch 0，走的是同一条出口。
+        MidiData tz = z;
+        for (auto& n : tz.notes) n.pitch += 60;
+        transposeData(tz, -60);
+        const std::string htz = renderHtml(tz, key, "t", &lz);
+        const std::string xtz = renderMusicXml(tz, key, &lz);
+        check(htmlWords(htz) == "甲乙丙丁" && xmlWords(xtz) == "甲乙丙丁",
+              "--transpose -60 降到 pitch 0 后两端仍各挂四字");
     }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "

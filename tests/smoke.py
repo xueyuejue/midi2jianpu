@@ -5752,6 +5752,57 @@ def main():
             check("".join(hw) == "一二三四",
                   "半秒四行歌词四个音头各挂一字", "".join(hw))
 
+    group("[137] v1.141.0 合法 MIDI 音高 0 不再吞掉歌词")
+    # HTML 单音列曾把 `n.pitch != 0` 当成「有音符」的门槛（早期渲染器拿
+    # pitch 0 占位写休止符才有的规则）。现代实现里休止符单独成列，pitch 0
+    # 只是合法的 C-1：命令行报「挂上 4 字」、MusicXML 写满 4 个 <text>，
+    # HTML 却只剩后 3 个字。--transpose -60 把真曲子的 C4 折回 C-1 也一样。
+    p0 = os.path.join(FIXTURES, "pitch0.mid")
+    p0_lrc = os.path.join(FIXTURES, "pitch0.lrc")
+    if not (os.path.exists(p0) and os.path.exists(p0_lrc)):
+        check(False, "素材 pitch0.mid/.lrc 存在（先跑 make_fixture.py）")
+    else:
+        p0_html = os.path.join(tmp, "pitch0.html")
+        p0_xml = os.path.join(tmp, "pitch0.xml")
+        rc, out, err = run(exe, p0, "--lyrics", p0_lrc,
+                           "--html", p0_html, "--musicxml", p0_xml)
+        check(rc == 0, "pitch 0 素材正常出谱", "rc=%d %s" % (rc, err[:200]))
+        if os.path.exists(p0_html) and os.path.exists(p0_xml):
+            ph = open(p0_html, encoding="utf-8").read()
+            px = open(p0_xml, encoding="utf-8").read()
+            hw = [w for w in re.findall(r"class='lyric'>([^<]*)<", ph) if w.strip()]
+            xw = [w for w in re.findall(r"<text>([^<]*)</text>", px) if w.strip()]
+            check("".join(hw) == "甲乙丙丁",
+                  "四个合法音高 0~3 各挂一字（旧版丢掉 pitch 0 的「甲」）",
+                  "".join(hw))
+            check("".join(xw) == "甲乙丙丁",
+                  "MusicXML 同样是甲乙丙丁", "".join(xw))
+            check(len(re.findall(r"class='lyric'>", ph)) == 4 and
+                  "<span class='lyric'></span>" not in ph,
+                  "HTML 四个词位都写成非空（旧版首列空着）")
+            check("<pitch><step>C</step><octave>-1</octave></pitch>" in px and
+                  px.count("<note>") == 4,
+                  "pitch 0 在 MusicXML 里仍是 C-1 真音，不是休止符")
+        # 真曲子移调路径：sample.mid 的 C4 经 --transpose -60 折回 C-1，
+        # 旧版 HTML 会把落在这两个音头上的字吞掉。
+        sm = os.path.join(FIXTURES, "sample.mid")
+        sl = os.path.join(FIXTURES, "sample.lrc")
+        if os.path.exists(sm) and os.path.exists(sl):
+            t_html = os.path.join(tmp, "sample_tr60.html")
+            t_xml = os.path.join(tmp, "sample_tr60.xml")
+            rc2, _, err2 = run(exe, sm, "--lyrics", sl, "--transpose", "-60",
+                               "--html", t_html, "--musicxml", t_xml)
+            check(rc2 == 0, "真曲子 --transpose -60 正常出谱",
+                  "rc=%d %s" % (rc2, err2[:200]))
+            if rc2 == 0 and os.path.exists(t_html) and os.path.exists(t_xml):
+                th = open(t_html, encoding="utf-8").read()
+                tx = open(t_xml, encoding="utf-8").read()
+                tw = [w for w in re.findall(r"class='lyric'>([^<]*)<", th) if w.strip()]
+                wx = [w for w in re.findall(r"<text>([^<]*)</text>", tx) if w.strip()]
+                check(tw == wx and "风" in tw,
+                      "移调折回 pitch 0 的字照常挂上（旧版 HTML 14 / XML 15）",
+                      "html=%d xml=%d" % (len(tw), len(wx)))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

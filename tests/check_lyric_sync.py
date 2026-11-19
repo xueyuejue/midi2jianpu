@@ -18,6 +18,7 @@
   * v1.139.0 同轨复调的副声部丢词：`assignLyrics` 把词铺在「旋律轨的全部
     音头」上，输出层却只给声部 1 印词——`track_pedal.mid` 的 8 个字只印 3 个。
   * v1.139.0 倚音占词位：倚音不占一列，却算了一个音头，整句词从那里往后错开。
+  * v1.140.0 合法 MIDI 音高 0（C-1）被 HTML 当成休止符占位，四个字只印后三个。
 
 每份素材各带一条**自检**，防止本闸空转：
 
@@ -26,6 +27,7 @@
   * `merge`：带词时的词位必须**多于**不带词时，也就是同音合并确实被第二个
     字的音节挡住了。
   * `voice`：至少**两行**挂着词，也就是字确实铺到了副声部上。
+  * `pitch0`：MusicXML 里真有 C-1，且 HTML 至少挂上一个字。
 
 用法：
   python tests/check_lyric_sync.py              # 校验表内素材
@@ -56,6 +58,7 @@ CASES = [
     ("stray_pedal.mid", [], "同轨 3 个声部、7 个音头", "voice"),
     ("port_standard.mid", [], "同轨 2 个声部各 1 个音", "voice"),
     ("overfull.mid", [], "主旋律轨里有一个倚音", "grace"),
+    ("pitch0.mid", [], "四个合法 MIDI 音高 0~3，pitch 0 是 C-1", "pitch0"),
 ]
 
 COL_SPLIT = "<span class='note "
@@ -63,6 +66,7 @@ LYRIC = re.compile(r"class='lyric'>(.*?)</span>")
 XML_TEXT = re.compile(r"<text>(.*?)</text>")
 XML_NOTE = re.compile(r"<note>(.*?)</note>", re.S)
 XML_VOICE = re.compile(r"<voice>(\d+)</voice>")
+PITCH0 = re.compile(r"<step>C</step><octave>-1</octave>")
 SLOT = re.compile(r"class='lyric'>")
 PLACED = re.compile(r"共\s*(\d+)\s*字，挂上\s*(\d+)\s*字")
 
@@ -220,7 +224,12 @@ def self_test():
            slot_count(good_html) == 3 and slot_count(merged_html) > 3,
            "%d / %d" % (slot_count(good_html), slot_count(merged_html)))
 
-    print("自测 7 项，失败 %d 项" % fails)
+    pitch0_xml = "<note><pitch><step>C</step><octave>-1</octave></pitch></note>"
+    pitch4_xml = "<note><pitch><step>C</step><octave>4</octave></pitch></note>"
+    expect("音高 0 在 MusicXML 里写作 C-1，别把普通 C 当成它",
+           bool(PITCH0.search(pitch0_xml)) and not PITCH0.search(pitch4_xml))
+
+    print("自测 8 项，失败 %d 项" % fails)
     return fails
 
 
@@ -303,6 +312,15 @@ def main():
             if len(hr) < 2:
                 print("[FAIL] %s：只有 %d 行挂着词（%s）——副声部的字又没了，"
                       "本闸空转" % (tag, len(hr), note))
+                bad += 1
+        elif kind == "pitch0":
+            xbody = open(x, encoding="utf-8").read()
+            if not PITCH0.search(xbody):
+                print("[FAIL] %s：MusicXML 里没有 C-1（%s）——素材已变，本闸空转"
+                      % (tag, note))
+                bad += 1
+            if hn == 0:
+                print("[FAIL] %s：一个字都没挂上（%s）——本闸空转" % (tag, note))
                 bad += 1
         else:                                   # grace
             ph = os.path.join(tmp, name.replace(".mid", "_plain.html"))

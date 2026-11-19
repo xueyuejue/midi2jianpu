@@ -23,13 +23,13 @@ import os
 # v1.134.0 新增 midbar_meter.mid（0x58 落在小节中途）：旧版对它导出的
 # MusicXML 里，被截短的小节没标 implicit，正是本轮要改掉的那一处。它已从
 # v1.140.0 起撤出本表（v1.139 基线已含它，应照常参与零回归）。
-# v1.140.0 新增 smpte_tempo0.mid（SMPTE 曲首两条不同速度的 set_tempo，
-# 先写 60BPM、后写 120BPM）：旧版取先写速度折 division，与修复后的三端
-# 输出必然不同，登记为跳过。
+# v1.140.0 的 smpte_tempo0.mid 从这一版起撤出本表（v1.140 基线已含它）。
+# v1.141.0 新增 pitch0.mid（四个合法 MIDI 音高 0~3）：旧版 HTML 把 pitch 0
+# 当休止符吞掉第一个字，与修复后的谱面必然不同，登记为跳过。
 #
 # v1.122.0 的 hostile_name.mid 从这一版起撤出本表：它已经进了 v1.122.0 之后
 # 的每一份基线，旧版对它的三端输出与新版一致，本就该参与逐字节比对。
-NEW_FIXTURES = {"smpte_tempo0.mid"}
+NEW_FIXTURES = {"pitch0.mid"}
 
 
 def skip(path):

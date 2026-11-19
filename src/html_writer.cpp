@@ -1154,7 +1154,13 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 // 不要再排除第一个音：休止符是单独插入的列，本来就不参与歌词分配，
                 // 多一个 !firstNote 只会把一句词的第一个字吞掉（"风霜染尽客行袍"
                 // 变成"风霜染尽客行"+下一小节的"袍"）。
-                std::string syl = (ownsWord(n.startTicks) && !lyrics.empty() && n.pitch != 0)
+                // 也别拿 pitch == 0 当空列：MIDI 0 是合法的 C-1，不是休止符。
+                // 早期渲染器用 pitch 0 占位写休止，才有过这个门槛；现在休止
+                // 全部由 restColumns() 单独成列，倚音也在上面跳过了，剩下的
+                // 每个音头都是真音——包括 --transpose -60 折回后的 pitch 0。
+                // 旧门槛让命令行报「挂上 N 字」、MusicXML 写满 <text>，HTML
+                // 却把这些字全吞掉。
+                std::string syl = (ownsWord(n.startTicks) && !lyrics.empty())
                                   ? lyricForNote(n.startTicks) : std::string();
                 // 三连音走单独的时值档位，避免 1/3 拍被当成附点十六分
                 DurStyle ds = grp[0]->trip ? tripletStyleOf(beats) : durStyleOf(beats);

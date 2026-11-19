@@ -760,6 +760,30 @@ if (existsSync(st0Path)) {
     'WASM 四个 500 tick 的音都是四分音符（旧版印成八分）');
 }
 
+// 合法 MIDI 音高 0 是 C-1，不是休止符：网页版共用 html_writer，旧版把
+// 落在 pitch 0 上的歌词吞掉，MusicXML 却照写。
+const p0Path = path.join(FIXTURES, 'pitch0.mid');
+const p0LrcPath = path.join(FIXTURES, 'pitch0.lrc');
+check(existsSync(p0Path) && existsSync(p0LrcPath),
+  '素材 pitch0.mid/.lrc 存在（先跑 make_fixture.py）');
+if (existsSync(p0Path) && existsSync(p0LrcPath)) {
+  const p0Bytes = new Uint8Array(readFileSync(p0Path));
+  const cP0 = makeCaller(mod);
+  cP0.setMidi(p0Bytes);
+  cP0.setLyrics(readFileSync(p0LrcPath, 'utf8'));
+  const p0Html = cP0.call('midi2jianpu_html', -1, 1) || '';
+  const p0Xml = cP0.call('midi2jianpu_musicxml', -1, 1) || '';
+  const p0Words = [...p0Html.matchAll(/class='lyric'>([^<]*)</g)]
+    .map((m) => m[1]).filter((w) => w.trim()).join('');
+  const p0XmlWords = [...p0Xml.matchAll(/<text>([^<]*)<\/text>/g)]
+    .map((m) => m[1]).join('');
+  check(p0Words === '甲乙丙丁' && p0XmlWords === '甲乙丙丁',
+    'WASM 的 pitch 0 音符照常挂词，HTML 与 MusicXML 都是甲乙丙丁',
+    `html=${p0Words} xml=${p0XmlWords}`);
+  check(p0Xml.includes('<pitch><step>C</step><octave>-1</octave></pitch>'),
+    'WASM MusicXML 把 pitch 0 写成 C-1 真音');
+}
+
 const f2Path = path.join(FIXTURES, 'format2.mid');
 check(existsSync(f2Path), '素材 format2.mid 存在（先跑 make_fixture.py）');
 if (existsSync(f2Path)) {

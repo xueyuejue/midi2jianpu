@@ -35,7 +35,9 @@ modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五
 长音跨小节，外加一条每小节一个 4 拍柱式和弦的钢琴轨，polyphony 则把钢琴
 左右手放进同一个轨，测「同拍不同值不是和弦而是两个声部」。smpte 是
 SMPTE 时间基准（0xE728 = 25fps×40），smpte_tempo0 再在曲首放两条不同速度的
-set_tempo（后写 120BPM 必须覆盖先写 60BPM），format2 则是两条互不相干的独立序列。
+set_tempo（后写 120BPM 必须覆盖先写 60BPM），pitch0 则把四个合法 MIDI 音高
+0~3 放在曲首，锁住 HTML 不再把 pitch 0 当休止符吞掉歌词，format2 则是两条
+互不相干的独立序列。
 aftertouch 在每个音中间插 0xA0（3 字节事件，读错就整轨崩），retrigger 是同音
 还没抬手又按下，dangling 是轨尾只按不抬的悬挂音，twolyrics 则把两段词放在两条
 轨上（错开半拍，合并成一行就是乱码）。pedal 是踩着踏板只按 1/4 拍的钢琴和弦，
@@ -1470,6 +1472,13 @@ SMPTE_TEMPO0_LRC = """[ti:SMPTE 同拍速度]
 [00:01.50]四
 """
 
+PITCH0_LRC = """[ti:MIDI 音高 0 也是真音]
+[00:00.00]甲
+[00:00.50]乙
+[00:01.00]丙
+[00:01.50]丁
+"""
+
 
 def build_smpte() -> bytes:
     """SMPTE 时间基准（division 高字节为负）的素材。
@@ -1519,6 +1528,30 @@ def build_smpte_tempo0() -> bytes:
         t1.note(0, p, 96, i * 500, 500)                # 120BPM 下每音正好一拍
 
     header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, 0xE728)
+    return header + t0.render() + t1.render()
+
+
+def build_pitch0() -> bytes:
+    """合法 MIDI 音高 0（C-1）必须和别的音一样挂歌词。
+
+    早期 HTML 渲染器用 `pitch == 0` 当作「休止符占位」来跳过歌词，现代实现
+    的休止符早已由 restColumns() 单独成列，pitch 0 只是 C-1。四个音取
+    0/1/2/3，避免同音合并掩盖丢词：命令行报「挂上 4 字」、MusicXML 写满
+    四个 <text> 时，HTML 也必须印出甲乙丙丁。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 500000us -> 120BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    t1.program(0, 0, 0)
+    for i, p in enumerate((0, 1, 2, 3)):
+        t1.note(0, p, 96, i * 480, 480)                # 120BPM 下一个音半秒
+
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, 480)
     return header + t0.render() + t1.render()
 
 
@@ -3086,6 +3119,17 @@ def main() -> None:
         f.write(SMPTE_TEMPO0_LRC)
     print(f"wrote {s0mid} ({len(s0data)} bytes)")
     print(f"wrote {s0lrc}")
+
+    # 合法 MIDI 音高 0~3：HTML 不得把 pitch 0 当休止符吞掉歌词
+    p0mid = os.path.join(here, "pitch0.mid")
+    with open(p0mid, "wb") as f:
+        p0data = build_pitch0()
+        f.write(p0data)
+    p0lrc = os.path.join(here, "pitch0.lrc")
+    with open(p0lrc, "w", encoding="utf-8") as f:
+        f.write(PITCH0_LRC)
+    print(f"wrote {p0mid} ({len(p0data)} bytes)")
+    print(f"wrote {p0lrc}")
 
     # format 2（多个独立序列）素材
     f2mid = os.path.join(here, "format2.mid")
