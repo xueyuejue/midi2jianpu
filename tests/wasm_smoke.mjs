@@ -3228,6 +3228,35 @@ if (existsSync(twoLyrics76)) {
   mod._midi2jianpu_set_use_dynamics(1);
 }
 
+// ---- 89. v1.144.0 倚音不再吞掉它前面的休止列 ----
+// HTML 的倚音分支原来直接 continue，把「倚音前面那段空拍」一起跳过。
+// parts.mid 的 2 拍弱起因此只画出 1 拍（少了开头的 0 列）；网页端与
+// 命令行、MusicXML 的谱面结构就此分叉。
+{
+  for (const [name, barIndex, wantCols] of
+       [['parts.mid', 0, 2], ['overfull.mid', 2, 3]]) {
+    const midi = new Uint8Array(readFileSync(path.join(FIXTURES, name)));
+    const p = mod._malloc(midi.length);
+    mod.HEAPU8.set(midi, p);
+    const html = mod.UTF8ToString(mod._midi2jianpu_html(p, midi.length));
+    mod._free(p);
+    const bars = html.split("<span class='measure'>").slice(1);
+    const bar = bars[barIndex] || '';
+    const cols = (bar.match(/<span class='note /g) || []).length;
+    check(cols === wantCols,
+      `${name} 第 ${barIndex + 1} 小节 ${wantCols} 列（旧版少一列）`,
+      `实际 ${cols} 列`);
+    check(bar.includes("<span class='num'>0</span>"),
+      `${name} 第 ${barIndex + 1} 小节的空拍补成了 0 列`, bar.slice(0, 80));
+    if (bar.includes("class='grace'")) {
+      const r0 = bar.indexOf("<span class='num'>0</span>");
+      const g0 = bar.indexOf("class='grace'");
+      check(r0 >= 0 && r0 < g0, `${name} 的 0 列排在倚音之前`,
+        `rest=${r0} grace=${g0}`);
+    }
+  }
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

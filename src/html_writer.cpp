@@ -1016,6 +1016,20 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             beamPrevEnd = -1;
         };
 
+        // 间隙补休止：正常音与倚音共用。倚音本身不占列，但它前面那段空拍
+        // 仍要补出来——文本谱的 emitRestUntil 与 MusicXML 都照实补，HTML 若
+        // 因为「跳过倚音」而漏掉，这一小节就少列、拍数不够（parts.mid 的
+        // 2 拍弱起只画出 1 拍，overfull.mid 第 3 小节少 1 拍）。
+        auto fillGap = [&](long upto) {
+            long gap = upto - prevEnd;
+            if (gap < restGateTicks(data.division)) return;
+            flushBeam();          // 休止符打断减时线
+            double restBeats = (double)gap / data.division;
+            emit(restColumns(gap, data.division, restBeats,
+                             chordMarkFor(prevEnd), dynMarkFor(prevEnd)),
+                 prevEnd, true);
+        };
+
         bool firstNote = true;
         for (size_t gi = 0; gi < groups.size(); gi++) {
             const auto& grp = groups[gi];
@@ -1023,13 +1037,10 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             const bool cont = grp[0]->cont;
             int bar = (int)grid.barIndex(n.startTicks);
 
-            // 倚音（装饰音）：整组跳过，只在它后面的主音上用小字上标呈现。
-            // 否则倚音会自己占一格，把主音挤到下一拍，整行节奏错位。
-            if (expr.isGraceNote(n.startTicks, n.channel)) {
-                prevEnd = std::max(prevEnd, n.startTicks + n.durationTicks);
-                firstNote = false;
-                continue;
-            }
+            // 倚音（装饰音）：本身不单独占一格，只在它后面的主音上用小字上标
+            // 呈现。但「不占列」不等于「整组跳过」——小节线、空小节补齐、
+            // 前面的休止都得照常走一遍，否则倚音前面那段空拍会被整段吞掉。
+            const bool grace = expr.isGraceNote(n.startTicks, n.channel);
 
             if (bar != curBar) {
                 flushBeam();                                  // 小节线截断减时线
@@ -1099,6 +1110,14 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 inTriplet = false;
             }
 
+            // 倚音到此为止：休止补完、把游标推到倚音尾部，音符列留给主音。
+            if (grace) {
+                fillGap(n.startTicks);
+                prevEnd = std::max(prevEnd, n.startTicks + n.durationTicks);
+                firstNote = false;
+                continue;
+            }
+
             // 三连音组的标记
             if (grp[0]->trip && !inTriplet) {
                 flushBeam();
@@ -1110,14 +1129,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
 
             // 间隙补休止符。原来这里多了一个 `prevEnd > 0` 条件，
             // 导致乐曲开头的休止符（第一个音不在 tick 0）永远不显示。
-            long gap = n.startTicks - prevEnd;
-            if (gap >= restGateTicks(data.division)) {
-                flushBeam();          // 休止符打断减时线
-                double restBeats = (double)gap / data.division;
-                emit(restColumns(gap, data.division, restBeats,
-                                 chordMarkFor(prevEnd), dynMarkFor(prevEnd)),
-                     prevEnd, true);
-            }
+            fillGap(n.startTicks);
 
             // 整组的时值取最长那个音
             long durTicks = 0;

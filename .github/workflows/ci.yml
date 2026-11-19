@@ -30,7 +30,7 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 2
 
-      - name: 单元测试（1649 项）
+      - name: 单元测试（1655 项）
         working-directory: build
         run: ctest --output-on-failure
 
@@ -94,6 +94,15 @@ jobs:
         run: |
           python3 tests/check_html_rests.py --self-test
           python3 tests/check_html_rests.py
+
+      - name: HTML 列连续性（10 项自测 + 109 份素材）
+        # HTML 的每一列都接在上一列后面：漏一列，这一小节后面所有列的起点
+        # 就整体前移，小节线也跟着提前。以 MusicXML 的小节起点为标尺，逐小节
+        # 核对「累计列时值 == 下一个音符列的 data-t」。v1.144.0 倚音分支漏补
+        # 休止列（parts.mid 弱起只画 1 拍）就是被这道守卫钉住的。
+        run: |
+          python3 tests/check_html_bars.py --self-test
+          python3 tests/check_html_bars.py
 
       - name: 三端结构一致性（11 项自测 + 109 份素材）
         # 文本谱↔HTML 轨数与逐轨小节数、三端名义拍号、文本谱↔MusicXML
@@ -193,5 +202,5 @@ jobs:
         # 五处导出符号没有漂移，不编译、不加载 wasm。
         run: python3 tests/check_wasm_exports.py
 
-      - name: WASM 产物冒烟（88 组，含版本号守护）
+      - name: WASM 产物冒烟（89 组，含版本号守护）
         run: node tests/wasm_smoke.mjs

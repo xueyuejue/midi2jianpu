@@ -5803,6 +5803,44 @@ def main():
                       "移调折回 pitch 0 的字照常挂上（旧版 HTML 14 / XML 15）",
                       "html=%d xml=%d" % (len(tw), len(wx)))
 
+    group("[138] v1.144.0 倚音不再吞掉它前面的休止列")
+    # HTML 的倚音分支原来直接 continue，把小节开启与「倚音前面那段空拍」
+    # 一起跳过：parts.mid 的 2 拍弱起只画出 1 拍、overfull.mid 第 3 小节
+    # 少一个 0 列（5' 提前一拍、还被拉长成 3 拍），而文本谱 emitRestUntil
+    # 与 MusicXML 都照实补。守两件事：倚音前的 0 列在，列数不多不少。
+    for name, bar_index, want_cols, want_text in (
+            ("parts.mid", 0, 2, "0 (7,)1"),
+            ("overfull.mid", 2, 3, "0 (2')")):
+        mid = os.path.join(FIXTURES, name)
+        if not os.path.exists(mid):
+            check(False, "素材 %s 存在（先跑 make_fixture.py）" % name)
+            continue
+        hh = os.path.join(tmp, name + ".html")
+        rc, out, err = run(exe, mid, "--html", hh)
+        check(rc == 0, "%s 正常出谱" % name, "rc=%d %s" % (rc, err[:200]))
+        if not os.path.exists(hh):
+            continue
+        h = open(hh, encoding="utf-8").read()
+        bars = h.split("<span class='measure'>")[1:]
+        if bar_index >= len(bars):
+            check(False, "%s 至少 %d 个小节" % (name, bar_index + 1),
+                  "只有 %d 个" % len(bars))
+            continue
+        bar = bars[bar_index]
+        cols = bar.count("<span class='note ")
+        check(cols == want_cols,
+              "%s 第 %d 小节 %d 列（旧版少一列）" % (name, bar_index + 1, want_cols),
+              "实际 %d 列" % cols)
+        check("<span class='num'>0</span>" in bar,
+              "%s 第 %d 小节的空拍补成了 0 列" % (name, bar_index + 1))
+        if "grace" in bar:
+            r0, g0 = (bar.find("<span class='num'>0</span>"),
+                      bar.find("class='grace'"))
+            check(0 <= r0 < g0, "%s 的 0 列排在倚音之前" % name,
+                  "rest=%d grace=%d" % (r0, g0))
+        check(want_text in out,
+              "%s 同一小节文本谱仍是 %s" % (name, want_text))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

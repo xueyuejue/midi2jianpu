@@ -283,6 +283,7 @@ def exact_beats(value):
 def structural_regress(old_exe, new_exe):
     errors = []
     changed = []
+    relaxed = []
     added_cols = 0
     added_beats = 0.0
     approx_before = 0
@@ -309,6 +310,19 @@ def structural_regress(old_exe, new_exe):
             xs = xml_rest_segments(b["xml"].decode("utf-8", "replace"))
             approx_before += len(find_approx(html_rest_segments(raw_old), xs))
             approx_after += len(find_approx(html_rest_segments(raw_new), xs))
+            if regress_skip.html_changed(mid):
+                # v1.144.0：倚音前面那段空拍补成了休止列，parts.mid 的 [C]
+                # 和弦记号还随之前移到新的 0 列上——「差异只能是纯 0 列」这条
+                # 判据对它不适用。这里只要求「0 列确实变多」，逐小节的列起点
+                # 对齐由 tests/check_html_bars.py 守护；下一轮基线已含新版输出，
+                # 该素材会自动恢复逐字节比对。
+                o0 = raw_old.count("<span class='num'>0</span>")
+                n0 = raw_new.count("<span class='num'>0</span>")
+                if n0 <= o0:
+                    errors.append("%s: 没有补出新的 0 列（%d -> %d）" % (stem, o0, n0))
+                changed.append(stem)
+                relaxed.append(stem)
+                continue
             # 减时线组的包裹范围归 v1.65.0 的复拍子分组管，逐字节比对前先摘壳。
             old_html = strip_beam_groups(raw_old)
             new_html = strip_beam_groups(raw_new)
@@ -336,6 +350,9 @@ def structural_regress(old_exe, new_exe):
     # 无论这是精度提升（1.61.0：少画的近似档改精确）还是正确性修复
     # （1.63.0：补回被吞掉的跨小节尾休止），都满足本判据；反过来，若新版
     # 把休止列删掉（补回拍数为负）或近似问题变多，一定会被上面的几条抓住。
+    if relaxed:
+        print("[NOTE] 本轮 HTML 有意变化的素材（只要求 0 列变多，"
+              "由 check_html_bars.py 逐小节守护）：%s" % " / ".join(relaxed))
     print("变化素材 %d 份 / 插入 0 列 %d 个 / 补回 %.3f 拍: %s"
           % (len(changed), added_cols, added_beats, ", ".join(changed)))
     print("近似问题: 旧版 %d 项 -> 新版 %d 项" % (approx_before, approx_after))

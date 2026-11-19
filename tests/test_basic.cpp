@@ -9843,6 +9843,53 @@ int main() {
         check(htmlWords(htz) == "甲乙丙丁" && xmlWords(xtz) == "甲乙丙丁",
               "--transpose -60 降到 pitch 0 后两端仍各挂四字");
     }
+
+    // ---- v1.144.0 HTML 倚音前面的空拍要补成休止列 ----
+    {
+        std::cout << "\n测试 HTML 倚音前的休止列\n";
+        SmfTrack cond, mel;
+        cond.at(0, ev({0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20}));   // 120BPM
+        cond.at(0, ev({0xFF, 0x58, 0x04, 4, 2, 24, 8}));        // 4/4
+        cond.at(0, ev({0xFF, 0x59, 0x02, 0, 0}));               // C 大调
+        // 弱起小节：0~460 是空拍，460 处一颗 14 tick 的倚音，480 起主音。
+        // 倚音本身不占列，但前面那 460 tick 必须补成休止，否则整个小节少一拍。
+        mel.at(460, ev({0x90, 59, 90}));
+        mel.at(474, ev({0x80, 59, 64}));
+        mel.at(480, ev({0x90, 60, 90}));
+        mel.at(960, ev({0x80, 60, 64}));
+        mel.at(960, ev({0x90, 62, 90}));
+        mel.at(1440, ev({0x80, 62, 64}));
+
+        auto bytes = buildSmf(2, 480, {cond, mel});
+        MidiData d;
+        check(loadMidiFromMemory(bytes.data(), bytes.size(), d),
+              "解析带倚音的弱起文件");
+        const std::string h = renderHtml(d, estimateKey(d), "t");
+
+        const size_t grace = h.find("class='grace'");
+        const size_t rest = h.find("<span class='num'>0</span>");
+        check(grace != std::string::npos, "倚音仍以小字上标呈现");
+        check(rest != std::string::npos, "倚音前的空拍补成了 0 列");
+        check(rest < grace, "0 列排在倚音之前（旧版整段没有这两列的前半）");
+
+        // 倚音之前只有「0」这一列：补多了会把主音挤到下一拍
+        int before = 0;
+        for (size_t i = 0; (i = h.find("<span class='note ", i)) != std::string::npos &&
+                            i < grace;
+             i += 5)
+            before++;
+        check(before == 1,
+              "倚音前面只有一列休止，实际: " + std::to_string(before));
+
+        // 整份谱一共三列：0、主音、第二个音。补过头会多出列来。
+        int totalCols = 0;
+        for (size_t i = 0; (i = h.find("<span class='note ", i)) != std::string::npos;
+             i += 5)
+            totalCols++;
+        check(totalCols == 3,
+              "整份谱三列，没有补出多余的休止列，实际: " +
+                  std::to_string(totalCols));
+    }
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";
