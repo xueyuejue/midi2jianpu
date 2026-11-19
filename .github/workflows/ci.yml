@@ -193,5 +193,5 @@ jobs:
         # 五处导出符号没有漂移，不编译、不加载 wasm。
         run: python3 tests/check_wasm_exports.py
 
-      - name: WASM 产物冒烟（87 组，含版本号守护）
+      - name: WASM 产物冒烟（88 组，含版本号守护）
         run: node tests/wasm_smoke.mjs

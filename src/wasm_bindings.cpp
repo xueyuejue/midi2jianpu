@@ -325,6 +325,12 @@ const char* midi2jianpu_lyric_info(const uint8_t* midiData, int size,
     if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter))
         return g_result.c_str();
 
+    // 体检必须和实际渲染吃同一份开关。`--no-dynamics` 会让 ExpressionMap
+    // 不再把倚音判成装饰音，歌词铺排也跟着把那个音当成普通音头：CLI 在
+    // 落 useDynamics 之后才数「挂上几字」，这里过去漏了这一步，于是关闭
+    // 力度时提示「挂上 7 字」而 HTML / MusicXML 实际印 8 字。
+    applyRenderOptions(data);
+
     const bool isLrc = m2j::detectLyricFormat("", text) == m2j::LyricFormat::Lrc;
     size_t dropped = 0;
     const std::vector<m2j::LyricLine> lines = parseLyricsAuto(text, data, &dropped);

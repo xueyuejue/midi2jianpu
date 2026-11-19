@@ -3182,6 +3182,52 @@ if (existsSync(twoLyrics76)) {
   mod._midi2jianpu_set_track(-1);
 }
 
+// ---- 88. v1.143.0 网页歌词体检跟随「力度与演奏法」开关 ----
+// overfull.mid 的 8 个音里有 1 个倚音。开启力度时倚音不占词位，8 字只挂 7；
+// 关闭力度后 ExpressionMap 整体停用，倚音按普通音头参与铺排，8 字全挂上。
+// 旧版 lyric_info() 漏了 applyRenderOptions()，两种情况都答「挂上 7 字」，
+// 关闭力度时就和同一份 HTML 的 8 字自相矛盾。
+{
+  const midi = new Uint8Array(readFileSync(path.join(FIXTURES, 'overfull.mid')));
+  const lrc = '[00:00.00]一二三四五六七八\n';
+  const run = (dyn) => {
+    mod._midi2jianpu_set_use_dynamics(dyn);
+    const p = mod._malloc(midi.length);
+    mod.HEAPU8.set(midi, p);
+    const n = mod.lengthBytesUTF8(lrc) + 1;
+    const lp = mod._malloc(n);
+    mod.stringToUTF8(lrc, lp, n);
+    mod._midi2jianpu_set_lyrics(lp);
+    const info = mod.UTF8ToString(mod._midi2jianpu_lyric_info(p, midi.length, lp));
+    const html = mod.UTF8ToString(mod._midi2jianpu_html(p, midi.length));
+    mod._free(lp);
+    mod._free(p);
+    const words = [...html.matchAll(/class='lyric'>([^<]*)</g)]
+      .map((m) => m[1]).filter((w) => w.trim());
+    return { info, words };
+  };
+
+  const on = run(1);
+  check(on.info.includes('挂上 7 字') && on.info.includes('1 字没有音头可挂'),
+    '开启力度时体检报 7 字并说明倚音不占词位', on.info);
+  check(on.words.length === 7 && on.words.join('') === '一二三四五六七',
+    '开启力度时谱面确实只印前 7 字', on.words.join(''));
+
+  const off = run(0);
+  check(off.info.includes('挂上 8 字') && !off.info.includes('没有音头可挂'),
+    '关闭力度后体检报 8 字，不再误报丢字', off.info);
+  check(off.words.length === 8 && off.words.join('') === '一二三四五六七八',
+    '关闭力度后谱面 8 字全印，体检与谱面一致', off.words.join(''));
+
+  const infoCount = (s) => Number((s.match(/挂上 (\d+) 字/) || [])[1]);
+  check(infoCount(on.info) === on.words.length &&
+        infoCount(off.info) === off.words.length,
+    '两种开关下体检报的「挂上 N 字」都等于谱面实际字数',
+    `${on.info} / ${on.words.length}；${off.info} / ${off.words.length}`);
+
+  mod._midi2jianpu_set_use_dynamics(1);
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);
