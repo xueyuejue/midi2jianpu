@@ -3124,6 +3124,64 @@ if (existsSync(twoLyrics76)) {
     txt.slice(0, 60));
 }
 
+// ---- 87. v1.142.0 format 2 的轨道诊断要按整份文件解析 ----
+// 谱面默认只转 format 2 的第 0 段，这是设计；但网页下拉框与歌词体检说的是
+// 「整份文件有什么」。旧实现两条诊断都走默认解析，SongB 的轨名 / 音符 /
+// 歌词在解析层就被丢掉，页面于是显示空轨并说「此文件没有内置歌词」。
+{
+  const trackList = (name) => {
+    const bytes = new Uint8Array(readFileSync(path.join(FIXTURES, name)));
+    const p = mod._malloc(bytes.length);
+    mod.HEAPU8.set(bytes, p);
+    const s = mod._midi2jianpu_track_list(p, bytes.length);
+    const out = s ? mod.UTF8ToString(s) : '';
+    mod._free(p);
+    return JSON.parse(out);
+  };
+  const lyricHint = (name, track) => {
+    const bytes = new Uint8Array(readFileSync(path.join(FIXTURES, name)));
+    mod._midi2jianpu_set_track(track);
+    const p = mod._malloc(bytes.length);
+    mod.HEAPU8.set(bytes, p);
+    const s = mod._midi2jianpu_midi_lyric_info(p, bytes.length);
+    const out = s ? mod.UTF8ToString(s) : '';
+    mod._free(p);
+    return out;
+  };
+
+  const a = trackList('format2.mid');
+  check(a.length === 2 && a[0].name === 'SongA' && a[1].name === 'SongB',
+    'format2.mid 的下拉框列出两段真实轨名（旧版 SongB 是空名）',
+    JSON.stringify(a.map((t) => t.name)));
+  check(a[0].notes === 16 && a[1].notes === 8,
+    '两段各自的音符数都保留（旧版第二段 0 音）',
+    JSON.stringify(a.map((t) => t.notes)));
+
+  const b = trackList('track_fmt2.mid');
+  check(b.length === 2 && b[0].name === 'SongA' && b[1].name === 'SongB',
+    '带内置歌词的 format 2 也能列出两段轨名',
+    JSON.stringify(b.map((t) => t.name)));
+  check(b[0].notes === 4 && b[1].notes === 4 && b[1].lyrics === 8,
+    '第二段的 4 音与 8 个歌词音节都进诊断（与 CLI --list-tracks 一致）',
+    JSON.stringify(b.map((t) => [t.notes, t.lyrics])));
+
+  const autoHint = lyricHint('track_fmt2.mid', -1);
+  check(autoHint.includes('此文件自带 8 个歌词音节（轨 1）'),
+    '自动模式指出词在第二段（旧版只说「没有内置歌词」）', autoHint);
+  const noneHint = lyricHint('track_fmt2.mid', 0);
+  check(noneHint.includes('8 个音节在轨 1') &&
+        !noneHint.includes('此文件没有内置歌词'),
+    '选了没词的轨时指路到轨 1，不说「此文件没有」', noneHint);
+  const oneHint = lyricHint('track_fmt2.mid', 1);
+  check(oneHint.includes('轨 1 自带 8 个歌词音节'),
+    '选中带词的第二段时如实报 8 字', oneHint);
+  const twoHint = lyricHint('track_fmt2.mid', 2);
+  check(twoHint.includes('轨 2 没有歌词') && twoHint.includes('8 个音节在轨 1'),
+    '越界轨也不会把第二段的词说成不存在', twoHint);
+
+  mod._midi2jianpu_set_track(-1);
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

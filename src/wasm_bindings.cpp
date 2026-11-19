@@ -33,9 +33,9 @@ static void applyRenderOptions(m2j::MidiData& data) {
 // MidiData 上，否则网页端的下拉就改不到谱面。所有读取文件的入口都走这里，
 // 避免每个函数各自散落赋值。
 static bool loadJ(const uint8_t* midiData, int size, m2j::MidiData& data,
-                  bool filtered, int track) {
+                  bool keepAllFormat2, int trackFilter) {
     data.softPedalScale = g_softPedalScale;
-    return m2j::loadMidiFromMemory(midiData, size, data, filtered, track);
+    return m2j::loadMidiFromMemory(midiData, size, data, keepAllFormat2, trackFilter);
 }
 
 extern "C" {
@@ -95,8 +95,10 @@ static std::string jsonEscape(const std::string& s) {
 const char* midi2jianpu_track_list(const uint8_t* midiData, int size) {
     m2j::MidiData data;
     // 这里永远按「全曲」解析：下拉框要列出全部轨，不能受当前选中轨影响，
-    // 否则用户选了第 2 轨之后下拉框就只剩一个选项了。
-    if (!loadJ(midiData, size, data, false, -1)) {
+    // 否则用户选了第 2 轨之后下拉框就只剩一个选项了。format 2 的其它序列
+    // 也要留着：默认解析会把第 1 段之后的轨名 / 音符 / 歌词全丢掉，页面
+    // 于是把 SongB 显示成空轨。
+    if (!loadJ(midiData, size, data, true, -1)) {
         g_result = "[]";
         return g_result.c_str();
     }
@@ -394,10 +396,11 @@ int midi2jianpu_midi_lyric_count(const uint8_t* midiData, int size) {
 //
 // 这里必须按「全曲」解析：按当前选中轨过滤后，所选轨以外的歌词事件已经在
 // 解析层被丢掉，那样「选了一条没有词的轨」就只剩「此文件没有内置歌词」这句
-// 错话——文件明明有词，只是不在这一轨上。
+// 错话——文件明明有词，只是不在这一轨上。format 2 同理，默认解析会把
+// 第 1 段之后的歌词一并丢掉，连「词在轨 1」都说不出来。
 const char* midi2jianpu_midi_lyric_info(const uint8_t* midiData, int size) {
     m2j::MidiData data;
-    if (!loadJ(midiData, size, data, false, -1)) {
+    if (!loadJ(midiData, size, data, true, -1)) {
         g_result.clear();
         return g_result.c_str();
     }
