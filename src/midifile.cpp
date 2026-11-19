@@ -51,8 +51,8 @@ static uint32_t readVarLen(const uint8_t* data, size_t size, size_t& pos,
 TempoTimeline::TempoTimeline(const std::vector<TempoPoint>& changes, int division) {
     division_ = division > 0 ? division : 480;
     std::vector<TempoPoint> v = changes;
-    std::sort(v.begin(), v.end(),
-              [](const TempoPoint& a, const TempoPoint& b) { return a.tick < b.tick; });
+    std::stable_sort(v.begin(), v.end(),
+                     [](const TempoPoint& a, const TempoPoint& b) { return a.tick < b.tick; });
     std::vector<TempoPoint> uniq;
     for (const auto& p : v) {
         if (p.bpm <= 0 || p.tick < 0) continue;
@@ -146,9 +146,19 @@ static void applySmpteTimeBase(MidiData& out) {
         return;
     }
 
+    // 与 TempoTimeline / tempoMarksOf 同一口径：按 tick 排序、同 tick 后写覆盖、
+    // 丢掉非法 BPM。多轨都在 tick 0 写 set_tempo（format 1 很常见）时，必须取
+    // 最后写的那个；旧版取稳定排序后的首项，等于拿了先写的速度去折 division，
+    // 同一份 MIDI 只因换成 SMPTE 基准就换了拍速，歌词落位也跟着偏。
     std::stable_sort(out.tempoChanges.begin(), out.tempoChanges.end(),
                      [](const TempoPoint& a, const TempoPoint& b) { return a.tick < b.tick; });
-    double bpm = out.tempoChanges.empty() ? 120.0 : out.tempoChanges.front().bpm;
+    std::vector<TempoPoint> uniq;
+    for (const auto& p : out.tempoChanges) {
+        if (p.bpm <= 0 || p.tick < 0) continue;
+        if (!uniq.empty() && uniq.back().tick == p.tick) uniq.back() = p;
+        else uniq.push_back(p);
+    }
+    double bpm = uniq.empty() ? 120.0 : uniq.front().bpm;
     if (!(bpm > 0)) bpm = 120.0;
 
     const double ppq = (60.0 / bpm) * ticksPerSec;   // 一拍多少 tick

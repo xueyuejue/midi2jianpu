@@ -2992,8 +2992,8 @@ std::vector<TempoMark> tempoMarksOf(const MidiData& data) {
     // 先归一化：排序、同 tick 后写覆盖、丢弃非法 BPM。与 TempoTimeline 用
     // 同一套规则，否则「时间轴按 3 个点算、谱面按 4 个点标」这种错位迟早出现。
     std::vector<TempoPoint> pts = data.tempoChanges;
-    std::sort(pts.begin(), pts.end(),
-              [](const TempoPoint& a, const TempoPoint& b) { return a.tick < b.tick; });
+    std::stable_sort(pts.begin(), pts.end(),
+                     [](const TempoPoint& a, const TempoPoint& b) { return a.tick < b.tick; });
     std::vector<TempoPoint> uniq;
     for (const auto& p : pts) {
         if (p.bpm <= 0 || p.tick < 0) continue;

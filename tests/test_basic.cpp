@@ -2693,6 +2693,50 @@ int main() {
         size_t bars = 0;
         for (char c : jp) if (c == '|') bars++;
         check(bars == 4, "16 拍划成 4 小节，实际小节线: " + std::to_string(bars));
+
+        // 曲首两条 set_tempo：60 先写、120 后写。SMPTE 折算必须与
+        // TempoTimeline / tempoMarksOf 同口径取后写覆盖；旧版取了先写的
+        // 60，division 折成 1000，500 tick 的一拍被印成八分音符。
+        {
+            SmfTrack c2, v2;
+            c2.at(0, ev({0xFF, 0x51, 0x03, 0x0F, 0x42, 0x40}));   // 60BPM 先写
+            c2.at(0, ev({0xFF, 0x58, 0x04, 4, 2, 24, 8}));
+            v2.at(0, ev({0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20}));   // 120BPM 后写
+            for (int i = 0; i < 4; i++) {
+                v2.at(i * 500, ev({0x90, 60 + i, 96}));
+                v2.at(i * 500 + 500, ev({0x80, 60 + i, 0}));
+            }
+            auto b2 = buildSmf(2, kSmpteDiv, {c2, v2});
+            MidiData m2;
+            check(loadMidiFromMemory(b2.data(), b2.size(), m2), "解析 SMPTE 同拍重复速度");
+            check(m2.division == 500,
+                  "后写 120BPM 折出 500 tick/拍，实际: " + std::to_string(m2.division));
+            check(m2.tempoChanges.size() == 1 &&
+                      std::lround(m2.tempoChanges[0].bpm) == 120,
+                  "SMPTE 保留后写的 120BPM 单点");
+            const auto marks2 = tempoMarksOf(m2);
+            check(marks2.size() == 1 && marks2[0].bpm == 120,
+                  "谱头折叠速度也取后写的 120BPM");
+            const TempoTimeline tl2(m2);
+            check(tl2.secondsToTick(0.5) == 500 && tl2.secondsToTick(1.0) == 1000,
+                  "半秒反解成 500 tick（旧口径要一秒才到 500）");
+            const auto lines2 = parseLrcText(
+                "[00:00.00]一\n[00:00.50]二\n[00:01.00]三\n[00:01.50]四\n", m2);
+            check(lines2.size() == 4 && lines2[0].startTick == 0 &&
+                      lines2[1].startTick == 500 && lines2[2].startTick == 1000 &&
+                      lines2[3].startTick == 1500,
+                  "每行歌词落在对应音头（半秒一拍 = 500 tick）");
+            const std::string mx2 = renderMusicXml(m2, estimateKey(m2));
+            check(mx2.find("<divisions>500</divisions>") != std::string::npos &&
+                      mx2.find("<sound tempo=\"120\"/>") != std::string::npos,
+                  "MusicXML 的 divisions 与 sound tempo 都是后写口径");
+            check(occurrences(mx2, "<type>quarter</type>") == 4 &&
+                      occurrences(mx2, "<type>half</type>") == 0 &&
+                      occurrences(mx2, "<type>eighth</type>") == 0,
+                  "四个 500 tick 的音都是四分音符（旧版印成八分）");
+            check(tl2.changeCount() == 0 && tempoChangeCount(m2) == 0,
+                  "归一后没有多余的变速点");
+        }
     }
 
     // ---- 文件头 MThd：format 2 是多个独立序列 ----

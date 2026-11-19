@@ -34,7 +34,8 @@ modulation 是中途转调（1=C → 1=D → 1=F），pentatonic 则是中国五
 每半拍一个 set_tempo 复刻 DAW 的渐快 / 渐慢曲线，long_tie 则是 6 拍 / 10 拍
 长音跨小节，外加一条每小节一个 4 拍柱式和弦的钢琴轨，polyphony 则把钢琴
 左右手放进同一个轨，测「同拍不同值不是和弦而是两个声部」。smpte 是
-SMPTE 时间基准（0xE728 = 25fps×40），format2 则是两条互不相干的独立序列。
+SMPTE 时间基准（0xE728 = 25fps×40），smpte_tempo0 再在曲首放两条不同速度的
+set_tempo（后写 120BPM 必须覆盖先写 60BPM），format2 则是两条互不相干的独立序列。
 aftertouch 在每个音中间插 0xA0（3 字节事件，读错就整轨崩），retrigger 是同音
 还没抬手又按下，dangling 是轨尾只按不抬的悬挂音，twolyrics 则把两段词放在两条
 轨上（错开半拍，合并成一行就是乱码）。pedal 是踩着踏板只按 1/4 拍的钢琴和弦，
@@ -1462,6 +1463,14 @@ def build_polyphony() -> bytes:
     return header + t0.render() + t1.render()
 
 
+SMPTE_TEMPO0_LRC = """[ti:SMPTE 同拍速度]
+[00:00.00]一
+[00:00.50]二
+[00:01.00]三
+[00:01.50]四
+"""
+
+
 def build_smpte() -> bytes:
     """SMPTE 时间基准（division 高字节为负）的素材。
 
@@ -1485,6 +1494,30 @@ def build_smpte() -> bytes:
         t1.note(0, p, 96, i * TPB, TPB)
 
     # 0xE7 = -25 fps，0x28 = 40 tick/frame
+    header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, 0xE728)
+    return header + t0.render() + t1.render()
+
+
+def build_smpte_tempo0() -> bytes:
+    """SMPTE 文件里曲首有两个 set_tempo，必须取后写覆盖的那个。
+
+    25 fps × 40 tick = 1000 tick/秒。Conductor 轨先写 60BPM，Vocal 轨在
+    同一 tick 0 后写 120BPM；按 MIDI 的「同 tick 后写覆盖」口径，折算后的
+    division 应是 500 tick/拍（120BPM 一拍 0.5 秒）。旧实现取排序后的首项，
+    拿先写的 60BPM 折成 1000 tick/拍，于是 500 tick 的一个音被印成八分音符，
+    与等价 PPQ 文件（division=500）的三端输出都不一致。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x0F, 0x42, 0x40])))   # 1000000us -> 60BPM（先写）
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Vocal"))
+    t1.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 500000us -> 120BPM（后写）
+    for i, p in enumerate((60, 62, 64, 65)):
+        t1.note(0, p, 96, i * 500, 500)                # 120BPM 下每音正好一拍
+
     header = b"MThd" + struct.pack(">IHHH", 6, 1, 2, 0xE728)
     return header + t0.render() + t1.render()
 
@@ -3042,6 +3075,17 @@ def main() -> None:
         sdata = build_smpte()
         f.write(sdata)
     print(f"wrote {smid} ({len(sdata)} bytes)")
+
+    # SMPTE 曲首重复 set_tempo：同 tick 后写覆盖
+    s0mid = os.path.join(here, "smpte_tempo0.mid")
+    with open(s0mid, "wb") as f:
+        s0data = build_smpte_tempo0()
+        f.write(s0data)
+    s0lrc = os.path.join(here, "smpte_tempo0.lrc")
+    with open(s0lrc, "w", encoding="utf-8") as f:
+        f.write(SMPTE_TEMPO0_LRC)
+    print(f"wrote {s0mid} ({len(s0data)} bytes)")
+    print(f"wrote {s0lrc}")
 
     # format 2（多个独立序列）素材
     f2mid = os.path.join(here, "format2.mid")

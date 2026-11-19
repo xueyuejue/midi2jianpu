@@ -735,6 +735,31 @@ if (existsSync(smptePath)) {
   check(smeasures === 4, `WASM MusicXML 四个小节，实际 ${smeasures}`);
 }
 
+// 曲首同 tick 两条 set_tempo（60 先写、120 后写）：网页与 CLI 共用解析层，
+// 必须同样取后写覆盖；旧版折出 1000 tick/拍，把四分音印成八分音。
+const st0Path = path.join(FIXTURES, 'smpte_tempo0.mid');
+check(existsSync(st0Path), '素材 smpte_tempo0.mid 存在（先跑 make_fixture.py）');
+if (existsSync(st0Path)) {
+  const sb2 = new Uint8Array(readFileSync(st0Path));
+  const sp2 = mod._malloc(sb2.length);
+  mod.HEAPU8.set(sb2, sp2);
+  const fh2 = mod.UTF8ToString(mod._midi2jianpu_file_header_info(sp2, sb2.length));
+  mod._free(sp2);
+  check(/SMPTE 25 fps/.test(fh2) && /500 tick/.test(fh2) && /♩=120/.test(fh2),
+    `WASM 按后写的 120BPM 折算 division，实际：${fh2}`);
+
+  const c2 = makeCaller(mod);
+  c2.setMidi(sb2);
+  const sx2 = c2.call('midi2jianpu_musicxml', -1, 1) || '';
+  const sd2 = sx2.match(/<divisions>(\d+)<\/divisions>/);
+  check(sd2 && sd2[1] === '500',
+    `WASM MusicXML divisions 用折算后的 500，实际 ${sd2 && sd2[1]}`);
+  check(sx2.includes('<sound tempo="120"/>'), 'WASM MusicXML 谱头速度取后写的 120');
+  check((sx2.match(/<type>quarter<\/type>/g) || []).length === 4 &&
+        !sx2.includes('<type>eighth</type>') && !sx2.includes('<type>half</type>'),
+    'WASM 四个 500 tick 的音都是四分音符（旧版印成八分）');
+}
+
 const f2Path = path.join(FIXTURES, 'format2.mid');
 check(existsSync(f2Path), '素材 format2.mid 存在（先跑 make_fixture.py）');
 if (existsSync(f2Path)) {

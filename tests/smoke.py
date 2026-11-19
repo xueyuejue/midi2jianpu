@@ -5700,6 +5700,58 @@ def main():
                 check(len(hw) == 7, "7 个真音各一个字（旧版把词错到倚音上，只印 7 个却是错的字）",
                       "".join(hw))
 
+    group("[136] v1.140.0 SMPTE 曲首同拍重复 tempo 取后写覆盖")
+    # smpte_tempo0.mid 的 Conductor 轨在 tick 0 先写 60BPM，Vocal 轨同一 tick
+    # 后写 120BPM。旧版取排序后的首项（60），division 折成 1000，500 tick 的
+    # 四分音被印成八分音；与把同一份 MIDI 的 division 改成 500 的等价 PPQ
+    # 文件相比，MusicXML 的 divisions / tempo / <type> 全都不一样。
+    st0 = os.path.join(FIXTURES, "smpte_tempo0.mid")
+    st0_lrc = os.path.join(FIXTURES, "smpte_tempo0.lrc")
+    if not (os.path.exists(st0) and os.path.exists(st0_lrc)):
+        check(False, "素材 smpte_tempo0.mid/.lrc 存在（先跑 make_fixture.py）")
+    else:
+        st0_html = os.path.join(tmp, "st0.html")
+        st0_xml = os.path.join(tmp, "st0.xml")
+        rc, out, err = run(exe, st0, "--lyrics", st0_lrc,
+                           "--html", st0_html, "--musicxml", st0_xml)
+        check(rc == 0, "SMPTE 同拍重复速度素材正常出谱", "rc=%d %s" % (rc, err[:200]))
+        check("500 tick/拍（按 ♩=120 折算）" in out,
+              "取后写的 120BPM 折出 500 tick/拍", out[:200])
+        check("division=500" in out and "♩=120" in out and
+              "division=1000" not in out and "♩=60" not in out,
+              "诊断与谱头都不再报先写的 60BPM", out[:200])
+        if os.path.exists(st0_xml):
+            sx = open(st0_xml, encoding="utf-8").read()
+            check("<divisions>500</divisions>" in sx and
+                  '<sound tempo="120"/>' in sx,
+                  "MusicXML 的 divisions 与 sound tempo 都是 500 / 120")
+            check(sx.count("<type>quarter</type>") == 4 and
+                  "<type>eighth</type>" not in sx and "<type>half</type>" not in sx,
+                  "四个 500 tick 的音都是四分音符（旧版印成八分）")
+        # 同一份字节流只改 MThd 的 division 字：SMPTE 与等价 PPQ 必须同谱。
+        blob = bytearray(open(st0, "rb").read())
+        check(blob[:4] == b"MThd" and len(blob) >= 14,
+              "素材有标准 MThd 头可改 division")
+        if blob[:4] == b"MThd" and len(blob) >= 14:
+            ppq = os.path.join(tmp, "st0_equiv_ppq.mid")
+            blob[12:14] = (500).to_bytes(2, "big")
+            with open(ppq, "wb") as f:
+                f.write(blob)
+            pq_xml = os.path.join(tmp, "st0_ppq.xml")
+            rc2, _, err2 = run(exe, ppq, "--lyrics", st0_lrc,
+                               "--musicxml", pq_xml)
+            check(rc2 == 0, "等价 PPQ 文件正常出谱", "rc=%d %s" % (rc2, err2[:200]))
+            if rc == 0 and rc2 == 0 and os.path.exists(st0_xml) and os.path.exists(pq_xml):
+                a = open(st0_xml, encoding="utf-8").read()
+                b = open(pq_xml, encoding="utf-8").read()
+                check(a == b, "SMPTE 修复后与等价 PPQ 的 MusicXML 逐字节一致")
+        if os.path.exists(st0_html):
+            hw = [w for w in re.findall(r"class='lyric'>([^<]*)<",
+                                        open(st0_html, encoding="utf-8").read())
+                  if w.strip()]
+            check("".join(hw) == "一二三四",
+                  "半秒四行歌词四个音头各挂一字", "".join(hw))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

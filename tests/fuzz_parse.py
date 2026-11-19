@@ -113,6 +113,15 @@ BUILDER_SPECS = {
     "build_legacy_encoding": ("LEGACY_GBK", "LEGACY_SJIS", "LEGACY_UTF8"),
 }
 
+# 生成器里这几条 build_xxx() 产的是歌词文本，不是 MIDI 种子；新增同类
+# builder 时要在这里登记，否则下面的种子总数自测会把它们误算进去。
+NON_MIDI_BUILDERS = {
+    "build_enhanced_lrc",
+    "build_tempolrc_lrc",
+    "build_tempolrc_multi_lrc",
+    "build_tempolrc_offset_lrc",
+}
+
 
 def collect_seeds(mod):
     """收集所有 build_xxx() 返回的原始 MIDI 字节，过滤掉 LRC/非字节产物。
@@ -581,8 +590,16 @@ def self_test():
         key = "build_legacy_encoding_" + suffix
         st(key in all_seeds and all_seeds[key][:4] == b"MThd",
            f"带参 builder 展开为 {key}（旧版静默漏收）")
-    st(len(all_seeds) == 105 + len(BUILDER_SPECS["build_legacy_encoding"]),
-       f"种子总数含全部 legacy 变体（{len(all_seeds)} 份）")
+    # 总数按当前生成器的 build_xxx 函数现算：以前写死 105，新增一个素材
+    # 就会让自测假红（v1.140 加 smpte_tempo0 时踩到）。带参 builder 的每个
+    # spec 各算一份种子；产 LRC 文本的 builder 不算种子，集中登记在
+    # NON_MIDI_BUILDERS，新增同类 builder 时也要同步登记。
+    builders = [name for name, _ in inspect.getmembers(real, inspect.isfunction)
+                if name.startswith("build_")]
+    expected = (len(builders) - len(NON_MIDI_BUILDERS) - len(BUILDER_SPECS)
+                + sum(len(v) for v in BUILDER_SPECS.values()))
+    st(len(all_seeds) == expected,
+       f"种子总数含全部 builder 展开（{len(all_seeds)} 份，应为 {expected}）")
 
     # 定点选种子：语法感知算子必须挑到含对应字段的种子
     pool = {"a": b"MThd" + b"\x00" * 8, "b": SAMPLE}
