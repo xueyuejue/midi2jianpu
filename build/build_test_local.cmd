@@ -12,7 +12,7 @@ cd /d "%~dp0.."
 if not exist build\testobj mkdir build\testobj
 cl /nologo /utf-8 /W3 /std:c++17 /EHsc /O2 /Iinclude ^
    tests\test_basic.cpp src\midifile.cpp src\notation.cpp src\musicxml_writer.cpp ^
-   src\xml_verify.cpp ^
+   src\xml_verify.cpp ^
    src\text_verify.cpp ^
    src\html_writer.cpp ^
    /Fe:build\test_basic.exe /Fo:build\testobj\ 2>&1
