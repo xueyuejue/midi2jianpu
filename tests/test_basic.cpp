@@ -10,6 +10,7 @@
 #include "midi2jianpu/notation.hpp"
 #include "midi2jianpu/musicxml_writer.hpp"
 #include "midi2jianpu/html_writer.hpp"
+#include "midi2jianpu/xml_verify.hpp"
 #include "../src/text_encoding.hpp"
 #include "../src/cli_args.hpp"
 
@@ -7386,7 +7387,7 @@ int main() {
     {
         using namespace m2j::cli;
         check(valueOptions().size() == 11, "带值选项表共 11 项");
-        check(flagOptions().size() == 14, "开关选项表共 14 项");
+        check(flagOptions().size() == 15, "开关选项表共 15 项");
         check(optionNeedsValue("--html") && optionNeedsValue("--musicxml") &&
               optionNeedsValue("--soft-pedal-scale"), "输出/路径/系数类选项都需要取值");
         check(optionNeedsValue("--transpose") && optionNeedsValue("--track") &&
@@ -10036,6 +10037,182 @@ int main() {
                   std::to_string(countOf(sx, "<measure number=")));
         check(countOf(sx, "<rest measure=\"yes\"/>") == 0,
               "单轨没有整小节休止（每节都有音）");
+    }
+
+    // ---- v1.147.0 内建自检：该报的必须报，不该报的绝不报 ----
+    // --verify 的价值全在判据本身。下面每一条都手写一份畸形 MusicXML，确认
+    // 它被抓到；最后再拿 renderMusicXml() 的真实输出确认零误报——否则
+    // --verify 就成了一枚永远亮绿灯的装饰品。
+    {
+        auto measureXml = [](const std::string& num, const std::string& body,
+                             bool implicit = false) {
+            return "    <measure number=\"" + num + "\"" +
+                   (implicit ? " implicit=\"yes\"" : "") + ">\n" + body +
+                   "    </measure>\n";
+        };
+        auto attrBlock = []() {
+            return "      <attributes><divisions>480</divisions>"
+                   "<time><beats>4</beats><beat-type>4</beat-type></time>"
+                   "</attributes>\n";
+        };
+        auto toneNote = [](int dur) {
+            return "      <note><pitch><step>C</step><octave>4</octave></pitch>"
+                   "<duration>" + std::to_string(dur) +
+                   "</duration><voice>1</voice><type>quarter</type></note>\n";
+        };
+        auto wholeRest = []() {
+            return "      <note><rest measure=\"yes\"/><duration>1920</duration>"
+                   "<voice>1</voice><type>whole</type></note>\n";
+        };
+        auto plainRest = [](int dur) {
+            return "      <note><rest/><duration>" + std::to_string(dur) +
+                   "</duration><voice>1</voice><type>whole</type></note>\n";
+        };
+        // 4/4、division=480 的满小节：四个四分音符 = 1920 tick。
+        auto fullBar = [&](const std::string& num, bool first) {
+            std::string body = first ? attrBlock() : "";
+            for (int i = 0; i < 4; i++) body += toneNote(480);
+            return measureXml(num, body);
+        };
+        auto partXml = [](const std::string& id, const std::vector<std::string>& ms) {
+            std::string s = "  <part id=\"" + id + "\">\n";
+            for (const auto& m : ms) s += m;
+            return s + "  </part>\n";
+        };
+        // 按 parts 里的 id 顺序拼 part-list，保证默认是合规的。
+        auto doc = [&](const std::vector<std::string>& parts) {
+            std::string s = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                            "<score-partwise version=\"3.1\">\n  <part-list>\n";
+            for (const auto& p : parts) {
+                const size_t a = p.find("id=\"") + 4;
+                const size_t e = p.find('"', a);
+                s += "    <score-part id=\"" + p.substr(a, e - a) +
+                     "\"><part-name>x</part-name></score-part>\n";
+            }
+            s += "  </part-list>\n";
+            for (const auto& p : parts) s += p;
+            return s + "</score-partwise>\n";
+        };
+        auto hasIssue = [](const VerifyReport& r, const std::string& needle) {
+            for (const auto& it : r.issues)
+                if (it.what.find(needle) != std::string::npos) return true;
+            return false;
+        };
+        // 只有一份 XML 时，文本谱 / HTML 传空串表示「没生成这一端」。
+        auto auditXml = [](const std::string& xml) {
+            return verifyOutputs(std::string(), std::string(), xml);
+        };
+
+        const std::string goodP1 = partXml("P1", {fullBar("1", true), fullBar("2", false)});
+        const std::string goodP2 = partXml("P2", {fullBar("1", true), fullBar("2", false)});
+
+        const VerifyReport ok = auditXml(doc({goodP1, goodP2}));
+        check(ok.ok(), "等长、时值守恒的矩形谱应通过："
+                       + (ok.ok() ? std::string() : ok.issues.front().what));
+        check(ok.parts == 2 && ok.measures == 2,
+              "自检统计 parts=2 / measures=2，实际: " + std::to_string(ok.parts) +
+                  " / " + std::to_string(ok.measures));
+
+        // 短轨：P2 只写了一小节
+        const VerifyReport shortPart =
+            auditXml(doc({goodP1, partXml("P2", {fullBar("1", true)})}));
+        check(hasIssue(shortPart, "小节数与 P1 不同"),
+              "短 track 的 part 小节数不等必须报错");
+
+        // 小节号跳变
+        const VerifyReport jump = auditXml(doc({partXml(
+            "P1", {fullBar("1", true), fullBar("3", false)})}));
+        check(hasIssue(jump, "小节号跳变 1 -> 3"), "小节号跳变必须报错");
+
+        // 时值不守恒：3/4 小节的音符塞进 4/4 拍号
+        const VerifyReport shortSum = auditXml(doc({partXml(
+            "P1", {measureXml("1", attrBlock() + toneNote(480) + toneNote(480) +
+                                     toneNote(480))})}));
+        check(hasIssue(shortSum, "时值合计 1440 tick"),
+              "小节时值不守恒必须报错");
+
+        // 尾节写成普通休止（没有 measure="yes"）
+        const VerifyReport plainTail = auditXml(doc({partXml(
+            "P1", {fullBar("1", true), measureXml("2", plainRest(1920))})}));
+        check(hasIssue(plainTail, "尾节不是整小节休止"),
+              "尾节缺 <rest measure=\"yes\"/> 必须报错");
+
+        // 尾节是整小节休止则合格
+        const VerifyReport wholeTail = auditXml(doc({partXml(
+            "P1", {fullBar("1", true), measureXml("2", wholeRest())})}));
+        check(wholeTail.ok(), "尾节是整小节休止应通过");
+
+        // part-list 声明了 P2，正文却没有
+        {
+            std::string xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                              "<score-partwise version=\"3.1\">\n  <part-list>\n"
+                              "    <score-part id=\"P1\"/><score-part id=\"P2\"/>\n"
+                              "  </part-list>\n" + goodP1 + "</score-partwise>\n";
+            check(hasIssue(auditXml(xml), "正文却没有对应的 <part>"),
+                  "part-list 声明但正文缺失的 part 必须报错");
+        }
+        // 正文有 P2，part-list 却没声明
+        {
+            std::string xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                              "<score-partwise version=\"3.1\">\n  <part-list>\n"
+                              "    <score-part id=\"P1\"/>\n"
+                              "  </part-list>\n" + goodP1 + goodP2 +
+                              "</score-partwise>\n";
+            check(hasIssue(auditXml(xml), "没有在 part-list 里声明"),
+                  "正文有 part 但 part-list 没声明必须报错");
+        }
+
+        // 弱起小节本来就短：implicit="yes" 时不该被判成时值不守恒
+        {
+            std::string pickup = measureXml("0", attrBlock() + toneNote(480) +
+                                                   toneNote(480), true);
+            const VerifyReport r = auditXml(doc({partXml(
+                "P1", {pickup, fullBar("1", false), fullBar("2", false)})}));
+            check(r.ok(), "弱起 implicit 小节短于拍号不算错："
+                          + (r.ok() ? std::string() : r.issues.front().what));
+            check(r.implicitMeasures == 1, "弱起小节计数为 1，实际: " +
+                                               std::to_string(r.implicitMeasures));
+        }
+
+        // 编码：三端任一出现 U+FFFD 都要报
+        {
+            const VerifyReport r = verifyOutputs(
+                "共提取 1 个音符 \xEF\xBF\xBD", std::string(), std::string());
+            check(hasIssue(r, "U+FFFD"), "文本谱里的 U+FFFD 必须报错");
+        }
+
+        // 报告文案：通过一行、失败逐条带 [FAIL]
+        check(formatVerifyReport(ok, "x.mid").find("x.mid: 输出自检通过") == 0,
+              "通过时报告以「<文件>: 输出自检通过」开头");
+        check(formatVerifyReport(shortPart, "x.mid").find("[FAIL]") != std::string::npos,
+              "失败时报告逐条列出 [FAIL]");
+
+        // 真实输出零误报：两轨（其中一轨提前收尾）走一遍 renderMusicXml
+        {
+            MidiData d;
+            d.division = 480;
+            d.timeSig = TimeSignature{4, 2, true};
+            d.trackNames[0] = "Piano";
+            d.trackNames[1] = "Pad";
+            NoteEvent n;
+            n.channel = 0; n.velocity = 96; n.durationTicks = 480;
+            for (int i = 0; i < 16; i++) {
+                n.track = 0; n.pitch = 60 + (i % 5); n.startTicks = i * 480;
+                d.notes.push_back(n);
+            }
+            for (int i = 0; i < 4; i++) {   // 只有第一小节有音
+                n.track = 1; n.pitch = 72; n.startTicks = i * 480;
+                d.notes.push_back(n);
+            }
+            const KeyEstimate k{0, true};
+            const VerifyReport r =
+                auditXml(renderMusicXml(d, k, nullptr));
+            check(r.ok(), "真实导出的 XML 自检零问题："
+                          + (r.ok() ? std::string() : r.issues.front().what));
+            check(r.parts == 2 && r.measures == 4,
+                  "真实导出 2 个 part × 4 小节，实际: " + std::to_string(r.parts) +
+                      " × " + std::to_string(r.measures));
+        }
     }
 
     std::cout << "\n------------------------------------------------\n";

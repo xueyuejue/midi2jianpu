@@ -293,9 +293,6 @@ def structural_regress(old_exe, new_exe):
     line = regress_skip.note()
     if line:
         print(line)
-    line = regress_skip.note_xml()
-    if line:
-        print(line)
     with tempfile.TemporaryDirectory() as td:
         for mid in fixtures():
             name = os.path.basename(mid)
@@ -305,12 +302,6 @@ def structural_regress(old_exe, new_exe):
             n = render(new_exe, mid, td, "new")
             for i, ext in enumerate(("txt", "html", "xml")):
                 a, b = o[i], n[i]
-                if ext == "xml" and regress_skip.xml_changed(mid):
-                    # v1.146.0：这个 part 提前没音了，尾节补齐到全曲末节。
-                    # 只放过 xml；txt / html 仍逐字节比对。「只多了整小节休止」
-                    # 由 check_xml_parts.py --regress 定向证明。
-                    notes.append(name)
-                    continue
                 if ext != "xml":
                     # 打印块只决定纸面观感，跨版本比对时摘掉（v1.78.0
                     # 压深了 .barno/.footer 的打印色，由 smoke [91] 守）。

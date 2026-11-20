@@ -242,9 +242,6 @@ def structural_regress(old_exe, new_exe):
         line = regress_skip.note()
         if line:
             print(line)
-        line = regress_skip.note_xml()
-        if line:
-            print(line)
         for mid in mids:
             stem = os.path.splitext(os.path.basename(mid))[0]
             if regress_skip.skip(mid):
@@ -257,11 +254,6 @@ def structural_regress(old_exe, new_exe):
                             strip_direction_staff(strip_beams(a[ext])) ==
                             strip_direction_staff(strip_beams(b[ext]))):
                         continue          # 只多了 <beam>，属 v1.64.0 的预期变化
-                    if ext == "xml" and regress_skip.xml_changed(mid):
-                        # v1.146.0：短轨尾节补齐（各 part 等长），只追加整小节
-                        # 休止；由 check_xml_parts.py --regress 定向证明。
-                        notes.append(stem + ": xml 追加了尾节（check_xml_parts 证明）")
-                        continue
                     errors.append("%s: %s 发生变化（本轮只应改 HTML）" % (stem, ext))
             old_html = norm_html(a["html"].decode("utf-8", "replace"))
             new_html = norm_html(b["html"].decode("utf-8", "replace"))

@@ -3,6 +3,7 @@
 #include "midi2jianpu/notation.hpp"
 #include "midi2jianpu/html_writer.hpp"
 #include "midi2jianpu/musicxml_writer.hpp"
+#include "midi2jianpu/xml_verify.hpp"
 #include "midi2jianpu/version.hpp"
 #include "cli_args.hpp"
 
@@ -47,6 +48,14 @@ static bool writeOutputFile(const std::string& path, const std::string& content,
     }
     return true;
 }
+
+// 路径 -> 文件名。--verify 的每条问题都带这个前缀，批量体检时才分得清是
+// 哪份素材；HTML 标题取的是它的去扩展名版本。
+static std::string baseNameOf(const std::string& path) {
+    const size_t slash = path.find_last_of("/\\");
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
 static void printHelp() {
     std::cout <<
         "midi2jianpu " M2J_VERSION " - MIDI 文件转中文简谱\n"
@@ -73,6 +82,7 @@ static void printHelp() {
         "  midi2jianpu <input.mid> --soft-pedal-scale 0.5  软踏板力度衰减系数(0~1, 默认 0.7)\n"
         "  midi2jianpu <input.mid> --no-soft-pedal   关闭 CC67 软踏板(还原被强制压暗的弱奏曲)\n"
         "  midi2jianpu <input.mid> --no-quantize    关闭时值量化(保留 MIDI 原始时长)\n"
+        "  midi2jianpu <input.mid> --verify         导出自检(各 part 等长/时值守恒/小节号连续)\n"
         "  midi2jianpu --version\n"
         "  midi2jianpu --help\n";
 }
@@ -232,6 +242,7 @@ int main(int argc, char** argv) {
     bool player = false;       // --player：HTML 内嵌试听播放器
     int barsPerRow = 0;        // --bars N：每行固定 N 小节（0 = 自动折算）
     bool barNumbers = false;   // --bar-numbers：文本谱每行标出小节号
+    bool verify = false;       // --verify：输出写完后做一次自洽性体检
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         // ---- 带值选项必须有取值 ----
@@ -288,6 +299,7 @@ int main(int argc, char** argv) {
         else if (a == "--no-pickup") { noPickup = true; }
         else if (a == "--player") { player = true; }
         else if (a == "--bar-numbers") { barNumbers = true; }
+        else if (a == "--verify") { verify = true; }
         else if (a == "--bars" && i + 1 < argc) {
             int n = 0;
             if (!parseInt(argv[++i], n) || n < 1 || n > 8) {
@@ -823,23 +835,45 @@ int main(int argc, char** argv) {
         if (!writeOutputFile(txtOut, header + jianpu, "文本简谱")) return 1;
         std::cout << "文本简谱已写入: " << txtOut << "\n";
     }
+    // --verify 要体检「真正写出去的那一份」，所以三端内容先落到变量里再写盘。
+    // 分成「渲染一次去写、再渲染一次去查」等于查的是另一个东西：两次渲染之间
+    // 只要有任何不确定量（哈希序、时间戳），自检就会指着 A 说 B 有问题。
+    std::string htmlText, xmlText;
     if (!htmlOut.empty()) {
-        std::string title = input;
-        size_t slash = title.find_last_of("/\\");
-        if (slash != std::string::npos) title = title.substr(slash + 1);
+        std::string title = baseNameOf(input);
         size_t dot = title.find_last_of(".");
         if (dot != std::string::npos) title = title.substr(0, dot);
-        if (!writeOutputFile(htmlOut,
-                            m2j::renderHtml(data, key, title, lyricPtr,
-                                            player, barsPerRow),
-                            "HTML 谱面")) return 1;
+        htmlText = m2j::renderHtml(data, key, title, lyricPtr, player, barsPerRow);
+        if (!writeOutputFile(htmlOut, htmlText, "HTML 谱面")) return 1;
         std::cout << "HTML 谱面已写入: " << htmlOut << "\n";
     }
+    // 没给 --musicxml 也要生成：--verify 的体检对象就是 MusicXML。
+    if (!xmlOut.empty() || verify) xmlText = m2j::renderMusicXml(data, key, lyricPtr);
     if (!xmlOut.empty()) {
-        if (!writeOutputFile(xmlOut,
-                            m2j::renderMusicXml(data, key, lyricPtr),
-                            "MusicXML")) return 1;
+        if (!writeOutputFile(xmlOut, xmlText, "MusicXML")) return 1;
         std::cout << "MusicXML 已写入: " << xmlOut << "\n";
+    }
+    // 自洽性体检（v1.147.0）：各 part 等长、每小节时值守恒、小节号连续、
+    // part-list 与正文一致、短轨尾节是整小节休止、正文无 U+FFFD。
+    //
+    // 这些判据此前只活在 tests/*.py 里，只有仓库自带的 109 份素材享受得到；
+    // 用户拿自己的 MIDI 转出来的谱是没人看的。收进产品之后，同一套口径对
+    // 任意输入都成立——而且用的是「从生成好的文本重新数一遍」而不是 writer
+    // 的中间量，writer 自己算错时照得出来。
+    if (verify) {
+        const m2j::VerifyReport vr =
+            m2j::verifyOutputs(header + jianpu, htmlText, xmlText);
+        const std::string report = m2j::formatVerifyReport(vr, baseNameOf(input));
+        if (vr.ok()) {
+            std::cout << report << "\n";
+        } else {
+            // 文件照常写出去（用户手上要有东西可查），但退出码必须非 0：
+            // 结构坏掉的谱子在脚本里继续往下走，只会把坏谱发出去。
+            std::cerr << "错误: " << report << "\n"
+                      << "      以上问题会让导出的谱面在导入时错位或少拍，"
+                         "属于本程序的缺陷；请连同源 MIDI 一起反馈\n";
+            return 5;
+        }
     }
     return 0;
 }

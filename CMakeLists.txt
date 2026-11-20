@@ -24,6 +24,7 @@ set(M2J_CORE
   src/notation.cpp
   src/html_writer.cpp
   src/musicxml_writer.cpp
+  src/xml_verify.cpp
 )
 
 # ---- 命令行程序 ----

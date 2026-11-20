@@ -7,6 +7,7 @@
 
 不依赖第三方库；失败时返回非 0 退出码，可直接用于 CI。
 """
+import glob
 import json
 import os
 import re
@@ -5946,6 +5947,60 @@ def main():
         pm = part_measures(open(xt, encoding="utf-8").read())
         check(all(len(v) == 3 for v in pm.values()),
               "--track 3 单轨导出仍是 3 小节（不补到 4）", "%r" % (pm,))
+
+    group("[141] v1.147.0 内建自检 --verify（自洽性判据从 Python 收进产品）")
+    # 各 part 等长、每小节时值守恒、小节号连续、part-list 自洽、短轨尾节是
+    # 整小节休止、正文无 U+FFFD——这些判据此前只活在 tests/check_*.py 里，
+    # 只有仓库自带的素材享受得到；用户拿自己的 MIDI 转出来的谱没人看。
+    # 收进产品后同一套口径对任意输入都成立，而且数的是「已经生成的那份文本」
+    # 而不是 writer 的中间量，writer 自己算错时照得出来。
+    #
+    # 这组只守两件事：判据在全部素材上零误报；加了开关不改变任何一个输出字节。
+    vt = os.path.join(tmp, "verify")
+    os.makedirs(vt, exist_ok=True)
+    sample = os.path.join(FIXTURES, "sample.mid")
+
+    r, out, err = run(exe, sample, "--verify")
+    check(r == 0, "sample.mid --verify 通过（rc=0）", "rc=%d %s" % (r, err[:200]))
+    check("输出自检通过" in out, "自检结论打到标准输出", out[-160:])
+    check("3 个 part × 4 小节" in out, "报告带 part × 小节数", out[-160:])
+
+    # 开关不许改产物：同一个输入，加不加 --verify 的文本谱 / MusicXML 必须逐字节相同。
+    tv1 = os.path.join(vt, "a.txt")
+    tv2 = os.path.join(vt, "b.txt")
+    run(exe, sample, "--output", tv1)
+    r2, _, e2 = run(exe, sample, "--output", tv2, "--verify")
+    check(r2 == 0 and open(tv1, "rb").read() == open(tv2, "rb").read(),
+          "--verify 不改变文本谱一个字节", "rc=%d %s" % (r2, e2[:120]))
+    xv1 = os.path.join(vt, "a.xml")
+    xv2 = os.path.join(vt, "b.xml")
+    run(exe, sample, "--musicxml", xv1)
+    r3, _, _ = run(exe, sample, "--musicxml", xv2, "--verify")
+    check(r3 == 0 and open(xv1, "rb").read() == open(xv2, "rb").read(),
+          "--verify 不改变 MusicXML 一个字节")
+
+    # 弱起 / 被 0x58 截短的小节标了 implicit，本来就短，不该被误判成时值不守恒。
+    r, out, _ = run(exe, os.path.join(FIXTURES, "pedal_channels.mid"), "--verify")
+    check(r == 0 and "含 2 个弱起/截短小节" in out,
+          "pedal_channels.mid 的弱起小节不误报", out[-160:])
+
+    # --track 只留一条轨时，全曲末节跟着只剩三小节，自检统计要跟着走。
+    r, out, _ = run(exe, sample, "--verify", "--track", "3")
+    check(r == 0 and "1 个 part × 3 小节" in out,
+          "--track 3 自检统计为 1 个 part × 3 小节", out[-160:])
+
+    # --no-quantize 保留 MIDI 原始时长：小节里会出现 220 tick 这种非标准值，
+    # 但各段相加仍必须正好等于小节长度（拆分休止符那套逻辑没被绕过）。
+    r, out, _ = run(exe, sample, "--verify", "--no-quantize")
+    check(r == 0, "--no-quantize 下小节时值仍守恒", "rc=%d %s" % (r, out[-160:]))
+
+    bad = []
+    for f in sorted(glob.glob(os.path.join(FIXTURES, "*.mid"))):
+        rr, oo, ee = run(exe, f, "--verify")
+        if rr == 5 or "输出自检发现" in (oo + ee):
+            bad.append(os.path.basename(f))
+    check(not bad, "全部素材 --verify 零问题",
+          "%d 份有问题: %s" % (len(bad), bad[:6]))
 
     print("\n" + "-" * 48)
     if failures:

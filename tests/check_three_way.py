@@ -373,9 +373,6 @@ def structural_regress(old_exe, new_exe):
         line = regress_skip.note()
         if line:
             print(line)
-        line = regress_skip.note_xml()
-        if line:
-            print(line)
         for p in sorted(glob.glob(os.path.join(FIX, "*.mid"))):
             name = os.path.basename(p)
             if regress_skip.skip(p):
@@ -397,10 +394,7 @@ def structural_regress(old_exe, new_exe):
                 errors.append("%s: HTML 逐轨小节数随版本变化" % name)
             oxx = open(ox, encoding="utf-8", errors="replace").read()
             nxx = open(nx, encoding="utf-8", errors="replace").read()
-            # v1.146.0：短 part 的尾节补齐到全曲末节，XML 小节数会变多。
-            # 改动只限于「末尾多出整小节休止」，由 check_xml_parts.py --regress
-            # 定向证明；这里仍要求文本谱与 HTML 的逐轨结构不变。
-            if not regress_skip.xml_changed(p) and xml_parts(oxx) != xml_parts(nxx):
+            if xml_parts(oxx) != xml_parts(nxx):
                 errors.append("%s: MusicXML 逐轨小节数随版本变化" % name)
     return errors
 

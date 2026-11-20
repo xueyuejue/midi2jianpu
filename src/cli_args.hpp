@@ -29,7 +29,7 @@ inline const std::vector<std::string>& flagOptions() {
         "--help", "-h", "--version", "-v", "--list-tracks",
         "--no-pentatonic", "--no-key-changes", "--no-midi-lyrics",
         "--no-pickup", "--no-dynamics", "--no-soft-pedal",
-        "--no-quantize", "--player", "--bar-numbers"
+        "--no-quantize", "--player", "--bar-numbers", "--verify"
     };
     return v;
 }
