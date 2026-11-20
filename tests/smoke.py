@@ -6002,6 +6002,53 @@ def main():
     check(not bad, "全部素材 --verify 零问题",
           "%d 份有问题: %s" % (len(bad), bad[:6]))
 
+    group("[142] v1.148.0 文本谱拍数守恒（判据进 C，基准是 BarGrid 不是页眉）")
+    # 一小节印出来的拍数必须等于这一小节的拍号：读者按 token 数拍子，少印
+    # 一拍后面每个音头都整体前移。这条判据此前只活在 tests/check_bar_beats.py
+    # 里，而且拿「页眉那行摘要」当尺子——摘要与谱面一起错时它抓不到；现在
+    # --verify 直接按 BarGrid 判，用户自己的 MIDI 也享受得到。
+    # 这组守两件事：真实素材上零误报；--no-quantize 的近似记谱只提示不判错。
+    r, out, err = run(exe, sample, "--verify")
+    check(r == 0 and "文本谱核对" in out,
+          "--verify 报出文本谱核对结论", out[-220:])
+    check("文本谱核对 3 行 / 8 小节" in out and "每小节拍数守恒" in out,
+          "报告带谱行数 / 小节数与守恒结论", out[-220:])
+
+    # 弱起小节在网格里本身就短，按设计不判
+    r, out, _ = run(exe, os.path.join(FIXTURES, "pickup.mid"), "--verify")
+    check(r == 0 and "按设计不判" in out,
+          "pickup.mid 的弱起小节不误报", out[-220:])
+
+    # 变拍号截断小节（0x58 落在小节中间）同样不判
+    r, out, _ = run(exe, os.path.join(FIXTURES, "midbar_meter.mid"), "--verify")
+    check(r == 0 and "不守恒" not in out,
+          "midbar_meter.mid 的截短小节不误报", out[-220:])
+
+    # --bar-numbers 的小节号前缀 [3] 不能干扰判据（标记要整段剥掉）
+    r, out, _ = run(exe, os.path.join(FIXTURES, "meter.mid"), "--verify",
+                    "--bar-numbers")
+    check(r == 0 and "不守恒" not in out,
+          "--bar-numbers 的小节号前缀不影响判据", out[-220:])
+
+    # --no-quantize 保留原始时值，记谱只能吸附到最近档：不满只作提示，
+    # 退出码必须仍是 0（否则脚本里的 --verify 会被正常输入判死）
+    r, out, _ = run(exe, os.path.join(FIXTURES, "humanized.mid"), "--verify",
+                    "--no-quantize")
+    check(r == 0 and "近似记谱" in out,
+          "--no-quantize 的拍数不满只作提示（rc 仍 0）", out[-260:])
+    r, out, _ = run(exe, sample, "--verify", "--no-quantize")
+    check(r == 0 and "不守恒" not in out,
+          "sample.mid --no-quantize 不误判为不守恒", out[-220:])
+
+    # 全量素材：一条都不能报「不守恒」
+    badv = []
+    for f in sorted(glob.glob(os.path.join(FIXTURES, "*.mid"))):
+        rr, oo, ee = run(exe, f, "--verify")
+        if rr == 5 or "不守恒" in (oo + ee):
+            badv.append(os.path.basename(f))
+    check(not badv, "全部素材文本谱拍数守恒",
+          "%d 份有问题: %s" % (len(badv), badv[:6]))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

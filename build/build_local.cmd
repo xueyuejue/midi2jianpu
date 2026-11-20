@@ -12,6 +12,6 @@ rem Go back to the repo root from this script's folder (drive-letter agnostic).
 cd /d "%~dp0.."
 cl /nologo /utf-8 /W3 /std:c++17 /EHsc /O2 /Iinclude ^
    src\main.cpp src\midifile.cpp src\notation.cpp ^
-   src\html_writer.cpp src\musicxml_writer.cpp src\xml_verify.cpp ^
+   src\html_writer.cpp src\musicxml_writer.cpp src\xml_verify.cpp src\text_verify.cpp ^
    /Fe:build\midi2jianpu.exe /Fo:build\ 2>&1
 echo EXIT=%ERRORLEVEL%

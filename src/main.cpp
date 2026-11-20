@@ -4,6 +4,7 @@
 #include "midi2jianpu/html_writer.hpp"
 #include "midi2jianpu/musicxml_writer.hpp"
 #include "midi2jianpu/xml_verify.hpp"
+#include "midi2jianpu/text_verify.hpp"
 #include "midi2jianpu/version.hpp"
 #include "cli_args.hpp"
 
@@ -82,7 +83,7 @@ static void printHelp() {
         "  midi2jianpu <input.mid> --soft-pedal-scale 0.5  软踏板力度衰减系数(0~1, 默认 0.7)\n"
         "  midi2jianpu <input.mid> --no-soft-pedal   关闭 CC67 软踏板(还原被强制压暗的弱奏曲)\n"
         "  midi2jianpu <input.mid> --no-quantize    关闭时值量化(保留 MIDI 原始时长)\n"
-        "  midi2jianpu <input.mid> --verify         导出自检(各 part 等长/时值守恒/小节号连续)\n"
+        "  midi2jianpu <input.mid> --verify         导出自检(MusicXML 结构 + 文本谱拍数守恒)\n"
         "  midi2jianpu --version\n"
         "  midi2jianpu --help\n";
 }
@@ -861,15 +862,24 @@ int main(int argc, char** argv) {
     // 任意输入都成立——而且用的是「从生成好的文本重新数一遍」而不是 writer
     // 的中间量，writer 自己算错时照得出来。
     if (verify) {
-        const m2j::VerifyReport vr =
-            m2j::verifyOutputs(header + jianpu, htmlText, xmlText);
-        const std::string report = m2j::formatVerifyReport(vr, baseNameOf(input));
-        if (vr.ok()) {
-            std::cout << report << "\n";
+        const std::string textOut = header + jianpu;
+        const m2j::VerifyReport vr = m2j::verifyOutputs(textOut, htmlText, xmlText);
+        // 文本谱一侧的判据（v1.148.0）：一小节印出来的拍数必须等于 BarGrid
+        // 里这一小节的拍号。--no-quantize 保留原始时值，记谱只能吸附到最近
+        // 档，拍数不满是这种模式的必然结果，归到「提示」不影响退出码。
+        const m2j::TextVerifyReport tv =
+            m2j::verifyTextScore(textOut, data, !quantize);
+        const std::string label = baseNameOf(input);
+        const std::string report = m2j::formatVerifyReport(vr, label);
+        const std::string treport = m2j::formatTextVerifyReport(tv, label);
+        if (vr.ok() && tv.ok()) {
+            std::cout << report << "\n" << treport << "\n";
         } else {
             // 文件照常写出去（用户手上要有东西可查），但退出码必须非 0：
             // 结构坏掉的谱子在脚本里继续往下走，只会把坏谱发出去。
-            std::cerr << "错误: " << report << "\n"
+            std::cerr << "错误: 输出自检未通过\n"
+                      << report << "\n"
+                      << treport << "\n"
                       << "      以上问题会让导出的谱面在导入时错位或少拍，"
                          "属于本程序的缺陷；请连同源 MIDI 一起反馈\n";
             return 5;

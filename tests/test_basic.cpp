@@ -11,6 +11,7 @@
 #include "midi2jianpu/musicxml_writer.hpp"
 #include "midi2jianpu/html_writer.hpp"
 #include "midi2jianpu/xml_verify.hpp"
+#include "midi2jianpu/text_verify.hpp"
 #include "../src/text_encoding.hpp"
 #include "../src/cli_args.hpp"
 
@@ -10212,6 +10213,150 @@ int main() {
             check(r.parts == 2 && r.measures == 4,
                   "真实导出 2 个 part × 4 小节，实际: " + std::to_string(r.parts) +
                       " × " + std::to_string(r.measures));
+        }
+    }
+
+    // ---- v1.148.0 文本谱拍数守恒（判据的基准是 BarGrid，不是页眉文字） ----
+    //
+    // 这里手写文本谱而不是走 formatJianpu()：要确认判据「该报的报、不该报的
+    // 绝不报」，就必须能造出少一拍、多一拍、认不出的 token 这些畸形输入。
+    {
+        auto makeSong = [](int bars, const TimeSignature& sig) {
+            MidiData d;
+            d.division = 480;
+            d.timeSig = sig;
+            d.pickupTicks = 0;          // 关掉自动弱起判定，网格才是确定的
+            d.trackNames[0] = "Vocal";
+            NoteEvent n;
+            n.channel = 0; n.velocity = 96;
+            const long barLen = (long)std::llround(sig.barLengthTicks(480));
+            const long unit = barLen / 4;
+            for (int b = 0; b < bars; b++)
+                for (int k = 0; k < 4; k++) {
+                    n.track = 0; n.pitch = 60; n.durationTicks = unit;
+                    n.startTicks = (long)b * barLen + (long)k * unit;
+                    d.notes.push_back(n);
+                }
+            return d;
+        };
+        auto score = [](const std::string& count,
+                        const std::vector<std::string>& bars) {
+            std::string s = "[Vocal] (" + count + " 音符)\n";
+            for (const auto& b : bars) s += b + "  |\n";
+            return s;
+        };
+        const TimeSignature fourFour{4, 2, true};
+
+        // 通过：两小节 4/4，末小节按惯例不判
+        {
+            MidiData d = makeSong(2, fourFour);
+            const TextVerifyReport r = verifyTextScore(
+                score("8", {"1 2 3 4", "1 2 3 4"}), d, false);
+            check(r.ok(), "文本谱 2 小节全满 -> 通过");
+            check(r.bars == 1 && r.skipped == 1,
+                  "末小节按设计不判：核对 " + std::to_string(r.bars) + " / 跳过 "
+                      + std::to_string(r.skipped));
+        }
+        // 非末小节少一拍：必须抓到，并且报出印出几拍 / 应该几拍
+        {
+            MidiData d = makeSong(2, fourFour);
+            const TextVerifyReport r = verifyTextScore(
+                score("7", {"1 2 3", "1 2 3 4"}), d, false);
+            check(!r.ok() && r.issues.size() == 1, "第 1 小节少一拍必须报");
+            if (!r.issues.empty()) {
+                check(std::fabs(r.issues[0].printed - 3.0) < 1e-9 &&
+                          std::fabs(r.issues[0].want - 4.0) < 1e-9,
+                      "报告里的拍数：印出 " + std::to_string(r.issues[0].printed) +
+                          " / 应 " + std::to_string(r.issues[0].want));
+                check(r.issues[0].bar == 0 && r.issues[0].line == 1,
+                      "定位到第 1 行谱第 1 小节");
+            }
+        }
+        // 多一拍同样要报（不能只盯着「少了」）
+        {
+            MidiData d = makeSong(2, fourFour);
+            const TextVerifyReport r = verifyTextScore(
+                score("9", {"1 2 3 4 5", "1 2 3 4"}), d, false);
+            check(!r.ok() && r.issues.size() == 1 &&
+                      std::fabs(r.issues[0].printed - 5.0) < 1e-9,
+                  "多印一拍也要报");
+        }
+        // 末小节短一截：尾上休止按设计不补，不算错
+        {
+            MidiData d = makeSong(2, fourFour);
+            const TextVerifyReport r = verifyTextScore(
+                score("7", {"1 2 3 4", "1 2 3"}), d, false);
+            check(r.ok(), "末小节不满按惯例放行");
+        }
+        // 记法覆盖：三连音 / 和弦 / 休止 / 八分 / 附点与十六分
+        {
+            MidiData d = makeSong(2, fourFour);
+            check(verifyTextScore(score("8", {"3(1 2 3 ) 2 3 4", "1 2 3 4"}),
+                                  d, false).ok(),
+                  "三连音 3(1 2 3) 记 1 拍");
+            check(verifyTextScore(score("8", {"1,+3,+5, 2 3 4", "1 2 3 4"}),
+                                  d, false).ok(),
+                  "和弦 1,+3,+5, 整格只算一拍");
+            check(verifyTextScore(score("4", {"0 - - -", "1 2 3 4"}),
+                                  d, false).ok(),
+                  "休止 0 - - - 记 4 拍");
+            check(verifyTextScore(score("8", {"1_ 2_ 3_ 4_ 5_ 6_ 7_ 1'_",
+                                             "1 2 3 4"}), d, false).ok(),
+                  "八分音符 8 个记 4 拍");
+            check(verifyTextScore(score("6", {"1. 2= 3= 4_ 5_", "1 2 3 4"}),
+                                  makeSong(2, TimeSignature{3, 2, true}), false).ok(),
+                  "附点四分 + 十六分 + 八分 合计 3 拍");
+        }
+        // 认不出的写法：整行放弃判定，不许当成 0 拍报错
+        {
+            MidiData d = makeSong(2, fourFour);
+            const TextVerifyReport r = verifyTextScore(
+                score("8", {"1?? 2 3 4", "1 2 3 4"}), d, false);
+            check(r.ok() && r.bars == 0, "认不出的 token 不判，也不报");
+        }
+        // 谱行小节数与全曲小节数对不上：起点无法确定，整行不判
+        {
+            MidiData d = makeSong(2, fourFour);
+            const TextVerifyReport r = verifyTextScore(
+                score("9", {"1 2 3 4", "1 2 3 4", "1 2 3 4"}), d, false);
+            check(r.ok() && r.bars == 0, "小节数对不上的谱行整行不判");
+        }
+        // --no-quantize：拍数不满归到「提示」，不影响通过
+        {
+            MidiData d = makeSong(2, fourFour);
+            const TextVerifyReport r = verifyTextScore(
+                score("7", {"1 2 3", "1 2 3 4"}), d, true);
+            check(r.ok() && r.approx.size() == 1,
+                  "--no-quantize 下不满只进提示");
+            check(formatTextVerifyReport(r, "x.mid").find("近似记谱") !=
+                      std::string::npos,
+                  "提示里写明是 --no-quantize 的近似记谱");
+        }
+        // 报告文案
+        {
+            MidiData d = makeSong(2, fourFour);
+            const TextVerifyReport ok = verifyTextScore(
+                score("8", {"1 2 3 4", "1 2 3 4"}), d, false);
+            check(formatTextVerifyReport(ok, "x.mid").find("x.mid: 文本谱核对") == 0,
+                  "通过时报告以「<文件>: 文本谱核对」开头");
+            const TextVerifyReport bad = verifyTextScore(
+                score("7", {"1 2 3", "1 2 3 4"}), d, false);
+            const std::string rep = formatTextVerifyReport(bad, "x.mid");
+            check(rep.find("[FAIL]") != std::string::npos &&
+                      rep.find("印出 3 拍") != std::string::npos,
+                  "失败时逐条列出 [FAIL] 与拍数");
+        }
+        // 真实链路零误报：formatJianpu 的产物本身就是守恒的
+        {
+            MidiData d = makeSong(4, fourFour);
+            const KeyEstimate k{0, true};
+            const std::string txt = formatJianpu(d, k, false);
+            const TextVerifyReport r = verifyTextScore(txt, d, false);
+            check(r.ok(), "formatJianpu 的真实输出零误报"
+                              + (r.ok() ? std::string()
+                                        : ("：" + r.issues.front().text)));
+            check(r.bars == 3, "4 小节里末小节不判，核对 3 小节，实际: " +
+                                   std::to_string(r.bars));
         }
     }
 

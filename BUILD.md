@@ -50,7 +50,7 @@ Emscripten 的 sanity 检查误判配置变化，清掉 sysroot 缓存并重编�
 
 ## 测试
 
-### 单元测试（1684 项）
+### 单元测试（1704 项）
 
 ```bash
 cd build && ctest --output-on-failure
@@ -58,7 +58,7 @@ cd build && ctest --output-on-failure
 ./build/test_basic
 ```
 
-成功时输出 `共 1684 项，失败 0 项 -> 全部通过`。
+成功时输出 `共 1704 项，失败 0 项 -> 全部通过`。
 
 覆盖范围：调性识别、各调八度基准、升降号书写（含降号调）、时值后缀、三连音、同音合并、和弦检测、移调、MusicXML 小节时长与 `<chord/>`，以及二十一组解析层回归——**鼓轨过滤**、**旋律轨判定**、**变速 tempo map 秒数换算**、**弱起小节网格**、**歌词分配与一字多音区间**、**MIDI 内置歌词规整与精确对齐**、**拍号 map 与逐小节网格**、**调号 map（中途转调 / KeyMap）**、**五声调式宫音判定（正音落音才报调式名 / 偏音落音说「不在五声内」/ 无音符时不冒充）**、**TempoTimeline 与 LRC 变速对齐（tick/秒往返、乱序去重、offset、多时间戳、旧签名对照）**、**ExpressionMap 演奏表情（力度六档 / 渐变 / 断奏 / 重音 / 滑音 / 颤音 / 段落 / 通道隔离 / 开关 / 节奏混合时不误判）与解析层 velocity、原始时值、多轨事件排序**、**GM 音色名（英文全名 / 中文译名覆盖）、`0xC0` 解析（通道 → GM 音色号）、声部乐器标注 `listParts` / `partSummary`、倚音检测与通道隔离、无 0xC0 / 等间隔流零标注回归**、**和弦转位（低音非根音才写斜杠 / 和弦外音不写）、`Bm7b5` 与 `G7sus4` 的类型扩充、`ChordMark` 的结构化字段（rootPc / kind / kindText / bassPc）**、**速度曲线折叠（`tempoMarksOf`：渐变 / 阶跃 / 抖动退化 / 5% 跨度阈值 / 一拍聚簇阈值 / 曲首独立阶跃 / 页眉文案）**、**长音跨小节（6 拍 / 10 拍时值不被截断、延音段写成 `-` 而非休止符、复调轨 4 拍和弦不被门限放大、断奏轨门限还原仍生效）**、**同轨复调（`splitVoices`：同拍同值算和弦 / 同拍不同值拆声部 / 重叠拆声部 / 超上限退化并截短 / 倚音 skip）、复调 MusicXML 的 `<backup>` 与逐小节时值守恒、单声部零 `<backup>` 回归**、**RPN 弯音范围（按通道隔离 / 中途改范围不倒灌 / 跨轨设定 / CC38 音分微调 / 同 tick 后写覆盖 / 非法值兜底 / 提示文案）**、**running status 生命周期（歌词 meta / SysEx / System Common 之后取消、0xF8 与 0xFE 实时消息不改变、省略状态字节按最后一条通道状态补回、补回 CC 的两字节数据、通道归属不变、规范写法零回归、提示文案）**、**MIDI Port / Channel Prefix（端口隔离踏板 / 弯音范围 / RPN 状态表、端口不跨轨继承、同轨中途改端口、FF 20 不重定向通道消息、端口 255 逻辑通道不越界、鼓轨按低 4 位、GM 音色与 CC11 归逻辑通道、无端口声明零回归、提示文案）**、**SysEx 鼓模式（GS/XG 把任意 part 设为鼓 / mode=0 普通乐器对照 / 三种 Reset 按时间撤销 / 末轨 SysEx / 通道 10 改回钢琴 / 无关 SysEx 零回归 / 同 tick 后写覆盖 / 端口隔离 / 提示文案）**、**Bank Select 与音色时间轴（CC0=127 指定 XG 鼓组 / 普通音色库对照 / CC0 改回 0 后恢复旋律 / 末轨 setup / GM Reset 撤销 / 端口隔离 / 缺 0xC0 不切鼓 / 通道 10 普通音色设定不改回旋律 / programAt 按 tick 取音色 / channelProgram 兼容回退 / 普通 GM 文件无提示）`、`--track` 全事件表隔离（默认不隔离 / 选中轨只留该轨音符 / 别轨歌词·CC11·CC7·CC64 踏板·弯音不串入 / 别轨踏板不给选中轨补长时值 / 全局速度·拍号·调号·Marker·RPN 弯音仍保留 / 空轨与越界报错 / format 2 选段 / 提示文案）**、**CC66 持音踏板（只保持踩下瞬间正按着的键 / 与 CC64 叠加 / 迟滞死区 / 通道隔离 / 同键重击 / 强制清音 / 未抬踏板收束 / --track 隔离 / 诊断文案）**、**渐强渐弱的通道归属（同 tick 相反渐变分列 / inRange 按通道过滤 / 全局段落名可见 / 不传通道保留全量 / 全局标记排序 / 力度档位与渐变一致）**、**CC67 软踏板（只衰减踩下区间内起音的 velocity / 时值不动 / CC11 力度表不动 / 通道隔离 / 迟滞死区 / 未抬踏板收束 / 别轨事件与 --track 隔离 / 与 CC64 同曲叠加 / 力度下限 / 诊断文案 / 无 CC67 零回归 / 系数可配：默认 0.7、scale=1.0 不衰减、scale=0.0 关闭、纯整数公式零漂移、CLI 与网页共用同一字段）**、**257 轨的音符归属（`active` 表的 key 里轨号占几位：挤在低 8 位会让轨 0 与轨 256 撞成同一个键）**、**VLQ 四字节上限（delta / meta 长度 / SysEx 长度三处入口：5 字节回绕不再凭空造音符或吞字节、4 字节前导零仍合法、半途截断照旧计一次）**、**极端移调按八度折回（±60 内推出 MIDI 音域按八度归位且只计音符数不计步数、折回保音级、整八度调号不动、midiNoteName / MusicXML 对负 pitch 向下取整）**、**SMF chunk 边界重同步（轨前 / 轨间私有块按长度跳过、长度少写 / 多写靠 EOT 锚点校正、歌词与 SysEx 里字面 MTrk 不误判、真截断与 chunk 修复的提示合并）**、**MusicXML 键盘大谱表（宽音域键盘声部声明两行谱、上下谱号各一、音符带 `<staff>` 归属、谱表间 `<backup>` 切游标、净时值守恒、非键盘音色与窄音域不误判）**、**MusicXML 小节中途变速（同小节多个阶跃全部保留、`<offset>` 标回小节内拍位、小节线上的速度不多写 `<offset>`、渐慢落定点带 offset）**、**MusicXML 小节中途换力度档（`dynamicStepsInside` 取小节内孤立换档、`<offset>` 标回拍位、小节线换档不写 offset、渐变段内部中间档位不重复印、被顶掉的档位不再整条丢失）**、**文本谱 / HTML 的同一处换档（`lastDynTick` 游标逐个音头印 `[p]`、HTML 浮标 `dynx` 挂到音头、CSS 仅在用到时随页输出、渐变段内部不逐点印）**、**文本谱同拍和弦并格（同拍三音印成 `1,+3,+5,`、时值只写一次、先后发音不并格、各音保留自己的八度记号、旧写法 `3, - - -` 不再出现）**、**时值折算（3.75 拍拆成 `0 - -` + `-_.`、音符与休止同口径、不越过小节线、未顶到小节线的零头仍记最近档不碎片化、倚音前面的休止照常印出）**、**门限空档并进前一个音（`restGateTicks()` 与三端共用同一门槛、400/480 的四分音符补成整拍、真四分休止不被并掉、16 分击打不被拉长、MusicXML 不再补出 16 分休止）**、**复调轨按声部补空档（贪心 lane 分组求本声部下一音头、左手全音符不被截断、复调轨里的真休止与 16 分击打仍守住、三端都是 4 拍）**、**复调轨门限因子按声部估（整轨音头切短 ioi 导致门限样本被丢、`laneGate` 只对被误丢的音生效、全局 `gate` 保持旧值、连奏声部与末音不虚增、单声部轨零影响、三端都是整拍）**、**MusicXML 休止符时值一致性（不规则间隙拆成标准时值之和、每个休止符 duration 与 type/dot 严格一致、小节总时长守恒、精确档逐字节不变、不足 64 分音符的余量保留旧兜底、全小节休止 measure=yes 豁免、10 tick 间隙不丢时长）**、**文本谱休止符精确拆段（小节中间 1.75 / 1.25 拍拆成 `0. -=` / `0 -=`、两小节各守恒 4 拍、小节末旧写法与精确档逐字节不变、0.958 拍零头保留兜底、末小节也不再少拍）**（都在内存里现构造最小 SMF，不依赖 fixture 文件）；另含外部歌词字节归一（UTF-16 LE/BE BOM、GBK、Shift-JIS、CP1252）、JSON 转义键名与裸控制字符的纯逻辑单测。
 
@@ -201,7 +201,7 @@ C5 / D5。`port_prefix.mid` 与 `port_prefix_base.mid` 的谱面正文逐字符�
 
 | 类别 | 问的问题 | 落在哪 | 为什么 |
 | --- | --- | --- | --- |
-| 自洽性 | 这份输出自己跟定义对不对得上 | 产品内建，`--verify`（`src/xml_verify.cpp`） | 不需要基线，对**用户自己的 MIDI** 同样成立；数的是已生成的文本而不是 writer 的中间量，writer 算错时照得出来 |
+| 自洽性 | 这份输出自己跟定义对不对得上 | 产品内建，`--verify`（`src/xml_verify.cpp` + `src/text_verify.cpp`） | 不需要基线，对**用户自己的 MIDI** 同样成立；数的是已生成的文本而不是 writer 的中间量，writer 算错时照得出来 |
 | 回归性 | 这次改动有没有动到别的地方 | `tests/check_*.py --regress` | 要同时跑新旧两个可执行文件再逐字节比，subprocess + difflib 更合适 |
 | 期望值断言 | 这份素材该输出成什么样 | `tests/smoke.py` 等 | 期望值每轮都在长，是数据不是判据 |
 | 构建产物守门 | 改了源码有没有重编 wasm / 升版本 | `tests/check_wasm_*.py` | 要读 git 变更清单，属于仓库账簿 |
@@ -217,6 +217,17 @@ C5 / D5。`port_prefix.mid` 与 `port_prefix_base.mid` 的谱面正文逐字符�
   `<backup>` 后退、`<forward>` 前进；游标不许退到小节线之前；
 * 每个 part 尾部连续「无实音」的小节必须含 `<rest measure="yes"/>`；
 * 三端输出都不许出现 U+FFFD。
+
+文本谱一侧由 `src/text_verify.cpp` 判（v1.148.0）：
+
+* 一小节印出来的拍数必须等于 `BarGrid` 里这一小节的拍号。基准是**内部网格**，
+  不是页眉那行摘要——摘要与谱面一起错时，拿摘要当尺子查不出来；
+* 弱起小节、`0x58` 落在小节中间截断出来的短小节、每条谱行的末小节（尾上休止
+  按设计不补）一律不判：这三类都由模型自己标明「本来就短」，不需要启发式；
+* 谱行的小节数与该行应有的小节数对不上时整行不判（起点无法确定就不猜，
+  `edge/short_meter.mid` 就会让开头那个整节空白且短于休止门槛的小节根本不印）；
+* `--no-quantize` 保留 MIDI 原始时值，记谱只能吸附到最近档，拍数不满只作提示，
+  不影响退出码。
 
 刻意**没有** C 化的：`fuzz_parse.py`（突变算子每轮都在加）、`check_html_player.py`
 （播放器 JS 的 773 组排版还没定稿）、`smoke.py`（期望值数据）、`xml_norm.py`
@@ -286,7 +297,7 @@ python3 tests/check_wasm_sync.py --changed docs/wasm/midi2jianpu.wasm \
 
 | job | 步骤 |
 | --- | --- |
-| `cpp` | CMake 编译 CLI 与单测 → `ctest`（1684 项）→ 全量重生成 109 份 `.mid` 并要求零 diff、无未跟踪素材 → `smoke.py --self-test` 28 项 → `check_xml_durations.py` 18 项自测 + 109 份素材 → `check_xml_beams.py` 39 项自测 + 109 份素材 → `check_xml_staff.py` 32 项自测 + 109 份素材 → `check_bar_beats.py` 28 项自测 + 109 份素材 → `check_html_dots.py` 35 项自测 + 109 份素材 → `check_html_rests.py` 77 项自测 + 109 份素材 → `check_html_bars.py` 10 项自测 + 109 份素材 → `check_xml_tempo.py` 10 项自测 + 109 份素材 → `check_xml_parts.py` 11 项自测 + 109 份素材 → `check_three_way.py` 14 项自测 + 109 份素材 → `check_xml_structure.py` 34 项自测 + 109 份素材 → `check_html_player.py` 42 项自测 + 109 份素材 + 组合矩阵 → `check_utf8.py` 22 项自测 + 109 份素材 → `check_cli_matrix.py` 36 项自测 + 109 份素材 → `check_lyric_sync.py` 8 项自测 + 14 组素材 → `smoke.py` 141 组 → `fuzz_parse.py` 48 项自测 + 12 类突变 × 3 种子 × 200 次 |
+| `cpp` | CMake 编译 CLI 与单测 → `ctest`（1704 项）→ 全量重生成 109 份 `.mid` 并要求零 diff、无未跟踪素材 → `smoke.py --self-test` 28 项 → `check_xml_durations.py` 18 项自测 + 109 份素材 → `check_xml_beams.py` 39 项自测 + 109 份素材 → `check_xml_staff.py` 32 项自测 + 109 份素材 → `check_bar_beats.py` 28 项自测 + 109 份素材 → `check_html_dots.py` 35 项自测 + 109 份素材 → `check_html_rests.py` 77 项自测 + 109 份素材 → `check_html_bars.py` 10 项自测 + 109 份素材 → `check_xml_tempo.py` 10 项自测 + 109 份素材 → `check_xml_parts.py` 11 项自测 + 109 份素材 → `check_three_way.py` 14 项自测 + 109 份素材 → `check_xml_structure.py` 34 项自测 + 109 份素材 → `check_html_player.py` 42 项自测 + 109 份素材 + 组合矩阵 → `check_utf8.py` 22 项自测 + 109 份素材 → `check_cli_matrix.py` 36 项自测 + 109 份素材 → `check_lyric_sync.py` 8 项自测 + 14 组素材 → `smoke.py` 142 组 → `fuzz_parse.py` 48 项自测 + 12 类突变 × 3 种子 × 200 次 |
 | `wasm` | `check_wasm_sync.py --self-test`（16 组）+ 实跑（含反向版本守护）→ `check_wasm_exports.py` → `wasm_smoke.mjs` 91 组（含产物版本号与 `version.hpp` 比对） |
 
 客户端可以忘了跑测试，这里在服务端兜底；**升过版本号却忘了重编 `docs/wasm/`，
