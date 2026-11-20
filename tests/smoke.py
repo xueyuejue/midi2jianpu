@@ -6177,6 +6177,45 @@ def main():
     # 引号顺序不能畸形
     check("class='bgrp style=" not in body, "bgrp 属性引号正确，无畸形")
 
+    group("[146] v1.152.0 大拍号整小节长音三端时值一致（HTML 不再吸附 6 拍）")
+    # 12/4、8/4、16/4 整小节各一个长音。旧版 HTML durStyleOf 表最大 6 拍，
+    # 把 12 拍吸附成 5 条线（=6 拍）；文本用 lround-1 条、XML 用精确 duration，
+    # 三端分叉。修复后 HTML 也按 lround(beats)-1 条延长线输出。
+    with tempfile.TemporaryDirectory() as td:
+        hp = os.path.join(td, "lg.html")
+        xp = os.path.join(td, "lg.xml")
+        rc, out, _ = run(exe, os.path.join(FIXTURES, "longbar.mid"), "--no-dynamics")
+        rh, _, _ = run(exe, os.path.join(FIXTURES, "longbar.mid"),
+                       "--html", hp, "--no-dynamics")
+        rx, _, _ = run(exe, os.path.join(FIXTURES, "longbar.mid"),
+                       "--musicxml", xp, "--no-dynamics")
+        html = open(hp, encoding="utf-8").read() if os.path.exists(hp) else ""
+        xml = open(xp, encoding="utf-8").read() if os.path.exists(xp) else ""
+    check(rc == 0 and rh == 0 and rx == 0, "longbar.mid 三端导出成功")
+    hbody = html[html.find("</style>"):]
+    # HTML：三个长音各画 拍数-1 条延长线（8->7、12->11、16->15）
+    for numer in (8, 12, 16):
+        want = "class='note whole' style='--n:%d'" % (numer - 1)
+        check(want in hbody, "%d 拍长音 HTML --n=%d（不再吸附 6 拍）" % (numer, numer - 1))
+    # 文本谱：每小节延长线数 = 拍数 - 1
+    # 长音行：以数字音头开头（可带 [N/4] 拍号前缀），后跟 N-1 条延长线
+    textline = [l for l in out.splitlines()
+                if re.search(r"(?:^|\] )\d+'?\s+-", l)]
+    for numer in (8, 12, 16):
+        hit = [l for l in textline if l.count("-") == numer - 1]
+        check(len(hit) >= 1, "文本谱 %d 拍长音有 %d 条延长线" % (numer, numer - 1))
+    # XML：超长音切成 whole（4 拍）+ tie 链，每段 duration/type 严格一致
+    # （12/4 一个 12 拍音 -> 3 段 whole，8/4 -> 2 段，16/4 -> 4 段）
+    whole_durs = re.findall(r"<duration>1920</duration>", xml)
+    tie_starts = xml.count('<tie type="start"/>')
+    check(len(whole_durs) >= 3 + 2 + 4,
+          "XML 超长音切成 whole 段（8/12/16 拍共 >=9 段）")
+    check(tie_starts >= (1 + 2 + 3),
+          "XML 超长音用 tie 链连接各 whole 段")
+    check("<duration>5760</duration><tie" not in xml and
+          "<duration>5760</duration><voice" not in xml,
+          "XML 不再出现 12 拍单段 whole（duration/type 冲突）")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

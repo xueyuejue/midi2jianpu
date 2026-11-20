@@ -472,6 +472,15 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                 int bar = (int)grid.barIndex(start);
                 long barEnd = grid.barEnd(bar);
                 long segEnd = std::min(end, barEnd);
+                // 小节内不切分的长音（12/4、16/4 整小节一个音）：原来的
+                // 段可长达 12/16 拍，durTypeDot() 兜底写 whole（4 拍名义），
+                // <duration>=5760 与 <type>whole</type> 语义冲突，MuseScore
+                // 按 type 画成 4 拍、按 duration 走到 12 拍，谱面与校时都对不上。
+                // 与 HTML 的延长线、文本谱的 '-' 同口径：按 whole（4 拍）切段，
+                // 段间用 <tie> 连接——这正是跨小节长音已有的合法写法。
+                // 4 拍及以下的段不受影响，既有素材逐字节零回归。
+                const long maxSeg = 4L * division;
+                if (maxSeg > 0 && segEnd - start > maxSeg) segEnd = start + maxSeg;
                 // 防御：若换算出的小节末尾没有推进，直接吃到音符结束，避免死循环
                 if (segEnd <= start) segEnd = end;
 

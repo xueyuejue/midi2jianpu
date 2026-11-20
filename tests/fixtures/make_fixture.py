@@ -3145,6 +3145,13 @@ def main() -> None:
         f.write(badata)
     print(f"wrote {bamid} ({len(badata)} bytes)")
 
+    # 大拍号整小节长音：HTML 不能再把 12 拍吸附成 6 拍（三端时值分叉）
+    lgmid = os.path.join(here, "longbar.mid")
+    with open(lgmid, "wb") as f:
+        lgdata = build_longbar()
+        f.write(lgdata)
+    print(f"wrote {lgmid} ({len(lgdata)} bytes)")
+
     # format 2（多个独立序列）素材
     f2mid = os.path.join(here, "format2.mid")
     with open(f2mid, "wb") as f:
@@ -4161,6 +4168,45 @@ def build_beam_octave() -> bytes:
 
     return (b"MThd" + struct.pack(">IHHH", 6, 1, 3, DIV)
             + t0.render() + t1.render() + t2.render())
+
+
+def build_longbar() -> bytes:
+    """大拍号（12/4）整小节不切分长音：三端时值记号必须一致。
+
+    HTML 的 durStyleOf() 时值表最大只到 6 拍，旧版把一个 12 拍的长音吸附
+    到 6 拍档，只画 5 条延长线；文本谱 durationSuffix() 用 lround(beats)-1
+    = 11 条线记 12 拍，MusicXML 用精确 <duration>=5760，三端口径分叉——
+    读者在网页上数出的时值只有真实值的一半。v1.152.0 让 HTML 也按
+    lround(beats)-1 条延长线输出，三端一致。
+
+    素材：12/4 拍，第一小节一个 12 拍长音（pitch 72），随后两小节各一个
+    四分音符作时值基准。另外把 8/4 与 16/4 也各放一小节长音，覆盖表边界
+    内外多个档位；三段之间用 0x58 换拍号。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120BPM
+    t0.add(0, meta(0x58, bytes([12, 2, 24, 8])))       # 12/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"LongBar"))
+    # 12/4：整小节 12 拍长音
+    t1.note(0, 72, 90, 0, 12 * DIV)
+    t = 12 * DIV
+    # 8/4：换拍号后整小节 8 拍长音
+    t0.add(t, meta(0x58, bytes([8, 2, 24, 8])))
+    t1.note(0, 74, 90, t, 8 * DIV)
+    t += 8 * DIV
+    # 16/4：换拍号后整小节 16 拍长音
+    t0.add(t, meta(0x58, bytes([16, 2, 24, 8])))
+    t1.note(0, 76, 90, t, 16 * DIV)
+    t += 16 * DIV
+    # 收尾两小节正常四分，作为时值基准
+    t1.note(0, 77, 90, t, DIV)
+    t1.note(0, 79, 90, t + DIV, DIV)
+
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
 
 
 if __name__ == "__main__":

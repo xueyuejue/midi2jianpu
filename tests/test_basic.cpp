@@ -10683,6 +10683,76 @@ int main() {
         }
     }
 
+    // ---- v1.152.0 大拍号整小节长音：HTML 时值不再吸附成 6 拍 ----
+    //
+    // durStyleOf() 表最大只到 6 拍，小节内不切分的长音（12/4、16/4 整小节
+    // 一个音）被吸附到 6 拍档，只画 5 条延长线；文本 durationSuffix() 用
+    // lround(beats)-1 条、XML 用精确 <duration>，三端分叉。修复后 HTML 也
+    // 按 lround(beats)-1 条输出，4.5 拍及以下走原表逐字节零回归。
+    {
+        const KeyEstimate cMajor{0, true};
+        // 一小节一个整拍长音：numer 拍，4/4 的分母指数 2
+        auto longBarData = [](int numer) {
+            MidiData d;
+            d.division = 480;
+            d.timeSig = TimeSignature{numer, 2, true};
+            d.pickupTicks = 0;
+            d.trackNames[0] = "Vocal";
+            NoteEvent a;
+            a.channel = 0; a.velocity = 96; a.track = 0;
+            a.startTicks = 0; a.durationTicks = (long)numer * 480; a.pitch = 72;
+            d.notes.push_back(a);
+            return d;
+        };
+        // 超长音：延长线数 = 拍数 - 1，与文本谱 durationSuffix 同口径
+        for (int numer : {8, 12, 16}) {
+            const std::string h = renderHtml(longBarData(numer), cMajor, "t");
+            const std::string want = "--n:" + std::to_string(numer - 1);
+            check(h.find(want) != std::string::npos,
+                  std::to_string(numer) + " 拍整小节长音的 HTML 延长线数 = " +
+                  std::to_string(numer - 1) + "（不再吸附 6 拍）");
+            // ext 元素个数必须真的等于延长线数，不只是 --n 属性
+            const std::string marker = "<span class='ext'>";
+            size_t extBegin = h.find("<span class='exts'>");
+            if (extBegin != std::string::npos) {
+                size_t extEnd = h.find("</span></span>", extBegin);
+                std::string seg = h.substr(extBegin, extEnd == std::string::npos
+                                           ? std::string::npos : extEnd - extBegin);
+                int n = 0;
+                size_t p = 0;
+                while ((p = seg.find(marker, p)) != std::string::npos) { n++; p += marker.size(); }
+                check(n == numer - 1, std::to_string(numer) + " 拍长音实际渲染出 " +
+                      std::to_string(n) + " 条 ext 线");
+            } else {
+                check(false, std::to_string(numer) + " 拍长音应渲染 exts 容器");
+            }
+        }
+        // 6 拍及以下：走原表，逐字节零回归（4 拍=3 线、6 拍=5 线）
+        {
+            const std::string h4 = renderHtml(longBarData(4), cMajor, "t");
+            check(h4.find("--n:3") != std::string::npos,
+                  "4 拍整小节长音仍画 3 条延长线（原表档位不变）");
+            const std::string h6 = renderHtml(longBarData(6), cMajor, "t");
+            check(h6.find("--n:5") != std::string::npos,
+                  "6 拍整小节长音仍画 5 条延长线（原表档位不变）");
+        }
+        // MusicXML 同口径：12 拍整小节长音切成 3 段 whole（4 拍）+ tie 链，
+        // 每段 duration/type 严格一致，不再出现单个 12 拍 whole。
+        {
+            const std::string mx = renderMusicXml(longBarData(12), cMajor);
+            int wholeSegs = 0;
+            for (size_t p = 0; (p = mx.find("<duration>1920</duration>", p)) != std::string::npos;
+                 p += 10) wholeSegs++;
+            check(wholeSegs == 3, "12 拍长音在 XML 里切成 3 段 whole（4 拍/段）");
+            check(mx.find("<duration>5760</duration><type>whole</type>") == std::string::npos,
+                  "XML 不再出现 12 拍单段 whole（duration/type 冲突）");
+            int tieStarts = 0;
+            for (size_t p = 0; (p = mx.find("<tie type=\"start\"/>", p)) != std::string::npos;
+                 p += 6) tieStarts++;
+            check(tieStarts >= 2, "XML 超长音用 tie 链连接各 whole 段");
+        }
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

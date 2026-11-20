@@ -40,6 +40,8 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIX = os.path.join(ROOT, "tests", "fixtures")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import regress_skip  # noqa: E402
 
 # <part> 之间不嵌套；<measure> 之间也不嵌套，非贪婪匹配到自己的收尾即可。
 PART_RE = re.compile(r'<part id="([^"]+)">(.*?)</part>', re.S)
@@ -182,8 +184,12 @@ def audit(exe):
 def regress(old_exe, new_exe):
     errs = []
     padded = []
+    skipped = []
     for mid in fixtures():
         name = os.path.basename(mid)
+        if regress_skip.skip(mid):
+            skipped.append(name)
+            continue
         with tempfile.TemporaryDirectory() as td:
             old = render(old_exe, mid, os.path.join(td, "o.xml"))
             new = render(new_exe, mid, os.path.join(td, "n.xml"))
@@ -200,6 +206,9 @@ def regress(old_exe, new_exe):
                                       "new-去尾节", "old", lineterm="", n=0))
         errs.append("%s: 去掉尾节后仍与旧版不同\n%s"
                     % (name, "\n".join(d[:12])))
+    if skipped:
+        print("[NOTE] 跳过 %d 份本轮新增素材（旧版没有它们，回归不比对）：%s"
+              % (len(skipped), " / ".join(skipped)))
     if padded:
         print("[NOTE] 本轮只在尾部补了整小节休止、去掉尾节后逐字节相同的素材："
               "%d 份（%s）" % (len(padded), " / ".join(padded)))

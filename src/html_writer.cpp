@@ -47,6 +47,16 @@ struct DurStyle {
 };
 
 static DurStyle durStyleOf(double beats) {
+    // 超长音（小节内不切分、拍数超过表里最大的 6 拍）：表查不到就吸附到 6 拍，
+    // 把 12 拍画成 5 条延长线（6 拍）——而文本谱 durationSuffix() 用
+    // lround(beats)-1 条线、MusicXML 用精确 <duration>，三端就此分叉。
+    // 大拍号（12/4、16/4）整小节一个长音就会踩到。这里按文本端同口径：
+    // 超过 4.5 拍（表的 4 拍档与 6 拍档中点）就走「每多一拍加一条延长线」，
+    // 到多长都能精确表达；4.5 拍及以下仍走原表，既有素材一个字节不变。
+    if (beats > 4.5) {
+        int lines = (int)std::lround(beats) - 1;
+        return {"whole", false, lines > 0 ? lines : 0, 0};
+    }
     static const struct { double beats; DurStyle st; } table[] = {
         {0.125, {"thirtysecond", false, 0, 3}},
         {0.25,  {"sixteenth",    false, 0, 2}},
