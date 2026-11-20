@@ -9807,6 +9807,15 @@ int main() {
         check(htmlWords(hg) == "甲乙丙丁",
               "倚音不占词位，四个字落在四个真音上：" + htmlWords(hg));
         check(xmlWords(xg) == "甲乙丙丁", "MusicXML 同样四个字：" + xmlWords(xg));
+        // v1.150.0：把 assignLyrics 与 writers 的 grace 口径钉死在同一处判定。
+        // 三个输出层都走 ExpressionMap::isGraceNote；铺排器若另起一套「短音
+        // 算不算音头」的启发式，字数就会与谱面分叉（v1.139.0 修过一次）。
+        const LyricAssignment ga = assignLyrics(g, lvg, 0);
+        check(ga.at.find(0) == ga.at.end(),
+              "assignLyrics 的音头表不含倚音 tick 0（与 writers 同口径）");
+        check(ga.charsPlaced == 4 && ga.charsSkipped() == 0,
+              "挂上字数 4 == 谱面 4 字（口径一致不会分叉），实际: " +
+                  std::to_string(ga.charsPlaced));
 
         // ---- 合法 MIDI 音高 0 也挂词（v1.141.0）----
         // 早期 HTML 渲染器拿 pitch 0 当休止符占位，留下 `n.pitch != 0`
@@ -10519,6 +10528,102 @@ int main() {
                   "文本谱点数与 HTML <i> 点数逐列一致：文本 " +
                       std::to_string(td.size()) + " 列 / HTML " +
                       std::to_string(htmlDots.size()) + " 列");
+        }
+    }
+
+    // ---- v1.150.0 和弦叠写的八度点容器高度（2 个点起不再被压扁） ----
+    //
+    // .tone .oct 只有 8px，点是 4px + 1px 间隙，2 个点要 9px——被 flex 压成
+    // 薄片。按整列最大点数给所有 tone 同高，叠写行距才均匀。
+    {
+        // 同拍三音和弦：60=C4(0 点)、36=C2(2 个下点)、24=C1(3 个下点)
+        auto chordOf = [](std::initializer_list<int> pitches) {
+            MidiData d;
+            d.division = 480;
+            d.timeSig = TimeSignature{4, 2, true};
+            d.pickupTicks = 0;
+            d.trackNames[0] = "Vocal";
+            NoteEvent n;
+            n.channel = 0; n.velocity = 96; n.track = 0;
+            n.startTicks = 0; n.durationTicks = 480;
+            for (int p : pitches) { n.pitch = p; d.notes.push_back(n); }
+            return d;
+        };
+        // 抽和弦列里每个 tone 的 (高度, 点数, 是否低音点)
+        struct ToneSpan { int px; int dots; bool low; };
+        auto scanTones = [](const std::string& h) {
+            std::vector<ToneSpan> v;
+            size_t p = 0;
+            while ((p = h.find("class='tone", p)) != std::string::npos) {
+                const size_t stackEnd = h.find("</span></span></span>", p);
+                size_t q = p;
+                for (int k = 0; k < 2; k++) {
+                    const std::string key = k == 0 ? "<span class='oct'" : "<span class='oct low'";
+                    const size_t at = h.find(key, q);
+                    if (at == std::string::npos || (stackEnd != std::string::npos && at > stackEnd)) break;
+                    const size_t gt = h.find('>', at);
+                    const std::string tag = h.substr(at, gt - at);
+                    int px = 0;
+                    const size_t hp = tag.find("height:");
+                    if (hp != std::string::npos)
+                        for (size_t i = hp + 7; i < tag.size() && tag[i] >= '0' && tag[i] <= '9'; i++)
+                            px = px * 10 + (tag[i] - '0');
+                    const size_t close = h.find("</span>", gt);
+                    int dots = 0;
+                    for (size_t i = gt; i + 3 <= close; i++)
+                        if (h.compare(i, 3, "<i>") == 0) dots++;
+                    v.push_back({px, dots, k == 1});
+                    q = close + 7;
+                }
+                p += 11;
+            }
+            return v;
+        };
+        const KeyEstimate cMajor{0, true};
+
+        // 整列最大 3 个下点 -> 所有 tone 的低音容器都撑到 14px（5×3-1）
+        {
+            const std::string h = renderHtml(chordOf({60, 36, 24}), cMajor, "t");
+            const auto tones = scanTones(h);
+            int lowCount = 0;
+            for (const auto& t : tones) if (t.low && t.dots > 0) lowCount++;
+            check(lowCount >= 2, "和弦里确有两个带下点的 tone，实际: " + std::to_string(lowCount));
+            bool allLow14 = true;
+            for (const auto& t : tones) if (t.low && t.px != 14) allLow14 = false;
+            check(allLow14, "整列低音容器同为 14px（3 点）：" +
+                            std::to_string(tones.empty() ? -1 : tones[0].px));
+            bool hiZero = true;
+            for (const auto& t : tones) if (!t.low && t.px != 0) hiZero = false;
+            check(hiZero, "无上点的和弦不写高度（沿用 CSS 默认 8px）");
+        }
+        // 整列最大 2 个下点 -> 9px；1 个点不写
+        {
+            const std::string h = renderHtml(chordOf({60, 36}), cMajor, "t");
+            const auto tones = scanTones(h);
+            bool low9 = false, allLow9 = true;
+            for (const auto& t : tones) {
+                if (t.low && t.dots == 2 && t.px == 9) low9 = true;
+                // 整列同高：1 点的 tone 也拿到 9px，行距才均匀
+                if (t.low && t.dots > 0 && t.px != 9) allLow9 = false;
+            }
+            check(low9, "2 个下点的 tone 撑到 9px");
+            check(allLow9, "整列低音容器同为 9px（1 点的 tone 也同高，行距均匀）");
+        }
+        // 上点也要撑：音高 120 是 5 个上点 -> 24px（5×5-1）
+        {
+            const std::string h = renderHtml(chordOf({60, 120}), cMajor, "t");
+            const auto tones = scanTones(h);
+            bool high24 = false;
+            for (const auto& t : tones) if (!t.low && t.dots == 5 && t.px == 24) high24 = true;
+            check(high24, "5 个上点的 tone 撑到 24px");
+        }
+        // 全 0 点：不写任何高度（最常见情形，逐字节零回归）
+        {
+            const std::string h = renderHtml(chordOf({60, 64, 67}), cMajor, "t");
+            const auto tones = scanTones(h);
+            bool allZero = true;
+            for (const auto& t : tones) if (t.px != 0) allZero = false;
+            check(!tones.empty() && allZero, "全无八度点和弦不写任何高度");
         }
     }
 

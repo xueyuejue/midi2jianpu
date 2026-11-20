@@ -30,7 +30,8 @@ import os
 #
 # v1.122.0 的 hostile_name.mid 从这一版起撤出本表：它已经进了 v1.122.0 之后
 # 的每一份基线，旧版对它的三端输出与新版一致，本就该参与逐字节比对。
-NEW_FIXTURES = {"octave_extremes.mid"}
+# v1.149.0 新增 octave_extremes.mid，已在 v1.149 基线里，本轮起照常参与比对。
+NEW_FIXTURES = set()
 
 # v1.144.0 曾经有一张 HTML_CHANGED = {"parts.mid", "overfull.mid"}：那一版把
 # 倚音前面的空拍补成休止列，`--regress` 对这两份既有素材放行了「HTML 有意
@@ -45,13 +46,15 @@ NEW_FIXTURES = {"octave_extremes.mid"}
 # 分支一并删除，恢复逐字节比对。以后若再有「本轮就是要改某端输出」的修复，
 # 按同样办法临时开一张表，并在下一轮基线里清掉。
 
-# v1.149.0：八度点容器在 3 个点起带内联高度（`style='height:NNpx'`）。这是
-# 纯排版修复——同一行里每一列的容器高度都一样、数字仍在同一条基线上，只有
-# 原来被 flex 压成亚像素薄片的点恢复成看得见的大小。但它会改动 HTML 的字节，
-# 而这两份既有素材本来就有 3 个以上的点（pitch0.mid 是 5 个低音点、
-# grand_staff_wedge.mid 是 3 个），所以 --regress 要放行「HTML 有意变化」。
-# 下一轮基线包含 v1.149.0 的输出后，本表清空。
-HTML_CHANGED = {"pitch0.mid", "grand_staff_wedge.mid"}
+# v1.149.0 的 HTML_CHANGED = {"pitch0.mid", "grand_staff_wedge.mid"}（单音列
+# 3 个点起撑高）在 v1.150.0 基线里已包含，撤出本表，恢复逐字节比对。
+#
+# v1.150.0：和弦叠写里的 tone 点是 4px + 1px 间隙，CSS 默认 8px 只够 1 个点，
+# 2 个点（9px）就被压扁——34 个 tone 踩到了，涉及 5 份既有素材。修复按整列
+# 取最大点数写内联高度，摘掉该属性后逐字节相同，不是任意改动。下一轮基线
+# 包含 v1.150.0 的输出后，本表清空。
+HTML_CHANGED = {"chords.mid", "harmony.mid", "modulation.mid",
+                "pentatonic.mid", "pickup.mid"}
 
 
 def html_changed(path):

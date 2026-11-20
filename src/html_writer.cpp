@@ -145,6 +145,13 @@ struct OctSpace {
 // 5px 点 + 2px 间隙，CSS 默认 12px 够 2 个：3 点 19px / 4 点 26px / 5 点 33px
 static int staffOctPx(int dots) { return dots <= 2 ? 0 : 7 * dots - 2; }
 
+// 和弦叠写里的 tone 用更小的点（.tone .oct i 是 4px + 1px 间隙），CSS 默认
+// 8px 只够 1 个点，2 个点就要 9px。与单音列同理：点的容器写死高度时，多出来
+// 的点被 flex-shrink 压成看不见的薄片，八度记号等于没写。
+// 2 点 9px / 3 点 14px / 4 点 19px / 5 点 24px；0/1 点返回 0 沿用默认值。
+// 高度按整个和弦列取最大值（见 chordColumn），让叠写的各行行距均匀。
+static int chordOctPx(int dots) { return dots <= 1 ? 0 : 5 * dots - 1; }
+
 // 把简谱音名拆成「数字 / 上点数 / 下点数」。
 //
 // 文本谱的 ' 、, 与 HTML 的 <i> 必须是同一个口径：这段拆法以前在音符列与
@@ -281,6 +288,14 @@ static std::string chordColumn(const std::vector<std::pair<std::string, std::pai
                                double beats, const std::string& lyric) {
     DurStyle ds = durStyleOf(beats);
 
+    // 整列取最大：和弦各行叠写在同一列里，若逐行按自己的点数撑高，行距忽大
+    // 忽小、数字上下不齐；统一高度才能让叠写的几行保持均匀间距。
+    int highPx = 0, lowPx = 0;
+    for (const auto& tn : tones) {
+        highPx = std::max(highPx, chordOctPx(tn.second.first));
+        lowPx = std::max(lowPx, chordOctPx(tn.second.second));
+    }
+
     std::ostringstream os;
     os << "<span class='note chordcol " << ds.cls << "'";
     if (ds.extLines > 0) os << " style='--n:" << ds.extLines << "'";
@@ -293,11 +308,15 @@ static std::string chordColumn(const std::vector<std::pair<std::string, std::pai
         // 若挂在整列上，叠写的每个音都会各画一个点，看起来像一串附点。
         const bool lastTone = (ti + 1 == tones.size());
         os << "<span class='tone" << (lastTone && ds.dotted ? " dotted" : "") << "'>";
-        os << "<span class='oct'>";
+        os << "<span class='oct'";
+        if (highPx > 0) os << " style='height:" << highPx << "px'";
+        os << ">";
         for (int i = 0; i < tn.second.first; i++) os << "<i></i>";
         os << "</span>";
         os << "<span class='num'>" << htmlEscape(tn.first) << "</span>";
-        os << "<span class='oct low'>";
+        os << "<span class='oct low'";
+        if (lowPx > 0) os << " style='height:" << lowPx << "px'";
+        os << ">";
         for (int i = 0; i < tn.second.second; i++) os << "<i></i>";
         os << "</span>";
         os << "</span>";

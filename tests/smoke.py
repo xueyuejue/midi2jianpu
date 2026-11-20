@@ -6086,6 +6086,41 @@ def main():
     check(r == 0 and "文本谱核对" in out,
           "octave_extremes.mid 的文本谱拍数守恒", out[-200:])
 
+    group("[144] v1.150.0 和弦叠写的八度点（2 个点起不再被压成薄片）")
+    # 和弦的 tone 点是 4px + 1px 间隙，CSS 默认 8px 只够 1 个点；2 个点
+    # 需要 9px，被压扁后八度记号看不见。按整列最大点数撑高。
+    for mid in ("chords.mid", "harmony.mid", "modulation.mid",
+                "pentatonic.mid", "pickup.mid"):
+        with tempfile.TemporaryDirectory() as td:
+            hp = os.path.join(td, "c.html")
+            rc, _, _ = run(exe, os.path.join(FIXTURES, mid), "--html", hp)
+            html = open(hp, encoding="utf-8").read() if os.path.exists(hp) else ""
+        # 每个和弦列里所有 tone 的同类容器高度必须一致（行距均匀）
+        ok = True
+        for cm in re.finditer(
+                r"<span class='note chordcol[^>]*>.*?<span class='stack'>(.*?)</span><span class='exts'",
+                html[html.find("</style>"):], re.S):
+            stack = cm.group(1)
+            for kind in ("oct", "oct low"):
+                pxset = set(re.findall(
+                    r"<span class='" + kind + r"'[^>]*height:(\d+)px'", stack))
+                if len(pxset) > 1:
+                    ok = False
+        check(rc == 0 and ok, "%s 每个和弦列内八度点容器同高" % mid,
+              "rc=%d, html=%d bytes" % (rc, len(html)))
+    # 至少有一份素材真的踩到 2 点，断言才会因素材被换掉而失败
+    with tempfile.TemporaryDirectory() as td:
+        hp = os.path.join(td, "c.html")
+        run(exe, os.path.join(FIXTURES, "harmony.mid"), "--html", hp)
+        hm = open(hp, encoding="utf-8").read() if os.path.exists(hp) else ""
+    heights = set(re.findall(r"<span class='oct(?: low)?'[^>]*height:(\d+)px'", hm))
+    check("9" in heights, "harmony.mid 的和弦 tone 撑到 9px（2 个点），实际高度: %s"
+          % sorted(heights))
+    # 点本身一个不少：和弦列里带 2 个点的 tone 仍画两个 <i>
+    two_dot = re.search(
+        r"<span class='oct low'[^>]*height:9px'>(<i></i><i></i>)</span>", hm)
+    check(two_dot is not None, "9px 容器里仍是两个点（没有被裁掉）")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")
