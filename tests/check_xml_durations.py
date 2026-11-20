@@ -139,14 +139,24 @@ def structural_regress(old_exe):
     changed = []
     errors = []
     notes = []
+    padded = []
     with tempfile.TemporaryDirectory() as td:
         line = regress_skip.note()
+        if line:
+            print(line)
+        line = regress_skip.note_xml()
         if line:
             print(line)
         for p in sorted(glob.glob(os.path.join(FIX, "*.mid"))):
             name = os.path.basename(p)
             if regress_skip.skip(p):
                 continue        # 本轮新增素材：旧版没有它，不算回归
+            if regress_skip.xml_changed(p):
+                # v1.146.0：尾节补齐（各 part 等长）。只追加整小节休止，
+                # 由 check_xml_parts.py --regress 定向证明；这里是纯 XML 维度
+                # 的比对，跳过它不影响其它判据。
+                padded.append(name)
+                continue
             new_txt, new_html, new_xml = render_all(new_exe, p, td, "new")
             old_txt, old_html, old_xml = render_all(old_exe, p, td, "old")
             if new_xml == old_xml:
@@ -163,6 +173,9 @@ def structural_regress(old_exe):
                 errors.append(name + ": 休止符总时长变化")
             if note_mismatches(new_xml):
                 errors.append(name + ": 新版仍有 duration/type 不一致")
+    if padded:
+        notes.append("跳过 %d 份本轮尾节补齐的素材（check_xml_parts.py 定向证明）：%s"
+                     % (len(padded), " / ".join(padded)))
     return changed, errors, notes
 
 

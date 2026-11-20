@@ -3291,6 +3291,47 @@ if (existsSync(twoLyrics76)) {
   }
 }
 
+// ---- 91. v1.146.0 MusicXML 短轨尾节补齐（各 part 等长） ----
+// score-partwise 是矩形谱：各 <part> 的 <measure> 按「在自己 part 里的第几个」
+// 对齐，小节数必须相同。渲染循环按片段推进，某条轨提前没音了它的 part 就停在
+// 那儿（sample.mid 的 Pad 只有 3 小节，Vocal / Piano 有 4 个）。网页端与 CLI
+// 共用同一份 writer，这里验证导出结果确实补齐了、而且补的是整小节休止。
+{
+  const partMeasures = (xml) => {
+    const out = {};
+    for (const m of xml.matchAll(/<part id="([^"]+)">([\s\S]*?)<\/part>/g)) {
+      out[m[1]] = [...m[2].matchAll(/<measure number="([^"]+)"/g)].map((x) => x[1]);
+    }
+    return out;
+  };
+  const xmlOf = (name) => {
+    const midi = new Uint8Array(readFileSync(path.join(FIXTURES, name)));
+    const p = mod._malloc(midi.length);
+    mod.HEAPU8.set(midi, p);
+    const xml = mod.UTF8ToString(
+      mod._midi2jianpu_musicxml(p, midi.length, -1, 1)) || '';
+    mod._free(p);
+    return xml;
+  };
+  for (const [name, want] of [['sample.mid', 4], ['pedal_channels.mid', 3]]) {
+    const xml = xmlOf(name);
+    const pm = partMeasures(xml);
+    const ids = Object.keys(pm);
+    check(ids.length >= 2, `${name} 至少两个 part`, ids.join(','));
+    const lens = ids.map((k) => pm[k].length);
+    check(lens.every((n) => n === want),
+      `${name} 网页导出的各 part 小节数都等于 ${want}（旧版长短不一）`,
+      lens.join(','));
+  }
+  // 短 part 的尾节必须是整小节休止
+  const xml = xmlOf('sample.mid');
+  const p3 = (xml.match(/<part id="P3">([\s\S]*?)<\/part>/) || ['', ''])[1];
+  const ms = [...p3.matchAll(/<measure number="[^"]+"[^>]*>[\s\S]*?<\/measure>/g)];
+  const tail = ms.length ? ms[ms.length - 1][0] : '';
+  check(tail.includes('<rest measure="yes"/>') && !tail.includes('<pitch>'),
+    'sample.mid 的 Pad 尾节是整小节休止', tail.slice(0, 120));
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

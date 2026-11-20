@@ -197,6 +197,17 @@ def html_global_meter(htm):
 # ---------------------------------------------------------------------------
 # 比对
 # ---------------------------------------------------------------------------
+def count_rule(ct, cx):
+    """文本谱小节数 ct 与 XML 小节数 cx 的合法关系。
+
+    XML 允许**多于**文本谱：score-partwise 是一张矩形谱，各 <part> 必须等长，
+    某条轨提前没音时它的尾巴要补成整小节休止（v1.146.0）。文本谱 / HTML 是
+    各自独立的谱块，尾部静音按设计不印。所以只禁止「XML 比文本谱少」——那才是
+    真的丢了音乐。尾节的具体内容由 check_xml_parts.py 守护。
+    """
+    return None if cx >= ct else "text %d > xml %d" % (ct, cx)
+
+
 def compare_fixture(exe, mid):
     """返回该 fixture 的违规列表 [(描述, 细节), ...]。"""
     with tempfile.TemporaryDirectory() as td:
@@ -248,8 +259,9 @@ def compare_fixture(exe, mid):
     n_tx = min(len(tt), len(xp))
     for i in range(n_tx):
         ct, cx = len(tt[i]["meters"]), len(xp[i])
-        if ct != cx:
-            bad.append(("第%d轨文本谱 vs XML 小节数不一致" % (i + 1),
+        why = count_rule(ct, cx)
+        if why:
+            bad.append(("第%d轨文本谱 vs XML 小节数少了" % (i + 1),
                         "%s 文本=%d / XML=%d" % (name, ct, cx)))
         atm = tt[i]["meters"]
         axm = xp[i]
@@ -334,6 +346,11 @@ def self_test():
             "</div></div></div>")
     ck(html_tracks(htm3) == [1, 2], "HTML 多轨计数: %r" % html_tracks(htm3))
 
+    # XML 尾节补齐：XML 小节数可以多于文本谱，但绝不能少
+    ck(count_rule(3, 3) is None, "小节数相等合法")
+    ck(count_rule(3, 4) is None, "XML 多出尾节合法（各 part 补齐到全曲末节）")
+    ck(count_rule(4, 3) is not None, "XML 比文本谱少必须报错")
+
     print("check_three_way self-test: %d 项，%d 失败" % (n, len(failed)))
     for f in failed:
         print("  [FAIL]", f)
@@ -354,6 +371,9 @@ def structural_regress(old_exe, new_exe):
     errors = []
     with tempfile.TemporaryDirectory() as td:
         line = regress_skip.note()
+        if line:
+            print(line)
+        line = regress_skip.note_xml()
         if line:
             print(line)
         for p in sorted(glob.glob(os.path.join(FIX, "*.mid"))):
@@ -377,7 +397,10 @@ def structural_regress(old_exe, new_exe):
                 errors.append("%s: HTML 逐轨小节数随版本变化" % name)
             oxx = open(ox, encoding="utf-8", errors="replace").read()
             nxx = open(nx, encoding="utf-8", errors="replace").read()
-            if xml_parts(oxx) != xml_parts(nxx):
+            # v1.146.0：短 part 的尾节补齐到全曲末节，XML 小节数会变多。
+            # 改动只限于「末尾多出整小节休止」，由 check_xml_parts.py --regress
+            # 定向证明；这里仍要求文本谱与 HTML 的逐轨结构不变。
+            if not regress_skip.xml_changed(p) and xml_parts(oxx) != xml_parts(nxx):
                 errors.append("%s: MusicXML 逐轨小节数随版本变化" % name)
     return errors
 

@@ -5883,6 +5883,70 @@ def main():
             check("Intro" in a and "Intro" not in b,
                   "段落名照旧被关掉（它本来就在 --no-dynamics 范围内）")
 
+    group("[140] v1.146.0 MusicXML 短轨尾节补齐（各 part 等长）")
+    # score-partwise 是矩形谱：各 <part> 的 <measure> 按「在自己 part 里的第几个」
+    # 对齐，小节数必须相同。渲染循环按片段推进，某条轨提前没音了它的 part 就停在
+    # 那儿——sample.mid 的 Pad 只有 3 小节，Vocal / Piano 有 4 个，导入后那条谱表
+    # 末尾凭空少一节。前导 / 中间空小节本来就有补齐，尾节漏了。
+    #
+    # 守三件事：各 part 小节数相等；短轨补出来的尾节是整小节休止；文本谱不受影响
+    # （尾部静音按设计不印，所以 Pad 仍是 3 行——两端各管各的格式约束）。
+    def part_measures(xml):
+        """{part_id: [小节号, ...]}"""
+        out = {}
+        for pm in re.finditer(r'<part id="([^"]+)">(.*?)</part>', xml, re.S):
+            out[pm.group(1)] = re.findall(r'<measure number="([^"]+)"', pm.group(2))
+        return out
+
+    for name, want_bars, short_part in (("sample.mid", 4, "P3"),
+                                        ("pedal_channels.mid", 3, "P1")):
+        mid = os.path.join(FIXTURES, name)
+        if not os.path.exists(mid):
+            check(False, "素材 %s 存在（先跑 make_fixture.py）" % name)
+            continue
+        xo = os.path.join(tmp, name + ".parts.xml")
+        r, _, e = run(exe, mid, "--musicxml", xo)
+        check(r == 0, "%s 能导出 MusicXML" % name, "rc=%d %s" % (r, e[:120]))
+        if r != 0:
+            continue
+        xml = open(xo, encoding="utf-8").read()
+        pm = part_measures(xml)
+        check(len(pm) >= 2, "%s 至少两个 part" % name, "%r" % (list(pm),))
+        check(all(len(v) == want_bars for v in pm.values()),
+              "%s 各 part 小节数都等于 %d（旧版长短不一）" % (name, want_bars),
+              "%r" % ({k: len(v) for k, v in pm.items()},))
+        if short_part in pm:
+            body = re.search(r'<part id="%s">(.*?)</part>' % short_part,
+                             xml, re.S).group(1)
+            tail = re.findall(r'<measure number="[^"]+"[^>]*>.*?</measure>',
+                              body, re.S)[-1]
+            check('<rest measure="yes"/>' in tail and "<pitch>" not in tail,
+                  "%s 的 %s 尾节是整小节休止" % (name, short_part), tail[:120])
+        else:
+            check(False, "%s 里应有 part %s" % (name, short_part))
+
+        # 文本谱尾部静音按设计不印：Pad 仍是 3 行 / Piano 仍是 2 行
+        to = os.path.join(tmp, name + ".parts.txt")
+        run(exe, mid, "--output", to)
+        lines = [l for l in open(to, encoding="utf-8").read().splitlines()
+                 if l.endswith("|")]
+        # sample：Vocal 4 + Piano 4 + Pad 3 = 11 行；pedal_channels：2 + 3 = 5 行
+        want_txt = 11 if name == "sample.mid" else 5
+        check(len(lines) == want_txt,
+              "%s 文本谱行数不变（尾部静音不补小节）" % name,
+              "%d 行，期望 %d" % (len(lines), want_txt))
+
+    # 只导那条短轨时不该凭空多出小节：全曲末节按「参与渲染的轨」算，
+    # 单轨谱里它就是最后一小节。
+    xt = os.path.join(tmp, "sample.track3.xml")
+    r, _, e = run(exe, os.path.join(FIXTURES, "sample.mid"),
+                  "--musicxml", xt, "--track", "3")
+    check(r == 0, "sample.mid --track 3 能导出", "rc=%d %s" % (r, e[:100]))
+    if r == 0:
+        pm = part_measures(open(xt, encoding="utf-8").read())
+        check(all(len(v) == 3 for v in pm.values()),
+              "--track 3 单轨导出仍是 3 小节（不补到 4）", "%r" % (pm,))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

@@ -37,9 +37,32 @@ NEW_FIXTURES = {"pitch0.mid"}
 # 两个守卫里的分支一并删除，恢复逐字节比对。以后若再有「本轮就是要改 HTML」
 # 的修复，按同样办法临时开一张表，并在下一轮基线里清掉。
 
+# v1.146.0 起，这几份**既有**素材的 MusicXML 会变大：某个 part 提前没音
+# 之后，尾节现在被补齐到全曲末节（score-partwise 要求各 part 小节数相等）。
+# 它们的 txt / HTML 仍要求逐字节不变；XML 的变化由 tests/check_xml_parts.py
+# 证明「只在末尾追加整小节休止，把追加的部分删掉就与旧版逐字节相同」。
+# 下一轮基线已含 v1.146.0 的输出，届时本表应清空。
+XML_PADDED = {"pedal_channels.mid", "sample.mid",
+              "sysex_gs_normal.mid", "sysex_unknown.mid"}
+
+
 def skip(path):
     """该素材是否跳过零回归比对（本轮新增）。"""
     return os.path.basename(str(path)) in NEW_FIXTURES
+
+
+def xml_changed(path):
+    """该素材的 MusicXML 是否允许在本轮 `--regress` 里有意变化（尾节补齐）。"""
+    return os.path.basename(str(path)) in XML_PADDED
+
+
+def note_xml():
+    """尾节补齐的 NOTE；没有登记时返回 None。"""
+    if not XML_PADDED:
+        return None
+    return ("[NOTE] %d 份既有素材的 MusicXML 本轮有意追加尾节（各 part 补齐到"
+            "全曲末节，由 check_xml_parts.py 证明只多了整小节休止）：%s"
+            % (len(XML_PADDED), " / ".join(sorted(XML_PADDED))))
 
 
 def note():

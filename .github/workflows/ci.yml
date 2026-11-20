@@ -30,7 +30,7 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel 2
 
-      - name: 单元测试（1662 项）
+      - name: 单元测试（1668 项）
         working-directory: build
         run: ctest --output-on-failure
 
@@ -104,7 +104,7 @@ jobs:
           python3 tests/check_html_bars.py --self-test
           python3 tests/check_html_bars.py
 
-      - name: 三端结构一致性（11 项自测 + 109 份素材）
+      - name: 三端结构一致性（14 项自测 + 109 份素材）
         # 文本谱↔HTML 轨数与逐轨小节数、三端名义拍号、文本谱↔MusicXML
         # 按对齐下标逐轨小节数与逐小节拍号（首/末小节豁免）。比逐音符时值
         # 求和更稳健：和弦并发/多谱表<backup>/三连音编码都会让时值累加失真。
@@ -126,6 +126,15 @@ jobs:
         run: |
           python3 tests/check_xml_tempo.py --self-test
           python3 tests/check_xml_tempo.py
+
+      - name: MusicXML 各 part 等长（11 项自测 + 109 份素材）
+        # score-partwise 是矩形谱：各 <part> 的 <measure> 按「在自己 part 里的
+        # 第几个」对齐，小节数必须相同。渲染循环按片段推进，某条轨提前没音了
+        # 它的 part 就停在那儿（sample.mid 的 Pad 3 小节 / Vocal 4 小节），
+        # 导入后那条谱表末尾凭空少一节。v1.146.0 把尾节补成整小节休止。
+        run: |
+          python3 tests/check_xml_parts.py --self-test
+          python3 tests/check_xml_parts.py
 
       - name: HTML 试听播放器（42 项自测 + 109 份素材 + 组合矩阵）
         # --player 必须只加播放数据与高亮锚点，不改谱面本身；不带开关时
@@ -166,7 +175,7 @@ jobs:
           python3 tests/check_lyric_sync.py --self-test
           python3 tests/check_lyric_sync.py
 
-      - name: CLI 端到端冒烟（137 组）
+      - name: CLI 端到端冒烟（140 组）
         # 失败项由 tests/ci_report.py 同步写进 annotations 与 step summary。
         run: python3 tests/smoke.py build/midi2jianpu
 
@@ -212,5 +221,5 @@ jobs:
         # 五处导出符号没有漂移，不编译、不加载 wasm。
         run: python3 tests/check_wasm_exports.py
 
-      - name: WASM 产物冒烟（90 组，含版本号守护）
+      - name: WASM 产物冒烟（91 组，含版本号守护）
         run: node tests/wasm_smoke.mjs

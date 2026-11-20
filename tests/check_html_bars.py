@@ -172,8 +172,12 @@ def audit(exe, verbose=True):
                 skipped += 1
                 continue
             for pi, (hb, xb) in enumerate(zip(ht, xp)):
-                if len(hb) != len(xb):
-                    errors.append("%s: 第 %d 段小节数 HTML %d / XML %d"
+                # XML 允许比 HTML **多**尾节：score-partwise 要求各 part 等长，
+                # 短轨的尾巴被补成整小节休止（v1.146.0），而 HTML 是独立谱块，
+                # 尾部静音按设计不印。尾节里本来就没有音符列，按较短的一侧
+                # 对齐即可；XML 比 HTML 少才是真的丢了小节。
+                if len(xb) < len(hb):
+                    errors.append("%s: 第 %d 段小节数 HTML %d > XML %d"
                                   % (name, pi, len(hb), len(xb)))
                     continue
                 for bi, ((cols, trip), (start, div, tiny)) in enumerate(zip(hb, xb)):

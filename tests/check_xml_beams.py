@@ -299,16 +299,26 @@ def structural_regress(old_exe):
     new_exe = default_exe()
     errors = []
     notes = []
+    padded = []
     added = 0
     changed = 0
     with tempfile.TemporaryDirectory() as td:
         line = regress_skip.note()
         if line:
             print(line)
+        line = regress_skip.note_xml()
+        if line:
+            print(line)
         for mid in fixtures():
             name = os.path.basename(mid)
             if regress_skip.skip(mid):
                 continue        # 本轮新增素材：旧版没有它，不算回归
+            if regress_skip.xml_changed(mid):
+                # v1.146.0：尾节补齐（各 part 等长）。只追加整小节休止，
+                # 由 check_xml_parts.py --regress 定向证明；这里是纯 XML 维度
+                # 的比对，跳过它不影响其它判据。
+                padded.append(name)
+                continue
             # 两次产物落在不同目录，避免互相覆盖
             o1 = os.path.join(td, "old")
             o2 = os.path.join(td, "new")
@@ -332,6 +342,9 @@ def structural_regress(old_exe):
                 errors.append("%s: 新版梁结构违规 %d 处（%s）"
                               % (name, len(bad), bad[0]))
     notes.append("新增 <beam> 元素 %d 个，涉及 %d 份素材" % (added, changed))
+    if padded:
+        notes.append("跳过 %d 份本轮尾节补齐的素材（check_xml_parts.py 定向证明）：%s"
+                     % (len(padded), " / ".join(padded)))
     return changed, added, errors, notes
 
 

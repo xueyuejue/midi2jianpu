@@ -9966,6 +9966,78 @@ int main() {
               "渐慢的 rit. 文字记号仍在（它是速度，不在 --no-dynamics 的范围内）");
     }
 
+    // ---- v1.146.0 MusicXML 的短轨尾节必须补齐（各 part 等长） ----
+    // score-partwise 是一张矩形谱：各 <part> 的 <measure> 按「在自己 part 里的
+    // 第几个」对齐，小节数必须相同。渲染循环按片段推进，某条轨提前没音了它的
+    // part 就停在那儿——sample.mid 的 Pad 只有 3 小节，Vocal / Piano 有 4 个，
+    // 导入后那条谱表末尾凭空少一节。前导 / 中间空小节本来就有补齐，尾节漏了。
+    {
+        auto countOf = [](const std::string& s, const std::string& sub) {
+            size_t n = 0, pos = 0;
+            while ((pos = s.find(sub, pos)) != std::string::npos) {
+                n++; pos += sub.size();
+            }
+            return n;
+        };
+        auto partBody = [](const std::string& xml, int idx) -> std::string {
+            const std::string open = "<part id=\"P" + std::to_string(idx) + "\">";
+            size_t a = xml.find(open);
+            if (a == std::string::npos) return std::string();
+            size_t b = xml.find("</part>", a);
+            return b == std::string::npos ? std::string() : xml.substr(a, b - a);
+        };
+        const KeyEstimate key{0, true};
+
+        MidiData d;
+        d.division = 480;
+        d.timeSig = TimeSignature{4, 2, true};
+        d.trackNames[0] = "Piano";
+        d.trackNames[1] = "Flute";
+        NoteEvent n;
+        n.channel = 0;
+        n.velocity = 96;
+        n.durationTicks = 480;
+        n.startSeconds = 0;
+        n.durationSeconds = 0.5;
+        // 轨 0：四小节都有音（全曲 4 小节）
+        for (int i = 0; i < 16; i++) {
+            n.track = 0; n.pitch = 60 + (i % 5); n.startTicks = i * 480;
+            d.notes.push_back(n);
+        }
+        // 轨 1：只有第一小节有音，后面三小节是静音
+        for (int i = 0; i < 4; i++) {
+            n.track = 1; n.pitch = 72 + (i % 3); n.startTicks = i * 480;
+            d.notes.push_back(n);
+        }
+
+        const std::string xml = renderMusicXml(d, key);
+        const std::string p1 = partBody(xml, 1);
+        const std::string p2 = partBody(xml, 2);
+        check(countOf(xml, "<part id=") == 2, "两轨各一个 part");
+        check(countOf(p1, "<measure number=") == 4,
+              "长轨 4 小节，实际: " + std::to_string(countOf(p1, "<measure number=")));
+        check(countOf(p2, "<measure number=") == 4,
+              "短轨尾节补齐到 4 小节（旧版只有 1 小节），实际: " +
+                  std::to_string(countOf(p2, "<measure number=")));
+        check(countOf(p2, "<rest measure=\"yes\"/>") == 3,
+              "短轨补出的三节都是整小节休止，实际: " +
+                  std::to_string(countOf(p2, "<rest measure=\"yes\"/>")));
+
+        // 单轨文件没有「别的 part 更长」这回事，不该凭空多出小节
+        MidiData solo;
+        solo.division = 480;
+        solo.timeSig = TimeSignature{4, 2, true};
+        solo.trackNames[0] = "Piano";
+        for (const auto& e : d.notes)
+            if (e.track == 0) solo.notes.push_back(e);
+        const std::string sx = renderMusicXml(solo, key);
+        check(countOf(sx, "<measure number=") == 4,
+              "单轨不多补尾节，实际: " +
+                  std::to_string(countOf(sx, "<measure number=")));
+        check(countOf(sx, "<rest measure=\"yes\"/>") == 0,
+              "单轨没有整小节休止（每节都有音）");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

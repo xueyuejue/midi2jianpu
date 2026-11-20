@@ -344,6 +344,24 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
         }
     }
 
+    // 全曲最后一小节（0-based）：每个 part 的尾节都要补齐到这里。
+    //
+    // MusicXML 的 score-partwise 是一张矩形谱：各 <part> 的 <measure> 按
+    // 「在自己 part 里的第几个」对齐，因此每个 part 的小节数必须相同。下面的
+    // 渲染循环是「按片段推进」的——某条轨在倒数第三小节就没音了，它的 part
+    // 就直接停在那儿。于是 sample.mid 的 Pad 只有 3 个小节、Vocal / Piano 有 4 个，
+    // 导入后那条谱表在末尾凭空少一节，跟其它声部错位。
+    //
+    // 前导空小节、中间空小节本来就有补齐（理由写在下面 emitEmptyMeasure 处：
+    // 「否则各声部的小节号与 MuseScore 的编号对不上」），唯独尾节漏了，属于
+    // 同一件事没做完。这里先算出全曲末节，循环结束后按同一种空小节补满。
+    long scoreLastBar = 0;
+    for (auto& [t0, ns0] : byTrack)
+        for (const auto& n0 : ns0) {
+            const long endT = n0.startTicks + std::max<long>(n0.durationTicks, 1);
+            scoreLastBar = std::max(scoreLastBar, grid.barIndex(endT > 0 ? endT - 1 : 0));
+        }
+
     partIdx = 1;
     for (auto& [t, ns] : byTrack) {
         if (ns.empty()) { partIdx++; continue; }
@@ -966,39 +984,46 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             xml << "    </measure>\n";
         };
 
+        // 一整小节的空小节：整小节休止（大谱表上下两行各一条，中间 <backup>
+        // 退回谱表开头）。前导空小节、中间空小节、结尾补齐的尾节共用这一份——
+        // 三处必须是同一种写法，否则「空小节」在谱面上会长得不一样。
+        auto emitEmptyMeasure = [&](long b) {
+            xml << "    <measure number=\"" << grid.measureNumber(b) << "\"";
+            // 弱起小节在别的声部里是空小节，同样要标 implicit，否则各声部的
+            // 小节号与 MuseScore 的编号对不上；被 0x58 截短的空小节同理
+            // （判据与 openMeasure 共用 shortBar）。
+            if (shortBar(b)) xml << " implicit=\"yes\"";
+            xml << ">\n";
+            emitAttributes(b);   // 开头就是空小节时，属性要写在这里
+            emitDirections(b);  // 段落标记可能落在纯休止的前奏
+            if (grand) {
+                // 大谱表：上下两行谱各写一条全小节休止，中间退回谱表开头。
+                xml << "      <note><rest measure=\"yes\"/><duration>"
+                    << grid.barSpan(b) << "</duration><voice>1</voice>"
+                    << "<type>whole</type><staff>1</staff></note>\n"
+                    << "      <backup><duration>" << grid.barSpan(b)
+                    << "</duration></backup>\n"
+                    << "      <note><rest measure=\"yes\"/><duration>"
+                    << grid.barSpan(b) << "</duration><voice>1</voice>"
+                    << "<type>whole</type><staff>2</staff></note>\n";
+            } else {
+                xml << "      <note><rest measure=\"yes\"/><duration>"
+                    << grid.barSpan(b) << "</duration><voice>1</voice>"
+                    << "<type>whole</type></note>\n";
+            }
+            xml << "    </measure>\n";
+        };
+
         for (size_t si = 0; si < segs.size(); ++si) {
             const Segment& seg = segs[si];
             const BeamInfo& bi = beamOf[si];
             if (seg.bar != curBar) {
                 if (curBar >= 0) closeMeasure();
 
-                // 补齐中间完全空的小节，否则小节编号会跳号
-                for (int b = curBar + 1; b < seg.bar; b++) {
-                    xml << "    <measure number=\"" << grid.measureNumber(b) << "\"";
-                    // 弱起小节在别的声部里是空小节，同样要标 implicit，否则
-                    // 各声部的小节号与 MuseScore 的编号对不上；被 0x58 截短的
-                    // 空小节同理（判据与 openMeasure 共用 shortBar）。
-                    if (shortBar(b)) xml << " implicit=\"yes\"";
-                    xml << ">\n";
-                    emitAttributes(b);   // 开头就是空小节时，属性要写在这里
-                    emitDirections(b);  // 段落标记可能落在纯休止的前奏
-                    if (grand) {
-                        // 大谱表：上下两行谱各写一条全小节休止，中间退回谱表开头。
-                        xml << "      <note><rest measure=\"yes\"/><duration>"
-                            << grid.barSpan(b) << "</duration><voice>1</voice>"
-                            << "<type>whole</type><staff>1</staff></note>\n"
-                            << "      <backup><duration>" << grid.barSpan(b)
-                            << "</duration></backup>\n"
-                            << "      <note><rest measure=\"yes\"/><duration>"
-                            << grid.barSpan(b) << "</duration><voice>1</voice>"
-                            << "<type>whole</type><staff>2</staff></note>\n";
-                    } else {
-                        xml << "      <note><rest measure=\"yes\"/><duration>"
-                            << grid.barSpan(b) << "</duration><voice>1</voice>"
-                            << "<type>whole</type></note>\n";
-                    }
-                    xml << "    </measure>\n";
-                }
+                // 补齐中间完全空的小节，否则小节编号会跳号。
+                // 弱起 / 被 0x58 截短的短小节在别的声部里也是空小节，
+                // implicit 由 emitEmptyMeasure 按 shortBar 统一判定。
+                for (long b = curBar + 1; b < seg.bar; b++) emitEmptyMeasure(b);
 
                 curBar = seg.bar;
                 openMeasure(curBar);
@@ -1180,6 +1205,9 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
         }
 
         if (curBar >= 0) closeMeasure();
+        // 收尾补齐：这条轨提前没音了，尾巴照样要占满全曲小节数，否则
+        // score-partwise 的各 part 长短不一（见上面 scoreLastBar 的说明）。
+        for (long b = (long)curBar + 1; b <= scoreLastBar; b++) emitEmptyMeasure(b);
         xml << "  </part>\n";
         partIdx++;
     }
