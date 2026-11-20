@@ -43,6 +43,37 @@ def normalize_timeline_notice(html):
     return NOTICE_S.sub(lambda m: m.group(1) + " N " + m.group(2), html)
 
 
+# v1.151.0：.bgrp::after 的 top 从写死 12px 改为 var(--oct-h, 12px)，
+# 并改写了紧邻的 CSS 注释。这是全局样式声明，对**每份素材**的 HTML 都生效，
+# 属本轮有意修改；跨版本结构比对前把它归一回旧写法，谱面结构仍逐字节比。
+# 真实行为（bgrp 带 --oct-h、CSS 用 var）由单测 / 冒烟 [145] / 扫掠独立守护。
+BEAM_OLD_S = ("\r\n   .bgrp 里取消逐音符的短线，改用一条跨全组的绝对定位线；十六分/三十二分\r\n"
+              "   再向下每 4px 叠一条平行线。line 的纵向位置 = 八度点区(12px) + 数字行高，\r\n"
+              "   与 .num 的 border-bottom 原本所在的位置对齐。 */")
+BEAM_NEW_S = ("\r\n   .bgrp 里取消逐音符的短线，改用一条跨全组的绝对定位线；十六分/三十二分\r\n"
+              "   再向下每 4px 叠一条平行线。line 的纵向位置 = 八度点区 + 数字行高，\r\n"
+              "   与 .num 的 border-bottom 原本所在的位置对齐。八度点区默认 12px；三个点\r\n"
+              "   起 .oct 被撑高到 19/26/33px，flushBeam 会把实际高度写进 --oct-h，减时线\r\n"
+              "   随之下移，否则会浮到数字上方、画进八度点区。 */")
+BEAM_OLD_B = BEAM_OLD_S.encode("utf-8")
+BEAM_NEW_B = BEAM_NEW_S.encode("utf-8")
+TOP_OLD_S = "top:calc(12px + 1.15em - 1px)"
+TOP_NEW_S = "top:calc(var(--oct-h, 12px) + 1.15em - 1px)"
+TOP_OLD_B = TOP_OLD_S.encode("ascii")
+TOP_NEW_B = TOP_NEW_S.encode("ascii")
+
+
+def normalize_beam_oct_css(html):
+    """把 v1.151.0 的减时线 CSS 归一回旧写法，支持 str / bytes。
+
+    只动注释块与 .bgrp::after 的 top 声明两处；bgrp 元素上的 --oct-h 属性
+    只会出现在本轮新素材（已在新素材跳过表），既有素材不受影响。
+    """
+    if isinstance(html, bytes):
+        return html.replace(BEAM_NEW_B, BEAM_OLD_B).replace(TOP_NEW_B, TOP_OLD_B)
+    return html.replace(BEAM_NEW_S, BEAM_OLD_S).replace(TOP_NEW_S, TOP_OLD_S)
+
+
 def strip_print_block(html):
     """摘掉 HTML 的 @media print 块（v1.78.0）。
 

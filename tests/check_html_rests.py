@@ -36,7 +36,7 @@ FIX = os.path.join(ROOT, "tests", "fixtures")
 # check_xml_staff.py 单独守护，这里的跨版本逐字节比对先把它摘掉。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from xml_norm import (strip_direction_staff, strip_print_block,
-                      normalize_timeline_notice)
+                      normalize_timeline_notice, normalize_beam_oct_css)
 import regress_skip
 
 # 与 src/html_writer.cpp::kExactRestSteps 同源：units = 拍数 * 16。
@@ -83,8 +83,8 @@ def norm_html(html):
     # 页脚版本号与 @media print 块都不参与结构：前者每版必变，后者
     # 只决定纸面观感（v1.78.0 压深了 .barno/.footer 的打印色）。
     # v1.87.0：页眉时间轴诊断的计数也不参与结构（数字由专项回归精确断言）。
-    return normalize_timeline_notice(
-        strip_print_block(VER_RE.sub("midi2jianpu vX.Y.Z", html)))
+    return normalize_beam_oct_css(normalize_timeline_notice(
+        strip_print_block(VER_RE.sub("midi2jianpu vX.Y.Z", html))))
 
 
 def default_exe():

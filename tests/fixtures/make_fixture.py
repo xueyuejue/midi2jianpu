@@ -3138,6 +3138,13 @@ def main() -> None:
         f.write(oedata)
     print(f"wrote {oemid} ({len(oedata)} bytes)")
 
+    # 连减时线随撑高的八度点下移：高八度点八分音符 + 普通八分音符对照
+    bamid = os.path.join(here, "beam_octave.mid")
+    with open(bamid, "wb") as f:
+        badata = build_beam_octave()
+        f.write(badata)
+    print(f"wrote {bamid} ({len(badata)} bytes)")
+
     # format 2（多个独立序列）素材
     f2mid = os.path.join(here, "format2.mid")
     with open(f2mid, "wb") as f:
@@ -4120,6 +4127,40 @@ def build_octave_extremes() -> bytes:
     bar(7, (36, 24, 12, 24))        # 2 3 4 3 个下点
 
     return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
+
+
+def build_beam_octave() -> bytes:
+    """连减时线（bgrp）要随撑高的八度点下移，不能再停在数字上方。
+
+    两个声部做正反对照，各自形成一拍两个八分的连减时线：
+
+      - HiBeam：音高 120/108/127/115（C 大调下 5/4/5/4 个上点）。v1.149
+        把 .oct 撑到 33px，数字随之下移；bgrp 的减时线若还按 CSS 默认
+        12px 定位，就会浮到数字上方、画进八度点区——高音区快速乐句读错
+        节奏。修复后 bgrp 带 style='--oct-h:33px'，减时线跟着下移。
+      - LoBeam：音高 60/64/67/62（0 个上点）。highPx=0，bgrp 不写
+        --oct-h，走 CSS 默认 12px，逐字节零回归。
+
+    两轨同拍发声但分属不同声部，各自渲染成独立行，不会并成一列。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调 do=C4(60)
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"HiBeam"))
+    for i, p in enumerate([120, 108, 127, 115] * 2):
+        t1.note(0, p, 90, i * 240, 240)  # 八分音符首尾相接，一拍两条连线
+
+    t2 = Track()
+    t2.add(0, meta(0x03, b"LoBeam"))
+    for i, p in enumerate([60, 64, 67, 62] * 2):
+        t2.note(0, p, 90, i * 240, 240)
+
+    return (b"MThd" + struct.pack(">IHHH", 6, 1, 3, DIV)
+            + t0.render() + t1.render() + t2.render())
 
 
 if __name__ == "__main__":

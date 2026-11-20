@@ -36,7 +36,7 @@ from html.parser import HTMLParser
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from xml_norm import (strip_direction_staff, strip_print_block,  # noqa: E402
-                      normalize_timeline_notice)
+                      normalize_timeline_notice, normalize_beam_oct_css)
 import regress_skip  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -322,10 +322,10 @@ def structural_regress(old_exe, new_exe):
                 if ext != "xml":
                     # 打印块只决定纸面观感，跨版本比对时摘掉（v1.78.0
                     # 压深了 .barno/.footer 的打印色，由 smoke [91] 守）。
-                    a = normalize_timeline_notice(
-                        strip_print_block(normalize_footer(a)))
-                    b = normalize_timeline_notice(
-                        strip_print_block(normalize_footer(b)))
+                    a = normalize_beam_oct_css(normalize_timeline_notice(
+                        strip_print_block(normalize_footer(a))))
+                    b = normalize_beam_oct_css(normalize_timeline_notice(
+                        strip_print_block(normalize_footer(b))))
                     if regress_skip.html_changed(mid):
                         a, b = strip_oct_px(a), strip_oct_px(b)
                 else:

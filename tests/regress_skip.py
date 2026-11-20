@@ -31,7 +31,11 @@ import os
 # v1.122.0 的 hostile_name.mid 从这一版起撤出本表：它已经进了 v1.122.0 之后
 # 的每一份基线，旧版对它的三端输出与新版一致，本就该参与逐字节比对。
 # v1.149.0 新增 octave_extremes.mid，已在 v1.149 基线里，本轮起照常参与比对。
-NEW_FIXTURES = set()
+#
+# v1.151.0 新增 beam_octave.mid（高八度点 + 连减时线，两声部正反对照）：旧版
+# 基线里没有它，且旧版对高音声部的 bgrp 不写 --oct-h（正是本轮修的缺陷），
+# 逐字节比对必然报红，登记为跳过。下一轮基线包含 v1.151.0 输出后撤出。
+NEW_FIXTURES = {"beam_octave.mid"}
 
 # v1.144.0 曾经有一张 HTML_CHANGED = {"parts.mid", "overfull.mid"}：那一版把
 # 倚音前面的空拍补成休止列，`--regress` 对这两份既有素材放行了「HTML 有意
@@ -49,12 +53,14 @@ NEW_FIXTURES = set()
 # v1.149.0 的 HTML_CHANGED = {"pitch0.mid", "grand_staff_wedge.mid"}（单音列
 # 3 个点起撑高）在 v1.150.0 基线里已包含，撤出本表，恢复逐字节比对。
 #
-# v1.150.0：和弦叠写里的 tone 点是 4px + 1px 间隙，CSS 默认 8px 只够 1 个点，
-# 2 个点（9px）就被压扁——34 个 tone 踩到了，涉及 5 份既有素材。修复按整列
-# 取最大点数写内联高度，摘掉该属性后逐字节相同，不是任意改动。下一轮基线
-# 包含 v1.150.0 的输出后，本表清空。
-HTML_CHANGED = {"chords.mid", "harmony.mid", "modulation.mid",
-                "pentatonic.mid", "pickup.mid"}
+# v1.150.0 的 HTML_CHANGED = {chords, harmony, modulation, pentatonic, pickup}
+# （和弦 tone 八度点撑高）在 v1.151.0 基线里已包含，撤出本表，恢复逐字节比对。
+#
+# v1.151.0 没有对既有素材的 HTML 做任何改动：连减时线的 --oct-h 只在高八度点
+# + 连线同时出现时写，全 112 份既有素材都不踩这个组合（见 .probe/v1151/
+# beam_oct_sweep.py：踩到撑高组合的只有新素材 beam_octave.mid 一份），而它已
+# 在 NEW_FIXTURES 里跳过。故本表为空。
+HTML_CHANGED = set()
 
 
 def html_changed(path):
@@ -66,7 +72,7 @@ def html_note():
     """有放行项时给一行提示，免得「HTML 变了」被误当成零回归通过。"""
     if not HTML_CHANGED:
         return None
-    return ("[NOTE] 本轮 HTML 有意变化 %d 份（八度点容器高度）：%s"
+    return ("[NOTE] 本轮 HTML 有意变化 %d 份：%s"
             % (len(HTML_CHANGED), " / ".join(sorted(HTML_CHANGED))))
 
 

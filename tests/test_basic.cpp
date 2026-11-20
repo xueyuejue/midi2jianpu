@@ -10627,6 +10627,62 @@ int main() {
         }
     }
 
+    // ---- v1.151.0 连减时线随撑高的八度点下移 ----
+    //
+    // .bgrp::after 的 top 原写死 12px（八度点区）+ 数字行高。v1.149 把 .oct
+    // 撑到 19/26/33px 后数字随之下移，减时线若不同步就浮到数字上方、画进
+    // 八度点区。修复给 bgrp 写 --oct-h（仅 highPx>0），CSS 用 var 回退 12px。
+    {
+        const KeyEstimate cMajor{0, true};
+        // 一拍里两个八分音符首尾相接 -> 一条连减时线 bgrp。
+        auto beamData = [](int p1, int p2) {
+            MidiData d;
+            d.division = 480;
+            d.timeSig = TimeSignature{4, 2, true};
+            d.pickupTicks = 0;
+            d.trackNames[0] = "Vocal";
+            NoteEvent a;
+            a.channel = 0; a.velocity = 96; a.track = 0;
+            a.startTicks = 0; a.durationTicks = 240; a.pitch = p1;
+            NoteEvent b = a;
+            b.startTicks = 240; b.pitch = p2;
+            d.notes.push_back(a);
+            d.notes.push_back(b);
+            return d;
+        };
+        // 高八度点：120 是 C 大调 5 个上点 -> oct 撑到 33px -> bgrp 写 --oct-h:33px
+        {
+            const std::string h = renderHtml(beamData(120, 108), cMajor, "t");
+            check(h.find("class='bgrp' style='--oct-h:33px'") != std::string::npos,
+                  "高八度点的连减时线组带 --oct-h:33px（减时线随数字下移）");
+            check(h.find("height:33px") != std::string::npos,
+                  "同一声部的 .oct 也确实撑到 33px（两者同源）");
+            check(h.find("top:calc(var(--oct-h, 12px)") != std::string::npos,
+                  "CSS 的减时线定位用 var(--oct-h) 回退 12px");
+            check(h.find("class='bgrp style=") == std::string::npos,
+                  "bgrp 的引号顺序正确，不出现畸形属性");
+        }
+        // 3 个点：96 是 C 大调 3 个上点 -> 19px
+        {
+            const std::string h = renderHtml(beamData(96, 103), cMajor, "t");
+            check(h.find("class='bgrp' style='--oct-h:19px'") != std::string::npos,
+                  "3 个上点的连减时线组带 --oct-h:19px");
+        }
+        // 普通音高（0 个点）：bgrp 不写 style，逐字节零回归
+        {
+            const std::string h = renderHtml(beamData(60, 64), cMajor, "t");
+            check(h.find("class='bgrp'>") != std::string::npos,
+                  "无八度点的连减时线组保持 <span class='bgrp'>（不写 style）");
+            check(h.find("--oct-h") != std::string::npos,
+                  "CSS 仍带 var(--oct-h) 声明（与是否写属性无关）");
+            // 数值属性只可能来自 bgrp 的 --oct-h；这里确认没有任何 height:NNpx
+            check(h.find("height:19px") == std::string::npos &&
+                  h.find("height:26px") == std::string::npos &&
+                  h.find("height:33px") == std::string::npos,
+                  "无八度点的声部不撑高任何 .oct");
+        }
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

@@ -6121,6 +6121,62 @@ def main():
         r"<span class='oct low'[^>]*height:9px'>(<i></i><i></i>)</span>", hm)
     check(two_dot is not None, "9px 容器里仍是两个点（没有被裁掉）")
 
+    group("[145] v1.151.0 连减时线随撑高的八度点下移（不再浮到数字上方）")
+    # v1.149 把 .oct 撑到 33px 后，数字下移；.bgrp::after 的 top 若还按 CSS
+    # 默认 12px 定位，减时线会浮到数字上方、画进八度点区。修复给 bgrp 写
+    # --oct-h，减时线随数字下移。beam_octave.mid 两声部一高一低做正反对照。
+    with tempfile.TemporaryDirectory() as td:
+        hp = os.path.join(td, "b.html")
+        rc, _, _ = run(exe, os.path.join(FIXTURES, "beam_octave.mid"),
+                       "--html", hp, "--no-dynamics")
+        html = open(hp, encoding="utf-8").read() if os.path.exists(hp) else ""
+    body = html[html.find("</style>"):]
+    check(rc == 0, "beam_octave.mid 导出成功")
+    check("class='bgrp' style='--oct-h:33px'" in body,
+          "高八度点声部的连减时线组带 --oct-h:33px")
+    check("top:calc(var(--oct-h, 12px)" in html,
+          "CSS 的减时线定位用 var(--oct-h) 回退 12px")
+    # 高低两个声部各 4 个 bgrp：高音 4 个带属性，低音 4 个不带
+    bgrp_tags = re.findall(r"<span class='bgrp[^>]*>", body)
+    with_var = [t for t in bgrp_tags if "--oct-h" in t]
+    without_var = [t for t in bgrp_tags if "--oct-h" not in t]
+    check(len(with_var) >= 4, "高音声部的 bgrp 都带 --oct-h（≥4 组）",
+          "实际 %d 组" % len(with_var))
+    check(len(without_var) >= 4, "普通音高声部的 bgrp 都不带 --oct-h（零回归，≥4 组）",
+          "实际 %d 组" % len(without_var))
+    # 每个带属性的 bgrp 里，八度点容器高度与 --oct-h 的值必须一致。
+    # 用 span 深度配对切出 bgrp 整块，再核块内 oct 高度。
+    def bgrp_blocks(s):
+        out = []
+        i = 0
+        while True:
+            k = s.find("<span class='bgrp", i)
+            if k < 0: break
+            gt = s.find('>', k) + 1
+            depth, j = 1, gt
+            while j < len(s) and depth:
+                op = s.find("<span", j)
+                cl = s.find("</span>", j)
+                if cl < 0: break
+                if op != -1 and op < cl:
+                    depth += 1; j = op + 5
+                else:
+                    depth -= 1; j = cl + 7
+            out.append(s[k:j]); i = j
+        return out
+    consistent = True
+    seen = 0
+    for blk in bgrp_blocks(body):
+        dm = re.search(r"<span class='bgrp' style='--oct-h:(\d+)px'>", blk)
+        if not dm: continue
+        seen += 1
+        if ("height:%spx" % dm.group(1)) not in blk:
+            consistent = False
+    check(seen >= 4 and consistent,
+          "每个 bgrp 的 --oct-h 与其内 oct 高度一致（减时线对准数字），核 %d 组" % seen)
+    # 引号顺序不能畸形
+    check("class='bgrp style=" not in body, "bgrp 属性引号正确，无畸形")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

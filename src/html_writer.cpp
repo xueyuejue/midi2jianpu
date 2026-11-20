@@ -1086,7 +1086,15 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             std::ostringstream g;
             g << "<span class='bgrp";
             if (beamLevel > 1) g << " b" << beamLevel;
-            g << "'>";
+            g << "'";
+            // 减时线（.bgrp::after）的纵向位置写成 calc(--oct-h + 数字行高)。
+            // v1.149 把 .oct 撑高后，连线组里的数字随之下移，若这里不同步，
+            // 减时线会停在原处、浮到数字上方画进八度点区——高音区快速乐句
+            // 就读错节奏。八度点没撑高（<=2 点、highPx==0）时不写，CSS 的
+            // var 回退到默认 12px，既有素材一个字节不变。
+            if (octSpace.highPx > 0)
+                g << " style='--oct-h:" << octSpace.highPx << "px'";
+            g << ">";
             for (const auto& h : beamBuf) g << h;
             g << "</span>";
             emitWithGroup(g.str(), beamGroup);
@@ -1458,13 +1466,15 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
 
 /* 连成一条的减时线：一拍内的同组音符共用一条横线，而不是各自一小段。
    .bgrp 里取消逐音符的短线，改用一条跨全组的绝对定位线；十六分/三十二分
-   再向下每 4px 叠一条平行线。line 的纵向位置 = 八度点区(12px) + 数字行高，
-   与 .num 的 border-bottom 原本所在的位置对齐。 */
+   再向下每 4px 叠一条平行线。line 的纵向位置 = 八度点区 + 数字行高，
+   与 .num 的 border-bottom 原本所在的位置对齐。八度点区默认 12px；三个点
+   起 .oct 被撑高到 19/26/33px，flushBeam 会把实际高度写进 --oct-h，减时线
+   随之下移，否则会浮到数字上方、画进八度点区。 */
 .bgrp{position:relative;display:inline-flex;align-items:flex-start}
 .bgrp>.note{margin:0 4px}
 .bgrp .num{border-bottom:none;box-shadow:none}
 .bgrp::after{content:"";position:absolute;left:1px;right:1px;
-             top:calc(12px + 1.15em - 1px);height:2px;background:#222}
+             top:calc(var(--oct-h, 12px) + 1.15em - 1px);height:2px;background:#222}
 .bgrp.b2::after{box-shadow:0 4px 0 #222}
 .bgrp.b3::after{box-shadow:0 4px 0 #222,0 8px 0 #222}
 
