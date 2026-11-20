@@ -280,6 +280,19 @@ def audit_fixtures(exe):
     return bad, stats
 
 
+# v1.149.0：八度点容器在 3 个点起带内联高度（`style='height:NNpx'`）。
+# 两份既有素材本来就有 3 个以上的点，HTML 有意变化；跨版本比对时摘掉该属性，
+# 其余部分仍逐字节核（不是整份放行）。下一轮基线清掉 regress_skip 的表。
+OCT_PX_RE = re.compile(r"(<span class=\'oct(?: low)?\') style='height:[0-9]+px'")
+
+
+def strip_oct_px(html):
+    if isinstance(html, bytes):
+        return re.sub(rb"(<span class='oct(?: low)?') style='height:[0-9]+px'",
+                      rb"\1", html)
+    return OCT_PX_RE.sub(r"\1", html)
+
+
 def structural_regress(old_exe, new_exe):
     """归一化页脚与 direction 的 <staff> 后，三端应与旧版逐字节一致。
 
@@ -287,12 +300,16 @@ def structural_regress(old_exe, new_exe):
     起点与 stop 必须落同一谱表，stop 不再按自己的拍位取到另一行谱。这与
     check_xml_staff 的口径一致——跨版本比对前先摘掉 direction 内的
     <staff> 行（<note> 里的 <staff> 是大谱表游标语义，保留不动），其余
-    结构一个字节都不许动。
+    结构一个字节都不许动。v1.149.0 起 HTML 侧再摘掉八度点容器的内联高度
+    （见 regress_skip.HTML_CHANGED），其余 HTML 仍逐字节核。
     """
     errors, changed, notes = [], [], []
     line = regress_skip.note()
     if line:
         print(line)
+    hline = regress_skip.html_note()
+    if hline:
+        print(hline)
     with tempfile.TemporaryDirectory() as td:
         for mid in fixtures():
             name = os.path.basename(mid)
@@ -309,6 +326,8 @@ def structural_regress(old_exe, new_exe):
                         strip_print_block(normalize_footer(a)))
                     b = normalize_timeline_notice(
                         strip_print_block(normalize_footer(b)))
+                    if regress_skip.html_changed(mid):
+                        a, b = strip_oct_px(a), strip_oct_px(b)
                 else:
                     a, b = strip_direction_staff(a), strip_direction_staff(b)
                 if a != b:

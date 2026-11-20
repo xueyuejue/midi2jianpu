@@ -2,7 +2,8 @@
 //
 // 排版坐标约定（一个音符是一列）：
 //
-//     ·  ·      <- 上八度点（.oct 固定 12px 高，无点时留空占位）
+//     ·  ·      <- 上八度点（.oct 默认 12px 高，无点时留空占位；三个点起
+//                  按需撑高，见 OctSpace）
 //     5  -  -   <- 数字与延音线同行（.core 用 flex row）
 //     ·         <- 下八度点（.oct.low，紧贴数字下方，不会被歌词压住）
 //     风        <- 歌词
@@ -121,6 +122,46 @@ static bool splitRestBeats(long gapTicks, int division, std::vector<double>& out
     return out.size() > 1;
 }
 
+// 八度点容器的高度预算。
+//
+// CSS 里 .oct 写死 12px，正好塞满两个点（5px×2 + 2px 间隙）。第三个点起
+// flex 会把这些点**压扁**：五个点时（MIDI 音高 127、C 调用 `5'''''`）每个
+// 点只剩 0.8px 高，画出来是一排亚像素薄片，八度记号等于被抹掉——读谱的人
+// 会把高八度当成原八度唱。低声区同理（音高 0 是 `1,,,,,`）。
+//
+// 这里按「这一声部最多要几个点」算出容器高度，用内联 style 覆盖 CSS。
+// 0/1/2 个点返回 0 = 不写 style，沿用 CSS 默认值：既有 111 份素材里最多
+// 只有两个点（0 点 2668 个音、1 点 162 个、2 点 15 个），所以它们的 HTML
+// 一个字节都不变，零回归不需要开任何放行表。
+//
+// 高度按整个声部统一取最大值，不是按行、也不是按列：.row 用
+// align-items:flex-start，同一行里各列顶部对齐，只有让一行之内每一列
+// （包括休止符的 0）都拿到同一个容器高度，数字才会落在同一条基线上。
+struct OctSpace {
+    int highPx = 0;   // .oct 的内联高度，0 = 不写 style
+    int lowPx = 0;    // .oct.low 同上
+};
+
+// 5px 点 + 2px 间隙，CSS 默认 12px 够 2 个：3 点 19px / 4 点 26px / 5 点 33px
+static int staffOctPx(int dots) { return dots <= 2 ? 0 : 7 * dots - 2; }
+
+// 把简谱音名拆成「数字 / 上点数 / 下点数」。
+//
+// 文本谱的 ' 、, 与 HTML 的 <i> 必须是同一个口径：这段拆法以前在音符列与
+// 和弦列各抄了一遍，任一处改动就会让两端点数各说各话。单测里「文本谱点数
+// == HTML 点数」正是钉这一条。
+static void splitOctaveDots(const std::string& jp, std::string& num,
+                            int& highDots, int& lowDots) {
+    num.clear();
+    highDots = 0;
+    lowDots = 0;
+    for (char c : jp) {
+        if (c == '\'') highDots++;
+        else if (c == ',') lowDots++;
+        else num += c;
+    }
+}
+
 // 生成一个音符的 HTML 列。
 //
 // 关键点：延音线不参与宽度计算（绝对定位挂在 .core 右侧），所以 .note 的
@@ -129,7 +170,8 @@ static bool splitRestBeats(long gapTicks, int division, std::vector<double>& out
 static std::string noteColumn(const std::string& numText, int highDots, int lowDots,
                               double beats, const std::string& lyric,
                               const std::string& extraClass = "",
-                              const DurStyle* overrideStyle = nullptr) {
+                              const DurStyle* overrideStyle = nullptr,
+                              const OctSpace& oct = OctSpace{}) {
     DurStyle ds = overrideStyle ? *overrideStyle : durStyleOf(beats);
 
     std::ostringstream os;
@@ -142,8 +184,11 @@ static std::string noteColumn(const std::string& numText, int highDots, int lowD
     if (ds.extLines > 0) os << " style='--n:" << ds.extLines << "'";
     os << ">";
 
-    // 上八度点：固定高度占位，保证各行音符顶部对齐
-    os << "<span class='oct'>";
+    // 上八度点：固定高度占位，保证各行音符顶部对齐。三个点起容器撑高
+    // （见 OctSpace），否则点会被 flex 压成看不见的薄片。
+    os << "<span class='oct'";
+    if (oct.highPx > 0) os << " style='height:" << oct.highPx << "px'";
+    os << ">";
     for (int i = 0; i < highDots; i++) os << "<i></i>";
     os << "</span>";
 
@@ -157,7 +202,9 @@ static std::string noteColumn(const std::string& numText, int highDots, int lowD
     os << "</span>";
 
     // 下八度点：紧跟数字下方、歌词之前
-    os << "<span class='oct low'>";
+    os << "<span class='oct low'";
+    if (oct.lowPx > 0) os << " style='height:" << oct.lowPx << "px'";
+    os << ">";
     for (int i = 0; i < lowDots; i++) os << "<i></i>";
     os << "</span>";
 
@@ -211,13 +258,15 @@ static std::string withDyn(const std::string& col, const std::string& dyn) {
 // 拆列时和弦 / 力度标记只挂第一列 —— 标记标的是音头位置，挂到每一列
 // 会把「第 2 拍变弱」重复标成好几次。
 static std::string restColumns(long gapTicks, int division, double restBeats,
-                               const std::string& chord, const std::string& dyn) {
+                               const std::string& chord, const std::string& dyn,
+                               const OctSpace& oct = OctSpace{}) {
     std::vector<double> parts;
     if (!splitRestBeats(gapTicks, division, parts))
-        return withDyn(withChord(noteColumn("0", 0, 0, restBeats, ""), chord), dyn);
+        return withDyn(withChord(noteColumn("0", 0, 0, restBeats, "", "", nullptr, oct),
+                                 chord), dyn);
     std::string out;
     for (size_t i = 0; i < parts.size(); i++) {
-        std::string col = noteColumn("0", 0, 0, parts[i], "");
+        std::string col = noteColumn("0", 0, 0, parts[i], "", "", nullptr, oct);
         if (i == 0) col = withDyn(withChord(col, chord), dyn);
         out += col;
     }
@@ -836,6 +885,18 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             groups.push_back({&s});
         }
 
+        // 这一声部最多要几个八度点：按整声部取最大值算容器高度（见 OctSpace）。
+        // 只在 3 个点起才非 0，所以常见素材不会写任何 style。
+        OctSpace octSpace;
+        for (const auto& grp : groups) {
+            std::string num;
+            int hi = 0, lo = 0;
+            splitOctaveDots(pitchToJianpu(grp[0]->n.pitch, keys.at(grp[0]->n.startTicks)),
+                            num, hi, lo);
+            octSpace.highPx = std::max(octSpace.highPx, staffOctPx(hi));
+            octSpace.lowPx = std::max(octSpace.lowPx, staffOctPx(lo));
+        }
+
         int curBar = -1;
         long prevEnd = 0;
         std::string lastDyn;
@@ -1026,7 +1087,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             flushBeam();          // 休止符打断减时线
             double restBeats = (double)gap / data.division;
             emit(restColumns(gap, data.division, restBeats,
-                             chordMarkFor(prevEnd), dynMarkFor(prevEnd)),
+                             chordMarkFor(prevEnd), dynMarkFor(prevEnd), octSpace),
                  prevEnd, true);
         };
 
@@ -1059,7 +1120,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                     if (tailGap >= restGateTicks(data.division)) {
                         double tailBeats = (double)tailGap / data.division;
                         emit(restColumns(tailGap, data.division, tailBeats,
-                                         chordMarkFor(prevEnd), dynMarkFor(prevEnd)),
+                                         chordMarkFor(prevEnd), dynMarkFor(prevEnd), octSpace),
                              prevEnd, true);
                         prevEnd = prevBarEnd;                 // 收口，避免新小节再补一次
                     }
@@ -1094,7 +1155,8 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                     // 休止时值按本小节的实际长度算——弱起小节比正常小节短
                     double restBeats = (double)grid.barSpan(b) / data.division;
                     body << "</span><span class='notes'>"
-                         << withDyn(withChord(noteColumn("0", 0, 0, restBeats, ""),
+                         << withDyn(withChord(noteColumn("0", 0, 0, restBeats, "", "",
+                                                         nullptr, octSpace),
                                               chordMarkFor(grid.barStart(b))),
                                     dynMarkFor(grid.barEnd(b) - 1))
                          << "</span></span>";
@@ -1143,18 +1205,15 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 if (cnt < 1) cnt = 1;
                 for (int k = 0; k < cnt; k++) {
                     long tk = n.startTicks + (long)k * data.division;
-                    emit(withDyn(withChord(noteColumn("-", 0, 0, 1.0, ""), chordMarkFor(tk)),
+                    emit(withDyn(withChord(noteColumn("-", 0, 0, 1.0, "", "", nullptr, octSpace),
+                                           chordMarkFor(tk)),
                                  dynMarkFor(tk)), tk);
                 }
             } else if (grp.size() == 1) {
-                std::string jp = pitchToJianpu(n.pitch, keys.at(n.startTicks));
-                int highDots = 0, lowDots = 0;
                 std::string num;
-                for (char c : jp) {
-                    if (c == '\'') highDots++;
-                    else if (c == ',') lowDots++;
-                    else num += c;
-                }
+                int highDots = 0, lowDots = 0;
+                splitOctaveDots(pitchToJianpu(n.pitch, keys.at(n.startTicks)),
+                                num, highDots, lowDots);
                 // 倚音（装饰音）：先快速滑/弹一个音再落到主音，谱面上用小字上标
                 // 写在主音数字前面，如 <sup>3</sup>5，不参与节奏计数。
                 const NoteExpression ne = expr.noteAt(n.startTicks, n.channel);
@@ -1177,7 +1236,8 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 // 三连音走单独的时值档位，避免 1/3 拍被当成附点十六分
                 DurStyle ds = grp[0]->trip ? tripletStyleOf(beats) : durStyleOf(beats);
                 std::string col = graceHtml + withArticulation(
-                    withDyn(withChord(noteColumn(num, highDots, lowDots, beats, syl, "", &ds),
+                    withDyn(withChord(noteColumn(num, highDots, lowDots, beats, syl, "",
+                                                 &ds, octSpace),
                                       chordMarkFor(n.startTicks)),
                             dynMarkFor(n.startTicks)),
                     ne.symbol());
@@ -1236,14 +1296,10 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
 
                 std::vector<std::pair<std::string, std::pair<int, int>>> tones;
                 for (const auto& t : sorted) {
-                    std::string jp = pitchToJianpu(t.pitch, keys.at(t.startTicks));
-                    int hi = 0, lo = 0;
                     std::string num;
-                    for (char c : jp) {
-                        if (c == '\'') hi++;
-                        else if (c == ',') lo++;
-                        else num += c;
-                    }
+                    int hi = 0, lo = 0;
+                    splitOctaveDots(pitchToJianpu(t.pitch, keys.at(t.startTicks)),
+                                    num, hi, lo);
                     tones.push_back({num, {hi, lo}});
                 }
                 // 和弦列也要挂歌词：简谱里一列只有一个词位，落点和 MusicXML

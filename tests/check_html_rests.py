@@ -53,11 +53,14 @@ COL_RE = re.compile(r"<span class='note ([^']*)'([^>]*)>(.*?)</span></span>", re
 # 不带和弦 / 力度 / 断音 / 倚音标记的完整 0 列：restColumns 拆出来的续列
 # 都是这种固定模板，用它做跨版本的结构性比对，避免字符级 difflib 把
 # 两个完全相同的列串对齐到列中间。
+# v1.149.0：八度点容器在 3 个点起会带 style='height:NNpx'（见 html_writer.cpp
+# 的 OctSpace）。0 列本身没有点，但同一行里每一列都要拿到同一个容器高度，
+# 否则「0」会和数字错开基线——所以这里的模板必须容忍这个属性。
 REST_COL_RE = re.compile(
-    r"<span class='note ([^']*)'([^>]*)><span class='oct'></span>"
+    r"<span class='note ([^']*)'([^>]*)><span class='oct'[^>]*></span>"
     r"<span class='core'><span class='num'>0</span>"
     r"(?:<span class='exts'>.*?</span>)?</span>"
-    r"<span class='oct low'></span><span class='lyric'></span></span>", re.S)
+    r"<span class='oct low'[^>]*></span><span class='lyric'></span></span>", re.S)
 NOTE_RE = re.compile(r"<note>(.*?)</note>", re.S)
 DUR_RE = re.compile(r"<duration>(\d+)</duration>")
 DIV_RE = re.compile(r"<divisions>(\d+)</divisions>")
@@ -65,6 +68,15 @@ DIV_RE = re.compile(r"<divisions>(\d+)</divisions>")
 VER_RE = re.compile(r"midi2jianpu v\d+\.\d+\.\d+")
 EPS = 1e-6
 GAP_TOL = 0.5          # 「最近档吸附」最多少 0.5 拍
+
+
+OCT_PX_RE = re.compile(
+    r"(<span class='oct(?: low)?') style='height:[0-9]+px'")
+
+
+def strip_oct_px(html):
+    """摘掉八度点容器的内联高度（v1.149.0 起 3 个点以上才有这个属性）。"""
+    return OCT_PX_RE.sub(r"\1", html)
 
 
 def norm_html(html):
@@ -291,6 +303,9 @@ def structural_regress(old_exe, new_exe):
         line = regress_skip.note()
         if line:
             print(line)
+        hline = regress_skip.html_note()
+        if hline:
+            print(hline)
         for mid in fixtures():
             stem = os.path.splitext(os.path.basename(mid))[0]
             if regress_skip.skip(mid):
@@ -306,6 +321,11 @@ def structural_regress(old_exe, new_exe):
                     errors.append("%s: %s 发生变化（本轮只应改 HTML）" % (stem, ext))
             raw_old = norm_html(a["html"].decode("utf-8", "replace"))
             raw_new = norm_html(b["html"].decode("utf-8", "replace"))
+            if regress_skip.html_changed(mid):
+                # v1.149.0 的八度点容器高度：这两份素材本来就有 3 个以上的
+                # 点，高度属性必然出现。摘掉它再比，本条守卫要看的 0 列结构
+                # 仍然逐字节核（而不是整份放过）。
+                raw_old, raw_new = strip_oct_px(raw_old), strip_oct_px(raw_new)
             xs = xml_rest_segments(b["xml"].decode("utf-8", "replace"))
             approx_before += len(find_approx(html_rest_segments(raw_old), xs))
             approx_after += len(find_approx(html_rest_segments(raw_new), xs))

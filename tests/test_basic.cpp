@@ -10360,6 +10360,168 @@ int main() {
         }
     }
 
+    // ---- v1.149.0 八度点容器高度（3 个点起不再被 flex 压扁） ----
+    //
+    // CSS 的 .oct 写死 12px，正好塞两个点（5px×2 + 2px 间隙）。第三个点起
+    // flex-shrink 把每个点压到不足 1px：五个点时（音高 127，C 调用 `5'''''`）
+    // 每个点只剩 0.8px 高，八度记号等于被抹掉。修法是按整个声部最多的点数
+    // 撑高容器，2 个点以内沿用 CSS 默认值（既有素材一个字节都不变）。
+    {
+        auto songOf = [](std::initializer_list<int> pitches,
+                         long gapBeforeLast = 0) {
+            MidiData d;
+            d.division = 480;
+            d.timeSig = TimeSignature{4, 2, true};
+            d.pickupTicks = 0;
+            d.trackNames[0] = "Vocal";
+            NoteEvent n;
+            n.channel = 0; n.velocity = 96; n.track = 0;
+            n.durationTicks = 480;
+            long t = 0;
+            size_t i = 0;
+            for (int p : pitches) {
+                if (gapBeforeLast > 0 && i + 1 == pitches.size()) t += gapBeforeLast;
+                n.pitch = p;
+                n.startTicks = t;
+                d.notes.push_back(n);
+                t += 480;
+                i++;
+            }
+            return d;
+        };
+        // 抽出 <span class='oct'...> / <span class='oct low'...> 的 (高度, 点数)
+        struct OctSpan { int px; int dots; };
+        auto scanOct = [](const std::string& h, bool low) {
+            const std::string key = low ? "<span class='oct low'" : "<span class='oct'";
+            std::vector<OctSpan> v;
+            size_t p = 0;
+            while ((p = h.find(key, p)) != std::string::npos) {
+                const size_t gt = h.find('>', p);
+                if (gt == std::string::npos) break;
+                const std::string tag = h.substr(p, gt - p);
+                int px = 0;
+                const size_t hp = tag.find("height:");
+                if (hp != std::string::npos) {
+                    for (size_t i = hp + 7; i < tag.size() && tag[i] >= '0' && tag[i] <= '9'; i++)
+                        px = px * 10 + (tag[i] - '0');
+                }
+                const size_t close = h.find("</span>", gt);
+                int dots = 0;
+                for (size_t i = gt; i + 3 <= close; i++)
+                    if (h.compare(i, 3, "<i>") == 0) dots++;
+                v.push_back({px, dots});
+                p = close + 7;
+            }
+            return v;
+        };
+        const KeyEstimate cMajor{0, true};
+
+        // 3 个点：CSS 默认 12px 塞不下（3×5 + 2×2 = 19），必须撑到 19px
+        {
+            const std::string h = renderHtml(songOf({96}), cMajor, "t");
+            const auto hi = scanOct(h, false);
+            check(hi.size() == 1 && hi[0].dots == 3,
+                  "音高 96 是 3 个上八度点，实际: " +
+                      std::to_string(hi.empty() ? -1 : hi[0].dots));
+            check(!hi.empty() && hi[0].px == 19,
+                  "3 个点的容器撑到 19px，实际: " +
+                      std::to_string(hi.empty() ? -1 : hi[0].px));
+        }
+        // 4 个点 / 5 个点
+        {
+            const std::string h4 = renderHtml(songOf({108}), cMajor, "t");
+            const auto a = scanOct(h4, false);
+            check(!a.empty() && a[0].dots == 4 && a[0].px == 26,
+                  "音高 108 是 4 个点 / 26px，实际: " +
+                      std::to_string(a.empty() ? -1 : a[0].dots) + " / " +
+                      std::to_string(a.empty() ? -1 : a[0].px));
+            const std::string h5 = renderHtml(songOf({120}), cMajor, "t");
+            const auto b = scanOct(h5, false);
+            check(!b.empty() && b[0].dots == 5 && b[0].px == 33,
+                  "音高 120 是 5 个点 / 33px，实际: " +
+                      std::to_string(b.empty() ? -1 : b[0].dots) + " / " +
+                      std::to_string(b.empty() ? -1 : b[0].px));
+        }
+        // 0/1/2 个点：不写 style，沿用 CSS 默认值（既有素材逐字节不变）
+        {
+            for (int p : {60, 72, 84}) {
+                const std::string h = renderHtml(songOf({p}), cMajor, "t");
+                check(h.find("style='height:") == std::string::npos,
+                      "音高 " + std::to_string(p) + " 没超过 2 个点，不写内联高度");
+            }
+        }
+        // 低声区同理：音高 12 是 4 个低音点
+        {
+            const std::string h = renderHtml(songOf({12}), cMajor, "t");
+            const auto lo = scanOct(h, true);
+            check(!lo.empty() && lo[0].dots == 4 && lo[0].px == 26,
+                  "音高 12 是 4 个低音点 / 26px，实际: " +
+                      std::to_string(lo.empty() ? -1 : lo[0].dots) + " / " +
+                      std::to_string(lo.empty() ? -1 : lo[0].px));
+        }
+        // 同一行里休止符的 0 必须拿到和数字一样的高度，否则基线会错开
+        {
+            const std::string h = renderHtml(songOf({120, 120}, 480), cMajor, "t");
+            const auto hi = scanOct(h, false);
+            int rests = 0, tall = 0;
+            for (const auto& s : hi) {
+                if (s.dots == 0) rests++;
+                if (s.px == 33) tall++;
+            }
+            check(rests >= 1, "中途空拍补出了休止列，实际: " + std::to_string(rests));
+            check(!hi.empty() && tall == (int)hi.size(),
+                  "带 5 个点的行里每一列（含休止）都是 33px："
+                      + std::to_string(tall) + " / " + std::to_string(hi.size()));
+        }
+        // 文本谱的点数与 HTML 的点数必须逐列一致（同一个 splitOctaveDots）
+        {
+            auto textDots = [](const std::string& txt) {
+                std::vector<int> v;
+                // 只数谱面：页眉（1=C 大调 4/4 ♩=120 声部：…）与
+                // 「[Vocal] (N 音符)」这类标题里的数字不能算成音符列。
+                size_t ls = 0;
+                while (ls <= txt.size()) {
+                    const size_t le = txt.find('\n', ls);
+                    const std::string line =
+                        txt.substr(ls, (le == std::string::npos ? txt.size() : le) - ls);
+                    ls = (le == std::string::npos) ? txt.size() + 1 : le + 1;
+                    if (line.find("声部") != std::string::npos) continue;   // 页眉
+                    if (!line.empty() && line[0] == '[') continue;          // 谱行标题
+                    size_t i = 0;
+                    while (i < line.size()) {
+                        if (line[i] == '[') { i = line.find(']', i); i = (i == std::string::npos) ? line.size() : i + 1; continue; }
+                        if (line[i] == ' ' || line[i] == '|') { i++; continue; }
+                        const size_t st = i;
+                        while (i < line.size() && line[i] != ' ' && line[i] != '|') i++;
+                        const std::string tok = line.substr(st, i - st);
+                        // 延音线「-」在 HTML 里也是 0 点的一列，照数
+                        bool note = (tok == "-");
+                        for (char c : tok)
+                            if (c >= '0' && c <= '9') note = true;
+                        if (!note) continue;
+                        int dots = 0;
+                        for (char c : tok) if (c == '\'' || c == ',') dots++;
+                        v.push_back(dots);
+                    }
+                }
+                return v;
+            };
+            MidiData d = songOf({96, 108, 120, 12});
+            const std::string txt = formatJianpu(d, cMajor, false);
+            const std::string h = renderHtml(d, cMajor, "t");
+            const auto hi = scanOct(h, false);
+            const auto lo = scanOct(h, true);
+            std::vector<int> htmlDots;
+            for (size_t k = 0; k < hi.size() && k < lo.size(); k++)
+                htmlDots.push_back(hi[k].dots + lo[k].dots);
+            const std::vector<int> td = textDots(txt);
+            check(td == htmlDots,
+                  "文本谱点数与 HTML <i> 点数逐列一致：文本 " +
+                      std::to_string(td.size()) + " 列 / HTML " +
+                      std::to_string(htmlDots.size()) + " 列");
+        }
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

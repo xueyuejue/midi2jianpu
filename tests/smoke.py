@@ -6049,6 +6049,43 @@ def main():
     check(not badv, "全部素材文本谱拍数守恒",
           "%d 份有问题: %s" % (len(badv), badv[:6]))
 
+    group("[143] v1.149.0 八度点容器高度（3 个点起不再被压成薄片）")
+    # CSS 的 .oct 写死 12px，正好塞两个点（5px×2 + 2px 间隙）。第三个点起
+    # flex-shrink 把点压到不足 1px：音高 127 的 `5'''''` 五个点在浏览器里
+    # 只剩一排亚像素薄片，八度记号等于被抹掉。修法是按整个声部最多的点数
+    # 撑高容器；0/1/2 个点沿用 CSS 默认值，既有素材一个字节都不变。
+    oe = os.path.join(FIXTURES, "octave_extremes.mid")
+    r, out, _ = run(exe, oe)
+    check(r == 0 and "5'''''" in out and "1,,,," in out,
+          "octave_extremes.mid 印出五个上点与四个下点", out[-200:])
+    with tempfile.TemporaryDirectory() as td:
+        oh = os.path.join(td, "oe.html")
+        rc2, _, _ = run(exe, oe, "--html", oh)
+        html = open(oh, encoding="utf-8").read() if os.path.exists(oh) else ""
+    oct_hi = re.findall(r"<span class='oct'([^>]*)>(.*?)</span>", html, re.S)
+    oct_lo = re.findall(r"<span class='oct low'([^>]*)>(.*?)</span>", html, re.S)
+    check(rc2 == 0 and len(oct_hi) == len(oct_lo) == 28,
+          "28 列音符/休止都带上下八度点容器，实际: %d / %d"
+          % (len(oct_hi), len(oct_lo)))
+    check(all("height:33px" in a for a, _ in oct_hi),
+          "五个上点的行里每一列都是 33px（含休止符的 0）")
+    check(all("height:26px" in a for a, _ in oct_lo),
+          "四个下点的行里每一列都是 26px")
+    check(max(d.count("<i>") for _, d in oct_hi) == 5
+          and max(d.count("<i>") for _, d in oct_lo) == 4,
+          "点本身一个不少（上 5 / 下 4）")
+    # 两个点以内的素材不许出现内联高度：既有 110 份素材的零回归靠这条守住
+    with tempfile.TemporaryDirectory() as td:
+        sh = os.path.join(td, "sample.html")
+        run(exe, sample, "--html", sh)
+        shtml = open(sh, encoding="utf-8").read() if os.path.exists(sh) else ""
+    check("style='height:" not in shtml,
+          "sample.mid 最多两个点，不写内联高度（零回归不动一个字节）")
+    # 文本谱与 HTML 的点数同源：同一个 splitOctaveDots
+    r, out, _ = run(exe, oe, "--verify")
+    check(r == 0 and "文本谱核对" in out,
+          "octave_extremes.mid 的文本谱拍数守恒", out[-200:])
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

@@ -3131,6 +3131,13 @@ def main() -> None:
     print(f"wrote {p0mid} ({len(p0data)} bytes)")
     print(f"wrote {p0lrc}")
 
+    # 八度点 3/4/5 个：高低两端各一条，各留一处中途休止
+    oemid = os.path.join(here, "octave_extremes.mid")
+    with open(oemid, "wb") as f:
+        oedata = build_octave_extremes()
+        f.write(oedata)
+    print(f"wrote {oemid} ({len(oedata)} bytes)")
+
     # format 2（多个独立序列）素材
     f2mid = os.path.join(here, "format2.mid")
     with open(f2mid, "wb") as f:
@@ -4071,6 +4078,46 @@ def build_midbar_meter() -> bytes:
         t1.note(0, p, 90, 2880 + i * DIV, DIV)
     for i, p in enumerate((88, 89, 91)):                # 第 4 小节：6/8
         t1.note(0, p, 90, 4320 + i * DIV, DIV)
+
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
+
+
+def build_octave_extremes() -> bytes:
+    """八度点 3/4/5 个：高音侧 bar1-4、低音侧 bar5-8，各留一处中途休止。
+
+    CSS 的 .oct 固定 12px，只够两个点。这份素材要钉住三件事：
+
+      1. 3 个以上点的容器必须撑高（否则点被 flex 压成亚像素薄片，八度记号
+         等于被抹掉，读谱的人会把高八度当原八度唱）；
+      2. 撑高之后同一行里每一列（含休止符的 0）拿到的是同一个高度，数字仍
+         落在同一条基线上；
+      3. 高点是 3/4/5 三种档位都出现（96/108/120/127 对应 3/4/5 个点），
+         低点是 3/4 个（24/12），两端都不过界——音高 0~11 会写出 MusicXML
+         的 <octave>-1</octave>，那是另一个话题，不混进这份素材。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调，do=C4(60)
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Extremes"))
+
+    def bar(b, pitches):
+        """一小节四个四分音符；None 表示这一拍空着（会补成休止列）。"""
+        for i, p in enumerate(pitches):
+            if p is not None:
+                t1.note(0, p, 90, (b * 4 + i) * DIV, DIV)
+
+    bar(0, (96, 100, 103, 108))     # 3 3 3 4 个上点
+    bar(1, (115, 120, 127, 120))    # 4 5 5 5 个上点
+    bar(2, (108, None, None, None))  # 4 个上点 + 三拍休止
+    bar(3, (103, 108, 115, 120))    # 3 4 4 5 个上点
+    bar(4, (24, 12, 24, 36))        # 3 4 3 2 个下点
+    bar(5, (12, 24, 36, 48))        # 4 3 2 1 个下点
+    bar(6, (24, None, None, None))  # 3 个下点 + 三拍休止
+    bar(7, (36, 24, 12, 24))        # 2 3 4 3 个下点
 
     return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
 

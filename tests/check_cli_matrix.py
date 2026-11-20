@@ -165,9 +165,35 @@ def fifths_from_xml(path):
     return [int(f.text) for f in ET.parse(path).getroot().iter("fifths")]
 
 
+STEP_PC = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
+MIDI_MIN, MIDI_MAX = 0, 127
+
+
+def midi_of(step, alter, octave):
+    return (octave + 1) * 12 + STEP_PC[step] + int(float(alter))
+
+
 def shift_octaves(notes, k):
-    """把一串 (step, alter, octave) 整体升 k 个八度，用于和移调产物比对。"""
-    return sorted((s, a, o + k) for (s, a, o) in notes)
+    """把一串 (step, alter, octave) 整体升 k 个八度，用于和移调产物比对。
+
+    越过 MIDI 0~127 的音按八度折回——这是 v1.127.0 的既定契约（「极端移调
+    按八度折回，不再让越界音高流进下游」）。所以音高 127（G9）再升一个八度
+    不是 G10，而是折回 G9：音级不变、八度不再增加。旧实现这里直接写 o+k，
+    只要素材里有 127 就会把这条合法行为误报成「移调算错」；v1.149.0 的
+    octave_extremes.mid 正是第一份碰到这条线的素材。
+    """
+    out = []
+    for (s, a, o) in notes:
+        oct2 = o + k
+        m = midi_of(s, a, oct2)
+        while m > MIDI_MAX:
+            oct2 -= 1
+            m -= 12
+        while m < MIDI_MIN:
+            oct2 += 1
+            m += 12
+        out.append((s, a, oct2))
+    return sorted(out)
 
 
 def compare_octave(base_notes, moved_notes, k):
