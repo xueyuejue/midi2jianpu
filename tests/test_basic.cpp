@@ -1110,6 +1110,20 @@ int main() {
                   std::string(40, 'a') + "…",
               "转义序列整个落在截断点之外，不会留下半截 \\x");
 
+        // 文本谱专用：段落名里的结构字符折叠成全角。全角字形近似、但在文本谱
+        // 里没有语法含义——'|' 不再是小节线、']' 不再提前收尾标记、换行不撕行。
+        check(escapeForTextScore("Verse") == "Verse", "普通段落名原样通过");
+        check(escapeForTextScore("Verse|Chorus") == "Verse\xEF\xBD\x9C" "Chorus",
+              "竖线折叠成全角 ｜，不再被当成小节线");
+        check(escapeForTextScore("A]B[C") ==
+                  std::string("A\xEF\xBC\xBD") + "B" + "\xEF\xBC\xBB" + "C",
+              "方括号折叠成全角，stripMarks 不会提前收尾");
+        check(escapeForTextScore("A\nB\rC") == "A B C",
+              "换行折成空格，一行谱不会被撕成两行");
+        check(escapeForTextScore("中文 段落 &<name>") == "中文 段落 &<name>",
+              "只折叠结构字符；可见文字与 & < > 留给各自的输出层");
+        check(escapeForTextScore("") == "", "空串不崩");
+
         // 页眉的「声部：」是单行摘要，轨名里的换行会把它撕成两行。
         MidiData hp;
         hp.trackCount = 1;
@@ -10750,6 +10764,70 @@ int main() {
             for (size_t p = 0; (p = mx.find("<tie type=\"start\"/>", p)) != std::string::npos;
                  p += 6) tieStarts++;
             check(tieStarts >= 2, "XML 超长音用 tie 链连接各 whole 段");
+        }
+    }
+
+    // ---- v1.153.0 段落名里的文本谱结构字符：不得造出伪小节线 ----
+    //
+    // 段落名来自 MIDI 0x06 marker（文件内容），会被拼进文本谱的 `[名字] `。
+    // '|' 是文本谱的小节线、'[' ']' 是行内标记定界符、换行是行分隔。旧版把
+    // 段落名原样写进去："[Verse|Chorus]" 被 --verify 按 '|' 切成两段、两段
+    // 都认不出，于是「核对 0 小节却宣布守恒」的假通过；读谱人也会误读小节。
+    // 修复：写文本谱时把这些字符折叠成视觉等价的全角形式，HTML/XML 各自的
+    // 转义层不动，故只对文本谱生效。
+    {
+        const KeyEstimate cMajor{0, true};
+        auto markData = [](const std::string& name) {
+            MidiData d;
+            d.division = 480;
+            d.timeSig = TimeSignature{4, 2, true};
+            d.pickupTicks = 0;
+            d.trackNames[0] = "Melody";
+            d.markers.push_back({0, name});
+            for (int i = 0; i < 8; i++) {
+                NoteEvent n;
+                n.track = 0; n.channel = 0; n.velocity = 90;
+                n.startTicks = i * 480; n.durationTicks = 480; n.pitch = 72;
+                d.notes.push_back(n);
+            }
+            return d;
+        };
+        // 文本谱：竖线折叠成全角 ｜，一行里的小节线计数不能变多。
+        const std::string jp = formatJianpu(markData("Verse|Chorus"), cMajor);
+        check(jp.find("Verse|Chorus") == std::string::npos,
+              "文本谱段落名不再含半角 |（不会造出伪小节线）");
+        check(jp.find(std::string("Verse\xEF\xBD\x9C") + "Chorus") != std::string::npos,
+              "竖线折叠成全角 ｜，段落名仍可读");
+        int bars = 0;
+        for (size_t p = 0; (p = jp.find('|', p)) != std::string::npos; p++) bars++;
+        check(bars == 2, "两小节谱仍只有 2 条小节线，实际: " + std::to_string(bars));
+        // 拍数守恒自检：折叠后真的判到 1 小节（另 1 小节是末小节、按设计不判），
+        // 而不是修复前的「核对 0 小节却宣布守恒」。
+        const MidiData tvData = markData("Verse|Chorus");
+        TextVerifyReport tv = verifyTextScore(formatJianpu(tvData, cMajor), tvData, false);
+        check(tv.ok(), "含 | 段落名的文本谱自检通过（是真判过、不是跳过）");
+        check(tv.bars >= 1, "自检至少真判 1 小节，不再 0 小节假通过");
+        // HTML / MusicXML 不受影响：' |' 在它们里面本就没有语法含义，保持原文。
+        check(renderHtml(markData("Verse|Chorus"), cMajor, "t").find("Verse|Chorus")
+                  != std::string::npos,
+              "HTML 段落名保留原始竖线（htmlEscape 层照旧）");
+        check(renderMusicXml(markData("Verse|Chorus"), cMajor).find("Verse|Chorus")
+                  != std::string::npos,
+              "MusicXML 段落名保留原始竖线（xmlEscape 层照旧）");
+        // 方括号与换行同样折叠。
+        check(formatJianpu(markData("A]B"), cMajor).find("A]B") == std::string::npos,
+              "段落名里的 ] 折叠，stripMarks 不会提前收尾");
+        {
+            const std::string jpNl = formatJianpu(markData("A\nB"), cMajor);
+            const size_t markPos = jpNl.find("[A B]");
+            check(markPos != std::string::npos,
+                  "段落名里的换行折成空格，仍写作 [A B]");
+            if (markPos != std::string::npos) {
+                const size_t nl = jpNl.find('\n', markPos);
+                const size_t bar = jpNl.find('|', markPos);
+                check(bar != std::string::npos && (nl == std::string::npos || bar < nl),
+                      "段落名与小节线之间没有换行（谱面行不被撕开）");
+            }
         }
     }
 

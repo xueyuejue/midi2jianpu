@@ -6216,6 +6216,42 @@ def main():
           "<duration>5760</duration><voice" not in xml,
           "XML 不再出现 12 拍单段 whole（duration/type 冲突）")
 
+    group("[147] v1.153.0 段落名结构字符折叠（文本谱不造伪小节线）")
+    # 段落名来自 MIDI 0x06 marker（文件内容），可含 | ] [ 与换行。旧版原样
+    # 拼进文本谱的 `[名字] `：'|' 被当成小节线，']' 让标记提前收尾，自检
+    # 把小节切开后两段都认不出，报「核对 0 小节却宣布守恒」的假通过。
+    # 修复只在文本谱写入点折叠为全角，HTML/XML 各自的转义层保持原文。
+    sf = os.path.join(FIXTURES, "section_struct.mid")
+    with tempfile.TemporaryDirectory() as td:
+        sh = os.path.join(td, "ss.html")
+        sx = os.path.join(td, "ss.xml")
+        rt, tout, terr = run(exe, sf, "--verify")
+        rtv, tvout, _ = run(exe, sf, "--bar-numbers", "--verify")
+        rh, _, _ = run(exe, sf, "--html", sh)
+        rx, _, _ = run(exe, sf, "--musicxml", sx)
+        sh_html = open(sh, encoding="utf-8").read() if os.path.exists(sh) else ""
+        sx_xml = open(sx, encoding="utf-8").read() if os.path.exists(sx) else ""
+    check(rt == 0 and rtv == 0 and rh == 0 and rx == 0,
+          "section_struct.mid 三端 + --verify 导出成功")
+    # 文本谱：四种结构字符都折叠；无半角 '|' 混进段落名（小节线本身仍是 '|'）
+    for folded in ("Verse\uFF5CChorus", "Verse\uFF3DChorus", "Verse Chorus", "\uFF3BVerse"):
+        check(folded in tout, "文本谱段落名折叠为可见写法: %s" % folded)
+    check("Verse|Chorus" not in tout and "Verse]Chorus" not in tout,
+          "文本谱段落名不含半角结构字符（伪小节线/提前收尾消失）")
+    # --verify 真判到 4 小节（第 5 小节是末小节、按设计不判），不是 0 小节假通过
+    m = re.search(r"文本谱核对 1 行 / (\d+) 小节", tvout)
+    check(m is not None and int(m.group(1)) >= 4,
+          "自检真判 >=4 小节，不再 0 小节假通过: %s" % (m.group(0) if m else "无"))
+    check("输出自检通过" in tvout and "rc=0" not in terr,
+          "section_struct.mid 自检通过（结构折叠后拍数守恒）")
+    # 每行小节线数不因段落名里原有的 '|' 而变多（5 小节 = 5 条小节线）
+    score_lines = [l for l in tout.splitlines() if l.strip().startswith(("[Verse", "[1]", "[2]"))]
+    check(all(l.count("|") == 1 for l in score_lines if "[Verse" in l),
+          "含段落名的谱行各只有 1 条小节线（无伪小节线）")
+    # HTML/XML 保留原始竖线：' |' 在它们里没有语法含义，转义层照旧
+    check("Verse|Chorus" in sh_html, "HTML 段落名保留原始竖线（htmlEscape 层未动）")
+    check("Verse|Chorus" in sx_xml, "MusicXML 段落名保留原始竖线（xmlEscape 层未动）")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

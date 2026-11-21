@@ -543,6 +543,18 @@ std::string drumInstrumentList(const TrackSummary& s, size_t maxItems = 4,
 std::string dropControlChars(const std::string& s);
 std::string escapeForTerminal(const std::string& s, size_t maxChars = 0);
 
+// 文本谱专用：段落名（0x06 marker）是文件内容，会被拼进 `[名字] ` 这种行内
+// 标记里。文本谱用 '|' 当小节线、'[' ']' 当标记定界符、换行当行分隔，段落名
+// 一旦含这些字符（DAW 里 "Verse|Chorus" 这类写法很常见）就会撞上语法：
+//   * '|' 被自检当成小节线切开，两段都认不出，于是「核对 0 小节却宣布守恒」
+//     的假通过；读谱人也会把它当真的小节线。
+//   * ']' 让 stripMarks 提前收尾，剩下的字漏进拍数解析，整行被判不守恒。
+// 这里把这些结构字符折叠成视觉等价的全角形式（｜ ［ ］），换行折成空格：
+// 名字仍然看得懂，但不再有语法含义。只作用于文本谱的段落名写入点——HTML /
+// MusicXML 各有 htmlEscape / xmlEscape，'|' 在它们里面没有特殊含义，
+// 不调用本函数，所以既有素材三端输出一个字节都不变。
+std::string escapeForTextScore(const std::string& s);
+
 // ---- 「这条轨没有旋律音符，但别处有」（CLI --track / 网页段落选择） ----
 // 按轨过滤后 MidiData 里只剩这一条轨，别的轨的音符已经不在，说不出「旋律在
 // 哪条轨」。所以 data 必须是**全曲**解析结果，track 是用户选的那条轨。

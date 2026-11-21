@@ -1513,7 +1513,8 @@ static std::string formatTrack(
         // 演奏表情，每个声部都要按自己的主导通道各印一次。旧版把两者一起
         // 塞进 if (chords)，伴奏声部（乃至第二条轨）的 cresc. 全被吞掉。
         for (const auto& m : expr.inRange(grid.barStart(bar), grid.barEnd(bar), channel)) {
-            if (chords && !m.section.empty()) os << "[" << m.section << "] ";
+            if (chords && !m.section.empty())
+                os << "[" << escapeForTextScore(m.section) << "] ";
             if (m.wedge > 0) os << "[cresc.] ";
             else if (m.wedge < 0) os << "[dim.] ";
         }
@@ -3805,6 +3806,28 @@ std::string escapeForTerminal(const std::string& s, size_t maxChars) {
     }
     // 截断要留痕：静默砍掉半个名字，用户会以为文件里就叫这个。
     if (src.size() < s.size()) out += "…";
+    return out;
+}
+
+// 见 notation.hpp「自由文本的显示安全」：文本谱专用的结构字符折叠。
+// 全角形式与半角字形几乎一样，但在文本谱里没有语法含义（不是小节线、
+// 不是标记定界符），stripMarks / 小节切分 / 拍数解析都把它当普通文字。
+//
+// 用字节串而不是直接写全角字面量：源码编码虽有 BOM/UTF-8 判定，但这里是
+// 逐字节拼装，写死 UTF-8 字节可避免任何编译期编码歧义。
+std::string escapeForTextScore(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (unsigned char c : s) {
+        switch (c) {
+            case '|': out += "\xEF\xBD\x9C"; break;  // ｜ U+FF5C
+            case '[': out += "\xEF\xBC\xBB"; break;  // ［ U+FF3B
+            case ']': out += "\xEF\xBC\xBD"; break;  // ］ U+FF3D
+            case '\n':                                // 换行会把这一行谱撕成两行
+            case '\r': out += ' '; break;
+            default:  out += (char)c; break;
+        }
+    }
     return out;
 }
 

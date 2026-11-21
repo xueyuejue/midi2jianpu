@@ -3152,6 +3152,13 @@ def main() -> None:
         f.write(lgdata)
     print(f"wrote {lgmid} ({len(lgdata)} bytes)")
 
+    # 段落名含文本谱结构字符（| ] [ 换行）：不得造出伪小节线
+    semid = os.path.join(here, "section_struct.mid")
+    with open(semid, "wb") as f:
+        sedata = build_section_struct()
+        f.write(sedata)
+    print(f"wrote {semid} ({len(sedata)} bytes)")
+
     # format 2（多个独立序列）素材
     f2mid = os.path.join(here, "format2.mid")
     with open(f2mid, "wb") as f:
@@ -4205,6 +4212,34 @@ def build_longbar() -> bytes:
     # 收尾两小节正常四分，作为时值基准
     t1.note(0, 77, 90, t, DIV)
     t1.note(0, 79, 90, t + DIV, DIV)
+
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
+
+
+def build_section_struct() -> bytes:
+    """段落名（MIDI 0x06 marker）含文本谱结构字符：| ] [ 与换行。
+
+    '|' 是文本谱的小节线、'[' ']' 是行内标记定界符、换行是行分隔。段落名
+    来自文件、可以含这些字符（DAW 里 "Verse|Chorus" 很常见）。修复前文本谱
+    把它原样写进 `[Verse|Chorus]`，自检按小节线切开后两段都认不出，于是
+    「核对 0 小节却宣布守恒」的假通过，读谱人也会把它当真的小节线。
+    四个 marker 分四小节，各覆盖一种结构字符；每小节 4 个四分音符，尾部再
+    补一小节让含 marker 的小节不是末小节（末小节按设计不判）。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"StructMark"))
+    marks = [(0, b"Verse|Chorus"), (4 * DIV, b"Verse]Chorus"),
+             (8 * DIV, b"Verse\nChorus"), (12 * DIV, b"[Verse")]
+    for tick, name in marks:
+        t1.add(tick, meta(0x06, name))
+    for i in range(20):                                 # 5 小节 × 4 拍
+        t1.note(0, 72 + i % 5, 90, i * DIV, DIV)
 
     return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
 
