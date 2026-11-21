@@ -614,9 +614,18 @@ static std::string playerBlock(const std::string& playJson) {
 std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                        const std::string& title,
                        const std::vector<LyricLine>* lyricLines,
-                       bool player, int barsPerRow) {
+                       bool player, int barsPerRow,
+                       const std::string& keySourceNote) {
     std::string displayTitle = title.empty() ? "简谱" : title;
     const std::string lyricLabel = lyricSourceLabel(data, lyricLines);
+    // 调号来源：调用方知道就直接说调用方的（--key / --gong / --transpose /
+    // 网页版选调），只有调用方无可奉告时才回落到「文件里有没有 0x59」这层
+    // 旧判定。别让页眉把「用户指定的调」说成「MIDI调号」——那是两份完全
+    // 不同的信息，终端页眉早在 v1.51 就分开说了，HTML 一直没跟上。
+    const std::string keySource = keySourceNote.empty()
+        ? (data.keySig.valid ? "MIDI调号"
+           : (key.scaleLabel.empty() ? "自动猜测" : "五声宫音校正"))
+        : keySourceNote;
 
     std::ostringstream body;
     // 小节网格（含弱起）。三个输出模块共用同一套换算，见 notation.hpp 的 BarGrid
@@ -1609,8 +1618,7 @@ h1{font-size:26px;text-align:center;color:#b03030;margin:0 0 6px;font-weight:700
 <div class="meta">)"
          << htmlEscape(keys.summary(grid))
          << " ｜ " << htmlEscape(meterSummary(data))
-         << " ｜ " << (data.keySig.valid ? "MIDI调号"
-                       : (key.scaleLabel.empty() ? "自动猜测" : "五声宫音校正"))
+         << " ｜ " << htmlEscape(keySource)
          << (tempoSummary(data).empty() ? "" : " ｜ " + htmlEscape(tempoSummary(data)))
          << (partSummary(data).empty() ? "" : " ｜ " + htmlEscape(partSummary(data)))
          << (pickupLabel(data).empty() ? "" : " ｜ " + htmlEscape(pickupLabel(data)))

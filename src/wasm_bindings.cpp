@@ -239,9 +239,13 @@ const char* midi2jianpu_html(const uint8_t* midiData, int size, int keyPitch, in
     m2j::quantizeTiming(data);
 
     m2j::KeyEstimate key;
+    // 网页版选调与 CLI 的 --key 是同一件事：这个调是人选的，不是文件里写的。
+    // 页眉照旧印「MIDI调号」就等于把用户的选择记到 MIDI 文件头上。
+    std::string keySourceNote;
     if (keyPitch >= 0) {
         key.tonicPitchClass = keyPitch;
         key.isMajor = isMajor != 0;
+        keySourceNote = "手动指定 " + m2j::keyName(key);
     } else {
         key = m2j::estimateKey(data);
     }
@@ -253,7 +257,8 @@ const char* midi2jianpu_html(const uint8_t* midiData, int size, int keyPitch, in
     if (!g_lyrics.empty()) lyricLines = parseLyricsAuto(g_lyrics, data);
 
     g_result = m2j::renderHtml(data, key, g_title.empty() ? "简谱" : g_title,
-                              lyricLines.empty() ? nullptr : &lyricLines);
+                              lyricLines.empty() ? nullptr : &lyricLines,
+                              false, 0, keySourceNote);
     return g_result.c_str();
 }
 

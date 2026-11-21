@@ -47,8 +47,9 @@ import os
 #
 # v1.155.0 新增 odd_meter.mid（5/16、7/16、9/8 整小节单音 + 4/4 切分音）：
 # 旧版把这些时值吸成 1 / 1.5 / 4 拍、缺的拍数在 MusicXML 里补成休止，三端
-# 输出都与修复后不同，登记为跳过；下一轮基线包含 v1.155.0 输出后撤出。
-NEW_FIXTURES = {"odd_meter.mid"}
+# 输出都与修复后不同，登记为跳过。它已在 v1.155.0 基线里，本轮起撤出本表，
+# 照常参与零回归。
+NEW_FIXTURES = set()
 
 # v1.144.0 曾经有一张 HTML_CHANGED = {"parts.mid", "overfull.mid"}：那一版把
 # 倚音前面的空拍补成休止列，`--regress` 对这两份既有素材放行了「HTML 有意
@@ -87,6 +88,11 @@ NEW_FIXTURES = {"odd_meter.mid"}
 # 的都没有内置歌词）；⑤ MusicXML 里拼不出标准时值的间隙不再写 <type>——
 # 113 份素材的休止全都能精确拆分（check_xml_durations 全绿即为证），走不到
 # 那个兜底分支。故本表仍为空。
+#
+# v1.156.0 只改 HTML 页眉里「调号是谁定的」这句话，且只在调用方明确给出
+# 来源时才改（`--key` / `--gong` / `--transpose`）；`--regress` 跑的是不带
+# 参数的三端默认输出，`keySourceNote` 为空、沿用旧判定，页眉一个字节不动。
+# 故本表仍为空。
 HTML_CHANGED = set()
 
 

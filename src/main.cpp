@@ -427,6 +427,11 @@ int main(int argc, char** argv) {
         std::cerr << "警告: --bars 只作用于 --html 输出，其它输出会忽略它\n";
     if (player && htmlOut.empty())
         std::cerr << "警告: --player 只作用于 --html 输出，其它输出会忽略它\n";
+    // --bar-numbers 同理：小节号是文本谱的行首标记，HTML 列里没有它的位置。
+    // 用户写了 --bar-numbers 又只看 --html 那份文件时，静默无效果等于骗人。
+    if (barNumbers && txtOut.empty() && !htmlOut.empty())
+        std::cerr << "警告: --bar-numbers 只作用于文本谱（终端输出 / --output），"
+                     "--html 里不含小节号\n";
 
     m2j::MidiData data;
     // 软踏板系数必须在解析之前落到 MidiData 上：CC67 的力度衰减发生在解析阶段
@@ -644,7 +649,15 @@ int main(int argc, char** argv) {
     }
 
     m2j::KeyEstimate key;
-    std::string keySource;    if (!gongArg.empty()) {
+    // 调号来源的措辞：终端页眉与 HTML 页眉必须说同一句话。HTML 原来只看
+    // data.keySig.valid——文件里有 0x59 就印「MIDI调号」——于是 --key /
+    // --gong / --transpose 之后，终端老老实实写「手动指定 D」，导出的 HTML
+    // 却仍旧宣称这个调是 MIDI 文件自带的。这里把措辞算一次、两边共用。
+    // keySourceNote 只在「用户真的改过调」时非空：没改过就交给 HTML 沿用
+    // 旧判定（含五声宫音校正那一档），既有输出逐字节不变。
+    std::string keySource;
+    std::string keySourceNote;
+    if (!gongArg.empty()) {
         // --gong 优先于 --key：它同时决定「1 落在哪个音」和调式名。
         m2j::KeyEstimate g;
         if (parseKey(gongArg, g)) {
@@ -660,8 +673,9 @@ int main(int argc, char** argv) {
                     gHint = m2j::transposeFifths(gHint, transpose);
             }
             key = m2j::keyFromGong(data, gpc, gHint);
-            keySource = "(手动指定宫音 " + gongArg
-                      + (transposeShiftsKey ? "，已随移调平移" : "") + ")";
+            keySource = "手动指定宫音 " + gongArg
+                      + (transposeShiftsKey ? "，已随移调平移" : "");
+            keySourceNote = keySource;
             std::cout << "五声调式: " << key.scaleLabel
                       << "，首调 1=" << m2j::keyName(key) << "\n";
         } else {
@@ -673,8 +687,9 @@ int main(int argc, char** argv) {
         // --key 同理：它描述的是原调，移调后要一起走，否则用户在 README 里
         // 抄的 `--key C --transpose +2` 会得到「1=C 的 D 大调旋律」。
         if (transposeShiftsKey) key = m2j::transposeKey(key, transpose);
-        keySource = "(手动指定 " + keyArg
-                  + (transposeShiftsKey ? "，已随移调平移" : "") + ")";
+        keySource = "手动指定 " + keyArg
+                  + (transposeShiftsKey ? "，已随移调平移" : "");
+        keySourceNote = keySource;
     } else {
         if (!keyArg.empty()) {
             // 同上：严格校验已在参数循环里做过，留着防止将来有调用方绕过。
@@ -682,12 +697,14 @@ int main(int argc, char** argv) {
             return 1;
         }
         key = m2j::estimateKey(data);
-        keySource = data.keySig.valid ? "(MIDI调号)" : "(自动猜测)";
+        keySource = data.keySig.valid ? "MIDI调号" : "自动猜测";
     }
     // 调号已经跟着 --transpose 平移过，页眉不能再写「MIDI调号」——那会让用户
     // 以为文件里本来就写着这个调。移到这里的标签统一在下面点明。
-    if (transposeMovedKey && keySource == "(MIDI调号)")
-        keySource = "(MIDI调号，已随移调平移)";
+    if (transposeMovedKey && keySource == "MIDI调号") {
+        keySource = "MIDI调号，已随移调平移";
+        keySourceNote = keySource;
+    }
     if (!key.scaleLabel.empty() && gongArg.empty())
         std::cout << "五声调式: " << key.scaleLabel
                   << "，首调 1=" << m2j::keyName(key)
@@ -821,7 +838,7 @@ int main(int argc, char** argv) {
     const std::string meter = m2j::meterSummary(data);
     std::string header = "\n共提取 " + std::to_string(data.notes.size())
               + " 个音符 (division=" + std::to_string(data.division)
-              + ", 拍号=" + meter + ") " + keySource + "\n\n";
+              + ", 拍号=" + meter + ") (" + keySource + ")\n\n";
     std::cout << header << jianpu;
     const auto meterChanges = m2j::meterChangesOf(data);
     if (!meterChanges.empty())
@@ -844,7 +861,8 @@ int main(int argc, char** argv) {
         std::string title = baseNameOf(input);
         size_t dot = title.find_last_of(".");
         if (dot != std::string::npos) title = title.substr(0, dot);
-        htmlText = m2j::renderHtml(data, key, title, lyricPtr, player, barsPerRow);
+        htmlText = m2j::renderHtml(data, key, title, lyricPtr, player, barsPerRow,
+                                  keySourceNote);
         if (!writeOutputFile(htmlOut, htmlText, "HTML 谱面")) return 1;
         std::cout << "HTML 谱面已写入: " << htmlOut << "\n";
     }

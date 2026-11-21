@@ -6358,6 +6358,55 @@ def main():
     check("<rest/>" not in om_xml,
           "不再把缺的拍数补成休止（旧版 1.25 拍写成 1 拍音 + 0.25 拍休止）")
 
+    group("[150] v1.156.0 页眉的调号来源不再把用户的选择记到 MIDI 文件头上")
+    # 终端页眉从 v1.51 起就分三种说法：(MIDI调号) / (手动指定 D) / (MIDI调号，
+    # 已随移调平移)。HTML 页眉却只看 data.keySig.valid——文件里有 0x59 就
+    # 一律印「MIDI调号」——于是 `--key D` 之后终端说「手动指定 D」、导出的
+    # HTML 说「MIDI调号」，同一份谱子的两处页眉互相打脸；无调号文件配
+    # `--key D` 时更离谱，HTML 退回「自动猜测」，把人的选择说成机器猜的。
+    tk = os.path.join(FIXTURES, "transpose_key.mid")
+    hm = os.path.join(FIXTURES, "harmony.mid")
+
+    def meta_of(*args):
+        with tempfile.TemporaryDirectory() as td:
+            p = os.path.join(td, "m.html")
+            run(exe, tk, *args, "--html", p)
+            s = open(p, encoding="utf-8").read() if os.path.exists(p) else ""
+        m = re.search(r'<div class="meta">(.*?)</div>', s, re.S)
+        return re.sub(r"<[^>]+>", "", m.group(1)) if m else ""
+
+    plain_m = meta_of()
+    tr_m = meta_of("--transpose", "2")
+    key_m = meta_of("--key", "D")
+    gong_m = meta_of("--gong", "D")
+    oct_m = meta_of("--transpose", "12")
+
+    check("MIDI调号" in plain_m and "手动指定" not in plain_m,
+          "没改过调时页眉照旧写 MIDI调号: " + plain_m)
+    check("MIDI调号，已随移调平移" in tr_m,
+          "--transpose 2 后页眉点明调号已平移: " + tr_m)
+    check("手动指定 D" in key_m and "MIDI调号" not in key_m,
+          "--key D 后页眉不再谎称 MIDI调号: " + key_m)
+    check("手动指定宫音 D" in gong_m and "MIDI调号" not in gong_m,
+          "--gong D 后页眉同样改口: " + gong_m)
+    check("MIDI调号" in oct_m and "已随移调平移" not in oct_m,
+          "整八度移调不动调号，页眉也不谎称平移过: " + oct_m)
+
+    # --bar-numbers 是文本谱的行首标记，HTML 列里没有它的位置。旧版静默
+    # 忽略：用户写了开关、拿到的 HTML 里一个小节号都没有，程序一声不响。
+    with tempfile.TemporaryDirectory() as td:
+        b1 = os.path.join(td, "b1.html")
+        b2 = os.path.join(td, "b2.html")
+        r1, _, e1 = run(exe, hm, "--bar-numbers", "--html", b1)
+        r2, _, e2 = run(exe, hm, "--output", os.path.join(td, "b.txt"),
+                        "--bar-numbers", "--html", b2)
+        same = (open(b1, "rb").read() == open(b2, "rb").read())
+    check(r1 == 0 and "只作用于文本谱" in e1,
+          "只要 HTML 时明确提示 --bar-numbers 不生效: " + e1.strip()[:120])
+    check(r2 == 0 and "只作用于文本谱" not in e2,
+          "同时给了 --output 文本谱时不误报")
+    check(same, "--bar-numbers 对 HTML 输出确实无效（这点如实说出来，不假装有效）")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

@@ -15,10 +15,16 @@ namespace m2j {
 // barsPerRow>0 时固定每行小节数（1~8），并顺带给打印样式加「一行不被分页
 // 撕开」。默认 0 = 沿用「一行约 16 拍」的自动折算（4/4 即 4 小节一行），
 // 与旧版逐字节一致。
+//
+// keySourceNote：调号「是谁定的」这句话。页眉原来只看 data.keySig.valid——
+// 文件里有 0x59 就印「MIDI调号」——于是 --key / --gong / --transpose 改了调
+// 之后，页眉照样把用户指定的调说成「MIDI调号」，与终端页眉（v1.51 起已分
+// 开说）自相矛盾。空串表示调用方没有可说的来源，此时沿用旧判定，逐字节不变。
 std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                        const std::string& title = "",
                        const std::vector<LyricLine>* lyricLines = nullptr,
                        bool player = false,
-                       int barsPerRow = 0);
+                       int barsPerRow = 0,
+                       const std::string& keySourceNote = "");
 
 } // namespace m2j

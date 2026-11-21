@@ -3332,6 +3332,35 @@ if (existsSync(twoLyrics76)) {
     'sample.mid 的 Pad 尾节是整小节休止', tail.slice(0, 120));
 }
 
+// ---- 92. v1.156.0 网页选调不再被页眉记到 MIDI 文件头上 ----
+// 网页版的调号下拉框走 keyPitch >= 0，与 CLI 的 --key 是同一件事。页眉原来
+// 只看「文件里有没有 0x59 调号事件」，于是用户自己选了 D 调，页眉却仍旧印
+// 「MIDI调号」——把人的选择说成文件自带的。transpose_key.mid 里明写着 1=Bb，
+// 正好用来分辨这两种情况。
+{
+  const midiKey = new Uint8Array(readFileSync(path.join(FIXTURES, 'transpose_key.mid')));
+  const metaOf = (keyPitch, isMajor) => {
+    const p = mod._malloc(midiKey.length);
+    mod.HEAPU8.set(midiKey, p);
+    const html = mod.UTF8ToString(
+      mod._midi2jianpu_html(p, midiKey.length, keyPitch, isMajor)) || '';
+    mod._free(p);
+    const m = html.match(/<div class="meta">([\s\S]*?)<\/div>/);
+    return m ? m[1].replace(/<[^>]+>/g, '') : '';
+  };
+
+  const auto = metaOf(-1, 1);
+  check(auto.includes('MIDI调号') && !auto.includes('手动指定'),
+    '自动定调时页眉照旧写 MIDI调号', auto);
+
+  const picked = metaOf(2, 1);        // 用户选 D
+  check(picked.includes('手动指定 D'), '网页选调后页眉写「手动指定 D」', picked);
+  check(!picked.includes('MIDI调号'),
+    '网页选调后页眉不再谎称 MIDI调号', picked);
+  check(picked.includes('1=D'),
+    '选 D 之后谱面确实是 1=D（页眉与调性一致）', picked);
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

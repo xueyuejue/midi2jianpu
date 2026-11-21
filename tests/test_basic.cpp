@@ -11017,6 +11017,68 @@ int main() {
         }
     }
 
+    // ---- v1.156.0：HTML 页眉的调号来源必须与终端页眉同口径 ----
+    // 页眉原来只看 data.keySig.valid，于是 --key / --gong / --transpose 之后
+    // 导出的 HTML 仍宣称这个调「是 MIDI 文件里写的」，终端却说「手动指定」。
+    {
+        MidiData d;
+        d.division = 480;
+        d.timeSig = TimeSignature{4, 2, true};
+        d.keySig = KeySignature{0, false, true};   // 文件里明写着 1=C
+        d.trackNames[0] = "Vocal";
+        auto add = [&](long st, long dur, int pitch) {
+            NoteEvent n;
+            n.track = 0; n.channel = 0; n.velocity = 90;
+            n.startTicks = st; n.durationTicks = dur; n.pitch = pitch;
+            d.notes.push_back(n);
+        };
+        add(0, 480, 60); add(480, 480, 62); add(960, 960, 64);
+
+        const KeyEstimate k = estimateKey(d);
+        auto meta = [](const std::string& html) {
+            const size_t a = html.find("<div class=\"meta\">");
+            if (a == std::string::npos) return std::string();
+            const size_t b = html.find("</div>", a);
+            return html.substr(a, b - a);
+        };
+
+        // ① 没改过调：沿用旧判定，措辞与旧版逐字节相同。
+        const std::string h0 = meta(renderHtml(d, k, "t"));
+        check(h0.find("MIDI调号") != std::string::npos &&
+                  h0.find("手动指定") == std::string::npos,
+              "没改过调时页眉照旧写 MIDI调号，实际: " + h0);
+
+        // ② --key：调是人选的，不能再记到 MIDI 文件头上。
+        const std::string hKey = meta(renderHtml(d, k, "t", nullptr, false, 0,
+                                                 "手动指定 D"));
+        check(hKey.find("手动指定 D") != std::string::npos,
+              "--key 之后页眉写「手动指定 D」，实际: " + hKey);
+        check(hKey.find("MIDI调号") == std::string::npos,
+              "--key 之后页眉不再谎称 MIDI调号");
+
+        // ③ --transpose 平移过调号：要说清楚「已随移调平移」，不能只说一半。
+        const std::string hTr = meta(renderHtml(d, k, "t", nullptr, false, 0,
+                                                "MIDI调号，已随移调平移"));
+        check(hTr.find("MIDI调号，已随移调平移") != std::string::npos,
+              "移调后页眉点明调号已平移，实际: " + hTr);
+
+        // ④ 文件里没有 0x59、用户又指定了调：不能退回「自动猜测」。
+        MidiData noKey = d;
+        noKey.keySig = KeySignature{};
+        const std::string hMk = meta(renderHtml(noKey, estimateKey(noKey), "t",
+                                                nullptr, false, 0, "手动指定 D"));
+        check(hMk.find("手动指定 D") != std::string::npos &&
+                  hMk.find("自动猜测") == std::string::npos,
+              "无调号文件 + --key 时页眉写手动指定而不是自动猜测，实际: " + hMk);
+
+        // ⑤ 这句话最终来自命令行参数，进 HTML 前必须转义。
+        const std::string hEsc = meta(renderHtml(d, k, "t", nullptr, false, 0,
+                                                 "手动<b>指定"));
+        check(hEsc.find("&lt;b&gt;") != std::string::npos &&
+                  hEsc.find("<b>") == std::string::npos,
+              "调号来源里的尖括号被转义，实际: " + hEsc);
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";
