@@ -189,11 +189,32 @@ bool segmentBeats(const std::string& seg, double* beats, bool* any) {
 bool isTrackHeader(const std::string& l, long* noteCount = nullptr) {
     if (l.empty() || l[0] != '[') return false;
     const std::string key = " 音符)";
-    const size_t p = l.find(key);
+    // 取**最后**一个「 音符)」：轨名里可能自带这串字（`X (200 音符)`），
+    // 取第一个会把名字里那个数字当成本声部的音数，进而算错这条谱行该有
+    // 几小节、整行被判不判。
+    const size_t p = l.rfind(key);
     if (p == std::string::npos || p == 0) return false;
+    // 「 音符)」之后只允许两种：行尾，或「 · 和弦: N 个」。别的都是谱行
+    // 内容——段落名印在小节首（`[合唱段 (8 音符)] - - - 5_  |`），把它当
+    // 小标题会把整条谱行吞掉，核对的小节数从「有」变「0」，坏谱反而通过。
+    const size_t after = p + key.size();
+    if (after < l.size()) {
+        const std::string chord = " · 和弦: ";
+        if (l.compare(after, chord.size(), chord) != 0) return false;
+        size_t q = after + chord.size();
+        const size_t dig = q;
+        while (q < l.size() && isDigitChar(l[q])) q++;
+        const std::string suffix = " 个";
+        if (q == dig || l.compare(q, suffix.size(), suffix) != 0 ||
+            q + suffix.size() != l.size())
+            return false;
+    }
     size_t b = p;
     while (b > 0 && isDigitChar(l[b - 1])) b--;
     if (!(b < p && b > 0 && l[b - 1] == '(')) return false;
+    // 小标题的「(」紧跟在方括号收尾之后：`[声部名] (N 音符)`。轨名里可以
+    // 带括号，但小标题这一个括号一定落在 `] ` 后面。
+    if (!(b >= 3 && l[b - 2] == ' ' && l[b - 3] == ']')) return false;
     if (noteCount) {
         long v = 0;
         bool any = false;
@@ -377,8 +398,14 @@ std::string formatTextVerifyReport(const TextVerifyReport& r,
     if (r.ok()) {
         out = pfx + "文本谱核对 " + std::to_string(r.lines) + " 行 / "
             + std::to_string(r.bars) + " 小节";
-        if (r.approx.empty())
+        if (r.bars == 0) {
+            // 一个小节都没真判（单小节文件整篇是「末小节」，或全部落在
+            // 弱起/截短口径里）。这时说「守恒」是把没查说成查过——自检的
+            // 可信度全靠这句话，宁可直说没核。
+            out += "：没有可比对的小节，本次未做拍数核对";
+        } else if (r.approx.empty()) {
             out += "，每小节拍数守恒";
+        }
         if (r.skipped > 0)
             out += "（另有 " + std::to_string(r.skipped)
                  + " 小节按设计不判：弱起、变拍号截短、末小节）";

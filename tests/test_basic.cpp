@@ -10831,6 +10831,74 @@ int main() {
         }
     }
 
+    // ---- v1.154.0 自检与统计不再说假话 ----
+    //
+    // ① 段落名里带「(N 音符)」时，旧版 isTrackHeader 把整条谱行当成声部小标题
+    //    吞掉：核对的小节数从 2 变 0，坏谱反而报「每小节拍数守恒」。
+    // ② 一个小节都没真判时（单小节文件整篇是「末小节」），旧版照样印「守恒」。
+    // ③ 内置歌词不跳过倚音：第一个字挂在谁也不印的倚音上，命令行却记成「挂上」。
+    {
+        // ① 段落名含「(8 音符)」不再把谱行吞成小标题
+        {
+            MidiData d;
+            d.division = 480;
+            d.timeSig = TimeSignature{4, 2, true};
+            d.trackNames[0] = "Melody";
+            for (int i = 0; i < 8; i++) {
+                NoteEvent n;
+                n.track = 0; n.channel = 0; n.velocity = 90;
+                n.startTicks = (long)i * 480; n.durationTicks = 480; n.pitch = 72;
+                d.notes.push_back(n);
+            }
+            const std::string text =
+                "[Melody] (8 音符)\n"
+                "[合唱段 (8 音符)] 1 2 3  | 1 2 3 4  |\n";
+            const TextVerifyReport tv = verifyTextScore(text, d, false);
+            check(tv.bars == 1,
+                  "段落名含「(8 音符)」的那一行仍按谱行核对（不再被当成小标题吞掉）");
+            check(tv.issues.size() == 1 && tv.issues[0].bar == 0,
+                  "被段落名遮住的残缺小节照样报出来（印 3 拍 / 应 4 拍）");
+        }
+
+        // ② 0 小节时不得宣称守恒
+        {
+            TextVerifyReport r;
+            r.lines = 1;
+            r.bars = 0;
+            r.skipped = 1;
+            const std::string rep = formatTextVerifyReport(r, "x.mid");
+            check(rep.find("每小节拍数守恒") == std::string::npos,
+                  "一个小节都没核对时不印「每小节拍数守恒」");
+            check(rep.find("未做拍数核对") != std::string::npos,
+                  "改为直说本次未做拍数核对");
+        }
+
+        // ③ 内置歌词跳过倚音
+        {
+            MidiData d;
+            d.division = 480;
+            d.timeSig = TimeSignature{4, 2, true};
+            auto add = [&](long st, long dur, int pitch) {
+                NoteEvent n;
+                n.track = 0; n.channel = 0; n.velocity = 90;
+                n.startTicks = st; n.durationTicks = dur; n.pitch = pitch;
+                d.notes.push_back(n);
+            };
+            add(0, 10, 60);        // 倚音：极短、紧贴主音
+            add(10, 480, 64);
+            add(490, 480, 67);
+            add(970, 480, 72);
+            d.midiLyrics = {{0, "春", 0}, {490, "秋", 0}, {970, "冬", 0}};
+            const LyricAssignment m = assignMidiLyrics(d, 0);
+            check(m.charsTotal == 3 && m.charsPlaced == 3,
+                  "三个音节全部挂上（分母与分子同源）");
+            check(m.at.find(0) == m.at.end(),
+                  "第一个字不再挂在倚音的音头上（倚音不占列，挂上也没人印）");
+            check(m.at.count(10) == 1,
+                  "第一个字挂到主音的音头（音头表已排除倚音）");
+        }
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

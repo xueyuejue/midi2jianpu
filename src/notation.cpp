@@ -3597,10 +3597,15 @@ LyricAssignment assignMidiLyrics(const MidiData& data, int mainTrack) {
     const std::vector<MidiSyllable> syls = normalizeMidiLyrics(data);
     if (mainTrack < 0 || syls.empty()) return out;
 
+    // 倚音不算音头（v1.154.0）：与 assignLyrics 同一口径。三个输出层都把
+    // 倚音写成小字上标、不占一列，把它算进音头会让整句词从这里往后错开
+    // 一个音——那个字谁也印不出来，命令行还把它记成「挂上」。
+    const ExpressionMap expr(data);
     std::vector<long> onsets;
     long songEnd = 0;
     for (const auto& n : data.notes) {
         if (n.track != mainTrack) continue;
+        if (expr.isGraceNote(n.startTicks, n.channel)) continue;
         onsets.push_back(n.startTicks);
         songEnd = std::max(songEnd, n.startTicks + std::max<long>(n.durationTicks, 1));
     }

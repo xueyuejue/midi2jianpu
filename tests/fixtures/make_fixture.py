@@ -3159,6 +3159,13 @@ def main() -> None:
         f.write(sedata)
     print(f"wrote {semid} ({len(sedata)} bytes)")
 
+    # 倚音 + MIDI 内置歌词：第一个字不许挂在倚音上
+    glmid = os.path.join(here, "midi_lyric_grace.mid")
+    with open(glmid, "wb") as f:
+        gldata = build_midi_lyric_grace()
+        f.write(gldata)
+    print(f"wrote {glmid} ({len(gldata)} bytes)")
+
     # format 2（多个独立序列）素材
     f2mid = os.path.join(here, "format2.mid")
     with open(f2mid, "wb") as f:
@@ -4240,6 +4247,43 @@ def build_section_struct() -> bytes:
         t1.add(tick, meta(0x06, name))
     for i in range(20):                                 # 5 小节 × 4 拍
         t1.note(0, 72 + i % 5, 90, i * DIV, DIV)
+
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
+
+
+def build_midi_lyric_grace() -> bytes:
+    """倚音 + MIDI 内置歌词：第一个字不许挂在倚音上。
+
+    倚音是主音前面的装饰，三个输出层都写成小字上标、不占一列。旧版
+    assignMidiLyrics 的音头表没跳过它，第一个字挂到倚音的音头上——谱面里
+    那个字谁也印不出来，整句词从这里往后错开一个音，而命令行仍报「全部
+    挂上」（分母分子都是 4，看不出问题）。对照 assignLyrics，v1.139.0 起
+    那边就有这行过滤，两个入口口径不一致。
+
+    主音必须够长（>= DIV/4）且是倚音的 4 倍以上，gap 落在 [-DIV/8, DIV/16]，
+    才被 ExpressionMap 认作倚音——这几个数照它的判定条件摆的。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"GraceLyric"))
+    # 单声部、单小节：倚音 10 tick 起手，主音依次从 10 / 490 / 970 开始。
+    # 不用「倚音夹在小节中间」那种写法——倚音紧贴主音，前一个音就必然在
+    # 非网格处收尾，量化会把尾巴拉长到与倚音重叠、拆出复调来，反而把要验
+    # 的歌词错位淹掉。小节只有一个，按设计是「末小节」不参与拍数核对，
+    # 本素材只负责歌词落位。
+    t1.note(0, 60, 90, 0, 10)                          # 倚音（小字上标，不占列）
+    t1.note(0, 64, 90, 10, DIV)                        # 3
+    t1.note(0, 67, 90, 490, DIV)                       # 5
+    t1.note(0, 69, 90, 970, DIV)                       # 6
+    # 第一个字故意落在倚音的 tick 上——DAW 导出的卡拉 OK 轨就是这样：字跟着
+    # 「发声那一刻」，而那一下正好是倚音。
+    for tick, word in [(0, "春"), (490, "秋"), (970, "冬")]:
+        t1.add(tick, meta(0x05, word.encode("utf-8")))
 
     return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
 

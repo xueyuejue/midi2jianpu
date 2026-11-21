@@ -38,10 +38,13 @@ import os
 # v1.152.0 新增 longbar.mid（12/4、8/4、16/4 整小节不切分长音）：已在 v1.152
 # 基线里，v1.153.0 起撤出本表，照常参与零回归。
 #
-# v1.153.0 新增 section_struct.mid（段落名含 | ] [ 换行）：旧版基线里没有它，
-# 且旧版文本谱把段落名原样写进 `[名字]`、造出伪小节线（正是本轮修的缺陷），
-# 逐字节比对必然报红，登记为跳过。下一轮基线包含 v1.153.0 输出后撤出。
-NEW_FIXTURES = {"section_struct.mid"}
+# v1.153.0 新增 section_struct.mid（段落名含 | ] [ 换行）：已在 v1.153 基线里，
+# v1.154.0 起撤出本表，照常参与零回归。
+#
+# v1.154.0 新增 midi_lyric_grace.mid（倚音 + MIDI 内置歌词）：旧版基线里没有它，
+# 且旧版把第一个字挂到不占列的倚音上（HTML 里那格是空的），逐字节比对必然报红，
+# 登记为跳过。下一轮基线包含 v1.154.0 输出后撤出。
+NEW_FIXTURES = {"midi_lyric_grace.mid"}
 
 # v1.144.0 曾经有一张 HTML_CHANGED = {"parts.mid", "overfull.mid"}：那一版把
 # 倚音前面的空拍补成休止列，`--regress` 对这两份既有素材放行了「HTML 有意
@@ -73,7 +76,13 @@ NEW_FIXTURES = {"section_struct.mid"}
 # v1.153.0 只改文本谱的段落名写入点（折叠 | ] [ 换行成全角）；全 113 份既有
 # 素材的 0x06 marker 都不含这些结构字符，文本谱一字未动，HTML / XML 从头到尾
 # 没碰。踩到本缺陷的只有新素材 section_struct.mid，它已在 NEW_FIXTURES 里跳过。
-# 故本表仍为空。
+#
+# v1.154.0 同样没有对既有素材做任何改动：① isTrackHeader 只认行尾的
+# 「(N 音符)」（既有素材的轨名都不含这串字）；② 0 小节时的报告文案；
+# ③ 失败时只印没过的那一侧；④ assignMidiLyrics 跳过倚音（既有素材里带倚音
+# 的都没有内置歌词）；⑤ MusicXML 里拼不出标准时值的间隙不再写 <type>——
+# 113 份素材的休止全都能精确拆分（check_xml_durations 全绿即为证），走不到
+# 那个兜底分支。故本表仍为空。
 HTML_CHANGED = set()
 
 

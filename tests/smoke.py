@@ -6252,6 +6252,45 @@ def main():
     check("Verse|Chorus" in sh_html, "HTML 段落名保留原始竖线（htmlEscape 层未动）")
     check("Verse|Chorus" in sx_xml, "MusicXML 段落名保留原始竖线（xmlEscape 层未动）")
 
+    group("[148] v1.154.0 内置歌词跳过倚音（第一个字不再挂在倚音上）")
+    # 倚音是主音前的装饰，三个输出层都写成小字上标、不占一列。旧版
+    # assignMidiLyrics 的音头表没跳过它，第一个字挂到倚音的音头上：谱面里
+    # 那个字谁也印不出来，整句词往后错开一个音，而命令行仍报「全部挂上」
+    # （分母分子都是 3，看不出问题）。对照 assignLyrics，v1.139.0 起那边
+    # 就有这行过滤——两个入口口径不一致才是根因。
+    gl = os.path.join(FIXTURES, "midi_lyric_grace.mid")
+    with tempfile.TemporaryDirectory() as td:
+        gh = os.path.join(td, "gl.html")
+        gx = os.path.join(td, "gl.xml")
+        rt, tout, terr = run(exe, gl, "--verify")
+        rh, _, _ = run(exe, gl, "--html", gh)
+        rx, _, _ = run(exe, gl, "--musicxml", gx)
+        gh_html = open(gh, encoding="utf-8").read() if os.path.exists(gh) else ""
+        gx_xml = open(gx, encoding="utf-8").read() if os.path.exists(gx) else ""
+    check(rt == 0 and rh == 0 and rx == 0,
+          "midi_lyric_grace.mid 三端 + --verify 导出成功")
+    check("3 个音节" in (tout + terr), "识别出 3 个内置音节")
+    check("没有音头可挂" not in (tout + terr),
+          "三个字全部挂上（旧版同样不报这句，但谱面实际只印 2 字）")
+    # 文本谱：倚音写成 `(1)` 小字上标、不占列，音头是 3 / 5 / 6 三个
+    check(re.search(r"\(1\)3 5 6\s+\|", tout) is not None,
+          "文本谱倚音不占列，只有 3 个音头: %r" %
+          [ln for ln in tout.splitlines() if "|" in ln][:1])
+    words = re.findall(r"class='lyric'>([^<]*)<", gh_html)
+    check(words == ["春", "秋", "冬"],
+          "HTML 歌词按音头顺序逐字落位（首字没被倚音吞掉）: %r" % (words,))
+    xtexts = re.findall(r"<text>([^<]*)</text>", gx_xml)
+    check(xtexts == ["春", "秋", "冬"],
+          "MusicXML 歌词与 HTML 同序: %r" % (xtexts,))
+    # 倚音吃掉 10 tick，第 1 小节的领头/收尾间隙是 20 / 460 tick——都拼不出
+    # 标准时值（最小的 64 分音符要 30 tick）。旧版退回「最近档」，写出
+    # <duration>20</duration><type>64th</type> 这种自相矛盾的写法；新版
+    # 干脆不写 <type>（MusicXML 里它是可选的），只留 duration 推进游标。
+    check(re.search(r"<duration>(?:20|460)</duration><voice>\d+</voice><type>", gx_xml) is None,
+          "拼不出标准时值的间隙不写 <type>（不再与 <duration> 说两套话）")
+    check("<type>64th</type>" not in gx_xml,
+          "20 tick 不再被标成 64 分音符")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

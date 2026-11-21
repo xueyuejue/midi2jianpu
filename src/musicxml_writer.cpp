@@ -643,10 +643,14 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             // 单段且精确时，输出与旧实现逐字节一致（durTypeDot 的精确匹配档）。
             // 无法精确拆分的极不规则 tick 也保留旧兜底，不动时间推进。
             if (parts.empty()) {
-                auto [rt, rd] = durTypeDot(len / (double)division);
+                // 这段间隙拼不出任何标准时值（例如 20 tick：最小的 64 分音符
+                // 也要 30 tick）。旧版退回 durTypeDot() 的「最近档」，写出的
+                // <type> 与 <duration> 说两套话——20 tick 标成 64 分音符；
+                // MuseScore 按 type 画符号、按 duration 推进游标，谱面与校时
+                // 当场打架。MusicXML 的 <type> 本来就是可选的：表达不了就
+                // 不写，只留 duration 推进，时间轴仍然准确。
                 xml << "      <note><rest/><duration>" << len
-                    << "</duration><voice>" << (voice + 1) << "</voice><type>" << rt << "</type>";
-                if (rd) xml << "<dot/>";
+                    << "</duration><voice>" << (voice + 1) << "</voice>";
                 if (grand && curStaff >= 1) xml << "<staff>" << curStaff << "</staff>";
                 xml << "</note>\n";
                 return;
