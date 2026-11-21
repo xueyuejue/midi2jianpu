@@ -3166,6 +3166,13 @@ def main() -> None:
         f.write(gldata)
     print(f"wrote {glmid} ({len(gldata)} bytes)")
 
+    # 奇数拍号 + 切分音：1.25 / 1.75 / 2.5 / 4.5 拍不许被吸走半拍
+    ommid = os.path.join(here, "odd_meter.mid")
+    with open(ommid, "wb") as f:
+        omdata = build_odd_meter()
+        f.write(omdata)
+    print(f"wrote {ommid} ({len(omdata)} bytes)")
+
     # format 2（多个独立序列）素材
     f2mid = os.path.join(here, "format2.mid")
     with open(f2mid, "wb") as f:
@@ -4284,6 +4291,54 @@ def build_midi_lyric_grace() -> bytes:
     # 「发声那一刻」，而那一下正好是倚音。
     for tick, word in [(0, "春"), (490, "秋"), (970, "冬")]:
         t1.add(tick, meta(0x05, word.encode("utf-8")))
+
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
+
+
+def build_odd_meter() -> bytes:
+    """奇数拍号 + 切分音：时值表装不下的档位不许被吸走半拍。
+
+    5/16 一拍半的小节（1.25 拍）、7/16（1.75 拍）、9/8（4.5 拍）各三小节，
+    每小节整小节只有一个音；最后两小节 4/4 放 1.25 + 0.75 + 1.75 + 0.25
+    的切分。这五个时值单一符号都写不出来（1.25 不是 2^k×{1,1.5,1.75}，
+    2.5 / 4.5 超出延长线能加的整拍数），旧版量化时把它们吸成
+    1 / 1.5 / 2 / 4 拍，谱面每小节凭空少 0.25~0.5 拍，`--verify` 只能
+    报「拍数不守恒」——自检说了真话，但谱子是错的。
+
+    v1.155.0 起量化保住原值，三端按可记谱档位拆段：文本 `1 -=` / `1. -=` /
+    `1 - _` / `1 - - _` / `1 - - - _`，HTML 同形的续列，MusicXML `<tie>`
+    连起来的 quarter+16th / whole+eighth。段相加必须回到原时值。
+
+    变拍号边界的小节按设计不参与拍数核对，所以每种拍号写三小节，
+    中间那节是可判的。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120BPM
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调
+
+    # 每段：(分子, 分母, 小节 tick, 段首 tick, 音高列表)
+    segs = [
+        (5, 16, DIV * 5 // 4, 0,      [60, 62, 64]),
+        (7, 16, DIV * 7 // 4, DIV * 15 // 4, [65, 67, 69]),
+        (9, 8, DIV * 9 // 2, DIV * 9,  [72, 71, 69]),
+    ]
+    t1 = Track()
+    t1.add(0, meta(0x03, b"OddMeter"))
+    for num, den, bar, base, pitches in segs:
+        t1.add(base, meta(0x58, bytes([num, {8: 3, 16: 4}[den], 24, 8])))
+        for i, p in enumerate(pitches):
+            t1.note(0, p, 90, base + i * bar, bar)
+
+    # 4/4 切分：1.25 + 0.75 + 1.75 + 0.25 = 4 拍，两小节
+    split_base = DIV * 9 + DIV * 9 // 2 * 3
+    t1.add(split_base, meta(0x58, bytes([4, 2, 24, 8])))
+    for bar in range(2):
+        b = split_base + bar * DIV * 4
+        t1.note(0, 60 + bar, 90, b, DIV * 5 // 4)
+        t1.note(0, 62 + bar, 90, b + DIV * 5 // 4, DIV * 3 // 4)
+        t1.note(0, 64 + bar, 90, b + DIV * 2, DIV * 7 // 4)
+        t1.note(0, 65 + bar, 90, b + DIV * 2 + DIV * 7 // 4, DIV // 4)
 
     return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
 

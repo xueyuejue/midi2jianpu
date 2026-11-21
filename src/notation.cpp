@@ -618,12 +618,34 @@ static long largestNotatableTicks(long ticks, int division) {
     return best;
 }
 
+std::vector<long> splitNotatableTicks(long ticks, int division) {
+    std::vector<long> out;
+    if (ticks <= 0 || division <= 0) return out;
+    // 精确可表（量化后的绝大多数音符都落在这里）：不拆，既有输出一字不变。
+    if (nearestNotatableTicks(ticks, division) == ticks) return out;
+    long left = ticks;
+    while (left > 0) {
+        long part = largestNotatableTicks(left, division);
+        if (part <= 0) { out.clear(); return out; }   // 余量不足 1/32 拍：交回最近档兜底
+        out.push_back(part);
+        left -= part;
+    }
+    if (out.size() < 2) { out.clear(); return out; }
+    return out;
+}
+
 // ---- 时值量化 ----
 // 合法的记谱时值（单位为拍，1 拍 = 四分音符）。
 // 同时包含二进制细分与三连音两套体系，量化时取最近者。
+//
+// 1.25 / 1.75 / 2.5 / 3.5 这四个档位单一符号写不出来，却是真实存在的
+// 音长：5/16 拍号整小节一个音是 1.25 拍、7/16 是 1.75 拍、4/4 里的
+// 「二分 + 八分」切分是 2.5 拍。不列进来就会被吸成 1 / 1.5 / 2 / 3 拍，
+// 谱面每小节凭空少 0.25~0.5 拍，`--verify` 只能报错、没法修。
+// 量化保住原值，切分交给 splitNotatableTicks() 用延音线分写。
 static const double NOTATABLE_BEATS[] = {
     1.0 / 12, 1.0 / 8, 1.0 / 6, 1.0 / 4, 1.0 / 3, 3.0 / 8, 1.0 / 2, 2.0 / 3,
-    3.0 / 4, 1.0, 3.0 / 2, 2.0, 3.0, 4.0
+    3.0 / 4, 1.0, 1.25, 3.0 / 2, 1.75, 2.0, 2.5, 3.0, 3.5, 4.0
 };
 
 static double snapBeats(double beats) {
@@ -1312,6 +1334,23 @@ static void emitDurationTokens(std::ostringstream& os, const std::string& head,
                                bool exactRest = false) {
     if (ticks <= 0) { emitNoteToken(os, head, "", art); return; }
     const long snapped = nearestNotatableTicks(ticks, division);
+
+    // 时值表装不下的档位（1.25 / 1.75 / 2.5 / 3.5 / 4.5 拍）：吸附到最近档
+    // 会让谱面凭空少 0.25~0.5 拍。5/16、7/16、9/8 拍号里「整小节一个音」
+    // 就是这种时值，旧版记成 1 / 1.5 / 4 拍，`--verify` 直接报拍数不守恒。
+    // 只要贪心拆段能整除（`1 -=` / `1. =` / `1 - _` / `1 - - _` / `1 - - - _`），
+    // 就按段记；拆不干净的（400 tick 这类门限还原值）仍走下面的最近档，
+    // `1_.` 那种刻意保留的干净写法不变。
+    if (!exactRest && snapped != ticks) {
+        const std::vector<long> parts = splitNotatableTicks(ticks, division);
+        if (!parts.empty()) {
+            for (size_t i = 0; i < parts.size(); i++)
+                emitNoteToken(os, i == 0 ? head : "-",
+                              durationSuffix(parts[i], division),
+                              i == 0 ? art : "");
+            return;
+        }
+    }
 
     // 先试算能不能精确拆完。余量不足最小时值时保留旧写法，绝不擅自改动
     // 时间推进（与 MusicXML 侧 splitRestDuration 的兜底同口径）。

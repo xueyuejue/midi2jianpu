@@ -6732,6 +6732,9 @@ int main() {
               "文本谱仍是精确拆段，HTML 与它逐段对齐：" + jp.substr(0, 200));
 
         // 精确档不许碎片化：0.75 拍休止仍是单列附点八分。
+        // 这里只数休止列（num 是 0）：同曲里 1320 tick 的音是 2.75 拍，
+        // v1.155.0 起它自己也会拆成「二分 + 附点八分」两列，直接数
+        // class 会把那个 '-' 续列也算进来。
         MidiData e;
         e.division = 480;
         e.timeSig.valid = true;
@@ -6739,7 +6742,8 @@ int main() {
         add(e, 0, 240, 60);
         add(e, 600, 1320, 62);       // gap 360 = 0.75 拍
         const std::string he = renderHtml(e, c, "t");
-        check(countOf(he, "class='note eighth dotted'") == 1,
+        check(countOf(he, "<span class='note eighth dotted'><span class='oct'></span>"
+                          "<span class='core'><span class='num'>0</span>") == 1,
               "0.75 拍精确档仍是单个附点八分休止列");
         check(countOf(he, "<span class='num'>0</span>") == 1,
               "精确档不碎片化，只画一个 0 列");
@@ -10896,6 +10900,120 @@ int main() {
                   "第一个字不再挂在倚音的音头上（倚音不占列，挂上也没人印）");
             check(m.at.count(10) == 1,
                   "第一个字挂到主音的音头（音头表已排除倚音）");
+        }
+    }
+
+    // ---- v1.155.0 时值表装不下的档位：三端按可记谱档位拆段 ----
+    //
+    // 1.25 / 1.75 / 2.5 / 3.5 / 4.5 拍单一符号写不出来（1.25 不是
+    // 2^k×{1,1.5,1.75}，2.5 / 4.5 超出延长线能加的整拍数），旧版量化时
+    // 把它们吸成 1 / 1.5 / 2 / 3 / 4 拍：5/16、7/16、9/8 拍号里「整小节
+    // 一个音」就此少 0.25~0.5 拍，`--verify` 只能报「拍数不守恒」。
+    // 现在量化保住原值，三端统一拆成「可记谱档 + 余数」用延音线分写。
+    {
+        auto ticks = [](std::initializer_list<long> xs) {
+            return std::vector<long>(xs);
+        };
+        check(splitNotatableTicks(480, 480) == ticks({}),
+              "1 拍精确可表，不拆段（既有输出不变）");
+        check(splitNotatableTicks(1920, 480) == ticks({}),
+              "4 拍精确可表，不拆段");
+        check(splitNotatableTicks(400, 480) == ticks({}),
+              "0.833 拍拆不干净（余 40 tick 不足 32 分），退回最近档 '1_.'");
+        check(splitNotatableTicks(600, 480) == ticks({480, 120}),
+              "1.25 拍拆成 1 拍 + 十六分");
+        check(splitNotatableTicks(840, 480) == ticks({720, 120}),
+              "1.75 拍拆成附点四分 + 十六分");
+        check(splitNotatableTicks(1200, 480) == ticks({960, 240}),
+              "2.5 拍拆成二分 + 八分");
+        check(splitNotatableTicks(1680, 480) == ticks({1440, 240}),
+              "3.5 拍拆成三拍 + 八分");
+        check(splitNotatableTicks(2160, 480) == ticks({1920, 240}),
+              "4.5 拍拆成全音符 + 八分");
+
+        // 5/16 整小节一个音：文本谱 / HTML / MusicXML 三端都要把 1.25 拍写全。
+        auto oddBar = [](int num, int denPow, long barTicks) {
+            MidiData d;
+            d.division = 480;
+            d.timeSig = TimeSignature{num, denPow, true};
+            d.pickupTicks = 0;
+            d.trackNames[0] = "Odd";
+            NoteEvent n;
+            n.track = 0; n.channel = 0; n.velocity = 90;
+            n.startTicks = 0; n.durationTicks = barTicks; n.pitch = 60;
+            d.notes.push_back(n);
+            return d;
+        };
+        const KeyEstimate cMajor{0, true};
+        const MidiData d516 = oddBar(5, 4, 600);
+        const std::string jp516 = formatJianpu(d516, cMajor);
+        check(jp516.find("1 -=") != std::string::npos,
+              "文本谱 5/16 整小节音写作 `1 -=`（1 拍 + 续写十六分），实际: "
+                  + jp516.substr(0, 120));
+        const MidiData d716 = oddBar(7, 4, 840);
+        check(formatJianpu(d716, cMajor).find("1. -=") != std::string::npos,
+              "文本谱 7/16 整小节音写作 `1. -=`（附点四分 + 续写十六分）");
+        const MidiData d98 = oddBar(9, 3, 2160);
+        check(formatJianpu(d98, cMajor).find("1 - - - -_") != std::string::npos,
+              "文本谱 9/8 整小节音写作 `1 - - - -_`（全音符 + 续写八分）");
+
+        // 拍数守恒：单小节按设计是末小节不判，所以补一个 4/4 小节里的切分，
+        // 让真正参与核对的小节带上这些档位。
+        {
+            MidiData d;
+            d.division = 480;
+            d.timeSig = TimeSignature{4, 2, true};
+            d.pickupTicks = 0;
+            d.trackNames[0] = "Sync";
+            auto add = [&](long st, long dur, int pitch) {
+                NoteEvent n;
+                n.track = 0; n.channel = 0; n.velocity = 90;
+                n.startTicks = st; n.durationTicks = dur; n.pitch = pitch;
+                d.notes.push_back(n);
+            };
+            add(0, 600, 60);            // 1.25 拍
+            add(600, 360, 62);          // 0.75 拍 -> 合计 2 拍
+            add(960, 840, 64);          // 1.75 拍
+            add(1800, 120, 65);         // 0.25 拍 -> 合计 4 拍
+            add(1920, 1920, 60);        // 第 2 小节：4 拍整
+            const std::string jp = formatJianpu(d, cMajor);
+            check(jp.find("1 -= 2_. 3. -= 4=") != std::string::npos,
+                  "4/4 切分音逐段记谱，四段相加正好 4 拍，实际: "
+                      + jp.substr(0, 120));
+            TextVerifyReport tv = verifyTextScore(jp, d, false);
+            check(tv.ok(), "含 1.25 / 1.75 拍切分音的文本谱自检通过");
+            check(tv.bars >= 1, "自检真判了 1 个小节（不是 0 小节假通过）");
+        }
+
+        // MusicXML：<duration> 与 <type>/<dot> 必须严格一致，段间用 <tie> 连。
+        {
+            const std::string xml = renderMusicXml(d516, cMajor);
+            check(xml.find("<duration>480</duration>") != std::string::npos &&
+                      xml.find("<type>quarter</type>") != std::string::npos,
+                  "MusicXML 首段是 480 tick 的 quarter");
+            check(xml.find("<duration>120</duration>") != std::string::npos &&
+                      xml.find("<type>16th</type>") != std::string::npos,
+                  "MusicXML 续段是 120 tick 的 16th（duration 与 type 一致）");
+            check(xml.find("<tie type=\"start\"/>") != std::string::npos &&
+                      xml.find("<tie type=\"stop\"/>") != std::string::npos,
+                  "两段之间用 <tie> 连接");
+            check(xml.find("<rest/>") == std::string::npos,
+                  "1.25 拍不再写成「1 拍音 + 0.25 拍休止」");
+        }
+
+        // HTML：首列 quarter 带数字，续列 sixteenth 用 '-' 头。
+        {
+            const std::string html = renderHtml(d516, cMajor, "t");
+            check(html.find("class='note quarter'") != std::string::npos,
+                  "HTML 首列是 quarter");
+            check(html.find("class='note sixteenth'") != std::string::npos,
+                  "HTML 续列是 sixteenth（续写十六分）");
+            int dash = 0;
+            for (size_t p = 0; (p = html.find("<span class='num'>-</span>", p)) != std::string::npos;
+                 p += 8)
+                dash++;
+            check(dash == 1, "续列只有一个 '-'（不是把 1.25 拍画成 1 拍），实际: "
+                                 + std::to_string(dash));
         }
     }
 

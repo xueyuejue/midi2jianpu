@@ -43,8 +43,12 @@ import os
 #
 # v1.154.0 新增 midi_lyric_grace.mid（倚音 + MIDI 内置歌词）：旧版基线里没有它，
 # 且旧版把第一个字挂到不占列的倚音上（HTML 里那格是空的），逐字节比对必然报红，
-# 登记为跳过。下一轮基线包含 v1.154.0 输出后撤出。
-NEW_FIXTURES = {"midi_lyric_grace.mid"}
+# 登记为跳过。它已在 v1.155.0 基线里，本轮起撤出本表，照常参与零回归。
+#
+# v1.155.0 新增 odd_meter.mid（5/16、7/16、9/8 整小节单音 + 4/4 切分音）：
+# 旧版把这些时值吸成 1 / 1.5 / 4 拍、缺的拍数在 MusicXML 里补成休止，三端
+# 输出都与修复后不同，登记为跳过；下一轮基线包含 v1.155.0 输出后撤出。
+NEW_FIXTURES = {"odd_meter.mid"}
 
 # v1.144.0 曾经有一张 HTML_CHANGED = {"parts.mid", "overfull.mid"}：那一版把
 # 倚音前面的空拍补成休止列，`--regress` 对这两份既有素材放行了「HTML 有意

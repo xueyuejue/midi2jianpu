@@ -117,6 +117,16 @@ std::string pitchToJianpu(int pitch, const KeyEstimate& key);
 //   附点八分="_." 八分="_" 附点十六="=." 十六="=" 三十二="%%"
 std::string durationSuffix(long durationTicks, int division);
 
+// 把一个时值切成若干「单一符号写得出来」的段（贪心取最大档，宁长不短），
+// 段间用延音线连接。1.25 / 1.75 / 2.5 / 3.5 / 4.5 拍这些时值表里没有档位，
+// 吸附到最近档会让谱面凭空少 0.25~0.5 拍（5/16、7/16、9/8 整小节一个音最常见），
+// 三个输出层都走这里，才不会一端写 tie、另一端偷偷吞掉。
+//
+// 返回空向量 = 不用拆：要么时值本来精确（量化后的绝大多数音符，既有素材
+// 一个字节都不变），要么余下不足 1/32 拍拆不干净（400 tick 这种门限还原
+// 值仍按最近档记 '1_.'，不擅自改时长）。
+std::vector<long> splitNotatableTicks(long ticks, int division);
+
 // 谱面「写不出来」的空档门槛：不足半拍（八分休止）的空白不记休止符。
 // 三个输出层与 quantizeTiming() 共用这一个门槛。
 long restGateTicks(int division);

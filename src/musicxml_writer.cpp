@@ -481,6 +481,17 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                 // 4 拍及以下的段不受影响，既有素材逐字节零回归。
                 const long maxSeg = 4L * division;
                 if (maxSeg > 0 && segEnd - start > maxSeg) segEnd = start + maxSeg;
+                // 时值表装不下的档位（1.25 / 1.75 / 2.5 / 3.5 拍）：<duration>
+                // 写 600 tick 而 <type> 只能兜底写 quarter，MuseScore 按 type
+                // 画形状、按 duration 走游标，谱面与校时对不上。这里按可记谱
+                // 档位再切一刀，段间用 <tie> 连——与跨小节长音同一套合法写法，
+                // 也与文本谱的 `1 -=`、HTML 的续列同口径。
+                // 三连音例外：它的名义 1/3 拍在二分表里必然「不精确」，
+                // 切了就把一个三连音拆成两个不属于三连音的音。
+                if (!(i < triplets.size() && triplets[i])) {
+                    const std::vector<long> parts = splitNotatableTicks(segEnd - start, division);
+                    if (!parts.empty()) segEnd = start + parts[0];
+                }
                 // 防御：若换算出的小节末尾没有推进，直接吃到音符结束，避免死循环
                 if (segEnd <= start) segEnd = end;
 

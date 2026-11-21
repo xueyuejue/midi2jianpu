@@ -1271,9 +1271,21 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 std::string syl = (ownsWord(n.startTicks) && !lyrics.empty())
                                   ? lyricForNote(n.startTicks) : std::string();
                 // 三连音走单独的时值档位，避免 1/3 拍被当成附点十六分
-                DurStyle ds = grp[0]->trip ? tripletStyleOf(beats) : durStyleOf(beats);
+                //
+                // 时值表装不下的档位（1.25 / 1.75 / 2.5 / 3.5 / 4.5 拍）：
+                // 单列画不出来（延音线一条就是一拍）。这里按可记谱档位拆成
+                // 「首列 + 续列」，续列用 '-' 头带自己的减时线/延长线——
+                // 与文本谱的 `1 -=`、MusicXML 的 <tie> 同一口径。不拆的话
+                // 5/16、7/16、9/8 拍号里整小节一个音会少画 0.25~0.5 拍。
+                // 精确时值不拆，既有素材一个字节不变。
+                const std::vector<long> parts = grp[0]->trip
+                    ? std::vector<long>()
+                    : splitNotatableTicks(durTicks, data.division);
+                const double headBeats = parts.empty() ? beats
+                                                       : (double)parts[0] / data.division;
+                DurStyle ds = grp[0]->trip ? tripletStyleOf(headBeats) : durStyleOf(headBeats);
                 std::string col = graceHtml + withArticulation(
-                    withDyn(withChord(noteColumn(num, highDots, lowDots, beats, syl, "",
+                    withDyn(withChord(noteColumn(num, highDots, lowDots, headBeats, syl, "",
                                                  &ds, octSpace),
                                       chordMarkFor(n.startTicks)),
                             dynMarkFor(n.startTicks)),
@@ -1293,13 +1305,26 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 long beatLen = grid.sigForBar(bar).beamUnitTicks(data.division);
                 long curBeat = beatLen > 0
                     ? (n.startTicks - grid.barStart(bar)) / beatLen : 0;
-                long endTick = n.startTicks + std::max<long>(n.durationTicks, 1);
+                long endTick = n.startTicks + (parts.empty()
+                    ? std::max<long>(n.durationTicks, 1) : parts[0]);
                 bool join = ds.beams > 0 && ds.beams == beamLevel && !beamBuf.empty() &&
                             bar == beamBar && n.startTicks == beamPrevEnd &&
                             grp[0]->trip == beamTrip && g == beamGroup &&
                             (beamTrip || curBeat == beamBeat);
 
-                if (ds.beams > 0) {
+                if (!parts.empty()) {
+                    // 拆段的长音本来就打断减时线，先收口再逐列输出：
+                    // 首列带音头/歌词/和弦/力度，续列只有 '-' 与自己的时值。
+                    flushBeam();
+                    emit(col, n.startTicks);
+                    long off = parts[0];
+                    for (size_t k = 1; k < parts.size(); k++) {
+                        emit(noteColumn("-", 0, 0, (double)parts[k] / data.division, "",
+                                        "", nullptr, octSpace),
+                             n.startTicks + off, true);
+                        off += parts[k];
+                    }
+                } else if (ds.beams > 0) {
                     if (!join) {
                         flushBeam();
                         beamLevel = ds.beams;
@@ -1348,13 +1373,27 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 // 这个调用点一直没给它传过值。
                 std::string csyl = (ownsWord(n.startTicks) && !lyrics.empty())
                                    ? lyricForNote(n.startTicks) : std::string();
+                // 和弦列的时值与单音同一套口径：表外档位拆成「和弦列 + 续列」，
+                // 否则 5/16 / 7/16 拍号里整小节一个和弦会少画一截。
+                const std::vector<long> cparts = splitNotatableTicks(durTicks, data.division);
+                const double chead = cparts.empty() ? beats
+                                                    : (double)cparts[0] / data.division;
                 std::string ccol = graceHtml + withArticulation(
-                         withDyn(withChord(chordColumn(tones, beats, csyl),
+                         withDyn(withChord(chordColumn(tones, chead, csyl),
                                            chordMarkFor(n.startTicks)),
                                  dynMarkFor(n.startTicks)),
                          ne.symbol());
                 if (player) ccol = withTick(ccol, n.startTicks);
                 emit(ccol, n.startTicks);
+                if (!cparts.empty()) {
+                    long off = cparts[0];
+                    for (size_t k = 1; k < cparts.size(); k++) {
+                        emit(noteColumn("-", 0, 0, (double)cparts[k] / data.division, "",
+                                        "", nullptr, octSpace),
+                             n.startTicks + off, true);
+                        off += cparts[k];
+                    }
+                }
             }
 
             for (const auto* h : grp) prevEnd = std::max(prevEnd, h->n.startTicks + h->n.durationTicks);

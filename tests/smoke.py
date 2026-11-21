@@ -6291,6 +6291,73 @@ def main():
     check("<type>64th</type>" not in gx_xml,
           "20 tick 不再被标成 64 分音符")
 
+    group("[149] v1.155.0 时值表装不下的档位：三端按可记谱档位拆段")
+    # 1.25 / 1.75 / 2.5 / 3.5 / 4.5 拍单一符号都写不出来（1.25 不是
+    # 2^k×{1,1.5,1.75}，2.5 / 4.5 又超出延长线能加的整拍数）。旧版量化时
+    # 把它们吸成 1 / 1.5 / 2 / 3 / 4 拍：5/16、7/16、9/8 拍号里「整小节
+    # 一个音」每小节少 0.25~0.5 拍，`--verify` 只能报「拍数不守恒」——
+    # 自检说了真话，但谱子是错的。新版量化保住原值，三端统一按可记谱
+    # 档位拆段（文本 `1 -=`、HTML 续列、MusicXML 的 <tie>）。
+    om = os.path.join(FIXTURES, "odd_meter.mid")
+    with tempfile.TemporaryDirectory() as td:
+        oh = os.path.join(td, "om.html")
+        ox = os.path.join(td, "om.xml")
+        rc_o, out_o, err_o = run(exe, om, "--verify")
+        run(exe, om, "--html", oh)
+        run(exe, om, "--musicxml", ox)
+        om_html = open(oh, encoding="utf-8").read() if os.path.exists(oh) else ""
+        om_xml = open(ox, encoding="utf-8").read() if os.path.exists(ox) else ""
+    check(rc_o == 0, "odd_meter.mid 自检通过（旧版在 5/16、7/16、9/8 三处都报不守恒）",
+          (out_o + err_o)[-400:])
+    check("每小节拍数守恒" in out_o, "自检宣布每小节拍数守恒")
+    check(re.search(r"核对 1 行 / 10 小节", out_o) is not None,
+          "真判了 10 个小节（11 节里 1 节是末小节、按设计不判）")
+
+    # 文本谱：三处拍号 + 4/4 切分，逐段记谱且段相加回到原时值。
+    text = "\n".join(ln for ln in out_o.splitlines() if "|" in ln)
+    check("1 -=" in text, "5/16 整小节音写作 `1 -=`（1 拍 + 续写十六分）")
+    check("4. -=" in text, "7/16 整小节音写作 `4. -=`（附点四分 + 续写十六分）")
+    check("1' - - - -_" in text, "9/8 整小节音写作 `1' - - - -_`（全音符 + 续写八分）")
+    check("1 -= 2_. 3. -= 4=" in text,
+          "4/4 切分音逐段记谱（1.25 + 0.75 + 1.75 + 0.25 正好 4 拍）")
+
+    # HTML：续列用 '-' 头，带自己的减时线/延长线；11 小节共 13 个续列
+    # （9 个整小节音各 1 个，4/4 两小节各 2 个）。
+    dash_cols = om_html.count("<span class='num'>-</span>")
+    check(dash_cols == 13, "HTML 续列 13 个（旧版一个都没有，1.25 拍只画 1 拍）: "
+                           + str(dash_cols))
+    check(om_html.count("class='note sixteenth'") == 12,
+          "十六分续列 12 个（5/16、7/16 各 3 个，4/4 每小节 3 个）")
+    check(om_html.count("class='note whole'") == 3,
+          "9/8 首段是全音符")
+
+    # MusicXML：duration 与 type/<dot> 必须严格一致，段间用 <tie> 连。
+    seg = re.findall(r'<measure number="(\d+)">(.*?)</measure>', om_xml, re.S)
+    check(len(seg) == 11, "MusicXML 11 小节，实际: " + str(len(seg)))
+    want = {1: 600, 2: 600, 3: 600, 4: 840, 5: 840, 6: 840,
+            7: 2160, 8: 2160, 9: 2160, 10: 1920, 11: 1920}
+    nominal = {"whole": 1920, "half": 960, "quarter": 480, "eighth": 240,
+               "16th": 120, "32nd": 60}
+    bad = []
+    for num, body in seg:
+        tot = 0
+        for nb in re.findall(r"<note>(.*?)</note>", body, re.S):
+            d = int(re.search(r"<duration>(\d+)</duration>", nb).group(1))
+            tot += d
+            typ = re.search(r"<type>([^<]*)</type>", nb).group(1)
+            dots = nb.count("<dot/>")
+            if abs(nominal[typ] * (2 - 2.0 ** -dots) - d) > 1e-6:
+                bad.append((num, typ, dots, d))
+        if tot != want[int(num)]:
+            bad.append((num, "小节总长", tot, want[int(num)]))
+    check(not bad, "每小节 duration 之和等于拍号长度，且 duration 与 type/dot 严格一致: "
+                   + repr(bad[:5]))
+    check(om_xml.count('<tie type="start"/>') == 13 and
+          om_xml.count('<tie type="stop"/>') == 13,
+          "13 段续写都用 <tie> 连接")
+    check("<rest/>" not in om_xml,
+          "不再把缺的拍数补成休止（旧版 1.25 拍写成 1 拍音 + 0.25 拍休止）")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")
