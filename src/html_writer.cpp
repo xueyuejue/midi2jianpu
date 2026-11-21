@@ -111,12 +111,14 @@ static const RestStep kExactRestSteps[] = {
 // 返回 false 表示拆不干净（余量不足 1/8 拍、或 gap 不是 1/16 拍的整数倍），
 // 调用方保留旧的最近档单列兜底 —— 与另外两端的兜底口径一致。
 // 单段也返回 false：精确档素材走旧路径，逐字节不变。
-static bool splitRestBeats(long gapTicks, int division, std::vector<double>& out) {
+// 贪心拆段，**允许余量**：余下不足 1/8 拍（2 units）时停下，把那点留成
+// 看不见的洞。返回 false 表示一段都拆不出来。
+static bool greedyRestBeats(long gapTicks, int division, std::vector<double>& out) {
     out.clear();
     if (gapTicks <= 0 || division <= 0) return false;
-    const long long scaled = 1LL * gapTicks * 16;
-    if (scaled % division != 0) return false;
-    long long rem = scaled / division;
+    // 先向下取整到 1/16 拍：间隙不是 1/16 拍的整数倍时（1780 tick 这种），
+    // 取整掉的那一点本来也画不出来，正好留成洞。
+    long long rem = (1LL * gapTicks * 16) / division;
     while (rem > 0) {
         bool picked = false;
         for (const auto& st : kExactRestSteps) {
@@ -127,8 +129,32 @@ static bool splitRestBeats(long gapTicks, int division, std::vector<double>& out
                 break;
             }
         }
-        if (!picked) { out.clear(); return false; }
+        if (!picked) break;          // 余量不足 1/8 拍：留洞
     }
+    return !out.empty();
+}
+
+// 最近的可显示档位（拍）。与 durStyleOf() 的吸附同口径：间隙是 0.958 拍时
+// 最近档是 1.0 拍，只长出 0.042 拍——这种「一列干净的休止符」比拆成
+// `0_. -%%` 两列好读，误差也在 1/8 拍的记谱精度以内。
+static double nearestRestBeats(long gapTicks, int division) {
+    const double want = (double)gapTicks / (double)division;
+    if (want <= 0) return want;
+    double best = want, bestD = 1e9;
+    for (const auto& st : kExactRestSteps) {
+        const double d = std::fabs(want - st.beats);
+        if (d < bestD) { bestD = d; best = st.beats; }
+    }
+    return best;
+}
+
+// 精确拆完才返回 true（余量为 0 且不止一段）。
+static bool splitRestBeats(long gapTicks, int division, std::vector<double>& out) {
+    if (!greedyRestBeats(gapTicks, division, out)) return false;
+    double sum = 0.0;
+    for (double b : out) sum += b;
+    const double want = (double)gapTicks / (double)division;
+    if (std::fabs(sum - want) > 1e-9) { out.clear(); return false; }
     return out.size() > 1;
 }
 
@@ -276,9 +302,23 @@ static std::string withDyn(const std::string& col, const std::string& dyn) {
 // 会把「第 2 拍变弱」重复标成好几次。
 static std::string restColumns(long gapTicks, int division, double restBeats,
                                const std::string& chord, const std::string& dyn,
-                               const OctSpace& oct = OctSpace{}) {
+                               const OctSpace& oct = OctSpace{},
+                               bool barFinal = true) {
     std::vector<double> parts;
-    if (!splitRestBeats(gapTicks, division, parts))
+    const bool exact = splitRestBeats(gapTicks, division, parts);
+    // 拆不干净时只有两种情况按最近档画一列：
+    //   * 这一段休止一直铺到小节末（barFinal）——填满小节只是观感；
+    //   * 最近档只比真实值长出不到 1/8 拍（记谱精度以内），一列干净休止符
+    //     比拆成两列好读。
+    // 其余一律「宁短不长」，余量留成一个不足 1/8 拍的洞：上取整会把同一小节
+    // 后面的列整体推后一位，读出来的拍数超过拍号（v1.158.0：MIDI 音头落在
+    // 1780 tick 这类位置时天天遇到）。
+    const double nearest = nearestRestBeats(gapTicks, division);
+    const bool smallOver = nearest > restBeats && nearest - restBeats <= 0.125 + 1e-9;
+    if (!exact && (barFinal || smallOver))
+        return withDyn(withChord(noteColumn("0", 0, 0, restBeats, "", "", nullptr, oct),
+                                 chord), dyn);
+    if (!exact && !greedyRestBeats(gapTicks, division, parts))
         return withDyn(withChord(noteColumn("0", 0, 0, restBeats, "", "", nullptr, oct),
                                  chord), dyn);
     std::string out;
@@ -1132,8 +1172,13 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             if (gap < restGateTicks(data.division)) return;
             flushBeam();          // 休止符打断减时线
             double restBeats = (double)gap / data.division;
+            // 这一段休止是否一直铺到所属小节的末尾：只有那样的休止符按最近
+            // 档「填满小节」才是纯观感问题，中间位置填满会把后面的列推后。
+            const bool barFinal =
+                upto >= grid.barEnd((int)grid.barIndex(prevEnd));
             emit(restColumns(gap, data.division, restBeats,
-                             chordMarkFor(prevEnd), dynMarkFor(prevEnd), octSpace),
+                             chordMarkFor(prevEnd), dynMarkFor(prevEnd), octSpace,
+                             barFinal),
                  prevEnd, true);
         };
 

@@ -6470,6 +6470,33 @@ def main():
     check(r == 0 and "MusicXML 与 HTML 的小节号均连续" in out,
           "--verify 一并核对 HTML 小节号", out.strip()[-200:])
 
+    group("[152] 不在 1/8 拍网格上的音头（晚进声部只能近似记谱）")
+    og = os.path.join(FIXTURES, "offgrid_rest.mid")
+    rc, out, err = run(exe, og, "--verify")
+    check(rc == 0, "晚进声部的 --verify 通过（不再把整份文件判成缺陷）",
+          err.strip()[:200])
+    check("0 - - - 1=" not in out, "3.708 拍的休止不再印成 4 拍", out[:200])
+    check("0 - - -_ -%% 1=" in out,
+          "休止拆成 3.625 拍（0 - - -_ -%%），余量留成小洞", out[:200])
+    check("4.25" not in out, "第 2 小节不再读出 4.25 拍")
+    check("只能近似记谱" in out and "每小节拍数守恒" not in out,
+          "报告说清「只能近似记谱」，不谎称每小节守恒", out[-260:])
+    check("1/8 拍网格" in out, "提示写明成因（音头不在 1/8 拍网格上）")
+    with tempfile.TemporaryDirectory() as td:
+        hp = os.path.join(td, "og.html")
+        xp = os.path.join(td, "og.xml")
+        rc, out, err = run(exe, og, "--html", hp, "--musicxml", xp)
+        html = open(hp, encoding="utf-8").read()
+        xml = open(xp, encoding="utf-8").read()
+    check(html.count("class='note whole'") == 1,
+          "HTML 里只剩第 1 小节那一个整小节休止列（第 2 小节不再画 4 拍）")
+    check("<duration>1780</duration>" in xml,
+          "MusicXML 仍写真实时值 1780（三端里它最精确）")
+    # 对照：网格上的素材不许被这条近似口径带偏。
+    rc, out, err = run(exe, os.path.join(FIXTURES, "sample.mid"), "--verify")
+    check(rc == 0 and "每小节拍数守恒" in out and "近似" not in out,
+          "普通素材仍报「每小节拍数守恒」且没有近似提示", out[-200:])
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

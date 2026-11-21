@@ -3394,6 +3394,27 @@ if (existsSync(twoLyrics76)) {
     '未闭合增强标签不再吞掉后面的正文（解析出 ' + parsed + ' 字）', info);
 }
 
+// ---- 94. v1.158.0 网页版也不再把 3.708 拍的休止画成 4 拍 ----
+// 网页与 CLI 共用 html_writer.cpp 的休止拆列：按最近档上取整时，1780 tick
+// 的休止会画成一个 4 拍的 0 列，这一小节读出 4.25 拍。修好之后拆成
+// 3.5 + 0.5 + 0.125 三列，余下不足 1/8 拍的部分留成看不见的洞。
+{
+  const og = new Uint8Array(readFileSync(path.join(FIXTURES, 'offgrid_rest.mid')));
+  const p = mod._malloc(og.length);
+  mod.HEAPU8.set(og, p);
+  const html = mod.UTF8ToString(mod._midi2jianpu_html(p, og.length, -1, 1)) || '';
+  const xml = mod.UTF8ToString(mod._midi2jianpu_musicxml(p, og.length, -1, 1)) || '';
+  mod._free(p);
+
+  check((html.match(/class='note whole'/g) || []).length === 1,
+    '网页谱面只剩第 1 小节那一个整小节休止列（第 2 小节不再画 4 拍）',
+    html.slice(0, 200));
+  check(html.includes('thirtysecond'),
+    '休止拆到三十二分（0.125 拍）那一列，而不是整小节一列', html.slice(0, 200));
+  check(xml.includes('<duration>1780</duration>'),
+    '网页导出的 MusicXML 仍写真实时值 1780', xml.slice(0, 200));
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

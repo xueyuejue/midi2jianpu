@@ -637,7 +637,7 @@ std::vector<long> splitNotatableTicks(long ticks, int division) {
 // 这个时值能不能「一段不差地」记出来：要么本身就是一个可记谱档位，要么能
 // 由若干档位贪心拼成（文本谱写 `1 -=`、HTML 首列 + 续列、MusicXML 用
 // <tie> 连段）。量化时用它判断「保住原值会不会让谱面记不出」。
-static bool canNotateExactly(long ticks, int division) {
+bool canNotateExactly(long ticks, int division) {
     if (ticks <= 0 || division <= 0) return false;
     if (nearestNotatableTicks(ticks, division) == ticks) return true;
     const std::vector<long> parts = splitNotatableTicks(ticks, division);
@@ -1398,12 +1398,25 @@ static void emitNoteToken(std::ostringstream& os, const std::string& head,
 // 吸附（无论向上还是向下）都会让谱面拍数与真实时间错位——1.75 拍记成
 // 0.(1.5 拍)、1.25 拍记成 0(1 拍)，4/4 的一小节只读出 3.5 拍。休止符
 // 只有精确档才照记，表外档一律拆成多段「宁短不长」的记法。
-static void emitDurationTokens(std::ostringstream& os, const std::string& head,
+//
+// v1.158.0：休止符的兜底不再允许上取整。MIDI 里的音头落在 1780 tick 这种
+// 位置是常事（人性化演奏、晚进声部），它前面的间隙 3.708 拍在时值表里没有
+// 对应档——吸附到 4 拍就把这一小节印成 4.25 拍，后面每个音头都被推后一位。
+// 现在一律按「贪心拆段 + 余量留成看不见的小洞」记，并把余量作为返回值交给
+// 调用方补给同一小节的下一列（那一列补上后正好回到真实时间轴）。
+// 返回值 = 本次比真实时值少印的 tick 数（0 = 没留洞）。
+static long emitDurationTokens(std::ostringstream& os, const std::string& head,
                                long ticks, long startTick, long barEnd,
                                int division, const std::string& art = "",
-                               bool exactRest = false) {
-    if (ticks <= 0) { emitNoteToken(os, head, "", art); return; }
+                               bool exactRest = false, bool mayFillBar = false) {
+    if (ticks <= 0) { emitNoteToken(os, head, "", art); return 0; }
     const long snapped = nearestNotatableTicks(ticks, division);
+    // 最小可记时值单位（1/8 拍）。最近档比真实值长出的量不超过这个单位时，
+    // 仍按最近档记干净的一列：`0.958 拍` 记成 `0` 比 `0_. -%%` 两列好读得多，
+    // 误差也在记谱精度以内。超出这个幅度就必须拆段——1780 tick 记成 4 拍，
+    // 一小节会明显超拍，后面每个音头都被推后一位（v1.158.0）。
+    const long unit = std::max<long>(1, division / 8);
+    const bool smallOver = snapped > ticks && (snapped - ticks) <= unit;
 
     // 时值表装不下的档位（1.25 / 1.75 / 2.5 / 3.5 / 4.5 拍）：吸附到最近档
     // 会让谱面凭空少 0.25~0.5 拍。5/16、7/16、9/8 拍号里「整小节一个音」
@@ -1414,17 +1427,20 @@ static void emitDurationTokens(std::ostringstream& os, const std::string& head,
     if (!exactRest && snapped != ticks) {
         const std::vector<long> parts = splitNotatableTicks(ticks, division);
         if (!parts.empty()) {
-            for (size_t i = 0; i < parts.size(); i++)
+            long sum = 0;
+            for (size_t i = 0; i < parts.size(); i++) {
                 emitNoteToken(os, i == 0 ? head : "-",
                               durationSuffix(parts[i], division),
                               i == 0 ? art : "");
-            return;
+                sum += parts[i];
+            }
+            return ticks - sum;
         }
     }
 
-    // 先试算能不能精确拆完。余量不足最小时值时保留旧写法，绝不擅自改动
-    // 时间推进（与 MusicXML 侧 splitRestDuration 的兜底同口径）。
-    if (exactRest && snapped != ticks) {
+    // 休止符：能拆几段就印几段，**只有延伸到小节末的那一段才许上取整**。
+    // 中间列上取整等于把同一小节后面的音头整体推后，小节拍数超过拍号。
+    if (exactRest && snapped != ticks && !smallOver && !mayFillBar) {
         std::vector<long> parts;
         long left = ticks;
         while (left > 0) {
@@ -1433,19 +1449,21 @@ static void emitDurationTokens(std::ostringstream& os, const std::string& head,
             parts.push_back(part);
             left -= part;
         }
-        if (left == 0 && parts.size() > 1) {
+        if (!parts.empty()) {
             for (size_t i = 0; i < parts.size(); i++)
                 emitNoteToken(os, i == 0 ? head : "-",
                               durationSuffix(parts[i], division),
                               i == 0 ? art : "");
-            return;
+            return left;      // 余量（不足 1/8 拍）留成看不见的小洞
         }
     }
 
-    // 音符（以及拆不干净的休止符）沿用旧口径。
-    if (snapped <= ticks || startTick + snapped <= barEnd) {
+    // 音符（以及延伸到小节末的休止符）沿用旧口径：只在「这一列就是本小节
+    // 的最后一列」时才允许按最近档上取整把小节填满，中间列一律拆段。
+    if (snapped <= ticks || smallOver ||
+        (mayFillBar && startTick + snapped <= barEnd)) {
         emitNoteToken(os, head, durationSuffix(ticks, division), art);
-        return;
+        return snapped < ticks ? ticks - snapped : 0;
     }
     long left = ticks;
     bool first = true;
@@ -1459,7 +1477,8 @@ static void emitDurationTokens(std::ostringstream& os, const std::string& head,
         left -= part;
     }
     // 连最小档都放不下（不足 1/32 拍）：退回老写法，别把音头整个丢掉。
-    if (first) emitNoteToken(os, head, durationSuffix(ticks, division), art);
+    if (first) { emitNoteToken(os, head, durationSuffix(ticks, division), art); return 0; }
+    return left;
 }
 
 // ---- 调性 map（中途转调） ----
@@ -1552,6 +1571,11 @@ static std::string formatTrack(
     int currentBar = -1;
     bool started = false;
     long prevEnd = 0;
+    // 上一列因为时值表里没有对应档位而少印的 tick 数，以及它落在哪一小节。
+    // 只补给**同一小节**的下一列：跨过小节线补给下一小节，会让本小节短一截、
+    // 下一小节长一截，两头都不守恒。
+    long holeTicks = 0;
+    long holeBar = -1;
     std::string lastDyn;
     // 力度口径已经印到哪个 tick：小节内换档要接着这个位置往后找，
     // 否则同一处变化会被相邻两个音头各印一遍（或者整条漏掉）。
@@ -1652,7 +1676,8 @@ static std::string formatTrack(
         if (segTicks % data.division == 0) {
             for (long k = 0; k < segTicks / data.division; ++k) os << "- ";
         } else {
-            emitDurationTokens(os, "-", segTicks, atTick, barEndTick, data.division);
+            emitDurationTokens(os, "-", segTicks, atTick, barEndTick, data.division,
+                               "", false, atTick + segTicks == barEndTick);
         }
     };
 
@@ -1683,33 +1708,45 @@ static std::string formatTrack(
         // （弱起小节开头、小节中段的休止）不能跟着一起被吞掉——旧实现先
         // 跳过倚音再算 gap，那一段空白既没有音头也没有休止，直接消失，
         // parts.mid 的 2 拍弱起小节因此只读出 1 拍。
-        auto emitRestUntil = [&](long endTick) {
+        auto emitRestUntil = [&](long endTick) -> long {
             long gap = endTick - prevEnd;
-            if (gap < restGateTicks(data.division)) return;
-            if (!started && endTick <= 0) return;
+            if (gap < restGateTicks(data.division)) return 0;
+            if (!started && endTick <= 0) return 0;
             long t = prevEnd;
+            long hole = 0;
             while (t < endTick) {
                 long bar = barOf(t);
                 switchToBar(bar, t, partChannel);
                 long seg = std::min(endTick, grid.barEnd(bar)) - t;
                 if (seg <= 0) break;                    // 防御：避免死循环
-                emitDurationTokens(os, "0", seg, t, grid.barEnd(bar), data.division,
-                                   "", true);
+                // 这一段延伸到小节末 = 后面没有别的列，按最近档把小节填满只是
+                // 观感上的事；否则上取整会把后面的音头整体推后一位。
+                const bool fills = (t + seg == grid.barEnd(bar));
+                hole += emitDurationTokens(os, "0", seg, t, grid.barEnd(bar),
+                                           data.division, "", true, fills);
                 t += seg;
             }
+            return hole;
         };
 
         // 倚音（装饰音）：本身不单独占一格，改挂到紧随其后的主音上。这里整颗
         // 跳过，只把结束位置推进到倚音尾部，避免主音的休止计算把它算成空拍。
         if (expr.isGraceNote(n.startTicks, n.channel)) {
-            emitRestUntil(n.startTicks);
+            const long h = emitRestUntil(n.startTicks);
+            if (h > 0) { holeTicks = h; holeBar = barOf(n.startTicks > 0 ? n.startTicks - 1 : 0); }
             started = true;
             prevEnd = n.startTicks + groupDur;
             idx = grpEnd;
             continue;
         }
 
-        emitRestUntil(n.startTicks);
+        {
+            const long h = emitRestUntil(n.startTicks);
+            if (h > 0) {
+                holeTicks = h;
+                holeBar = barOf(n.startTicks > 0 ? n.startTicks - 1 : 0);
+            }
+        }
 
         switchToBar(barOf(n.startTicks), n.startTicks, partChannel);
 
@@ -1773,16 +1810,36 @@ static std::string formatTrack(
         const std::string art = ne.symbol();
         long noteEnd = n.startTicks + groupDur;
         long barEnd = grid.barEnd(barOf(n.startTicks));
+        // 这一列是不是本小节的最后一列（后面没有别的音头落在这里）。只有它
+        // 才允许「按最近档上取整把小节填满」——中间列一旦印长，后面的音头
+        // 整体被推后一位，这一小节就会超过拍号。
+        const bool lastInBar = (grpEnd >= merged.size()) ||
+                               merged[grpEnd].startTicks >= barEnd;
+        // 上一列（休止符或拆段没拆干净的音符）少印的那点 tick 补给这一列：
+        // 它的印出时长 + 洞正好等于真实时值，本小节回到精确，位置也不会越位。
+        long printDur = groupDur;
+        long printShift = 0;      // 印出起点相对真实起点前移的量（= 洞）
+        if (holeTicks > 0 && holeBar == barOf(n.startTicks)) {
+            const long want = groupDur + holeTicks;
+            if (canNotateExactly(want, data.division)) {
+                printDur = want;
+                printShift = holeTicks;
+                holeTicks = 0;
+            }
+        }
         if (triplets[idx] || noteEnd <= barEnd) {
             if (triplets[idx])
                 emitNoteToken(os, head, "", art);        // 节奏由 3(...) 表达
-            else
-                emitDurationTokens(os, head, groupDur, n.startTicks, barEnd,
-                                   data.division, art);
+            else {
+                const long h = emitDurationTokens(os, head, printDur,
+                                                 n.startTicks - printShift, barEnd,
+                                                 data.division, art, false, lastInBar);
+                if (h > 0) { holeTicks = h; holeBar = barOf(n.startTicks); }
+            }
         } else {
             // 长音跨小节：先写满本小节，再逐小节用延长线续上
             emitDurationTokens(os, head, barEnd - n.startTicks, n.startTicks,
-                               barEnd, data.division, art);
+                               barEnd, data.division, art, false, true);
             long t = barEnd;
             while (t < noteEnd) {
                 long bar = barOf(t);

@@ -258,6 +258,10 @@ struct PrintedBar {
     double beatsAlt = 0.0;
     bool ok = false;      // 认得出这一节的每一个 token
     bool okAlt = false;   // 同上，按 2/3 拍的三连音单位
+    // 这一小节里出现过 3(...)。三连音的音头本来就落在 1/3 拍网格上，
+    // 「音头不在 1/8 拍网格」这条近似理由对它不成立——有它就别放行，否则
+    // 三连音少拍这类真缺陷会被记成「记谱极限」而静默通过。
+    bool triplet = false;
     std::string text;     // 原文（给报告用）
 };
 
@@ -310,6 +314,7 @@ TextVerifyReport verifyTextScore(const std::string& text, const MidiData& data,
                                                 2.0 / 3.0);
             pb.ok = parsed && any;
             pb.okAlt = parsedAlt && anyAlt;
+            pb.triplet = seg.find("3(") != std::string::npos;
             pb.text = clip(stripMarks(seg), 60);
             // 去掉首尾空白，报告里好看一点
             size_t a = 0, b = pb.text.size();
@@ -400,7 +405,46 @@ TextVerifyReport verifyTextScore(const std::string& text, const MidiData& data,
             is.printed = pb.beats;
             is.want = meterBeats;
             is.text = pb.text;
+            // 这一小节的差是不是「记谱本身的极限」：音头 / 时值不在 1/8 拍
+            // 网格上，简谱记到 1/8 拍为止，余下的洞印不出来。上界由模型算：
+            // 每一个落不到网格上的音头、每一个拆不干净的时值，各允许一个
+            // 1/8 拍的洞；差得比这个上界还多，说明另有原因（真缺陷）。
+            const long unit = std::max<long>(1, division / 8);
+            long allowance = 0;
+            if (!pb.triplet) {
+                const long bs = grid.barStart(barNo), be = grid.barEnd(barNo);
+                // 本小节的音头表：用来算「两个音头之间那段补不出来」的空档。
+                // 量化会把不在网格上的时值吸附到最近的档，于是原本首尾相接的
+                // 两个音之间露出几十 tick——比休止门槛短，印不出休止符，
+                // 这段就是一个必然的洞。
+                std::vector<std::pair<long, long>> ons;   // (音头, 该音头最远结束)
+                for (const auto& n : data.notes) {
+                    if (n.startTicks < bs || n.startTicks >= be) continue;
+                    const long end = n.startTicks + std::max<long>(n.durationTicks, 1);
+                    if (!ons.empty() && ons.back().first == n.startTicks) {
+                        if (end > ons.back().second) ons.back().second = end;
+                        continue;
+                    }
+                    ons.push_back({n.startTicks, end});
+                }
+                std::stable_sort(ons.begin(), ons.end());
+                for (size_t k = 0; k < ons.size(); k++) {
+                    if ((ons[k].first - bs) % unit != 0) allowance += unit;
+                    const long dur = ons[k].second - ons[k].first;
+                    if (!canNotateExactly(dur, division)) allowance += unit;
+                    if (k + 1 >= ons.size()) continue;
+                    const long gap = ons[k + 1].first - ons[k].second;
+                    // 门槛与 restGateTicks 同源：短到印不出休止符的那段，
+                    // 简谱只能丢掉（文本谱与 HTML 都不补）。
+                    if (gap > 0 && gap < std::max<long>(1, division / 2))
+                        allowance += gap;
+                }
+            }
+            const double deficit = meterBeats - pb.beats;
             if (allowApprox) r.approx.push_back(is);
+            else if (allowance > 0 && deficit > -kTol &&
+                     deficit * (double)division <= (double)allowance + kTol)
+                r.approxGrid.push_back(is);
             else r.issues.push_back(is);
         }
     }
@@ -419,8 +463,16 @@ std::string formatTextVerifyReport(const TextVerifyReport& r,
             // 弱起/截短口径里）。这时说「守恒」是把没查说成查过——自检的
             // 可信度全靠这句话，宁可直说没核。
             out += "：没有可比对的小节，本次未做拍数核对";
-        } else if (r.approx.empty()) {
+        } else if (r.approx.empty() && r.approxGrid.empty()) {
             out += "，每小节拍数守恒";
+        } else {
+            // 有近似小节时不能说「每小节拍数守恒」——那就把「没精确核到」
+            // 说成「核过了」。核过的与只能近似的必须分开说。
+            const int loose = (int)(r.approx.size() + r.approxGrid.size());
+            const int exactBars = r.bars - loose;
+            out += "，" + std::to_string(exactBars > 0 ? exactBars : 0)
+                + " 小节拍数精确守恒，" + std::to_string(loose)
+                + " 小节只能近似记谱（见提示）";
         }
         if (r.skipped > 0)
             out += "（另有 " + std::to_string(r.skipped)
@@ -439,6 +491,13 @@ std::string formatTextVerifyReport(const TextVerifyReport& r,
         out += "\n" + pfx + "提示：" + std::to_string(r.approx.size())
              + " 处小节拍数不满——--no-quantize 保留 MIDI 原始时值，记谱只能"
                "吸附到最近档，属近似记谱；要严格对齐请去掉该开关";
+    }
+    if (!r.approxGrid.empty()) {
+        out += "\n" + pfx + "提示：" + std::to_string(r.approxGrid.size())
+             + " 处小节拍数不满——MIDI 里的音头 / 时值不在 1/8 拍网格上"
+               "（如 1780 tick 这种位置），简谱最小只记到 1/8 拍，余下不足"
+               " 1/8 拍的部分印不出来。这是记谱精度本身的极限，不是缺陷；"
+               "要对得整整齐齐，请先在编曲软件里把音符量化到 1/8 拍网格";
     }
     return out;
 }

@@ -134,7 +134,16 @@ def score_bars(lines):
     return out
 
 
-def violations(lines):
+# 记谱精度的极限（v1.158.0）：MIDI 里的音头不在 1/8 拍网格上时（1780 tick
+# 这种位置，人性化演奏与晚进声部都很常见），简谱最小只记到 1/8 拍，余下
+# 不足 1/8 拍的部分**印不出来**，这一小节必然比拍号短一截。产品侧
+# `--verify` 对此有精确判据（按模型算出允许的洞，印多了、或差得比上界还多
+# 照样报缺陷），而这里只拿得到文本谱、看不到 MIDI，只能按素材登记 + 上界
+# 放行：只允许**短**、不允许长，且差值不得超过登记的上界。
+OFFGRID_FIXTURES = {"offgrid_rest.mid": 0.13}
+
+
+def violations(lines, lenient=0.0):
     """非末小节不守恒的项；最后一小节按惯例允许尾上休止不满。
 
     变拍号截断小节豁免：0x58 落在小节中途时，barGridOf() **有意**在当前
@@ -153,6 +162,9 @@ def violations(lines):
         # 四分三连音的单位在字形上看不出来，换 2/3 拍再对一次。
         if abs(b.get("beats_alt", 0.0) - b["meter"]) <= 0.01:
             continue
+        if (lenient > 0.0 and b["beats"] is not None
+                and 0.0 <= b["meter"] - b["beats"] <= lenient + 1e-9):
+            continue        # 登记过的近似小节：只允许短、不允许长
         nxt = bars[i + 1] if i + 1 < len(bars) else None
         if (nxt is not None and nxt["track"] == b["track"]
                 and abs(nxt["meter"] - b["meter"]) > 0.01
@@ -227,7 +239,8 @@ def audit_fixtures(exe):
     for p in sorted(glob.glob(os.path.join(FIX, "*.mid"))):
         with tempfile.TemporaryDirectory() as td:
             lines = render_lines(exe, p, td, "new")
-        for b in violations(lines):
+        tol = OFFGRID_FIXTURES.get(os.path.basename(p), 0.0)
+        for b in violations(lines, tol):
             bad.append((os.path.basename(p), b["bar"], b["beats"], b["meter"],
                         b["text"][:46]))
     return bad

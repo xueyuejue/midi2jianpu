@@ -3187,6 +3187,13 @@ def main() -> None:
         f.write(modata)
     print(f"wrote {momid} ({len(modata)} bytes)")
 
+    # 晚进声部：非 1/8 拍网格上的音头（休止符只能近似记谱）
+    ogmid = os.path.join(here, "offgrid_rest.mid")
+    with open(ogmid, "wb") as f:
+        ogdata = build_offgrid_rest()
+        f.write(ogdata)
+    print(f"wrote {ogmid} ({len(ogdata)} bytes)")
+
     # format 2（多个独立序列）素材
     f2mid = os.path.join(here, "format2.mid")
     with open(f2mid, "wb") as f:
@@ -4353,6 +4360,31 @@ def build_odd_meter() -> bytes:
         t1.note(0, 62 + bar, 90, b + DIV * 5 // 4, DIV * 3 // 4)
         t1.note(0, 64 + bar, 90, b + DIV * 2, DIV * 7 // 4)
         t1.note(0, 65 + bar, 90, b + DIV * 2 + DIV * 7 // 4, DIV // 4)
+
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
+
+
+def build_offgrid_rest() -> bytes:
+    """晚进声部：第 2 小节 3.708 拍（1780 tick）才进来。
+
+    4/4、division=480，第 1 小节整小节空，第 3 小节八个八分收在小节线上
+    （免得被弱起判定当成煞尾）。第 2 小节那 1780 tick 的休止在时值表里没有
+    对应档位：旧版按最近档印成 `0 - - -`（4 拍），这一小节读出 4.25 拍，
+    后面的音头整体被推后一位。简谱最小只记到 1/8 拍，余下不足 1/8 拍的部分
+    印不出来——修好之后这一小节印 3.875 拍，`--verify` 把它记成「只能近似
+    记谱」并给出原因，而不是把整份文件判成缺陷（v1.158.0）。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"LateEntry"))
+    t1.note(0, 60, 90, DIV * 4 + 1780, 140)            # 3.708 拍才进声部
+    for i, p in enumerate([62, 64, 65, 67, 69, 71, 72, 74]):
+        t1.note(0, p, 90, DIV * 8 + i * 240, 240)
 
     return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
 

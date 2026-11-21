@@ -44,6 +44,13 @@ struct TextVerifyReport {
     // （0.975 拍印成 `1`），个别小节拍数不满是这种模式的必然结果，
     // 不是缺陷。放到这里单独提示，不影响 ok()。
     std::vector<TextBarIssue> approx;
+    // 音头 / 时值本身不在 1/8 拍网格上的小节（MIDI 里 1780 tick 这种位置，
+    // 人性化演奏与晚进声部都很常见）：简谱能记到的最小单位是 1/8 拍，
+    // 余下不足 1/8 拍的部分**印不出来**，这一小节必然短一截。判据不是
+    // 「差多少都给过」——差多少必须落在模型算出来的洞的上界之内，且印多了
+    // （超过拍号）永远算缺陷。与上面 --no-quantize 的 approx 分开记账，
+    // 因为成因完全不同，提示语也不同。
+    std::vector<TextBarIssue> approxGrid;
 
     bool ok() const { return issues.empty(); }
 };

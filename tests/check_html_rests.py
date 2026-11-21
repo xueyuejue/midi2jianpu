@@ -16,6 +16,11 @@ v1.61.0 让 HTML 也按精确档位之和拆列。本脚本守护三件事：
 吸附」的特征是少 0~0.5 拍。只对后者报错，既不误伤既有差异，也不会漏掉
 真正的近似写法。
 
+v1.158.0 起把 0~1/8 拍这一段单独划开：MIDI 的音头不在 1/8 拍网格上时
+（1780 tick 这种位置），简谱最小只记到 1/8 拍，HTML 与文本谱都只能把
+余下那点丢掉——差不到 1/8 拍是记谱精度本身的下限，不是吸附 bug。真正的
+吸附 bug（1.75 拍画成 1.5 拍）差 0.25 拍，照样报。
+
 用法：
   python tests/check_html_rests.py                     # 校验全部 fixture
   python tests/check_html_rests.py --self-test        # 纯逻辑自测
@@ -68,6 +73,7 @@ DIV_RE = re.compile(r"<divisions>(\d+)</divisions>")
 VER_RE = re.compile(r"midi2jianpu v\d+\.\d+\.\d+")
 EPS = 1e-6
 GAP_TOL = 0.5          # 「最近档吸附」最多少 0.5 拍
+FLOOR_TOL = 0.125      # 小于 1/8 拍的差是记谱精度下限（不是吸附 bug）
 
 
 OCT_PX_RE = re.compile(
@@ -175,7 +181,8 @@ def find_approx(html_segs, xml_segs):
     for g in html_segs:
         if any(abs(g - s) < EPS for s in xml_segs):
             continue
-        near = [s for s in xml_segs if 0 < s - g <= GAP_TOL + EPS]
+        near = [s for s in xml_segs
+                if FLOOR_TOL - EPS <= s - g <= GAP_TOL + EPS]
         if near:
             s = min(near)
             out.append("HTML 休止段 %.3f 拍比 MusicXML 真实段 %.3f 拍少 %.3f 拍"
@@ -449,6 +456,9 @@ def self_test():
     ck(not find_approx([4.0, 4.0], [8.0]), "整小节切开（差 4 拍）豁免")
     ck(find_approx([2.0], [2.5]), "2.5 拍画成 2 拍（差 0.5）必须报错")
     ck(not find_approx([], [1.75]), "HTML 没有休止列时不报错")
+    ck(not find_approx([3.625], [3.708]),
+       "差不到 1/8 拍是记谱精度下限（1780 tick 的晚进声部），不报")
+    ck(find_approx([3.5], [3.708]), "差 0.208 拍超过 1/8 拍，仍要报")
 
     ck(norm_html("midi2jianpu v1.60.0") == "midi2jianpu vX.Y.Z",
        "页脚版本号归一化")

@@ -127,6 +127,12 @@ std::string durationSuffix(long durationTicks, int division);
 // 值仍按最近档记 '1_.'，不擅自改时长）。
 std::vector<long> splitNotatableTicks(long ticks, int division);
 
+// 这个时值能不能「一段不差地」记出来：本身是一个可记谱档位，或能由若干档位
+// 贪心拼成。量化时用它判断「保住 MIDI 原值会不会让谱面记不出」；文本谱自检
+// 用它判断「这一小节的拍数差是不是记谱本身的极限」（音头在 1780 tick 这种
+// 位置时，简谱只能记到最近的档位，差一个不足 1/8 拍的小洞）。
+bool canNotateExactly(long ticks, int division);
+
 // 谱面「写不出来」的空档门槛：不足半拍（八分休止）的空白不记休止符。
 // 三个输出层与 quantizeTiming() 共用这一个门槛。
 long restGateTicks(int division);

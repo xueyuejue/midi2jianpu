@@ -11214,6 +11214,98 @@ int main() {
               "624 tick（1.3 拍）兜底选附点四分而不是四分");
     }
 
+    std::cout << "\n测试 v1.158.0：非 1/8 拍网格上的音头（休止符只能近似记谱）\n";
+    {
+        // ① 3.708 拍（1780 tick）的休止不再印成 `0 - - -`（4 拍）。
+        // 旧版按最近档上取整，一小节读出 4.25 拍，后面的音头整体被推后。
+        MidiData td;
+        td.division = 480;
+        td.timeSig = TimeSignature{4, 2, true};
+        auto addNote = [&](long s, long d, int p) {
+            NoteEvent n;
+            n.startTicks = s; n.durationTicks = d; n.pitch = p;
+            n.track = 0; n.channel = 0;
+            td.notes.push_back(n);
+        };
+        addNote(480 * 4 + 1780, 140, 60);       // 第 2 小节 3.708 拍才进来
+        for (int i = 0; i < 8; i++)             // 第 3 小节铺满八分
+            addNote(480 * 8 + i * 240, 240, 62 + i);
+        std::string tj = formatJianpu(td, estimateKey(td));
+        check(tj.find("0 - - - 1=") == std::string::npos,
+              "3.708 拍的休止不再印成 4 拍（`0 - - - 1=`），实际: " + tj);
+        check(tj.find("0 - - -_ -%%") != std::string::npos,
+              "拆成 `0 - - -_ -%%`（3.625 拍）+ 余量留成小洞，实际: " + tj);
+        // 没量化时余量正好被下一列吃掉，这一小节仍然精确守恒。
+        const TextVerifyReport exact = verifyTextScore(tj, td, false);
+        check(exact.ok() && exact.approxGrid.empty(),
+              "余量被下一列吸收后仍精确守恒（不报近似）");
+
+        // ② 走过量化（CLI 的真实路径）后 140 tick 被吸成 120，余下的洞
+        //    补不上——自检把它记成「只能近似记谱」，不是缺陷。
+        MidiData qd = td;
+        quantizeTiming(qd);
+        const std::string qj = formatJianpu(qd, estimateKey(qd));
+        const TextVerifyReport tvr = verifyTextScore(qj, qd, false);
+        check(tvr.ok(), "音头不在 1/8 拍网格上时不再判成缺陷（rc 仍为 0）");
+        check(tvr.approxGrid.size() == 1 && tvr.issues.empty(),
+              "该小节进「近似记谱」桶，实际 issues=" +
+                  std::to_string(tvr.issues.size()) + " approxGrid=" +
+                  std::to_string(tvr.approxGrid.size()));
+        const std::string rep = formatTextVerifyReport(tvr, "offgrid.mid");
+        check(rep.find("每小节拍数守恒") == std::string::npos,
+              "有近似小节时不印「每小节拍数守恒」，实际: " + rep);
+        check(rep.find("只能近似记谱") != std::string::npos &&
+                  rep.find("1/8 拍网格") != std::string::npos,
+              "近似提示写明成因（1/8 拍网格）");
+
+        // ③ 印多了永远是缺陷：4/4 的小节印成 4.25 拍必须报，不进近似桶。
+        const std::string over =
+            "1=C 大调    4/4    声部：X\n"
+            "[X] (2 音符)\n"
+            "0 - - - 1=  |\n"
+            "2 - - -  |\n";
+        MidiData od;
+        od.division = 480;
+        od.timeSig = TimeSignature{4, 2, true};
+        auto add2 = [&](long s, long d) {
+            NoteEvent n;
+            n.startTicks = s; n.durationTicks = d; n.pitch = 60;
+            n.track = 0; n.channel = 0;
+            od.notes.push_back(n);
+        };
+        add2(1780, 140);        // 第 1 小节：3.708 拍才进来
+        add2(1920, 1920);       // 第 2 小节整小节一个音
+        const TextVerifyReport ovr = verifyTextScore(over, od, false);
+        check(!ovr.ok(), "一小节印出 4.25 拍仍然报缺陷（印多了不放行）");
+        check(ovr.approxGrid.empty(),
+              "印多了不进近似桶，实际 approxGrid=" +
+                  std::to_string(ovr.approxGrid.size()));
+
+        // ④ 1/8 拍门限：最近档只长出不到 1/8 拍的休止仍记成一列 `0`
+        //    （观感优先，误差在记谱精度以内），不拆成 `0_. -%%`。
+        MidiData small;
+        small.division = 480;
+        small.timeSig = TimeSignature{4, 2, true};
+        NoteEvent s1;
+        s1.startTicks = 0; s1.durationTicks = 120; s1.pitch = 60;
+        s1.track = 0; s1.channel = 0;
+        NoteEvent s2;
+        s2.startTicks = 580; s2.durationTicks = 1340; s2.pitch = 62;
+        s2.track = 0; s2.channel = 0;
+        small.notes = {s1, s2};
+        const std::string sj = formatJianpu(small, estimateKey(small));
+        check(sj.find("1= 0 2") != std::string::npos &&
+                  sj.find("0_. -%%") == std::string::npos,
+              "0.958 拍的休止仍记成一列 `0`（不碎片化），实际: " + sj);
+
+        // ⑤ canNotateExactly 的口径：能一段不差记出来的才为真。
+        check(canNotateExactly(480, 480) && canNotateExactly(180, 480) &&
+                  canNotateExactly(660, 480),
+              "精确档 / 附点十六分 / 可拼段都算「能记出来」");
+        check(!canNotateExactly(1780, 480) && !canNotateExactly(400, 480),
+              "1780 / 400 tick 拆不干净，算「记不出来」");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";
