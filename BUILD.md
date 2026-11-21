@@ -80,7 +80,7 @@ python tests/check_bar_beats.py --self-test        # 28 项文本谱拍数自测
 python tests/check_bar_beats.py                    # 全部 118 份素材拍数守恒
 python tests/check_html_dots.py --self-test         # 35 项 HTML 附点自测
 python tests/check_html_dots.py                    # 全部 118 份素材 HTML 附点一致性
-python tests/check_html_rests.py --self-test        # 77 项 HTML 休止符自测
+python tests/check_html_rests.py --self-test        # 79 项 HTML 休止符自测
 python tests/check_html_rests.py                   # 全部 118 份素材 HTML 休止符精确性
 python tests/check_three_way.py --self-test         # 14 项三端结构守卫自测
 python tests/check_three_way.py                    # 全部 118 份素材三端结构一致性
@@ -297,7 +297,7 @@ python3 tests/check_wasm_sync.py --changed docs/wasm/midi2jianpu.wasm \
 
 | job | 步骤 |
 | --- | --- |
-| `cpp` | CMake 编译 CLI 与单测 → `ctest`（1819 项）→ 全量重生成 118 份 `.mid` 并要求零 diff、无未跟踪素材 → `smoke.py --self-test` 28 项 → `check_xml_durations.py` 18 项自测 + 114 份素材 → `check_xml_beams.py` 39 项自测 + 114 份素材 → `check_xml_staff.py` 32 项自测 + 114 份素材 → `check_bar_beats.py` 28 项自测 + 114 份素材 → `check_html_dots.py` 35 项自测 + 114 份素材 → `check_html_rests.py` 77 项自测 + 114 份素材 → `check_html_bars.py` 10 项自测 + 114 份素材 → `check_xml_tempo.py` 10 项自测 + 114 份素材 → `check_xml_parts.py` 11 项自测 + 114 份素材 → `check_three_way.py` 14 项自测 + 114 份素材 → `check_xml_structure.py` 34 项自测 + 114 份素材 → `check_html_player.py` 42 项自测 + 114 份素材 + 组合矩阵 → `check_utf8.py` 22 项自测 + 114 份素材 → `check_cli_matrix.py` 36 项自测 + 114 份素材 → `check_lyric_sync.py` 8 项自测 + 14 组素材 → `smoke.py` 151 组 → `fuzz_parse.py` 48 项自测 + 12 类突变 × 3 种子 × 200 次 |
+| `cpp` | CMake 编译 CLI 与单测 → `ctest`（1819 项）→ 全量重生成 118 份 `.mid` 并要求零 diff、无未跟踪素材 → `smoke.py --self-test` 28 项 → `check_xml_durations.py` 18 项自测 + 114 份素材 → `check_xml_beams.py` 39 项自测 + 114 份素材 → `check_xml_staff.py` 32 项自测 + 114 份素材 → `check_bar_beats.py` 28 项自测 + 114 份素材 → `check_html_dots.py` 35 项自测 + 114 份素材 → `check_html_rests.py` 79 项自测 + 114 份素材 → `check_html_bars.py` 10 项自测 + 114 份素材 → `check_xml_tempo.py` 10 项自测 + 114 份素材 → `check_xml_parts.py` 11 项自测 + 114 份素材 → `check_three_way.py` 14 项自测 + 114 份素材 → `check_xml_structure.py` 34 项自测 + 114 份素材 → `check_html_player.py` 42 项自测 + 114 份素材 + 组合矩阵 → `check_utf8.py` 22 项自测 + 114 份素材 → `check_cli_matrix.py` 36 项自测 + 114 份素材 → `check_lyric_sync.py` 8 项自测 + 14 组素材 → `smoke.py` 151 组 → `fuzz_parse.py` 48 项自测 + 12 类突变 × 3 种子 × 200 次 |
 | `wasm` | `check_wasm_sync.py --self-test`（16 组）+ 实跑（含反向版本守护）→ `check_wasm_exports.py` → `wasm_smoke.mjs` 94 组（含产物版本号与 `version.hpp` 比对） |
 
 客户端可以忘了跑测试，这里在服务端兜底；**升过版本号却忘了重编 `docs/wasm/`，
