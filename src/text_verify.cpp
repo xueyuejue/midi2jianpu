@@ -191,7 +191,8 @@ bool segmentBeats(const std::string& seg, double* beats, bool* any,
     return true;
 }
 
-bool isTrackHeader(const std::string& l, long* noteCount = nullptr) {
+bool isTrackHeader(const std::string& l, long* noteCount = nullptr,
+                   int* voiceTag = nullptr) {
     if (l.empty() || l[0] != '[') return false;
     const std::string key = " 音符)";
     // 取**最后**一个「 音符)」：轨名里可能自带这串字（`X (200 音符)`），
@@ -220,6 +221,26 @@ bool isTrackHeader(const std::string& l, long* noteCount = nullptr) {
     // 小标题的「(」紧跟在方括号收尾之后：`[声部名] (N 音符)`。轨名里可以
     // 带括号，但小标题这一个括号一定落在 `] ` 后面。
     if (!(b >= 3 && l[b - 2] == ' ' && l[b - 3] == ']')) return false;
+    // 识别「· 声部k」后缀：同轨复调拆出的谱行（`[X · 声部2] (N 音符)`）。
+    // 取方括号内容里**最后**一个后缀——轨名自己也可能以这串字结尾，但
+    // writer 会把真实声部号接在它后面（`X · 声部2 · 声部1`），最后一个
+    // 才是真的。
+    if (voiceTag) {
+        *voiceTag = 0;
+        const size_t close = b - 3;              // ']' 的下标
+        size_t open = close;
+        while (open > 0 && l[open] != '[') open--;
+        if (l[open] == '[') {
+            // ']' 前面的数字串
+            size_t dBegin = close;
+            while (dBegin > open + 1 && isDigitChar(l[dBegin - 1])) dBegin--;
+            static const char mark[] = "\xC2\xB7 \xE5\xA3\xB0\xE9\x83\xA8"; // · 声部
+            const size_t markLen = sizeof mark - 1;
+            if (dBegin < close && dBegin >= open + 1 + markLen &&
+                l.compare(dBegin - markLen, markLen, mark) == 0)
+                *voiceTag = (int)std::atol(l.substr(dBegin, close - dBegin).c_str());
+        }
+    }
     if (noteCount) {
         long v = 0;
         bool any = false;
@@ -267,6 +288,7 @@ struct PrintedBar {
 
 struct PrintedTrack {
     long noteCount = -1;          // 小标题里写的「N 音符」
+    int voiceTag = 0;             // 小标题里的「· 声部k」（0 = 没有这个后缀）
     std::vector<PrintedBar> bars;
 };
 
@@ -290,9 +312,11 @@ TextVerifyReport verifyTextScore(const std::string& text, const MidiData& data,
         pos = (nl == std::string::npos) ? text.size() + 1 : nl + 1;
 
         long ncount = -1;
-        if (isTrackHeader(line, &ncount)) {
+        int vtag = 0;
+        if (isTrackHeader(line, &ncount, &vtag)) {
             PrintedTrack pt;
             pt.noteCount = ncount;
+            pt.voiceTag = vtag;
             tracks.push_back(pt);
             sawHeader = true;
             continue;
@@ -342,42 +366,350 @@ TextVerifyReport verifyTextScore(const std::string& text, const MidiData& data,
     // 一行是 maxEnd-1 所在的小节。
     const long totalBars = grid.barIndex(maxEnd > 0 ? maxEnd - 1 : 0) + 1;
 
-    // 把谱行与轨道对上：谱行小标题写着「(N 音符)」，单声部轨的 N 就是该轨的
-    // 音数。对上唯一一条轨，就能拿到这条轨自己的末音位置，从而知道这一行
-    // 应该有几小节。对不上（同音数的轨不止一条、或这条轨被拆成了多声部）
-    // 就退回「全曲小节数」，再对不上就整行不判。
-    struct TrackSpan {
+    // 把谱行与轨道对上：谱行小标题写着「(N 音符)」。单声部轨的 N 就是
+    // 该轨的音数；同轨复调被 writer 拆成「· 声部k」多行，N 是该声部的
+    // 音数，而且**印出的时值是 splitVoices 截短后的口径**（同声部同拍
+    // 对齐、重叠音截短到下一个音头）。所以这里不能只数音——要按 writer
+    // 的同一套流程（同轨分组 → splitVoices → 空声部丢弃）复刻出每一条
+    // 谱行应有的音集，才能既对上行、又把允许量算在这行真正印出的音上。
+    // 上一版只按整轨对行：声部行的 N 对不上任何整轨，模型退回全轨混算，
+    // 被别的轨的音污染（r0389_min：混入 track1 的音，allowance 少算 30）。
+    struct RowSpan {
         long count = 0;
         long end = 0;
+        int track = -1;
+        bool isVoice = false;    // 对应「· 声部k」谱行
+        std::vector<const NoteEvent*> notes;  // 该行实际印出的音（截短后）
     };
-    std::map<int, TrackSpan> spans;
-    for (const auto& n : data.notes) {
-        TrackSpan& s = spans[n.track];
-        s.count++;
-        s.end = std::max(s.end, n.startTicks + std::max<long>(n.durationTicks, 1));
+    std::vector<RowSpan> rows;
+    const ExpressionMap expr(data);
+    // 注意：notes 里存的是指向 byTrack 内 vector 元素的指针，byTrack 必须
+    // 活到函数结束——放在块作用域里就是悬垂指针（ASan 实测 heap-use-after-free，
+    // 且表现为「同一输入 rc 在 0/5 之间跳」的地址相关假缺陷，比崩溃更隐蔽）。
+    std::map<int, std::vector<NoteEvent>> byTrack;
+    for (const auto& n : data.notes) byTrack[n.track].push_back(n);
+    for (auto& kv : byTrack) {
+        auto& ns = kv.second;
+        const std::vector<int> vo = splitVoices(
+            ns, 3, [&](const NoteEvent& n) { return expr.isGraceNote(n.startTicks, n.channel); });
+        int voiceCount = 0;
+        for (int v : vo) voiceCount = std::max(voiceCount, v + 1);
+        auto pushRow = [&](bool isVoice, std::vector<const NoteEvent*>&& sel) {
+            if (sel.empty()) return;          // writer 丢掉空声部
+            RowSpan s;
+            s.track = kv.first;
+            s.isVoice = isVoice;
+            for (const NoteEvent* n : sel) {
+                s.count++;
+                s.end = std::max(s.end,
+                                 n->startTicks + std::max<long>(n->durationTicks, 1));
+            }
+            s.notes = std::move(sel);
+            rows.push_back(std::move(s));
+        };
+        if (voiceCount <= 1) {
+            std::vector<const NoteEvent*> sel;
+            for (const auto& n : ns) sel.push_back(&n);
+            pushRow(false, std::move(sel));
+            continue;
+        }
+        for (int v = 0; v < voiceCount; v++) {
+            std::vector<const NoteEvent*> sel;
+            for (size_t i = 0; i < ns.size(); i++)
+                if (vo[i] == v) sel.push_back(&ns[i]);
+            pushRow(true, std::move(sel));
+        }
     }
 
     for (size_t ti = 0; ti < tracks.size(); ti++) {
         const auto& bars = tracks[ti].bars;
         if (bars.empty()) continue;
         r.lines++;
+        const RowSpan* rowSpan = nullptr;
         long want = totalBars;
         if (tracks[ti].noteCount >= 0) {
-            long hitEnd = -1;
+            // 打印顺序就是轨道顺序：writer 与上面的行构建都按 byTrack 升序
+            // 遍历、跑同一套 splitVoices、同样丢掉空声部，所以第 ti 个谱行
+            // 严格对应第 ti 条 RowSpan。行数一致且音数/声部标记都对得上时
+            // 直接配对——单靠音数匹配会被「两条轨音数撞车」卡死
+            // （sample.mid 的 Vocal/Piano 都是 15 音符，两行全都退化为
+            // 整行不判，守恒覆盖凭空掉一半）。
+            if (rows.size() == tracks.size()
+                && rows[ti].count == tracks[ti].noteCount
+                && rows[ti].isVoice == (tracks[ti].voiceTag > 0)) {
+                rowSpan = &rows[ti];
+            } else {
             int hit = 0;
-            for (const auto& kv : spans) {
-                if (kv.second.count == tracks[ti].noteCount) {
+            const RowSpan* found = nullptr;
+            for (const auto& rs : rows) {
+                // 声部行只对声部描述、整轨行只对整轨描述：同一份文件里
+                // 完全可能出现「某声部 5 个音」与「另一条单声部轨 5 个音」，
+                // 不按行类型过滤会互相撞车。
+                if (rs.isVoice != (tracks[ti].voiceTag > 0)) continue;
+                if (rs.count == tracks[ti].noteCount) {
                     hit++;
-                    hitEnd = kv.second.end;
+                    found = &rs;
                 }
             }
-            if (hit == 1)
-                want = grid.barIndex(hitEnd > 0 ? hitEnd - 1 : 0) + 1;
+            if (hit == 1) {
+                rowSpan = found;
+            }
+            }
+            if (rowSpan != nullptr) {
+                want = grid.barIndex(rowSpan->end > 0 ? rowSpan->end - 1 : 0) + 1;
+            }
         }
         if ((long)bars.size() != want) {
             r.skipped += (int)bars.size();      // 起点无法确定，整行不判
             continue;
         }
+        if (rowSpan == nullptr) {
+            // 对不上唯一一条描述（音数撞车、或复刻流程与 writer 分叉）：
+            // 允许量没法算在这行真正印出的音上，整行不判。猜错的代价是
+            // 报一个假问题，比少判一行严重得多（与上面 want 的口径一致）。
+            r.skipped += (int)bars.size();
+            continue;
+        }
+
+        // ---- 列级模拟：逐列算「writer 印出的拍数 - 实际拍数」的期望偏差 ----
+        //
+        // 允许量不再是「每列一个吸附误差上界」的粗上界，而是把 writer 的
+        // 逐列打印决策**完整复刻**一遍后得到的**精确期望偏差**：
+        //   1. 同音相邻合并（writer 会把 `1 1` 合成 `1 -`；三连音、同拍多音、
+        //      跨小节线不合并）；
+        //   2. 同拍成组和弦（组时值取最短）；
+        //   3. 休止空档按小节切段（短于门槛整段丢掉；最近档上取整观感优先，
+        //      否则贪心拆段留小洞；延伸到小节末才许填满）；
+        //   4. 音符列按「精确拆段 → 最近档 → smallOver 上取整 → 填满小节 →
+        //      贪心拆段」的顺序决策，向下取整留下的**整段洞**可以比档距的
+        //      一半还大（2.333 拍夹在 2 与 3 之间：nearest=2，洞 1/3 拍 > 1/4 拍）；
+        //   5. 洞补给**同一小节**的下一列（能精确表达才补）；三连音列不印
+        //      时值后缀，却也会把待补的洞吞掉；
+        //   6. 三连音列在主口径下每个音只算 1/3 拍，与真实时值的差是字形
+        //      本身的模糊。
+        // 每一小节的期望偏差 = Σ(实际 - 印出)。判据变成：谱面实际差必须
+        // **等于**期望偏差（而不是不超过某个上界）——writer 决策树有任何
+        // 一处与模型分叉，这里都会现形。
+        struct Col {
+            long onset = 0;
+            long dur = 0;
+            bool trip = false;
+            bool grace = false;
+        };
+        std::map<long, long> devByBar;
+        {
+            std::vector<NoteEvent> seq;
+            seq.reserve(rowSpan->notes.size());
+            for (const NoteEvent* n : rowSpan->notes) seq.push_back(*n);
+            const std::vector<bool> trip0 = detectTriplets(seq, division);
+            std::map<long, int> onsetCount;
+            for (const auto& n : seq) onsetCount[n.startTicks]++;
+            auto isSingle = [&](long tick) {
+                auto it = onsetCount.find(tick);
+                return it == onsetCount.end() || it->second <= 1;
+            };
+            std::vector<NoteEvent> merged;
+            for (size_t i = 0; i < seq.size(); i++) {
+                if (!merged.empty() && !trip0[i] && !trip0[i - 1] &&
+                    seq[i].pitch == merged.back().pitch &&
+                    seq[i].startTicks ==
+                        merged.back().startTicks + merged.back().durationTicks &&
+                    isSingle(seq[i].startTicks) && isSingle(merged.back().startTicks) &&
+                    grid.barIndex(seq[i].startTicks) == grid.barIndex(merged.back().startTicks)) {
+                    merged.back().durationTicks += seq[i].durationTicks;
+                    continue;
+                }
+                merged.push_back(seq[i]);
+            }
+            const std::vector<bool> triplets = detectTriplets(merged, division);
+            std::vector<Col> cols;
+            for (size_t idx = 0; idx < merged.size(); ) {
+                size_t grpEnd = idx + 1;
+                while (grpEnd < merged.size() &&
+                       merged[grpEnd].startTicks == merged[idx].startTicks)
+                    grpEnd++;
+                long groupDur = std::max<long>(merged[idx].durationTicks, 1);
+                for (size_t k = idx + 1; k < grpEnd; k++)
+                    groupDur = std::min(groupDur,
+                                        std::max<long>(merged[k].durationTicks, 1));
+                Col c;
+                c.onset = merged[idx].startTicks;
+                c.dur = groupDur;
+                c.trip = triplets[idx];
+                c.grace = expr.isGraceNote(merged[idx].startTicks, merged[idx].channel);
+                cols.push_back(c);
+                idx = grpEnd;
+            }
+
+            const long gate = std::max<long>(1, division / 2);
+            const long unit = std::max<long>(1, division / 8);
+            auto addDev = [&](long bar, long d) { devByBar[bar] += d; };
+            // 音符列（exactRest=false）的印出量：复刻 emitDurationTokens。
+            auto notePrinted = [&](long ticks, long startTick, long barEndTick,
+                                   bool mayFill) -> long {
+                if (ticks <= 0) return 0;
+                const long snapped = nearestNotatableTicks(ticks, division);
+                const bool smallOver = snapped > ticks && (snapped - ticks) <= unit;
+                if (snapped != ticks) {
+                    const std::vector<long> parts = splitNotatableTicks(ticks, division);
+                    if (!parts.empty()) return ticks;    // SPLIT：精确拆段
+                }
+                if (snapped <= ticks) return snapped;    // 最近档向下取整
+                if (smallOver) return snapped;           // 上取整 ≤ 1/8 拍
+                if (mayFill && startTick + snapped <= barEndTick)
+                    return snapped;                      // 这一列是本小节最后一列：填满
+                long left = ticks;                       // GREEDY：宁短不长
+                bool any = false;
+                while (left > 0) {
+                    const long part = largestNotatableTicks(left, division);
+                    if (part <= 0) break;
+                    left -= part;
+                    any = true;
+                }
+                return any ? ticks - left : snapped;     // SMALL：退回最近档
+            };
+            // 休止列（exactRest=true）：smallOver 优先于精确拆段，其余贪心拆段。
+            auto restPrinted = [&](long ticks, long startTick, long barEndTick,
+                                   bool mayFill) -> long {
+                if (ticks <= 0) return 0;
+                const long snapped = nearestNotatableTicks(ticks, division);
+                const bool smallOver = snapped > ticks && (snapped - ticks) <= unit;
+                if (snapped == ticks) return snapped;
+                if (!smallOver && !mayFill) {
+                    long left = ticks;
+                    while (left > 0) {
+                        const long part = largestNotatableTicks(left, division);
+                        if (part <= 0) break;
+                        left -= part;
+                    }
+                    if (left < ticks) return ticks - left;   // RESTSPLIT
+                    return snapped;
+                }
+                if (snapped <= ticks) return snapped;
+                if (smallOver) return snapped;           // 上取整 ≤ 1/8 拍
+                if (mayFill && startTick + snapped <= barEndTick)
+                    return snapped;                      // 延伸到小节末：填满
+                long left = ticks;                       // GREEDY：宁短不长
+                while (left > 0) {
+                    const long part = largestNotatableTicks(left, division);
+                    if (part <= 0) break;
+                    left -= part;
+                }
+                return ticks - left;
+            };
+            // 洞记账：与 writer 同一套 holeTicks/holeBar（单洞，后洞覆盖前洞）。
+            // 注意 pendingHole **只管补偿**，不承担偏差记账——每一段的偏差
+            // （实际 - 印出）在打印时已经计入 devByBar；待补的洞若被下一列
+            // 补上，那一列会多印一截、偏差自然为负，两边正好抵消；若一直没
+            // 被补上，净偏差就是洞本身。这里若再手动加一遍就会双重记账。
+            long pendingHole = 0, pendingHoleBar = -1;
+            long prevEnd = 0;
+            bool started = false;
+            auto dropHole = [&](long bar, long hole) {
+                pendingHole = hole;
+                pendingHoleBar = bar;
+            };
+            // 休止空档 [prevEnd, endTick)：短于门槛整段丢掉；其余按小节切段。
+            auto doRest = [&](long endTick) {
+                const long gap = endTick - prevEnd;
+                if (gap < gate) {
+                    for (long t = prevEnd; t < endTick; ) {
+                        const long b = grid.barIndex(t);
+                        long seg = std::min(endTick, grid.barEnd(b)) - t;
+                        if (seg <= 0) break;
+                        addDev(b, seg);                  // 印不出来，整段是洞
+                        t += seg;
+                    }
+                    return;
+                }
+                if (!started && endTick <= 0) return;
+                long t = prevEnd;
+                while (t < endTick) {
+                    const long b = grid.barIndex(t);
+                    const long seg = std::min(endTick, grid.barEnd(b)) - t;
+                    if (seg <= 0) break;
+                    const bool fills = (t + seg == grid.barEnd(b));
+                    const long printed = restPrinted(seg, t, grid.barEnd(b), fills);
+                    addDev(b, seg - printed);
+                    if (printed < seg) dropHole(b, seg - printed);
+                    t += seg;
+                }
+            };
+
+            for (const Col& c : cols) {
+                const long cbar = grid.barIndex(c.onset);
+                const long barEndC = grid.barEnd(cbar);
+                if (c.grace) {                           // 倚音：不印，只推 prevEnd
+                    doRest(c.onset);
+                    prevEnd = c.onset + c.dur;
+                    started = true;
+                    continue;
+                }
+                doRest(c.onset);
+                if (c.trip) {
+                    // 三连音列：只印音头，节奏由 3(...) 表达。补偿块照跑
+                    // （writer 会把待补的洞清零却补不进字形——洞保持为净偏差，
+                    // 偏差在洞产生的那一列已经计过，这里只清账）。
+                    if (pendingHole > 0 && pendingHoleBar == cbar &&
+                        canNotateExactly(c.dur + pendingHole, division)) {
+                        pendingHole = 0;
+                        pendingHoleBar = -1;
+                    }
+                    addDev(cbar, c.dur - division / 3);  // 主口径：每音 1/3 拍
+                    prevEnd = c.onset + c.dur;
+                    started = true;
+                    continue;
+                }
+                const long noteEnd = c.onset + c.dur;
+                if (noteEnd <= barEndC) {
+                    long printDur = c.dur;
+                    long printShift = 0;
+                    if (pendingHole > 0 && pendingHoleBar == cbar) {
+                        const long want = c.dur + pendingHole;
+                        if (canNotateExactly(want, division)) {
+                            printDur = want;
+                            printShift = pendingHole;
+                            pendingHole = 0;
+                            pendingHoleBar = -1;
+                        }
+                    }
+                    // 最后一列（本小节后面没有别的列）才许按最近档填满小节。
+                    size_t next = static_cast<size_t>(&c - &cols[0]) + 1;
+                    const bool lastInBar =
+                        next >= cols.size() || cols[next].onset >= barEndC;
+                    const long printed =
+                        notePrinted(printDur, c.onset - printShift, barEndC, lastInBar);
+                    addDev(cbar, c.dur - printed);
+                    if (printed < printDur) dropHole(cbar, printDur - printed);
+                } else {
+                    // 跨小节：先写满本小节（mayFill=true），再逐小节续写。
+                    // 注意：writer 的跨小节首段与续写（emitHeld）都**丢弃**
+                    // emitDurationTokens 的返回值——洞不记账、不参与补偿，
+                    // 这里也一律不 dropHole（偏差本身照记）。
+                    const long firstSeg = barEndC - c.onset;
+                    const long printed = notePrinted(firstSeg, c.onset, barEndC, true);
+                    addDev(cbar, firstSeg - printed);
+                    long t = barEndC;
+                    while (t < noteEnd) {
+                        const long b = grid.barIndex(t);
+                        const long seg = std::min(noteEnd, grid.barEnd(b)) - t;
+                        if (seg <= 0) break;
+                        long printed2;
+                        if (seg % division == 0) {
+                            printed2 = seg;              // 整拍 "-"，一列不差
+                        } else {
+                            printed2 = notePrinted(seg, t, grid.barEnd(b),
+                                                   t + seg == grid.barEnd(b));
+                        }
+                        addDev(b, seg - printed2);
+                        t += seg;
+                    }
+                }
+                prevEnd = c.onset + c.dur;
+                started = true;
+            }
+        }
+
         for (size_t i = 0; i < bars.size(); i++) {
             const PrintedBar& pb = bars[i];
             const bool last = (i + 1 == bars.size());
@@ -405,45 +737,18 @@ TextVerifyReport verifyTextScore(const std::string& text, const MidiData& data,
             is.printed = pb.beats;
             is.want = meterBeats;
             is.text = pb.text;
-            // 这一小节的差是不是「记谱本身的极限」：音头 / 时值不在 1/8 拍
-            // 网格上，简谱记到 1/8 拍为止，余下的洞印不出来。上界由模型算：
-            // 每一个落不到网格上的音头、每一个拆不干净的时值，各允许一个
-            // 1/8 拍的洞；差得比这个上界还多，说明另有原因（真缺陷）。
-            const long unit = std::max<long>(1, division / 8);
-            long allowance = 0;
-            if (!pb.triplet) {
-                const long bs = grid.barStart(barNo), be = grid.barEnd(barNo);
-                // 本小节的音头表：用来算「两个音头之间那段补不出来」的空档。
-                // 量化会把不在网格上的时值吸附到最近的档，于是原本首尾相接的
-                // 两个音之间露出几十 tick——比休止门槛短，印不出休止符，
-                // 这段就是一个必然的洞。
-                std::vector<std::pair<long, long>> ons;   // (音头, 该音头最远结束)
-                for (const auto& n : data.notes) {
-                    if (n.startTicks < bs || n.startTicks >= be) continue;
-                    const long end = n.startTicks + std::max<long>(n.durationTicks, 1);
-                    if (!ons.empty() && ons.back().first == n.startTicks) {
-                        if (end > ons.back().second) ons.back().second = end;
-                        continue;
-                    }
-                    ons.push_back({n.startTicks, end});
-                }
-                std::stable_sort(ons.begin(), ons.end());
-                for (size_t k = 0; k < ons.size(); k++) {
-                    if ((ons[k].first - bs) % unit != 0) allowance += unit;
-                    const long dur = ons[k].second - ons[k].first;
-                    if (!canNotateExactly(dur, division)) allowance += unit;
-                    if (k + 1 >= ons.size()) continue;
-                    const long gap = ons[k + 1].first - ons[k].second;
-                    // 门槛与 restGateTicks 同源：短到印不出休止符的那段，
-                    // 简谱只能丢掉（文本谱与 HTML 都不补）。
-                    if (gap > 0 && gap < std::max<long>(1, division / 2))
-                        allowance += gap;
-                }
-            }
+            // 这一小节的差是不是「记谱本身的极限」。上面的列级模拟已经把
+            // writer 的逐列打印决策完整复刻了一遍，得到这一小节**应有的**
+            // 偏差（实际拍数 - 印出拍数，可正可负）。谱面实际差必须与期望
+            // 偏差一致——不是「不超过上界」而是「分毫不差」：writer 的决策
+            // 树有任何一处与模型分叉（多印、少印、洞补错了小节），这里都会
+            // 现形。反过来，1/8 拍网格上的音乐（量化过的编曲）一段不差、
+            // 一列不吸附，期望偏差恒为 0——真缺陷在这类文件上零容忍。
+            const long allowance = std::labs(devByBar[barNo]);
             const double deficit = meterBeats - pb.beats;
             if (allowApprox) r.approx.push_back(is);
-            else if (allowance > 0 && deficit > -kTol &&
-                     deficit * (double)division <= (double)allowance + kTol)
+            else if (allowance > 0 && std::fabs(deficit) * (double)division
+                                          <= (double)allowance + kTol)
                 r.approxGrid.push_back(is);
             else r.issues.push_back(is);
         }

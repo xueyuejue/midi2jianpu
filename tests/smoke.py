@@ -6497,6 +6497,19 @@ def main():
     check(rc == 0 and "每小节拍数守恒" in out and "近似" not in out,
           "普通素材仍报「每小节拍数守恒」且没有近似提示", out[-200:])
 
+    group("[153] 收尾休止的洞留在产生它的那一小节（不再漏给下一小节吸收）")
+    rh = os.path.join(FIXTURES, "rest_hole_nextbar.mid")
+    rc, out, err = run(exe, rh, "--verify")
+    check(rc == 0, "跨小节休止洞的 --verify 通过", err.strip()[:200])
+    check("0 - - - -%% #6 0_." in out,
+          "第 6 小节：780 tick 的休止按最近档印成 4.125 拍，洞记在本小节",
+          out[:300])
+    check("0 - - - - -%% 6_." in out and "6_. -%%" not in out,
+          "末小节不再多出一列 -%%（洞不再被下一小节的音头补偿吸收）",
+          out[:300])
+    check("1 小节只能近似记谱" in out,
+          "报告如实说 1 小节只能近似记谱", out[-260:])
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

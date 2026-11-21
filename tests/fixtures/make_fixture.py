@@ -3194,6 +3194,13 @@ def main() -> None:
         f.write(ogdata)
     print(f"wrote {ogmid} ({len(ogdata)} bytes)")
 
+    # 跨小节休止的洞记本小节（缩基器最小化复现，字节流含双 FF 2F）
+    rhmid = os.path.join(here, "rest_hole_nextbar.mid")
+    with open(rhmid, "wb") as f:
+        rhdata = build_rest_hole_nextbar()
+        f.write(rhdata)
+    print(f"wrote {rhmid} ({len(rhdata)} bytes)")
+
     # format 2（多个独立序列）素材
     f2mid = os.path.join(here, "format2.mid")
     with open(f2mid, "wb") as f:
@@ -4387,6 +4394,41 @@ def build_offgrid_rest() -> bytes:
         t1.note(0, p, 90, DIV * 8 + i * 240, 240)
 
     return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
+
+
+def build_rest_hole_nextbar() -> bytes:
+    """跨小节休止的洞留在产生它的那一小节（v1.159.0）。
+
+    3/2、division=120、两个音（D5 约 1 拍、C#5 约 0.8 拍，音头压着
+    4103 tick 这种远离 1/8 拍网格的位置）：音头之间的 720 tick 空档按
+    最近档印不满，余下的洞旧版漏给**下一小节**吸收——下一小节的音头
+    补偿让它凭空多印一截，末小节多出一列 `-%%`，两头小节都不守恒。修为
+    洞记在产生它的段所属小节后，洞只压短本小节，`--verify` 如实报
+    「只能近似记谱」。字节流是缩基器（最小化复现）的产物：两条轨各写了
+    两个 FF 2F 结尾、第二个音的 note-off 落在第一个 FF 2F 之后——生成器
+    逐字节复刻这份结构，保证与仓库里的素材一致。
+    """
+    conductor = (
+        b"\x00\xff\x03\x09Conductor"
+        b"\x00\xff\x51\x03\x0a\x37\xef"       # 668911us/beat -> 印作 ♩=90
+        b"\x00\xff\x58\x04\x03\x01\x18\x08"   # 3/2
+        b"\x00\xff\x59\x02\x04\x00"             # E 大调
+        b"\x00\xff\x2f\x00"                       # 缩基器留下的第一个结尾
+        b"\x00\xff\x2f\x00"
+    )
+    mel = (
+        b"\x00\xc0\x46"                            # 大管
+        b"\x00\xff\x03\x04Mel0"
+        b"\xa0\x07\x90\x4a\x5a"                  # +4103 tick: D5 on (vel 90)
+        b"\x78\x80\x4a\x00"                       # +120 tick: off
+        b"\x85\x50\x90\x49\x5a"                  # +720 tick: C#5 on (vel 90)
+        b"\x61\xff\x2f\x00"                       # +97 tick: 缩基器留下的第一个结尾
+        b"\x00\x80\x49\x00"                       # off
+        b"\x00\xff\x2f\x00"
+    )
+    return (b"MThd" + struct.pack(">IHHH", 6, 1, 2, 120)
+            + b"MTrk" + struct.pack(">I", len(conductor)) + conductor
+            + b"MTrk" + struct.pack(">I", len(mel)) + mel)
 
 
 def build_triplet_quarter() -> bytes:

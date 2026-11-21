@@ -140,7 +140,8 @@ def score_bars(lines):
 # `--verify` 对此有精确判据（按模型算出允许的洞，印多了、或差得比上界还多
 # 照样报缺陷），而这里只拿得到文本谱、看不到 MIDI，只能按素材登记 + 上界
 # 放行：只允许**短**、不允许长，且差值不得超过登记的上界。
-OFFGRID_FIXTURES = {"offgrid_rest.mid": 0.13}
+OFFGRID_FIXTURES = {"offgrid_rest.mid": 0.13,
+                    "rest_hole_nextbar.mid": 0.13}
 
 
 def violations(lines, lenient=0.0):

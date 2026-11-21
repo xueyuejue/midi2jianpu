@@ -590,7 +590,7 @@ std::string durationSuffix(long durationTicks, int division) {
 // durationSuffix() 会把表外时值吸附到最近档，落在两档之间时可能向上取整。
 // 这里给出「按最近档折算后的实际 tick 数」，口径必须与 durationSuffix 一致，
 // 供记谱出口判断有没有发生上取整（原来的 3.75 拍被记成 4 拍就是这么来的）。
-static long nearestNotatableTicks(long durationTicks, int division) {
+long nearestNotatableTicks(long durationTicks, int division) {
     if (division <= 0) return durationTicks;
     double beats = (double)durationTicks / division;
     if (beats > 4.5)                       // 与上面的「退化为延长线」同口径
@@ -608,7 +608,7 @@ static long nearestNotatableTicks(long durationTicks, int division) {
 }
 
 // 不超过 ticks 的最大可记谱时值，用来把超长时值拆成多段「宁短不长」的记法。
-static long largestNotatableTicks(long ticks, int division) {
+long largestNotatableTicks(long ticks, int division) {
     if (division <= 0) return ticks;
     long best = 0;
     for (const auto& d : DUR_TABLE) {
@@ -1708,12 +1708,15 @@ static std::string formatTrack(
         // （弱起小节开头、小节中段的休止）不能跟着一起被吞掉——旧实现先
         // 跳过倚音再算 gap，那一段空白既没有音头也没有休止，直接消失，
         // parts.mid 的 2 拍弱起小节因此只读出 1 拍。
-        auto emitRestUntil = [&](long endTick) -> long {
+        // 休止按小节切开输出，长前奏才能写成每小节一个 "0 - - -"。返回的
+        // 洞**记在产生它的那一小节**：收尾休止被最近档吸短留下的洞属于本
+        // 小节——把它补给下一小节的音头（起点前移）会让上一小节短一截、
+        // 下一小节长一截，总数对了但两头都不守恒（v1.159.0）。
+        auto emitRestUntil = [&](long endTick) {
             long gap = endTick - prevEnd;
-            if (gap < restGateTicks(data.division)) return 0;
-            if (!started && endTick <= 0) return 0;
+            if (gap < restGateTicks(data.division)) return;
+            if (!started && endTick <= 0) return;
             long t = prevEnd;
-            long hole = 0;
             while (t < endTick) {
                 long bar = barOf(t);
                 switchToBar(bar, t, partChannel);
@@ -1722,31 +1725,24 @@ static std::string formatTrack(
                 // 这一段延伸到小节末 = 后面没有别的列，按最近档把小节填满只是
                 // 观感上的事；否则上取整会把后面的音头整体推后一位。
                 const bool fills = (t + seg == grid.barEnd(bar));
-                hole += emitDurationTokens(os, "0", seg, t, grid.barEnd(bar),
-                                           data.division, "", true, fills);
+                const long h = emitDurationTokens(os, "0", seg, t, grid.barEnd(bar),
+                                                  data.division, "", true, fills);
+                if (h > 0) { holeTicks = h; holeBar = bar; }
                 t += seg;
             }
-            return hole;
         };
 
         // 倚音（装饰音）：本身不单独占一格，改挂到紧随其后的主音上。这里整颗
         // 跳过，只把结束位置推进到倚音尾部，避免主音的休止计算把它算成空拍。
         if (expr.isGraceNote(n.startTicks, n.channel)) {
-            const long h = emitRestUntil(n.startTicks);
-            if (h > 0) { holeTicks = h; holeBar = barOf(n.startTicks > 0 ? n.startTicks - 1 : 0); }
+            emitRestUntil(n.startTicks);
             started = true;
             prevEnd = n.startTicks + groupDur;
             idx = grpEnd;
             continue;
         }
 
-        {
-            const long h = emitRestUntil(n.startTicks);
-            if (h > 0) {
-                holeTicks = h;
-                holeBar = barOf(n.startTicks > 0 ? n.startTicks - 1 : 0);
-            }
-        }
+        emitRestUntil(n.startTicks);
 
         switchToBar(barOf(n.startTicks), n.startTicks, partChannel);
 

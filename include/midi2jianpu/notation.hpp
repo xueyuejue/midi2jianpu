@@ -127,6 +127,15 @@ std::string durationSuffix(long durationTicks, int division);
 // 值仍按最近档记 '1_.'，不擅自改时长）。
 std::vector<long> splitNotatableTicks(long ticks, int division);
 
+// 最近的可记谱档位（tick）。写谱端对不在时值表上的值一律吸到这一档：
+// 文本谱 / HTML 的 `smallOver`（1/8 拍内上取整观感优先）与整小节收尾填满
+// 都以它为基准。自检用它复刻写谱端的吸附决策树。
+long nearestNotatableTicks(long ticks, int division);
+
+// 不超过 ticks 的最大可记谱档位（tick）。写谱端拆段（宁短不长）与休止
+// 分段都以它为基准；自检复刻「向下取整留洞」的量时也要用它。
+long largestNotatableTicks(long ticks, int division);
+
 // 这个时值能不能「一段不差地」记出来：本身是一个可记谱档位，或能由若干档位
 // 贪心拼成。量化时用它判断「保住 MIDI 原值会不会让谱面记不出」；文本谱自检
 // 用它判断「这一小节的拍数差是不是记谱本身的极限」（音头在 1780 tick 这种

@@ -170,12 +170,20 @@ def xml_rest_segments(xml):
     return segs
 
 
-def find_approx(html_segs, xml_segs):
+# 「不足 1/8 拍的部分印不出来」的素材登记 + 上界放行：HTML 休止段允许比
+# MusicXML 真值短，但差值不得超过登记的上界（与 check_bar_beats 的
+# OFFGRID_FIXTURES 同一口径）。产品侧 --verify 有精确判据兜底，这里只防
+# HTML 与文本谱口径分叉。
+APPROX_FIXTURES = {"rest_hole_nextbar.mid": 0.13}
+
+
+def find_approx(html_segs, xml_segs, tol=0.0):
     """返回「按最近档吸附」的问题描述列表。
 
     HTML 段值若与某个 XML 段相等 -> 精确，通过。
     若比某 XML 段少 0~0.5 拍 -> 最近档吸附，报错。
     差得更多 -> HTML/XML 分段口径差异（跨小节长间隙），豁免。
+    tol > 0 时（登记素材），差值在上界内的近似放行。
     """
     out = []
     for g in html_segs:
@@ -185,6 +193,8 @@ def find_approx(html_segs, xml_segs):
                 if FLOOR_TOL - EPS <= s - g <= GAP_TOL + EPS]
         if near:
             s = min(near)
+            if s - g <= tol:
+                continue
             out.append("HTML 休止段 %.3f 拍比 MusicXML 真实段 %.3f 拍少 %.3f 拍"
                        "（按最近档近似）" % (g, s, s - g))
     return out
@@ -217,7 +227,9 @@ def audit(exe, verbose=True):
             xs = xml_rest_segments(r["xml"].decode("utf-8", "replace"))
             total_segs += len(hs)
             total_beats += sum(hs)
-            for msg in find_approx(hs, xs):
+            for msg in find_approx(hs, xs,
+                                   APPROX_FIXTURES.get(
+                                       os.path.basename(mid), 0.0)):
                 errors.append("%s: %s" % (stem, msg))
     if verbose:
         print("fixtures %d / HTML 休止段 %d / 总拍数 %.3f"

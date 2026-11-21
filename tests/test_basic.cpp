@@ -10315,7 +10315,7 @@ int main() {
         {
             MidiData d = makeSong(2, fourFour);
             const TextVerifyReport r = verifyTextScore(
-                score("7", {"1 2 3", "1 2 3 4"}), d, false);
+                score("8", {"1 2 3", "1 2 3 4"}), d, false);
             check(!r.ok() && r.issues.size() == 1, "第 1 小节少一拍必须报");
             if (!r.issues.empty()) {
                 check(std::fabs(r.issues[0].printed - 3.0) < 1e-9 &&
@@ -10330,7 +10330,7 @@ int main() {
         {
             MidiData d = makeSong(2, fourFour);
             const TextVerifyReport r = verifyTextScore(
-                score("9", {"1 2 3 4 5", "1 2 3 4"}), d, false);
+                score("8", {"1 2 3 4 5", "1 2 3 4"}), d, false);
             check(!r.ok() && r.issues.size() == 1 &&
                       std::fabs(r.issues[0].printed - 5.0) < 1e-9,
                   "多印一拍也要报");
@@ -10339,7 +10339,7 @@ int main() {
         {
             MidiData d = makeSong(2, fourFour);
             const TextVerifyReport r = verifyTextScore(
-                score("7", {"1 2 3 4", "1 2 3"}), d, false);
+                score("8", {"1 2 3 4", "1 2 3"}), d, false);
             check(r.ok(), "末小节不满按惯例放行");
         }
         // 记法覆盖：三连音 / 和弦 / 休止 / 八分 / 附点与十六分
@@ -10351,13 +10351,13 @@ int main() {
             check(verifyTextScore(score("8", {"1,+3,+5, 2 3 4", "1 2 3 4"}),
                                   d, false).ok(),
                   "和弦 1,+3,+5, 整格只算一拍");
-            check(verifyTextScore(score("4", {"0 - - -", "1 2 3 4"}),
+            check(verifyTextScore(score("8", {"0 - - -", "1 2 3 4"}),
                                   d, false).ok(),
                   "休止 0 - - - 记 4 拍");
             check(verifyTextScore(score("8", {"1_ 2_ 3_ 4_ 5_ 6_ 7_ 1'_",
                                              "1 2 3 4"}), d, false).ok(),
                   "八分音符 8 个记 4 拍");
-            check(verifyTextScore(score("6", {"1. 2= 3= 4_ 5_", "1 2 3 4"}),
+            check(verifyTextScore(score("8", {"1. 2= 3= 4_ 5_", "1 2 3 4"}),
                                   makeSong(2, TimeSignature{3, 2, true}), false).ok(),
                   "附点四分 + 十六分 + 八分 合计 3 拍");
         }
@@ -10372,14 +10372,39 @@ int main() {
         {
             MidiData d = makeSong(2, fourFour);
             const TextVerifyReport r = verifyTextScore(
-                score("9", {"1 2 3 4", "1 2 3 4", "1 2 3 4"}), d, false);
+                score("8", {"1 2 3 4", "1 2 3 4", "1 2 3 4"}), d, false);
             check(r.ok() && r.bars == 0, "小节数对不上的谱行整行不判");
+        }
+        // 两条轨音数撞车：谱行按打印顺序与 RowSpan 直接配对，两行照判。
+        // 单靠音数匹配会 hit=2 整行不判，守恒覆盖凭空掉一半（sample.mid
+        // 的 Vocal/Piano 都是 15 音符，曾从「8 小节守恒」退化成 2 小节）。
+        {
+            MidiData d;
+            d.division = 480;
+            d.timeSig = fourFour;
+            d.pickupTicks = 0;
+            NoteEvent n;
+            n.channel = 0; n.velocity = 96; n.pitch = 60; n.durationTicks = 480;
+            for (int trk = 0; trk < 2; trk++)
+                for (int k = 0; k < 8; k++) {
+                    n.track = trk; n.startTicks = (long)k * 480;
+                    d.notes.push_back(n);
+                }
+            d.trackNames[0] = "Vocal";
+            d.trackNames[1] = "Piano";
+            const TextVerifyReport r = verifyTextScore(
+                "[Vocal] (8 音符)\n1 2 3 4  |\n1 2 3 4  |\n"
+                "[Piano] (8 音符)\n1 2 3 4  |\n1 2 3 4  |\n", d, false);
+            check(r.ok() && r.lines == 2 && r.bars == 2,
+                  "音数撞车的两条轨按打印顺序配对，两行照判（行 " +
+                      std::to_string(r.lines) + " / 核对小节 " +
+                      std::to_string(r.bars) + "）");
         }
         // --no-quantize：拍数不满归到「提示」，不影响通过
         {
             MidiData d = makeSong(2, fourFour);
             const TextVerifyReport r = verifyTextScore(
-                score("7", {"1 2 3", "1 2 3 4"}), d, true);
+                score("8", {"1 2 3", "1 2 3 4"}), d, true);
             check(r.ok() && r.approx.size() == 1,
                   "--no-quantize 下不满只进提示");
             check(formatTextVerifyReport(r, "x.mid").find("近似记谱") !=
@@ -10394,7 +10419,7 @@ int main() {
             check(formatTextVerifyReport(ok, "x.mid").find("x.mid: 文本谱核对") == 0,
                   "通过时报告以「<文件>: 文本谱核对」开头");
             const TextVerifyReport bad = verifyTextScore(
-                score("7", {"1 2 3", "1 2 3 4"}), d, false);
+                score("8", {"1 2 3", "1 2 3 4"}), d, false);
             const std::string rep = formatTextVerifyReport(bad, "x.mid");
             check(rep.find("[FAIL]") != std::string::npos &&
                       rep.find("印出 3 拍") != std::string::npos,
