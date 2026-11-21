@@ -3173,6 +3173,20 @@ def main() -> None:
         f.write(omdata)
     print(f"wrote {ommid} ({len(omdata)} bytes)")
 
+    # 四分三连音（每个 2/3 拍）与 1.25 拍切分同处一小节
+    qtmid = os.path.join(here, "triplet_quarter.mid")
+    with open(qtmid, "wb") as f:
+        qtdata = build_triplet_quarter()
+        f.write(qtdata)
+    print(f"wrote {qtmid} ({len(qtdata)} bytes)")
+
+    # 0x58 写在小节线前 1 tick：必须吸附到小节线
+    momid = os.path.join(here, "meter_offset.mid")
+    with open(momid, "wb") as f:
+        modata = build_meter_offset()
+        f.write(modata)
+    print(f"wrote {momid} ({len(modata)} bytes)")
+
     # format 2（多个独立序列）素材
     f2mid = os.path.join(here, "format2.mid")
     with open(f2mid, "wb") as f:
@@ -4339,6 +4353,62 @@ def build_odd_meter() -> bytes:
         t1.note(0, 62 + bar, 90, b + DIV * 5 // 4, DIV * 3 // 4)
         t1.note(0, 64 + bar, 90, b + DIV * 2, DIV * 7 // 4)
         t1.note(0, 65 + bar, 90, b + DIV * 2 + DIV * 7 // 4, DIV // 4)
+
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
+
+
+def build_triplet_quarter() -> bytes:
+    """四分三连音 + 1.25 拍切分同处一小节。
+
+    四分三连音每个占 2/3 拍（320 tick @DIV=480）。旧版的三连音判据只认
+    1/3 体系，这组音落不进任何一项，被当成附点八分记出去：一小节四拍印成
+    4.25 拍，`--verify` 报「印出 4.25 拍 / 拍号应 4 拍」。
+
+    第 1 小节：3×320（两拍）+ 600（1.25 拍）+ 240 + 120 = 4 拍
+    第 2 小节：8 个八分，收在小节线上，免得被弱起判定当成煞尾。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"QuarterTriplet"))
+    for i, p in enumerate([60, 62, 64]):
+        t1.note(0, p, 90, i * 320, 320)
+    t1.note(0, 65, 90, 960, DIV * 5 // 4)              # 1.25 拍
+    t1.note(0, 67, 90, 960 + DIV * 5 // 4, 240)        # 0.5 拍
+    t1.note(0, 69, 90, 960 + DIV * 5 // 4 + 240, 120)  # 0.25 拍
+    for i, p in enumerate([60, 62, 64, 65, 67, 69, 71, 72]):
+        t1.note(0, p, 90, DIV * 4 + i * 240, 240)
+
+    return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
+
+
+def build_meter_offset() -> bytes:
+    """0x58 写在小节线前 1 tick：拍号必须吸附到小节线。
+
+    3839 而不是 3840——导出器写早一个 tick 极常见。旧版照单全收，把第 2 小节
+    截成 1919 tick 的半小节，后面每一小节都从 3839 起算；跨在那 1 tick 上的
+    音符被量化器拆出「整段 + 40 tick 残片」，文本谱打出 `-%%`，
+    `--verify` 报「印出 1.125 拍 / 拍号应 1.25 拍」。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))   # 120BPM
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))        # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))               # C 大调
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"MeterOffset"))
+    for i, p in enumerate([60, 62, 64, 65]):
+        t1.note(0, p, 90, i * DIV, DIV)
+    t1.note(0, 67, 90, DIV * 4, DIV)
+    # 5/16 写在 3839（差 1 tick 就是第 3 小节线）
+    t1.add(DIV * 8 - 1, meta(0x58, bytes([5, 4, 24, 8])))
+    for i, p in enumerate([69, 71, 72, 74, 76]):
+        t1.note(0, p, 90, DIV * 8 + i * DIV * 5 // 4, DIV * 5 // 4)
 
     return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
 

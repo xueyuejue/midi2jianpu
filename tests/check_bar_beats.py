@@ -41,8 +41,13 @@ def default_exe():
     return p if os.path.exists(p) else os.path.join(ROOT, "build", "midi2jianpu")
 
 
-def bar_beats(bar):
-    """折算一小节印出来的拍数；认不出来的 token 返回 None。"""
+def bar_beats(bar, trip_unit=1.0 / 3):
+    """折算一小节印出来的拍数；认不出来的 token 返回 None。
+
+    trip_unit 是三连音组里每个音的名义拍数：八分三连音 1/3 拍、四分三连音
+    2/3 拍。文本谱两者都写成 `3(1 1 1 )`，字形上分不出来，所以调用方两种
+    都算一遍，能与拍号对上的那种才算数。
+    """
     toks = re.sub(r"\[[^\]]*\]", " ", bar).split()
     tot = 0.0
     trip = False
@@ -71,7 +76,7 @@ def bar_beats(bar):
             # 没有后缀时一条横线才是一拍。
             tot += SUF[suf] if suf else len(core)
         elif trip:
-            tot += 1.0 / 3
+            tot += trip_unit
         else:
             if suf not in SUF:
                 return None
@@ -121,7 +126,9 @@ def score_bars(lines):
                 if n >= at:
                     meter = changes[at]
             out.append({"meter": meter, "text": s.strip(),
-                        "beats": bar_beats(s), "last": i == len(bars) - 1,
+                        "beats": bar_beats(s),
+                        "beats_alt": bar_beats(s, 2.0 / 3),
+                        "last": i == len(bars) - 1,
                         "bar": n, "track": ti})
             n += 1
     return out
@@ -143,6 +150,9 @@ def violations(lines):
             continue
         if b["beats"] is not None and abs(b["beats"] - b["meter"]) <= 0.01:
             continue
+        # 四分三连音的单位在字形上看不出来，换 2/3 拍再对一次。
+        if abs(b.get("beats_alt", 0.0) - b["meter"]) <= 0.01:
+            continue
         nxt = bars[i + 1] if i + 1 < len(bars) else None
         if (nxt is not None and nxt["track"] == b["track"]
                 and abs(nxt["meter"] - b["meter"]) > 0.01
@@ -160,7 +170,9 @@ def bad_bars(lines):
     """含末小节在内，所有印出来与拍号不符的小节（末小节按惯例可不满）。"""
     return [(b["bar"], b["beats"], b["meter"], b["last"])
             for b in score_bars(lines)
-            if b["beats"] is not None and abs(b["beats"] - b["meter"]) > 0.01]
+            if b["beats"] is not None
+            and abs(b["beats"] - b["meter"]) > 0.01
+            and abs(b.get("beats_alt", 0.0) - b["meter"]) > 0.01]
 
 
 def render_lines(exe, mid, td, tag):

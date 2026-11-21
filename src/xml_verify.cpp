@@ -217,6 +217,57 @@ void auditMeasure(const std::string& xml, const std::string& pid,
             + num(cursor - want) + "）：导入器会按拍号补一串休止把小节撑满");
 }
 
+// HTML 谱面：每条谱轨的小节号必须是连续的自然数（首个印出来的号可以是 1
+// 或 2——没有弱起时第一小节的号不印，第二个小节起从 2 开始）。
+//
+// 为什么只查这一条：HTML 的音符列不带 tick，时间信息全在 CSS 的视觉排布里，
+// 按拍核对得把列宽、减时线、连梁重新反推一遍，那不是「自检」而是第二套
+// writer，误报会淹没真问题。小节号则是字符串里现成的结构量，跳号就说明
+// writer 少铺或多铺了一小节——谱面从那里开始整条错位，是真正会让用户
+// 拿到坏谱的那类问题。此前 HTML 只被查过「有没有 U+FFFD」。
+void auditHtmlBars(const std::string& html, std::vector<VerifyIssue>& issues) {
+    const std::string trackKey = "<div class='track'>";
+    const std::string barnoKey = "<span class='barno'>";
+    size_t pos = 0;
+    long trackNo = 0;
+    while (true) {
+        const size_t t = html.find(trackKey, pos);
+        if (t == kNpos) break;
+        const size_t next = html.find(trackKey, t + trackKey.size());
+        const size_t end = (next == kNpos) ? html.size() : next;
+        ++trackNo;
+
+        long prev = 0;
+        bool first = true;
+        size_t q = t;
+        while (true) {
+            const size_t b = html.find(barnoKey, q);
+            if (b == kNpos || b >= end) break;
+            const size_t v = b + barnoKey.size();
+            const size_t e = html.find("</span>", v);
+            if (e == kNpos || e > end) break;
+            long n = 0;
+            if (parseDigits(html.substr(v, e - v), n)) {
+                const std::string where = "HTML 谱面 第 " + num(trackNo) + " 条谱轨";
+                if (first) {
+                    if (n != 1 && n != 2)
+                        add(issues, where,
+                            "第一个小节号是 " + num(n) + "，应该是 1 或 2"
+                            "（没有弱起时第一小节的号不印）");
+                } else if (n != prev + 1) {
+                    add(issues, where,
+                        "小节号从 " + num(prev) + " 跳到 " + num(n)
+                        + "：中间的小节没有铺出来，后面的谱面会整体错位");
+                }
+                prev = n;
+                first = false;
+            }
+            q = e + 7;   // strlen("</span>")
+        }
+        pos = end;
+    }
+}
+
 }  // namespace
 
 VerifyReport verifyOutputs(const std::string& text, const std::string& html,
@@ -238,7 +289,13 @@ VerifyReport verifyOutputs(const std::string& text, const std::string& html,
                 "原文变成了问号");
     }
 
-    // ---- 2. MusicXML 结构 ----
+    // ---- 2. HTML 结构：小节号必须连续 ----
+    if (!html.empty()) {
+        auditHtmlBars(html, r.issues);
+        r.htmlChecked = true;
+    }
+
+    // ---- 3. MusicXML 结构 ----
     if (xml.empty()) return r;
     const std::vector<Part> parts = splitParts(xml);
     if (parts.empty()) {
@@ -248,7 +305,7 @@ VerifyReport verifyOutputs(const std::string& text, const std::string& html,
     r.parts = (int)parts.size();
     r.measures = (int)parts.front().measures.size();
 
-    // 2a) part-list 与正文必须一一对应。声明了却没有 <part>，导入后少一条
+    // 3a) part-list 与正文必须一一对应。声明了却没有 <part>，导入后少一条
     //     谱表；有 <part> 却没声明，多数据入器直接把它丢掉。
     std::vector<std::string> declared;
     {
@@ -278,7 +335,7 @@ VerifyReport verifyOutputs(const std::string& text, const std::string& html,
                 "声明了 " + id + "，正文却没有对应的 <part>：导入后少一条谱表");
     }
 
-    // 2b) 各 part 的小节数与小节号序列必须完全相同——score-partwise 是矩形谱，
+    // 3b) 各 part 的小节数与小节号序列必须完全相同——score-partwise 是矩形谱，
     //     小节靠「在自己 part 里的第几个」对齐，长短不一就整条谱表错位。
     const Part& base = parts.front();
     for (size_t i = 1; i < parts.size(); ++i) {
@@ -301,7 +358,7 @@ VerifyReport verifyOutputs(const std::string& text, const std::string& html,
         }
     }
 
-    // 2c) 逐个 part 查：小节号连续、尾节是整小节休止、每小节时值守恒。
+    // 3c) 逐个 part 查：小节号连续、尾节是整小节休止、每小节时值守恒。
     for (const auto& p : parts) {
         for (size_t k = 1; k < p.measures.size(); ++k) {
             const std::string& prev = p.measures[k - 1].number;
@@ -346,7 +403,9 @@ std::string formatVerifyReport(const VerifyReport& r, const std::string& label) 
                         + num(r.measures) + " 小节";
         if (r.implicitMeasures > 0)
             out += "（含 " + num(r.implicitMeasures) + " 个弱起/截短小节）";
-        out += "，各 part 等长、时值守恒、小节号连续、尾节均为整小节休止";
+        out += "，各 part 等长、时值守恒、";
+        out += r.htmlChecked ? "MusicXML 与 HTML 的小节号均连续" : "小节号连续";
+        out += "、尾节均为整小节休止";
         return out;
     }
     std::string out = pfx + "输出自检发现 " + num((long long)r.issues.size())

@@ -75,7 +75,11 @@ bool isArtTail(const std::string& s) {
 }
 
 // 一个音（或一条 '--' 延长线）的拍数。认不出来返回 false。
-bool componentBeats(const std::string& t, bool triplet, double* out) {
+// tripletUnit：三连音组里每个音的名义拍数——八分三连音 1/3 拍、四分三连音
+// 2/3 拍。文本谱统一写成 `3(1 1 1 )`，两种单位在字形上分不出来，所以调用方
+// 两种都算一遍，能对上哪一个就认哪一个。
+bool componentBeats(const std::string& t, bool triplet, double tripletUnit,
+                    double* out) {
     std::string s = t;
     if (s.empty()) return false;
     if (s[0] == '#' || s[0] == 'b') s.erase(0, 1);
@@ -117,7 +121,7 @@ bool componentBeats(const std::string& t, bool triplet, double* out) {
         return true;
     }
     if (triplet) {
-        *out = 1.0 / 3.0;
+        *out = tripletUnit;
         return true;
     }
     *out = sufBeats;
@@ -156,7 +160,8 @@ std::vector<std::string> splitWs(const std::string& s) {
 
 // 一小节（'|' 之前的那一段）印出来的拍数。
 // ok=false 表示这一行里有认不出的写法，本行放弃判定。
-bool segmentBeats(const std::string& seg, double* beats, bool* any) {
+bool segmentBeats(const std::string& seg, double* beats, bool* any,
+                  double tripletUnit = 1.0 / 3.0) {
     *beats = 0.0;
     *any = false;
     const std::vector<std::string> toks = splitWs(stripMarks(seg));
@@ -179,7 +184,7 @@ bool segmentBeats(const std::string& seg, double* beats, bool* any) {
         const size_t plus = t.rfind('+');
         if (plus != std::string::npos) t = t.substr(plus + 1);
         double b = 0.0;
-        if (!componentBeats(t, triplet, &b)) return false;
+        if (!componentBeats(t, triplet, tripletUnit, &b)) return false;
         *beats += b;
         *any = true;
     }
@@ -247,7 +252,12 @@ std::string clip(const std::string& s, size_t n) {
 
 struct PrintedBar {
     double beats = 0.0;
+    // 同一小节按「四分三连音（2/3 拍）」重算的拍数。`3(1 1 1 )` 这种写法里
+    // 看不出每组是八分三连音还是四分三连音，两种都能与字形相容；判定时
+    // 只要有一种能与拍号对上就算守恒，避免把正常的四分三连音报成少拍。
+    double beatsAlt = 0.0;
     bool ok = false;      // 认得出这一节的每一个 token
+    bool okAlt = false;   // 同上，按 2/3 拍的三连音单位
     std::string text;     // 原文（给报告用）
 };
 
@@ -294,9 +304,12 @@ TextVerifyReport verifyTextScore(const std::string& text, const MidiData& data,
             const std::string seg = line.substr(s, bar - s);
             s = bar + 1;
             PrintedBar pb;
-            bool any = false;
+            bool any = false, anyAlt = false;
             const bool parsed = segmentBeats(seg, &pb.beats, &any);
+            const bool parsedAlt = segmentBeats(seg, &pb.beatsAlt, &anyAlt,
+                                                2.0 / 3.0);
             pb.ok = parsed && any;
+            pb.okAlt = parsedAlt && anyAlt;
             pb.text = clip(stripMarks(seg), 60);
             // 去掉首尾空白，报告里好看一点
             size_t a = 0, b = pb.text.size();
@@ -378,6 +391,9 @@ TextVerifyReport verifyTextScore(const std::string& text, const MidiData& data,
                 (double)sig.numerator * 4.0 / (double)(1 << sig.denomPow);
             r.bars++;
             if (std::fabs(pb.beats - meterBeats) <= kTol) continue;
+            // 三连音单位在字形上不可见：换 2/3 拍再对一次（见 PrintedBar）。
+            if (pb.okAlt && std::fabs(pb.beatsAlt - meterBeats) <= kTol)
+                continue;
             TextBarIssue is;
             is.line = (int)ti + 1;
             is.bar = barNo;

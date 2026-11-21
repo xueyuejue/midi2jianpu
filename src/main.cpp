@@ -766,17 +766,23 @@ int main(int argc, char** argv) {
         // 离谱的时间戳 / [offset:] / start_beat 换算成 32 位 tick 会溢出，
         // 旧版把环绕后的假 tick 当真，歌词被静默挂到曲首。现在显式丢弃并
         // 告诉用户，而不是让控制台继续宣称「歌词已加载: N 行」。
+        // LRC 一行可以有好几个字，JSON 的每个元素却就是**一个字**：
+        // 同一条提示对两种格式都说「行」，JSON 用户看到「歌词已加载: 46 行」
+        // 会以为文件里有 46 句词，其实只有 46 个字。
+        const std::string unit = isLrc ? "行" : "字";
         if (droppedLyricLines)
-            std::cerr << "警告: 已忽略 " << droppedLyricLines
-                      << " 行歌词（时间戳 / [offset:] / start_beat 数值"
-                         "超出谱面时间轴范围，或 JSON 歌词行格式错误）\n";
-        std::cout << "歌词已加载: " << lyricLines.size() << " 行\n";
+            std::cerr << "警告: 已忽略 " << droppedLyricLines << " "
+                      << (isLrc ? "行歌词" : "个字")
+                      << "（时间戳 / [offset:] / start_beat 数值"
+                         "超出谱面时间轴范围，或歌词条目格式错误）\n";
+        std::cout << "歌词已加载: " << lyricLines.size() << " " << unit << "\n";
         // 文件读到了却一行都没解析出来，通常只有两种：LRC 的时间戳不是
         // [mm:ss.xx] 形状，或者 JSON 根本不是 [{start_beat,text}] 数组。
         // 提示必须按实际用过的解析器说——早先不管走哪条路都说「检查是否以
         // [mm:ss.xx] 时间戳开头」，把 JSON 用户指去改一个不存在的字段。
         if (lyricLines.empty()) {
-            std::cerr << "警告: 歌词文件里没有解析出任何歌词行（按 "
+            std::cerr << "警告: 歌词文件里没有解析出任何歌词"
+                      << (isLrc ? "行" : "字") << "（按 "
                       << (isLrc ? "LRC" : "JSON") << " 解析 "
                       << lyricsPath << "）\n";
             if (isLrc)
@@ -794,7 +800,8 @@ int main(int argc, char** argv) {
             if (altCount)
                 std::cerr << "      内容看起来是 " << (isLrc ? "JSON" : "LRC")
                           << "（按另一种格式能解析出 " << altCount
-                          << " 行），检查文件扩展名是否写反\n";
+                          << (isLrc ? " 字" : " 行")
+                          << "），检查文件扩展名是否写反\n";
         }
         if (isLrc) {
             const int tc = m2j::tempoChangeCount(data);

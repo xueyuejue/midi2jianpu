@@ -4095,8 +4095,8 @@ def main():
     huge_json = v100_write('[{"start_beat":999999999999,"text":"世界"}]\n',
                            "huge", ".json")
     rc, out, err = run(exe, v100mid, "--lyrics", huge_json, "--html", v100html)
-    check(rc == 0 and "已忽略 1 行歌词" in err,
-          "JSON start_beat 越界也明确报告", err)
+    check(rc == 0 and "已忽略 1 个字" in err,
+          "JSON start_beat 越界也明确报告（JSON 条目按「字」计）", err)
     check(v100_bad(v100_lyrics(v100html)),
           "JSON 越界歌词不再挂到曲首", err)
     ok_json = v100_write('[{"start_beat":0,"text":"你好"}]\n', "ok", ".json")
@@ -4147,22 +4147,22 @@ def main():
     rc, out, err = v101_run_fast([v101mid, "--lyrics", f101,
                                   "--html", v101html])
     check(rc is not None, "text 后无引号：8 秒内必须返回（旧版无限挂起）", err)
-    check(rc == 0 and "已忽略 1 行歌词" in err,
-          "text 后无引号：明确报告丢弃 1 行", err)
+    check(rc == 0 and "已忽略 1 个字" in err,
+          "text 后无引号：明确报告丢弃 1 个字", err)
     check("start_beat" not in v101_lyrics(v101html),
           "text 后无引号：整份 JSON 源码不再被塞进谱面", err)
 
     u101 = v101_write('[{"start_beat":0,"text":"你好', "unclosed")
     rc, out, err = v101_run_fast([v101mid, "--lyrics", u101,
                                   "--html", v101html])
-    check(rc == 0 and "已忽略 1 行歌词" in err,
+    check(rc == 0 and "已忽略 1 个字" in err,
           "字符串未闭合：丢弃该对象并报告", err)
 
     n101 = v101_write('[{"start_beat":0,"text":123},'
                       '{"start_beat":4,"text":"世界"}]', "numtext")
     rc, out, err = v101_run_fast([v101mid, "--lyrics", n101,
                                   "--html", v101html])
-    check(rc == 0 and "已忽略 1 行歌词" in err,
+    check(rc == 0 and "已忽略 1 个字" in err,
           "text 是数字：畸形对象计入忽略警告", err)
     check("世界" in v101_lyrics(v101html)
           and all(ch not in v101_lyrics(v101html) for ch in "{}:_"),
@@ -4203,7 +4203,7 @@ def main():
     h101 = v101_write('[{"start_beat":999999999999,"text":"世界"}]', "huge")
     rc, out, err = v101_run_fast([v101mid, "--lyrics", h101,
                                   "--html", v101html])
-    check(rc == 0 and "已忽略 1 行歌词" in err,
+    check(rc == 0 and "已忽略 1 个字" in err,
           "v1.100.1 的 512 小节 cap 未被本轮改动破坏", err)
 
     check(open(v101mid, "rb").read() == open(injmid, "rb").read(),
@@ -4445,7 +4445,7 @@ def main():
 
     bad103 = v103_write('[{"start_beat":0,"text":123}]', "numtext")
     rc, out, err = v103_run(bad103)
-    check(rc == 0 and "已忽略 1 行歌词" in err,
+    check(rc == 0 and "已忽略 1 个字" in err,
           "v1.101 的 \"text\":123 畸形对象仍明确丢弃", err)
 
     c0l103 = v103_write(b"[00:00.00]\xe4\xbd\xa0\x01\x7f\xe5\xa5\xbd\n",
@@ -4615,8 +4615,9 @@ def main():
     # 反过来一样：未知扩展名里的 JSON 仍要按 JSON 解析，别把嗅探做成单向阀。
     j112 = v103_write(v103_json, "j112", ".txt")
     rc, out, err = v103_run(j112)
-    check(rc == 0 and v103_lyrics() == "你好世界" and "歌词已加载: 4 行" in out,
-          ".txt 里的 JSON 数组照旧按 JSON 解析（每个字自成一行）", out[-160:])
+    check(rc == 0 and v103_lyrics() == "你好世界" and "歌词已加载: 4 字" in out,
+          ".txt 里的 JSON 数组照旧按 JSON 解析（每个元素是一个字，按字计数）",
+          out[-160:])
 
     # 扩展名与内容写反时，0 行提示必须点名「按哪套解析器看过」以及另一种格式
     # 能不能救回来——旧版不管走哪条路都说「检查是否以 [mm:ss.xx] 时间戳开头」，
@@ -4630,7 +4631,7 @@ def main():
 
     rev112 = v103_write("[00:00.00]\u4f60\n", "rev112", ".json")
     rc, out, err = v103_run(rev112)
-    check(rc == 0 and "歌词已加载: 0 行" in out and "按 JSON 解析" in err,
+    check(rc == 0 and "歌词已加载: 0 字" in out and "按 JSON 解析" in err,
           ".json 里放 LRC：提示写明是按 JSON 解析的", err)
     check("内容看起来是 LRC" in err and "能解析出 1 行" in err,
           "并说明按 LRC 能解析出 1 行，扩展名写反了", err)
@@ -6406,6 +6407,68 @@ def main():
     check(r2 == 0 and "只作用于文本谱" not in e2,
           "同时给了 --output 文本谱时不误报")
     check(same, "--bar-numbers 对 HTML 输出确实无效（这点如实说出来，不假装有效）")
+
+    group("[151] v1.157.0 四分三连音 / 变拍号吸附 / 增强 LRC / HTML 小节号自检")
+    # ① 四分三连音每个 2/3 拍。旧版判据只认 1/3 体系，整组被当成附点八分，
+    #    一小节四拍印成 4.25 拍（--verify 报「印出 4.25 拍 / 拍号应 4 拍」）。
+    tq = os.path.join(FIXTURES, "triplet_quarter.mid")
+    r, out, err = run(exe, tq)
+    check(r == 0 and "3(" in out, "四分三连音在文本谱里成组标注 3(...)")
+    check("4.25" not in err, "不再报「印出 4.25 拍」: " + err.strip()[:160])
+    r, out, err = run(exe, tq, "--verify")
+    check(r == 0 and "拍数守恒" in out, "四分三连音 --verify 通过（rc=0）",
+          err.strip()[:160])
+    with tempfile.TemporaryDirectory() as td:
+        xp = os.path.join(td, "tq.xml")
+        run(exe, tq, "--musicxml", xp)
+        xml = open(xp, encoding="utf-8").read() if os.path.exists(xp) else ""
+    check("<time-modification><actual-notes>3</actual-notes>" in xml and
+          "<type>quarter</type>" in xml,
+          "MusicXML 四分三连音写 quarter + 3:2 time-modification")
+
+    # ② 0x58 写在小节线前 1 tick（3839）：必须吸附到 3840。旧版把第 2 小节
+    #    截成 1919 tick，跨在边界上的音被拆出 40 tick 残片，谱面打出 `-%%`。
+    mo = os.path.join(FIXTURES, "meter_offset.mid")
+    r, out, err = run(exe, mo, "--verify")
+    check(r == 0 and "拍数守恒" in out, "0x58 偏 1 tick 时 --verify 通过（rc=0）",
+          err.strip()[:160])
+    check("-%%" not in out and "%%" not in out.replace("1 2 3 4", ""),
+          "没有 40 tick 残片打出的三十二分尾巴: " + out.strip()[:160])
+    check("[5/16]" in out and "1 2 3 4" in out,
+          "拍号从第 3 小节起按 5/16 划，前两小节仍是 4/4")
+
+    # ③ 增强 LRC 里未闭合的 `<数字…:` 只丢标签本体，后面的正文必须留下。
+    #    旧版「数字打头且出现过冒号」就 break：整行变成空行，控制台报
+    #    「歌词已加载: 0 行」，用户以为歌词文件坏了。
+    with tempfile.TemporaryDirectory() as td:
+        lp = os.path.join(td, "open.lrc")
+        with open(lp, "w", encoding="utf-8") as f:
+            f.write("[00:01.00]<3 心:跳一下\n[00:03.00]前半<00:03.50后半\n")
+        hp = os.path.join(td, "open.html")
+        r, out, err = run(exe, tq, "--lyrics", lp, "--html", hp)
+        html = open(hp, encoding="utf-8").read() if os.path.exists(hp) else ""
+    check("歌词已加载: 2 行" in out, "两行 LRC 都算加载成功（不再吞成 0 行）",
+          out.strip()[:160])
+    for w in ("心", "跳", "后", "半"):
+        check(w in html, "未闭合标签后面的字「%s」留在谱面上" % w)
+
+    # ④ JSON 歌词的每个元素是一个字：CLI 提示不能说「N 行」。
+    with tempfile.TemporaryDirectory() as td:
+        jp = os.path.join(td, "l.json")
+        with open(jp, "w", encoding="utf-8") as f:
+            f.write('[{"start_beat":0,"text":"春"},'
+                    '{"start_beat":1,"text":"风"}]')
+        r, out, err = run(exe, tq, "--lyrics", jp,
+                          "--musicxml", os.path.join(td, "l.xml"))
+    check("歌词已加载: 2 字" in out, "JSON 歌词按「字」计数: " + out.strip()[:160])
+    check("歌词已加载: 2 行" not in out, "JSON 歌词不再说成「行」")
+
+    # ⑤ --verify 现在也看 HTML：导出 HTML 时报告里要写清楚两侧都查过。
+    with tempfile.TemporaryDirectory() as td:
+        hp = os.path.join(td, "s.html")
+        r, out, err = run(exe, sample, "--html", hp, "--verify")
+    check(r == 0 and "MusicXML 与 HTML 的小节号均连续" in out,
+          "--verify 一并核对 HTML 小节号", out.strip()[-200:])
 
     print("\n" + "-" * 48)
     if failures:

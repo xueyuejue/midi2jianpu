@@ -104,13 +104,21 @@ static std::pair<std::string, bool> durTypeDot(double beats) {
         double dotted = s.base * 1.5;
         if (std::abs(beats - dotted) / dotted < 0.08) return {s.type, true};
     }
-    // 兜底：取最接近的基础时值
-    double best = 1e9; std::string bestType = "quarter";
+    // 兜底：取最接近的基础时值**或附点档**。
+    //
+    // 只比非附点基值会挑出更差的那个：`--no-quantize` 下 624 tick（1.3 拍）
+    // 离附点四分（1.5）只差 0.2 拍，离四分（1.0）差 0.3 拍，旧实现却写
+    // quarter。`<duration>` 永远是精确值，`<type>` 只决定符头画成什么样，
+    // 能贴近一点就别让 MuseScore 画出明显更短的符头。
+    double best = 1e9; std::string bestType = "quarter"; bool bestDot = false;
     for (auto& s : stds) {
-        double d = std::abs(beats - s.base);
-        if (d < best) { best = d; bestType = s.type; }
+        for (int dot = 0; dot < 2; ++dot) {
+            const double v = dot ? s.base * 1.5 : s.base;
+            const double d = std::abs(beats - v);
+            if (d < best) { best = d; bestType = s.type; bestDot = (dot != 0); }
+        }
     }
-    return {bestType, false};
+    return {bestType, bestDot};
 }
 
 // 休止符时值拆分：音符走 quantizeTiming() 吸附到标准档，休止符却是按两个

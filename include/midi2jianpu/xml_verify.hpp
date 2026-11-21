@@ -3,9 +3,10 @@
 // 判据分两类，处置方式不同：
 //
 //   * **自洽性**（本模块）：一份输出自己跟定义对不对得上——各 part 等长、
-//     每小节时值 == 拍号、小节号连续、part-list 与正文一致、短轨尾节是整小节
-//     休止、正文里没有 U+FFFD。这类判据不需要任何旧版基线，对**用户自己的
-//     MIDI** 同样成立，所以随产品出厂，`--verify` 现场就能查。
+//     每小节时值 == 拍号、小节号连续（MusicXML 与 HTML 两侧都查）、part-list
+//     与正文一致、短轨尾节是整小节休止、正文里没有 U+FFFD。这类判据不需要
+//     任何旧版基线，对**用户自己的 MIDI** 同样成立，所以随产品出厂，
+//     `--verify` 现场就能查。
 //   * **回归性**（留在 tests/*.py）：同一份素材，新版与旧版的输出应当逐字节
 //     一致。这必须同时跑两个可执行文件再比对，Python 侧的 subprocess +
 //     difflib 是更合适的工具，本模块不掺和。
@@ -33,6 +34,7 @@ struct VerifyReport {
     int parts = 0;             // MusicXML 里的 <part> 个数
     int measures = 0;          // 每个 part 的小节数（各 part 等长）
     int implicitMeasures = 0;  // 其中标了 implicit="yes" 的弱起 / 被截短小节
+    bool htmlChecked = false;  // 本次真的拿到 HTML 并查过它的结构
 
     bool ok() const { return issues.empty(); }
 };

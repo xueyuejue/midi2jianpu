@@ -49,7 +49,14 @@ import os
 # 旧版把这些时值吸成 1 / 1.5 / 4 拍、缺的拍数在 MusicXML 里补成休止，三端
 # 输出都与修复后不同，登记为跳过。它已在 v1.155.0 基线里，本轮起撤出本表，
 # 照常参与零回归。
-NEW_FIXTURES = set()
+#
+# v1.157.0 新增两份素材，旧版基线里没有它们，逐字节比对必然报红，登记为跳过：
+#   triplet_quarter.mid —— 四分三连音。旧版判据只认 1/3 体系，2/3 拍落不进任何
+#     一项，整组被记成附点八分，文本谱 / HTML / MusicXML 三端都与修复后不同。
+#   meter_offset.mid   —— 0x58 写在小节线前 1 tick。旧版把第 2 小节截成 1919 tick，
+#     跨在边界上的音被拆出 40 tick 残片，谱面与 MusicXML 都对不上。
+# 这两份已进入 v1.157.0 基线，下一轮（v1.158.0）起撤出本表，照常参与零回归。
+NEW_FIXTURES = {"triplet_quarter.mid", "meter_offset.mid"}
 
 # v1.144.0 曾经有一张 HTML_CHANGED = {"parts.mid", "overfull.mid"}：那一版把
 # 倚音前面的空拍补成休止列，`--regress` 对这两份既有素材放行了「HTML 有意

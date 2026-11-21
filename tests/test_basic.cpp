@@ -255,6 +255,33 @@ int main() {
     for (bool b : eighthTrip) if (b) anyTrip = true;
     check(!anyTrip, "八分音符连奏不检测为三连音");
 
+    // 四分三连音：三个音平分两拍，每个 2/3 拍（320 tick @div=480）。
+    // 这张表里曾经只有 1/3 体系，2/3 落不进任何一项，于是整组被当成附点
+    // 八分写出去，一小节四拍的三连音印成 2.25 拍。
+    std::vector<NoteEvent> quarterTrip;
+    for (int i = 0; i < 3; i++) {
+        NoteEvent n;
+        n.startTicks = i * 320;
+        n.durationTicks = 320;
+        n.pitch = 60 + i;
+        quarterTrip.push_back(n);
+    }
+    auto qt = detectTriplets(quarterTrip, 480);
+    check(qt.size() == 3 && qt[0] && qt[1] && qt[2],
+          "四分三连音（每个 2/3 拍）检测为三连音");
+
+    // 附点八分 0.75 拍与 2/3 拍只差 0.083 拍，必须仍判成二分数值。
+    std::vector<NoteEvent> dottedEighth;
+    for (int i = 0; i < 3; i++) {
+        NoteEvent n;
+        n.startTicks = i * 360;
+        n.durationTicks = 360;
+        n.pitch = 60 + i;
+        dottedEighth.push_back(n);
+    }
+    auto de = detectTriplets(dottedEighth, 480);
+    check(!(!de.empty() && de[0]), "连续附点八分不检测为三连音");
+
     std::cout << "\n测试时值量化（真实录音 MIDI 的门限衰减）\n";
     {
         // 造一份"八分音符 + 门限 85%"的数据：音头间隔 480，实际时长 408
@@ -11077,6 +11104,114 @@ int main() {
         check(hEsc.find("&lt;b&gt;") != std::string::npos &&
                   hEsc.find("<b>") == std::string::npos,
               "调号来源里的尖括号被转义，实际: " + hEsc);
+    }
+
+    std::cout << "\n测试 v1.157.0：四分三连音 / 变拍号吸附 / 增强 LRC / HTML 自检\n";
+    {
+        // ① 四分三连音在文本谱里必须写成 3( ... )，且拍数核对能过。
+        MidiData td;
+        td.division = 480;
+        td.timeSig = TimeSignature{4, 2, true};
+        int pitches[14] = {60, 62, 64, 65, 67, 69,
+                           71, 72, 74, 76, 60, 62, 64, 65};
+        int starts[14] = {0, 320, 640, 960, 1560, 1800,
+                          1920, 2160, 2400, 2640, 2880, 3120, 3360, 3600};
+        // 第 1 小节：四分三连音（3×320）+ 1.25 拍（600）+ 八分 + 十六分；
+        // 第 2 小节铺满八分，收在小节线上，免得被弱起判定当成煞尾。
+        int durs[14] = {320, 320, 320, 600, 240, 120,
+                        240, 240, 240, 240, 240, 240, 240, 240};
+        for (int i = 0; i < 14; i++) {
+            NoteEvent n;
+            n.startTicks = starts[i];
+            n.durationTicks = durs[i];
+            n.pitch = pitches[i];
+            n.track = 0;
+            n.channel = 0;
+            td.notes.push_back(n);
+        }
+        std::string tj = formatJianpu(td, estimateKey(td));
+        check(tj.find("3(") != std::string::npos,
+              "四分三连音印出 3( 分组，实际: " + tj);
+        const TextVerifyReport tvr = verifyTextScore(tj, td, false);
+        check(tvr.ok() && tvr.bars > 0,
+              "四分三连音小节拍数守恒（不再报 4.25/4）");
+
+        // ② 三连音的 <type> 必须是名义时值：2/3 拍 × 1.5 = 四分。
+        const std::string tx = renderMusicXml(td, estimateKey(td));
+        check(tx.find("<duration>320</duration>") != std::string::npos &&
+                  tx.find("<time-modification><actual-notes>3</actual-notes>")
+                      != std::string::npos,
+              "MusicXML 四分三连音带 time-modification");
+        const size_t tp = tx.find("<duration>320</duration>");
+        check(tp != std::string::npos &&
+                  tx.find("<type>quarter</type>", tp) != std::string::npos,
+              "四分三连音的 <type> 是 quarter（不是 eighth）");
+
+        // ③ 0x58 写在小节线前 1 tick：吸附到 3839→3840，不再截出 1919 tick
+        //    的半小节（否则后面每小节都从 3839 起算，音符被拆出 40 tick 残片）。
+        MidiData md;
+        md.division = 480;
+        md.timeSig = TimeSignature{4, 2, true};
+        TimeSigPoint t0;
+        t0.tick = 0;
+        t0.sig = TimeSignature{4, 2, true};
+        md.timeSigChanges.push_back(t0);
+        TimeSigPoint t1;
+        t1.tick = 3839;                        // 差 1 tick
+        t1.sig = TimeSignature{5, 4, true};    // 5/16
+        md.timeSigChanges.push_back(t1);
+        NoteEvent a;
+        a.startTicks = 0; a.durationTicks = 1920; a.pitch = 60; a.track = 0;
+        NoteEvent b;
+        b.startTicks = 1920; b.durationTicks = 1920; b.pitch = 62; b.track = 0;
+        md.notes = {a, b};
+        const std::vector<TimeSigPoint> mc = meterChangesOf(md);
+        check(mc.size() == 1 && mc[0].tick == 3840,
+              "写在小节线前 1 tick 的 0x58 被吸附到小节线");
+        const BarGrid mg = barGridOf(md);
+        check(mg.barSpan(1) == 1920, "第 2 小节仍是完整的 4 拍（不被截短）");
+
+        // ④ 增强 LRC：未闭合的 `<数字…:` 只丢标签本体，后面的正文必须留下。
+        std::vector<LyricLine> ll = parseLrcText(
+            "[00:01.00]<3 心:跳一下\n[00:03.00]前半<00:03.50后半\n", md, nullptr);
+        std::string joined;
+        for (const auto& l : ll) joined += l.text;
+        check(joined.find("心") != std::string::npos &&
+                  joined.find("跳一下") != std::string::npos,
+              "`<3 心:跳一下` 整句保留（不再吞成空行），实际: " + joined);
+        check(joined.find("后半") != std::string::npos,
+              "`前半<00:03.50后半` 的后半句保留，实际: " + joined);
+
+        // ⑤ HTML 小节号自检：跳号必须报出来。
+        const std::string badHtml =
+            "<div class='track'>"
+            "<span class='barno'>2</span><span class='barno'>3</span>"
+            "<span class='barno'>5</span></div>";
+        const VerifyReport vr = verifyOutputs("", badHtml, "");
+        check(!vr.ok() && vr.htmlChecked, "HTML 小节号跳号被自检抓出");
+        const std::string okHtml =
+            "<div class='track'>"
+            "<span class='barno'>2</span><span class='barno'>3</span>"
+            "<span class='barno'>4</span></div>";
+        const VerifyReport vr2 = verifyOutputs("", okHtml, "");
+        check(vr2.ok(), "HTML 小节号连续时不误报");
+
+        // ⑥ 兜底 <type> 也要比附点档：624 tick（1.3 拍）离附点四分更近。
+        MidiData dd;
+        dd.division = 480;
+        dd.timeSig = TimeSignature{4, 2, true};
+        NoteEvent dn;
+        dn.startTicks = 0; dn.durationTicks = 624; dn.pitch = 60; dn.track = 0;
+        dd.notes = {dn};
+        const std::string dx = renderMusicXml(dd, estimateKey(dd));
+        check(dx.find("<duration>624</duration><tie type=\"start\"/>") !=
+                      std::string::npos ||
+                  dx.find("<duration>624</duration>") != std::string::npos,
+              "624 tick 音符的 duration 保留原值");
+        const size_t dp = dx.find("<duration>624</duration>");
+        check(dp != std::string::npos &&
+                  dx.find("<type>quarter</type><dot/>", dp) != std::string::npos,
+              "624 tick（1.3 拍）兜底选附点四分而不是四分");
     }
 
     std::cout << "\n------------------------------------------------\n";

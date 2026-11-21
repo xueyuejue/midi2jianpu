@@ -3361,6 +3361,39 @@ if (existsSync(twoLyrics76)) {
     '选 D 之后谱面确实是 1=D（页眉与调性一致）', picked);
 }
 
+// ---- 93. v1.157.0 四分三连音在网页版也成组标注，增强 LRC 不再吞整句 ----
+// 网页与 CLI 共用 notation.cpp 的三连音判据：只认 1/3 体系时，四分三连音
+// （每个 2/3 拍）会被当成附点八分画出去，一小节四拍变 4.25 拍。
+{
+  const tq = new Uint8Array(readFileSync(path.join(FIXTURES, 'triplet_quarter.mid')));
+  const p = mod._malloc(tq.length);
+  mod.HEAPU8.set(tq, p);
+  const html = mod.UTF8ToString(mod._midi2jianpu_html(p, tq.length, -1, 1)) || '';
+  const xml = mod.UTF8ToString(mod._midi2jianpu_musicxml(p, tq.length, -1, 1)) || '';
+
+  // 歌词：未闭合的 `<数字…:` 只丢标签本体。旧版把整行剩余的字全丢掉，
+  // 网页提示栏还会显示「未识别出歌词」。
+  const lrc = '[00:01.00]<3 心:跳一下';
+  const n = mod.lengthBytesUTF8(lrc) + 1;
+  const lp = mod._malloc(n);
+  mod.stringToUTF8(lrc, lp, n);
+  const info = mod.UTF8ToString(mod._midi2jianpu_lyric_info(p, tq.length, lp)) || '';
+  mod._free(lp);
+  mod._free(p);
+
+  check(html.includes('trip'), '四分三连音在网页谱面上成组标注（trip）',
+    html.slice(0, 160));
+  check(xml.includes('<time-modification><actual-notes>3</actual-notes>'),
+    '网页导出的 MusicXML 带 3:2 time-modification', xml.slice(0, 160));
+  check(xml.includes('<type>quarter</type>'),
+    '四分三连音的 <type> 是 quarter（不是 eighth）');
+  // `<3 心:跳一下` 共 8 个字（含字面量 `<3`）。旧版在这里直接把整行丢掉，
+  // 网页提示栏显示「未识别出歌词行」。
+  const parsed = (info.match(/，?按 (?:LRC|JSON) 解析 (\d+) 字/) || [])[1];
+  check(parsed && Number(parsed) >= 7,
+    '未闭合增强标签不再吞掉后面的正文（解析出 ' + parsed + ' 字）', info);
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

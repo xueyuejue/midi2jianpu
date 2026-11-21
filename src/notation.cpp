@@ -634,6 +634,18 @@ std::vector<long> splitNotatableTicks(long ticks, int division) {
     return out;
 }
 
+// 这个时值能不能「一段不差地」记出来：要么本身就是一个可记谱档位，要么能
+// 由若干档位贪心拼成（文本谱写 `1 -=`、HTML 首列 + 续列、MusicXML 用
+// <tie> 连段）。量化时用它判断「保住原值会不会让谱面记不出」。
+static bool canNotateExactly(long ticks, int division) {
+    if (ticks <= 0 || division <= 0) return false;
+    if (nearestNotatableTicks(ticks, division) == ticks) return true;
+    const std::vector<long> parts = splitNotatableTicks(ticks, division);
+    long sum = 0;
+    for (long p : parts) sum += p;
+    return !parts.empty() && sum == ticks;
+}
+
 // ---- 时值量化 ----
 // 合法的记谱时值（单位为拍，1 拍 = 四分音符）。
 // 同时包含二进制细分与三连音两套体系，量化时取最近者。
@@ -803,6 +815,20 @@ QuantizeReport quantizeTiming(MidiData& data) {
     rep.laneGate = laneEffective ? laneGate : 1.0;
 
     // ---- 第二遍：吸附音头与音尾 ----
+    //
+    // 音尾正好落在小节线上时不能乱吸：0x58 写在半小节中间会截出一个 2.25 拍
+    // 的短小节，里面的音确实「填满到小节末」，吸附到 2 拍会让那 0.25 拍凭空
+    // 消失（文本谱少拍，MusicXML 按小节末补齐，三端分叉）。只有存在变拍号时
+    // 才会出现这种短小节，所以网格按需建，没有变拍号的素材完全走老路径。
+    const bool hasMeterChange = !meterChangesOf(data).empty();
+    BarGrid qgrid;
+    bool qgridReady = false;
+    auto barEndOf = [&](long tick) -> long {
+        if (!hasMeterChange) return -1;
+        if (!qgridReady) { qgrid = barGridOf(data); qgridReady = true; }
+        if (qgrid.starts.empty()) return -1;
+        return qgrid.barEnd(qgrid.barIndex(tick));
+    };
     for (auto& kv : byTrack) {
         auto& idxs = kv.second;
         std::sort(idxs.begin(), idxs.end(), [&](size_t a, size_t b) {
@@ -905,7 +931,13 @@ QuantizeReport quantizeTiming(MidiData& data) {
                     dur = nextInLane - s;
 
                 long snapped = (long)std::llround(snapBeats((double)dur / div) * div);
-                if (snapped > 0) dur = snapped;
+                // 填满截短小节的音：音尾压在小节线上、且时值能被可记谱档位
+                // 精确拼出（2.25 拍 = 二分 + 十六分），就是真实音长，
+                // 吸附只会把它削成 2 拍。其余情况照旧吸附。
+                const long be = barEndOf(s);
+                const bool barAligned =
+                    be > 0 && s + dur == be && canNotateExactly(dur, div);
+                if (snapped > 0 && !barAligned) dur = snapped;
                 if (dur < 1) dur = 1;
 
                 if (dur != oldDur) {
@@ -940,13 +972,18 @@ static std::string dynamicLevel(int val) {
 // 检测三连音: 返回每个音符是否属于三连音组
 //
 // 旧实现只判断"连续三个时值相近的音符"，于是任何八分音符连奏都会被误判，
-// 整份谱子被 3( ... ) 包住。三连音的时值必然属于 1/3 拍体系（1/3、1/6、1/12 拍），
-// 而这个区间又和二分数值明显不同，据此判断才可靠。
+// 整份谱子被 3( ... ) 包住。三连音的时值必然属于 1/3 拍体系，而这个区间
+// 又和二分数值明显不同，据此判断才可靠。
+//
+// 表里必须同时有 1/3 与 2/3：八分三连音每个占 1/3 拍，四分三连音每个占
+// 2/3 拍。漏掉 2/3 的后果不是"少标一个 3("，而是那组音被当成附点八分
+// （0.75 拍）写出去，一小节四拍的三连音变成 2.25 拍，整份谱每过一组就
+// 多出 0.25 拍——`--verify` 只能报「印出 4.25 拍 / 拍号应 4 拍」。
 std::vector<bool> detectTriplets(const std::vector<NoteEvent>& notes, int division) {
     std::vector<bool> isTriplet(notes.size(), false);
     if (division <= 0 || notes.size() < 3) return isTriplet;
 
-    static const double TERNARY[] = {1.0 / 3, 1.0 / 6, 1.0 / 12};
+    static const double TERNARY[] = {1.0 / 3, 2.0 / 3, 1.0 / 6, 1.0 / 12};
     static const double BINARY[]  = {3.0 / 2, 1.0, 3.0 / 4, 1.0 / 2, 3.0 / 8, 1.0 / 4, 1.0 / 8};
 
     auto relErr = [](double v, const double* arr, int n) {
@@ -967,8 +1004,10 @@ std::vector<bool> detectTriplets(const std::vector<NoteEvent>& notes, int divisi
         if (std::abs(d1 - d2) / d1 > 0.12) continue;
         if (std::abs(d2 - d3) / d2 > 0.12) continue;
         // 时值必须贴近 1/3 体系，且不能同时贴近二分数值
-        if (relErr(d1, TERNARY, 3) > 0.12) continue;
-        if (relErr(d1, BINARY, 7) < 0.10) continue;
+        if (relErr(d1, TERNARY,
+                   (int)(sizeof(TERNARY) / sizeof(TERNARY[0]))) > 0.12) continue;
+        if (relErr(d1, BINARY, (int)(sizeof(BINARY) / sizeof(BINARY[0]))) < 0.10)
+            continue;
         // 三个音首尾相接，无间隙
         if (std::abs((notes[i + 1].startTicks - notes[i].startTicks)
                      - notes[i].durationTicks) > tol) continue;
@@ -1116,11 +1155,42 @@ std::vector<TimeSigPoint> meterChangesOf(const MidiData& data) {
     }
     TimeSignature cur = data.timeSig.valid ? data.timeSig : uniq.front().sig;
     std::vector<TimeSigPoint> out;
+    // 拍号应当落在小节线上，可导出器常常写早 / 写晚几个 tick（3839 写、
+    // 3840 才是小节线）。旧实现照单全收，于是第 2 小节被截成 1919 tick 的
+    // 半小节：后面每一小节都从 3839 起算，音符跨在那 1 tick 上被量化器拆成
+    // 「整段 + 40 tick 残片」，谱面打出 `-%%` 这种一个三十二分的尾巴，
+    // `--verify` 只能报「印出 1.125 拍 / 拍号应 1.25 拍」。
+    //
+    // 判据：离最近的小节线不超过 1/8 拍就吸附过去。真的写在半小节中间的
+    // （作者的意图就是从这里换拍）仍按原来「从事件 tick 截断」处理——
+    // 那种情况下截断是对的，barGridOf 会把它标成 implicit 短小节。
+    long curBarStart = 0;
+    auto lenOf = [&](const TimeSignature& s) -> long {
+        long l = (long)std::llround(s.barLengthTicks(data.division));
+        return l > 0 ? l : (long)data.division * 4;
+    };
+    long curLen = lenOf(cur);
     for (const auto& p : uniq) {
-        if (p.tick <= 0) { cur = p.sig; continue; }   // tick 0 是曲首拍号
+        if (p.tick <= 0) {   // tick 0 是曲首拍号
+            cur = p.sig;
+            curLen = lenOf(cur);
+            continue;
+        }
         if (p.sig.toString() == cur.toString()) continue;
-        out.push_back(p);
+        long tick = p.tick;
+        if (curLen > 0) {
+            const long tol = std::max<long>(1, data.division / 8);
+            const long k = (long)std::llround((double)(tick - curBarStart) / (double)curLen);
+            const long candidate = curBarStart + k * curLen;
+            if (candidate >= 0 && std::labs(tick - candidate) <= tol) tick = candidate;
+        }
+        TimeSigPoint np = p;
+        np.tick = tick;
+        out.push_back(np);
+        // 下一段网格的锚点：吸附过就是那条小节线，没吸附就是截短小节的起点。
+        curBarStart = tick;
         cur = p.sig;
+        curLen = lenOf(cur);
     }
     return out;
 }
@@ -2836,6 +2906,28 @@ static bool parseLrcTimestamp(const std::string& tag, double& outSec) {
 // 字」撑大——实测 8 个字变 36 个字，连带触发「这一段的字比旋律音多」误报。
 // 这里只剥掉**能解析成时间戳**的尖括号标签；歌词正文里偶尔出现的其它尖括号
 // 原样保留，不擅自吞字符。
+// 从 p 起是不是一个（可能被截断的）LRC 时间标签本体：mm:ss / h:mm:ss，
+// 允许带毫秒。只认「数字 + 冒号 + 数字」这种紧邻形状，中间有空格或汉字就
+// 不算——`<3 心:跳` 里的冒号在三个字之外，不该被当成标签。
+static bool lrcTagPrefixAt(const std::string& s, size_t p, size_t& after) {
+    size_t i = p;
+    int n = 0;
+    while (i < s.size() && s[i] >= '0' && s[i] <= '9' && n < 3) { ++i; ++n; }
+    if (n == 0 || i >= s.size() || s[i] != ':') return false;
+    ++i;
+    n = 0;
+    while (i < s.size() && s[i] >= '0' && s[i] <= '9' && n < 2) { ++i; ++n; }
+    if (n == 0) return false;
+    if (i < s.size() && s[i] == '.') {
+        size_t j = i + 1;
+        int m = 0;
+        while (j < s.size() && s[j] >= '0' && s[j] <= '9' && m < 3) { ++j; ++m; }
+        if (m > 0) i = j;
+    }
+    after = i;
+    return true;
+}
+
 static std::string stripEnhancedLrcTags(const std::string& s) {
     std::string out;
     out.reserve(s.size());
@@ -2847,14 +2939,20 @@ static std::string stripEnhancedLrcTags(const std::string& s) {
         }
         const size_t close = s.find('>', i + 1);
         if (close == std::string::npos) {
-            // 截断的尾标签（`<00:00.50` 没了右尖括号）：形如「数字打头且带
-            // 冒号」就按时间标签丢掉，否则（`<3` 这种正文）原样保留。
-            const size_t j = i + 1;
-            if (j < s.size() && s[j] >= '0' && s[j] <= '9' &&
-                s.find(':', j) != std::string::npos)
-                break;
-            out.append(s, i, std::string::npos);
-            break;
+            // 没有右尖括号的截断标签（`<00:00.50`）。旧实现只要「数字打头且
+            // 后面出现过冒号」就把**整行剩下的字**全丢掉：`[00:01.00]<3 心:跳`
+            // 直接变成空行（控制台报「歌词已加载: 0 行」），`前半<00:01.5后半`
+            // 丢掉后半句。
+            //
+            // 现在只按形状认标签：真的像时间标签（数字:数字，中间无空白）就
+            // 跳过标签本体、继续处理后面的正文；不像的就当普通字符输出。
+            size_t after = 0;
+            if (lrcTagPrefixAt(s, i + 1, after)) {
+                i = after;
+                continue;
+            }
+            out.push_back(s[i++]);
+            continue;
         }
         double sec = 0;
         if (parseLrcTimestamp(s.substr(i + 1, close - i - 1), sec)) {
