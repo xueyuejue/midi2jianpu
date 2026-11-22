@@ -95,6 +95,11 @@ int notationDoPitchClass(const KeyEstimate& key);
 // 调号音名（已按首调换算），如 "C"、"Bb"；a 小调返回 "C"
 std::string keyName(const KeyEstimate& key);
 
+// 主音音名（不带 1= 前缀、不带"大调/小调"后缀）：C 大调给 "C"，a 小调给 "A"。
+// 页眉要说「用户选的是哪个调」时用它——小调借用关系大调的 keyName（"C"）
+// 会让用户以为自己选错了（他明明选的是 a 小调）。
+std::string keyTonicName(const KeyEstimate& key);
+
 // 完整调性描述，如 "1=C (a小调)"、"1=G 大调"
 std::string keyDescription(const KeyEstimate& key);
 

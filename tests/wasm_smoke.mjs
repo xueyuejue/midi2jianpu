@@ -3415,6 +3415,108 @@ if (existsSync(twoLyrics76)) {
     '网页导出的 MusicXML 仍写真实时值 1780', xml.slice(0, 200));
 }
 
+
+// ---- 95. v1.164.0 网页移调：与 CLI --transpose 同一层换算、同一句措辞 ----
+// 网页过去完全没有移调能力：MIDI 定在 Bb、歌手只能唱到 F，用户只能回 DAW 里
+// 重新导出。这里走的是 CLI 的 transposeData()，位置也一样（解析之后、量化与
+// 定调之前），所以谱面音高、调号、页眉措辞、试听音高四者不会各说各话。
+{
+  const tk = readFixture('transpose_key.mid');   // 文件自带 1=Bb，第 5 小节转 1=D
+  const tMeta = (semis, keyPitch, isMajor) => {
+    const p = mod._malloc(tk.length);
+    mod.HEAPU8.set(tk, p);
+    mod._midi2jianpu_set_transpose(semis);
+    const html = mod.UTF8ToString(mod._midi2jianpu_html(
+      p, tk.length, keyPitch === undefined ? -1 : keyPitch,
+      isMajor === undefined ? 1 : isMajor)) || '';
+    mod._free(p);
+    const m = html.match(/<div class="meta">([\s\S]*?)<\/div>/);
+    return { meta: m ? m[1].replace(/<[^>]+>/g, '') : '', html };
+  };
+  const tXml = (semis) => {
+    const p = mod._malloc(tk.length);
+    mod.HEAPU8.set(tk, p);
+    mod._midi2jianpu_set_transpose(semis);
+    const x = mod.UTF8ToString(mod._midi2jianpu_musicxml(p, tk.length, -1, 1)) || '';
+    mod._free(p);
+    return x;
+  };
+  const fifthsOf = (x) => [...x.matchAll(/<fifths>(-?\d+)<\/fifths>/g)].map((m) => m[1]);
+
+  check(typeof mod._midi2jianpu_set_transpose === 'function' &&
+        typeof mod._midi2jianpu_transpose_folded === 'function',
+    '网页移调的两个导出都在（否则下拉框点了没反应）');
+
+  const plain = tMeta(0);
+  const up2 = tMeta(2);
+  check(up2.meta.includes('1=C') && plain.meta.includes('1=Bb'),
+    '移调 +2 后页眉从 1=Bb 变 1=C（调号一起平移）', up2.meta);
+  check(up2.meta.includes('MIDI调号，已随移调平移'),
+    '移调后页眉说清「MIDI调号，已随移调平移」，不谎称文件本来就写着这个调', up2.meta);
+  check(!plain.meta.includes('已随移调平移'),
+    '没移调时页眉不多这句（默认输出不变）', plain.meta);
+
+  const oct = tMeta(12);
+  check(oct.meta.includes('1=Bb') && !oct.meta.includes('已随移调平移'),
+    '整八度移调不改调性：仍是 1=Bb，也不声称调号平移过', oct.meta);
+
+  const picked = tMeta(2, 2, 1);                 // 用户选 D，再 +2
+  check(picked.meta.includes('手动指定 D，已随移调平移') && picked.meta.includes('1=E'),
+    '手动选调 + 移调：页眉说的是用户选的 D，谱面是 1=E', picked.meta);
+
+  const minor = tMeta(5, 9, 0);                  // 用户选 a 小调，再 +5
+  check(minor.meta.includes('手动指定 A小调'),
+    '小调选调后页眉写主音名「A小调」，不再写成关系大调的「C」', minor.meta);
+
+  const f0 = fifthsOf(tXml(0));
+  const f2 = fifthsOf(tXml(2));
+  check(f0[0] === '-2' && f2[0] === '0',
+    `MusicXML 的 <fifths> 跟着移调平移（${f0[0]} → ${f2[0]}）`, f2.join(','));
+
+  // 试听音高必须与谱面一致：谱面移了 +2，播放还是原调就成了两首曲子
+  const pitches = (semis) => {
+    const p = mod._malloc(tk.length);
+    mod.HEAPU8.set(tk, p);
+    mod._midi2jianpu_set_transpose(semis);
+    const j = JSON.parse(mod.UTF8ToString(mod._midi2jianpu_get_notes_json(p, tk.length)) || '[]');
+    mod._free(p);
+    return j.map((n) => n.pitch);
+  };
+  const base = pitches(0);
+  const moved = pitches(2);
+  check(base.length > 0 && base.length === moved.length &&
+        moved.every((v, i) => v === base[i] + 2),
+    `试听音高逐个 +2（${moved.length} 个音）`, moved.slice(0, 6).join(','));
+
+  // 文本谱也走同一条移调路径（网页「复制简谱」按钮）
+  const textOf = (semis) => {
+    const p = mod._malloc(tk.length);
+    mod.HEAPU8.set(tk, p);
+    mod._midi2jianpu_set_transpose(semis);
+    const t = mod.UTF8ToString(mod._midi2jianpu_parse(p, tk.length, -1, 1)) || '';
+    mod._free(p);
+    return t;
+  };
+  check(textOf(0) !== textOf(2) && textOf(0) === textOf(0),
+    '文本谱同样按移调后的音高写（复制出来的谱子与网页一致）');
+
+  // 幂等：同一份文件连渲染两次 0 半音，结果必须逐字节相同（不累加）
+  const a1 = tMeta(0).html, a2 = tMeta(0).html;
+  check(a1 === a2, '移调是「每次从原文件重算」而不是在上一次结果上累加');
+
+  // 越界拒绝：±60 之外不生效，不静默钳位
+  const back = mod._midi2jianpu_set_transpose(61);
+  const now = mod._midi2jianpu_set_transpose(0);
+  check(back === 0 && now === 0, 'set_transpose(61) 被拒绝，仍停在 0（不静默钳位到 60）');
+
+  // 越界折回：+60 必然把高音推出 127，页面要如实报折回数
+  tMeta(60);
+  const folded = mod._midi2jianpu_transpose_folded();
+  tMeta(0);
+  check(folded > 0, `移调越界时上报折回音数（${folded} 个音）`);
+  check(mod._midi2jianpu_transpose_folded() === 0, '回到 0 半音后折回计数清零');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

@@ -166,6 +166,14 @@ int main() {
     // e 小调 -> 关系大调 G
     KeyEstimate eMinor{4, false};
     check(keyName(eMinor) == "G", "e小调调号记作 1=G, 实际: " + keyName(eMinor));
+    // 主音音名与调号音名是两件事：网页选调后页眉要说「用户选了哪个调」，
+    // 小调借用关系大调的 keyName 会写成「手动指定 C」，用户以为自己选错了。
+    check(keyTonicName(aMinor) == "A",
+          "a小调的主音音名是 A（不是调号音名 C）, 实际: " + keyTonicName(aMinor));
+    check(keyTonicName(KeyEstimate{7, true}) == "G",
+          "G大调的主音音名是 G, 实际: " + keyTonicName(KeyEstimate{7, true}));
+    check(keyDescription(aMinor) == "1=C (A小调, 主音=6)",
+          "调性描述仍按主音写小调名, 实际: " + keyDescription(aMinor));
 
     std::cout << "\n测试 G 大调 (主音G=7)\n";
     KeyEstimate gMajor{7, true};

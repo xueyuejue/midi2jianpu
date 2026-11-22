@@ -18,6 +18,10 @@ static bool g_usePentatonic = true;  // 是否按五声调式校正宫音
 static bool g_useDynamics = true;    // 是否写出力度 / 演奏法 / 段落标记
 static int g_trackFilter = -1;       // 网页段落选择：-1 = 全部轨，与 CLI --track 共用
 static double g_softPedalScale = 0.7; // 网页软踏板强度下拉：与 CLI --soft-pedal-scale 共用
+// 网页移调（v1.164.0）：与 CLI --transpose 共用 transposeData()。
+static int g_transpose = 0;        // 半音数，0 = 不移调
+static int g_transposeFolded = 0;  // 上一次移调按八度折回的音数（页面如实报告）
+static bool g_keySigMoved = false; // 本次移调是否真的让文件自带调号变了（整八度不动）
 
 // 网页上的两个渲染开关。清空内置歌词事件表而不是只跳过渲染：歌词事件同时
 // 参与旋律轨判定，关掉就得连证据一起去掉。五声开关则直接落在 MidiData 上，
@@ -39,6 +43,23 @@ static bool loadJ(const uint8_t* midiData, int size, m2j::MidiData& data,
 }
 
 extern "C" {
+
+// --transpose 的合理上限，与 CLI 的 kMaxTransposeSemis 同值（±5 个八度）。
+static const int kMaxTransposeSemis = 60;
+
+// 移调必须落在「解析完 → 量化前」这一段，位置与 CLI 完全一致
+// （loadMidi → transposeData → quantizeTiming → estimateKey）。放在别处就会
+// 出现「谱面音高移了、调性还按原调猜」或「量化网格跟着音高走」这类分叉。
+// 每次渲染都从新解析出来的 data 开始，所以这里的移调不会跨次累加。
+static void applyTranspose(m2j::MidiData& data) {
+    g_transposeFolded = 0;
+    g_keySigMoved = false;
+    if (g_transpose == 0) return;
+    const int sfBefore = data.keySig.valid ? data.keySig.sharpsFlats : 0;
+    g_transposeFolded = m2j::transposeData(data, g_transpose);
+    // 移整个八度时调号不动，页眉也就不能声称「已随移调平移」。
+    g_keySigMoved = data.keySig.valid && data.keySig.sharpsFlats != sfBefore;
+}
 
 // 网页端的段落选择：与 CLI --track 走同一条解析层按轨隔离路径。
 // -1 表示全部轨（默认）。网页每次转换与每次刷新文件提示前都会重设。
@@ -189,6 +210,7 @@ const char* midi2jianpu_parse(const uint8_t* midiData, int size, int keyPitch, i
         return g_result.c_str();
     }
 
+    applyTranspose(data);
     applyRenderOptions(data);
     m2j::quantizeTiming(data);
 
@@ -196,6 +218,9 @@ const char* midi2jianpu_parse(const uint8_t* midiData, int size, int keyPitch, i
     if (keyPitch >= 0) {
         key.tonicPitchClass = keyPitch;
         key.isMajor = isMajor != 0;
+        // 网页选的调是「原调」，和 CLI --key 一样要跟着移调走：只移音不移调
+        // 会让谱面出现「音符在 D 大调、1 还写着 C」。
+        if (g_transpose % 12 != 0) key = m2j::transposeKey(key, g_transpose);
     } else {
         key = m2j::estimateKey(data);
     }
@@ -235,6 +260,7 @@ const char* midi2jianpu_html(const uint8_t* midiData, int size, int keyPitch, in
         return g_result.c_str();
     }
 
+    applyTranspose(data);
     applyRenderOptions(data);
     m2j::quantizeTiming(data);
 
@@ -243,11 +269,25 @@ const char* midi2jianpu_html(const uint8_t* midiData, int size, int keyPitch, in
     // 页眉照旧印「MIDI调号」就等于把用户的选择记到 MIDI 文件头上。
     std::string keySourceNote;
     if (keyPitch >= 0) {
-        key.tonicPitchClass = keyPitch;
-        key.isMajor = isMajor != 0;
-        keySourceNote = "手动指定 " + m2j::keyName(key);
+        m2j::KeyEstimate chosen;
+        chosen.tonicPitchClass = keyPitch;
+        chosen.isMajor = isMajor != 0;
+        // 措辞与 CLI 的 --key 分支逐字一致：先说「用户选的原调」，再点明
+        // 「已随移调平移」。反过来说成移调后的调，就等于把用户没选过的调
+        // 记到用户头上。
+        // 大调说 keyName（1=X 的音名），小调说主音名：a 小调若写成「手动指定
+        // C」，用户会以为自己选错了调——他选的是 a 小调，只是简谱记 1=C。
+        const std::string chosenName = chosen.isMajor
+            ? m2j::keyName(chosen)
+            : (m2j::keyTonicName(chosen) + "小调");
+        const bool shifted = (g_transpose % 12) != 0;
+        key = shifted ? m2j::transposeKey(chosen, g_transpose) : chosen;
+        keySourceNote = "手动指定 " + chosenName + (shifted ? "，已随移调平移" : "");
     } else {
         key = m2j::estimateKey(data);
+        // 文件里写着 0x59、而移调真的把调号挪了：页眉不能再说「MIDI调号」，
+        // 否则用户会以为文件本来就写着这个调（CLI 页眉在 v1.156 起就这么说）。
+        if (g_keySigMoved) keySourceNote = "MIDI调号，已随移调平移";
     }
 
     // 解析歌词。原来这里复制了一份 LRC 解析，且用裸 std::stoi / std::stod：
@@ -260,6 +300,22 @@ const char* midi2jianpu_html(const uint8_t* midiData, int size, int keyPitch, in
                               lyricLines.empty() ? nullptr : &lyricLines,
                               false, 0, keySourceNote);
     return g_result.c_str();
+}
+
+// 网页移调：半音数，范围与 CLI --transpose 完全一致（±60 = ±5 个八度）。
+// 越界不静默钳位——用户以为移了 100 半音、谱面却只动了 5 个八度，比直接
+// 拒绝更糟。返回实际生效的半音数，页面据此把下拉框拉回真实值。
+int midi2jianpu_set_transpose(int semitones) {
+    if (semitones < -kMaxTransposeSemis || semitones > kMaxTransposeSemis)
+        return g_transpose;
+    g_transpose = semitones;
+    return g_transpose;
+}
+
+// 上一次渲染中移调越界（0~127 之外）按整八度折回的音数。CLI 会打一行
+// 「移调越界: N 个音…」，网页也得说，否则高音区的谱子悄悄换了八度。
+int midi2jianpu_transpose_folded() {
+    return g_transposeFolded;
 }
 
 // 获取结果字符串长度
@@ -436,6 +492,8 @@ int midi2jianpu_pentatonic_info(const uint8_t* midiData, int size) {
     if (!g_usePentatonic) return 0;
     m2j::MidiData data;
     if (!loadJ(midiData, size, data, g_trackFilter >= 0, g_trackFilter)) return 0;
+    // 移调会把宫音整个挪走：提示里还说原调的宫音，就与谱面「1=X」对不上了。
+    applyTranspose(data);
     if (data.keySig.valid) return 0;
     const m2j::PentatonicEstimate p = m2j::detectPentatonic(data);
     if (!p.detected) return 0;
@@ -588,6 +646,11 @@ const char* midi2jianpu_get_notes_json(const uint8_t* midiData, int size) {
         g_result = "[]";
         return g_result.c_str();
     }
+    // 播放音高必须与谱面一致：谱面移了 +2，试听还是原调就成了「眼睛看到的
+    // 和耳朵听到的不是一首曲子」。移调放在这里、与渲染路径同一个函数，
+    // 两边不会各说各话。
+    applyTranspose(data);
+
     // 生成JSON: [{time, pitch, duration, velocity}]
     std::string json = "[";
     bool first = true;
@@ -614,6 +677,7 @@ const char* midi2jianpu_musicxml(const uint8_t* midiData, int size, int keyPitch
         g_result = "<error>无法解析MIDI</error>";
         return g_result.c_str();
     }
+    applyTranspose(data);
     applyRenderOptions(data);
     m2j::quantizeTiming(data);
 
@@ -621,6 +685,8 @@ const char* midi2jianpu_musicxml(const uint8_t* midiData, int size, int keyPitch
     if (keyPitch >= 0) {
         key.tonicPitchClass = keyPitch;
         key.isMajor = isMajor != 0;
+        // 与 CLI --key / 网页 HTML 同一条规则：用户选的调随移调平移。
+        if (g_transpose % 12 != 0) key = m2j::transposeKey(key, g_transpose);
     } else {
         key = m2j::estimateKey(data);
     }

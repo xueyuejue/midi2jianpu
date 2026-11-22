@@ -486,17 +486,21 @@ std::string keyName(const KeyEstimate& key) {
     return prefersFlats(key) ? FLAT_NAMES[pc] : SHARP_NAMES[pc];
 }
 
+// 主音音名：与 keyName 共用同一套升降号偏好，只是取主音而不是首调 do。
+std::string keyTonicName(const KeyEstimate& key) {
+    static const char* SHARP_NAMES[12] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
+    static const char* FLAT_NAMES[12]  = {"C","Db","D","Eb","E","F","Gb","G","Ab","A","Bb","B"};
+    const int pc = ((key.tonicPitchClass % 12) + 12) % 12;
+    return prefersFlats(key) ? FLAT_NAMES[pc] : SHARP_NAMES[pc];
+}
+
 std::string keyDescription(const KeyEstimate& key) {
     std::ostringstream os;
     os << "1=" << keyName(key);
     if (key.isMajor) {
         os << " 大调";
     } else {
-        static const char* SHARP_NAMES[12] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
-        static const char* FLAT_NAMES[12]  = {"C","Db","D","Eb","E","F","Gb","G","Ab","A","Bb","B"};
-        const char* n = prefersFlats(key) ? FLAT_NAMES[key.tonicPitchClass]
-                                          : SHARP_NAMES[key.tonicPitchClass];
-        os << " (" << n << "小调, 主音=6)";
+        os << " (" << keyTonicName(key) << "小调, 主音=6)";
     }
     if (!key.scaleLabel.empty()) os << " · " << key.scaleLabel;
     return os.str();
