@@ -1628,6 +1628,15 @@ static std::string formatTrack(
     long lastChordTick = -1;   // 已经处理过的和弦位置，避免同一和弦标两次
     auto switchToBar = [&](long bar, long atTick, int channel) {
         if ((int)bar == currentBar) return;
+        // 三连音组的 3( ... ) 不能跨行：弱起或变拍号会让小节线正好切在
+        // 3 音组的中间，若在这里直接换行，下一行段首就丢了 3( 上下文——
+        // 读者看到光秃秃的 `2 )` 无从知道它是三连音，--verify 的逐段
+        // 解析也会把这颗 1/3 拍的音读成整拍（报 4.667 拍 / 应 4 拍）。
+        // v1.160 的「每 3 音独立开合」只解决了连续多组共用一对括号，
+        // 没解决单组被小节线切开。换行前先闭合未完的组，下一行首音
+        // 由主循环的 `triplets[idx] && !inTriplet` 重新开 3(，于是每个
+        // 行段都是自包含的三连音组。
+        if (inTriplet) { os << ") "; inTriplet = false; tripCount = 0; }
         if (currentBar >= 0) os << " |\n";
         currentBar = (int)bar;
         // 小节号：与 HTML 的 .barno 同一口径——弱起小节不编号，第一个

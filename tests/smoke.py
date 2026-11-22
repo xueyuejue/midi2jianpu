@@ -6556,6 +6556,33 @@ def main():
           "实际 %d 个" % html.count("class='grace'"))
     check(xml.count("<measure number=") == 4, "MusicXML 仍是 4 小节")
 
+    group("[156] 三连音组被小节线切开时括号就地闭合不跨行（半拍弱起）")
+    # 半拍弱起让小节线切在 3 音组中间：旧版 `3(1 #1  |` 后接 `2 ) ...`，
+    # 下一行段首的 ) 丢了 3(，读者读不懂，--verify 报 4.667 拍 / 应 4 拍。
+    rc, out, err = run(exe, tc, "--pickup", "0.5", "--verify")
+    check(rc == 0, "--pickup 0.5 下三连音谱 --verify 通过", err.strip()[:200])
+    check("[FAIL]" not in out and "每小节拍数守恒" in out,
+          "跨小节的组不再被读成 4.667 拍", out[-300:])
+    rows = [l for l in out.splitlines() if "3(" in l and "|" in l]
+    check(len(rows) == 4 and all(r.count("3(") == r.count(")") for r in rows),
+          "每行 3( 与 ) 配对（括号不跨行），实际 %r"
+          % [(r.count("3("), r.count(")")) for r in rows])
+    check(any("3(1 #1 )" in r for r in rows),
+          "弱起行的小组就地闭合，不把 ) 甩到下一行")
+    with tempfile.TemporaryDirectory() as td:
+        hp = os.path.join(td, "tcp.html")
+        xp = os.path.join(td, "tcp.xml")
+        rc, out2, err2 = run(exe, tc, "--pickup", "0.5", "--html", hp, "--musicxml", xp)
+        html = open(hp, encoding="utf-8").read()
+        xml = open(xp, encoding="utf-8").read()
+    check(html.count("class='trip'") == 12,
+          "HTML 三连音标记不受文本换行影响（实际 %d）" % html.count("class='trip'"))
+    # 半拍弱起让 MusicXML 按段记谱成 40 个 note（36 三连音 + 4 个弱起补位），
+    # 其中 39 个标三连音时值比；修复只动文本换行，不碰 XML 分段。
+    check(xml.count("<time-modification>") == 39,
+          "MusicXML 39 个音标三连音时值比（实际 %d）"
+          % xml.count("<time-modification>"))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

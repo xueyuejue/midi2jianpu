@@ -11406,6 +11406,60 @@ int main() {
               "报告如实分开「精确核过」与「只能近似」");
     }
 
+    std::cout << "\n测试 v1.161.0：三连音组被小节线切开时括号不跨行\n";
+    {
+        auto countSub = [](const std::string& s, const std::string& needle) {
+            size_t n = 0, p = 0;
+            while ((p = s.find(needle, p)) != std::string::npos) {
+                ++n; p += needle.size();
+            }
+            return n;
+        };
+        // 半拍弱起（240 tick）让 4/4 的小节线不再落在 3 音组的边界上：
+        // 每组三连音音头在 0,160,320,... 而小节线在 240,2160,...，
+        // 于是第 1 组被切成「弱起 2 音 + 次小节开头 1 音」。旧版把
+        // `3(` 留在弱起行、`)` 甩到下一行，读者与 --verify 都读不懂，
+        // 报「印出 4.667 拍 / 应 4 拍」。修复后换行处先闭合再重开。
+        MidiData pd;
+        pd.division = 480;
+        pd.timeSig = TimeSignature{4, 2, true};
+        pd.pickupTicks = 240;                        // 半拍弱起（手动指定）
+        for (int i = 0; i < 36; i++) {
+            NoteEvent n;
+            n.track = 0; n.channel = 0; n.velocity = 90;
+            n.pitch = 60 + i % 3;
+            n.startTicks = (long)i * 160;
+            n.durationTicks = 160;
+            pd.notes.push_back(n);
+        }
+        const std::string pj = formatJianpu(pd, estimateKey(pd));
+        // 逐行检查：每一行的 3( 与 ) 数量必须相等，括号不跨行。
+        bool balanced = true;
+        size_t pos = 0;
+        while (pos < pj.size()) {
+            const size_t e = pj.find('\n', pos);
+            const std::string line = pj.substr(pos, e == std::string::npos
+                                                  ? std::string::npos : e - pos);
+            // 只看真正的三连音谱行（含 3(）；页眉里的 (自动猜测) 不算。
+            if (line.find("3(") != std::string::npos) {
+                if (countSub(line, "3(") != countSub(line, ")")) balanced = false;
+            }
+            if (e == std::string::npos) break;
+            pos = e + 1;
+        }
+        check(balanced, "三连音组跨小节线时每行 3( 与 ) 配对（括号不跨行）");
+        check(pj.find("3(1 #1 ) ") != std::string::npos,
+              "弱起行的小组就地闭合，不把 ) 甩到下一行");
+        const TextVerifyReport pr = verifyTextScore(pj, pd, false);
+        check(pr.ok() && pr.issues.empty(),
+              "半拍弱起+三连音的真实输出不再被自检误报「4.667 拍 / 应 4 拍」");
+        // HTML 的「3」标记贴在音符列上，不受文本换行分组影响，仍是 12 组。
+        const std::string ph = renderHtml(pd, estimateKey(pd), "p");
+        check(countSub(ph, "class='trip'") == 12,
+              "HTML 三连音标记仍逐组对齐（实际 " +
+                  std::to_string(countSub(ph, "class='trip'")) + "）");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";
