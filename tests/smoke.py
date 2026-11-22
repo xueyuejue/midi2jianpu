@@ -4619,22 +4619,23 @@ def main():
           ".txt 里的 JSON 数组照旧按 JSON 解析（每个元素是一个字，按字计数）",
           out[-160:])
 
-    # 扩展名与内容写反时，0 行提示必须点名「按哪套解析器看过」以及另一种格式
-    # 能不能救回来——旧版不管走哪条路都说「检查是否以 [mm:ss.xx] 时间戳开头」，
-    # 把 JSON 用户指去改一个不存在的字段。
+    # 扩展名与内容写反（v1.163.0）：CLI 主格式解析出 0 行时不再只提示
+    # 「检查扩展名写反」就停手——同一份文件在网页端（无文件名、纯内容
+    # 嗅探）能正常出词，三端给出不同谱面。现在自动回退到内容嗅探判定的
+    # 格式，并如实告知「按 X 解析出 0、已自动按 Y 解析出 N」。
     mism112 = v103_write('[{"start_beat":0,"text":"\u4f60"}]', "mism112", ".lrc")
     rc, out, err = v103_run(mism112)
-    check(rc == 0 and "歌词已加载: 0 行" in out and "按 LRC 解析" in err,
-          ".lrc 里放 JSON：提示写明是按 LRC 解析的，不再一律甩时间戳建议", err)
-    check("内容看起来是 JSON" in err and "扩展名" in err,
-          "并且直接点出「内容看起来是 JSON，扩展名写反了」", err)
+    check(rc == 0 and "歌词已加载: 1 字" in out and v103_lyrics() == "\u4f60",
+          ".lrc 里放 JSON：自动回退到 JSON，谱面照常出词", out[-160:])
+    check("扩展名与内容不符" in err and "已自动按 JSON 解析出 1 字" in err,
+          "并如实告知扩展名写反、已自动按 JSON 解析", err)
 
     rev112 = v103_write("[00:00.00]\u4f60\n", "rev112", ".json")
     rc, out, err = v103_run(rev112)
-    check(rc == 0 and "歌词已加载: 0 字" in out and "按 JSON 解析" in err,
-          ".json 里放 LRC：提示写明是按 JSON 解析的", err)
-    check("内容看起来是 LRC" in err and "能解析出 1 行" in err,
-          "并说明按 LRC 能解析出 1 行，扩展名写反了", err)
+    check(rc == 0 and "歌词已加载: 1 行" in out and v103_lyrics() == "\u4f60",
+          ".json 里放 LRC：自动回退到 LRC，谱面照常出词", out[-160:])
+    check("扩展名与内容不符" in err and "已自动按 LRC 解析出 1 行" in err,
+          "并如实告知扩展名写反、已自动按 LRC 解析", err)
 
     group("[113] v1.113.0 挂不上音头的歌词字不再静默消失，输出路径写「-」直接拒")
     # 「歌词已加载: N 行」数的是解析出几行，不是谱面上真印了几个字。一行字多于

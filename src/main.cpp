@@ -754,7 +754,7 @@ int main(int argc, char** argv) {
         const std::string lyricText = m2j::normalizeLyricFileBytes(lyricRaw);
         const m2j::LyricFormat lyricFmt =
             m2j::detectLyricFormat(lyricsPath, lyricText);
-        const bool isLrc = (lyricFmt == m2j::LyricFormat::Lrc);
+        bool isLrc = (lyricFmt == m2j::LyricFormat::Lrc);
         size_t droppedLyricLines = 0;
         if (isLrc) {
             // LRC 时间戳是真实秒，必须按 tempo map 分段反解成 tick；
@@ -765,6 +765,39 @@ int main(int argc, char** argv) {
             auto syls = m2j::parseLyricsText(lyricText, data.division,
                                              &droppedLyricLines);
             for (const auto& s : syls) lyricLines.push_back({s.tick, s.text});
+        }
+        // v1.163.0：扩展名猜错且主格式解析为空时，自动改用内容嗅探的格式。
+        // CLI 过去只提示「按另一种格式能解析出 N 字、检查扩展名是否写反」
+        // 就停手；同一份文件在网页端（没有文件名，只能纯内容嗅探）却能正常
+        // 出词，三端对同一个歌词文件给出不同谱面。既然已经算出另一种格式的
+        // 解析结果，直接用它并如实告知，比让用户手动改文件名更可靠。
+        // 两种判定都走 detectLyricFormat 同一个入口，不引入第三套口径；
+        // 只在主格式一行都解析不出时才回退，正常的 .lrc/.json 一字不改。
+        if (lyricLines.empty()) {
+            const bool contentIsLrc =
+                m2j::detectLyricFormat("", lyricText) == m2j::LyricFormat::Lrc;
+            if (contentIsLrc != isLrc) {
+                size_t altDropped = 0;
+                std::vector<m2j::LyricLine> alt;
+                if (contentIsLrc) {
+                    alt = m2j::parseLrcText(lyricText, data, &altDropped);
+                } else {
+                    for (const auto& s :
+                         m2j::parseLyricsText(lyricText, data.division, &altDropped))
+                        alt.push_back({s.tick, s.text});
+                }
+                if (!alt.empty()) {
+                    std::cerr << "警告: 歌词文件扩展名与内容不符（按 "
+                              << (isLrc ? "LRC" : "JSON") << " 解析出 0 "
+                              << (isLrc ? "行" : "字")
+                              << "），已自动按 " << (contentIsLrc ? "LRC" : "JSON")
+                              << " 解析出 " << alt.size()
+                              << (contentIsLrc ? " 行" : " 字") << "\n";
+                    isLrc = contentIsLrc;
+                    lyricLines = std::move(alt);
+                    droppedLyricLines = altDropped;
+                }
+            }
         }
         // 离谱的时间戳 / [offset:] / start_beat 换算成 32 位 tick 会溢出，
         // 旧版把环绕后的假 tick 当真，歌词被静默挂到曲首。现在显式丢弃并
