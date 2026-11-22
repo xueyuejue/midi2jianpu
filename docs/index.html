@@ -104,6 +104,15 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     <option value="7">高纯五度 +7</option>
     <option value="12">高八度 +12</option>
   </select>
+  <label for="bars">每行小节：</label>
+  <select id="bars" title="每行固定放几个小节，与命令行 --bars 同一套取值（1~8）。自动 = 按「一行约 16 拍」折算。印成歌本时压成统一的每行小节数，行宽才整齐；同时会给打印样式加「一行不被分页撕开」，否则打印出来可能半行留在上一页">
+    <option value="0">自动</option>
+    <option value="2">2 小节</option>
+    <option value="3">3 小节</option>
+    <option value="4">4 小节</option>
+    <option value="6">6 小节</option>
+    <option value="8">8 小节</option>
+  </select>
 </div>
 
 <details class="lyrics">
@@ -498,6 +507,9 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
   $('transpose').onchange = function () {
     if (midiBytes && wasmReady) { updateFileHints(); convert(); }
   };
+  $('bars').onchange = function () {
+    if (midiBytes && wasmReady) convert();
+  };
   $('lyricsBtn').onclick = function () { $('lyricsFile').click(); };
 
   // 把上传歌词文件的原始字节交给 WASM 解码（与 CLI 读盘入口同款
@@ -579,6 +591,13 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     if (wasmMod._midi2jianpu_set_transpose) {
       var semis = parseInt($('transpose').value, 10);
       wasmMod._midi2jianpu_set_transpose(isNaN(semis) ? 0 : semis);
+    }
+
+    // 每行小节数同样每次重设。只影响 HTML；复制文本与 MusicXML 不分行，
+    // CLI 给 --bars 时对这两者也只印一句「只作用于 --html」。
+    if (wasmMod._midi2jianpu_set_bars) {
+      var bpr = parseInt($('bars').value, 10);
+      wasmMod._midi2jianpu_set_bars(isNaN(bpr) ? 0 : bpr);
     }
 
     // 标题同理，每次重置，避免换了文件还顶着上一首的歌名

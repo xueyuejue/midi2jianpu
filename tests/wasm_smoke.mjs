@@ -3517,6 +3517,94 @@ if (existsSync(twoLyrics76)) {
   check(mod._midi2jianpu_transpose_folded() === 0, '回到 0 半音后折回计数清零');
 }
 
+// ---- 96. v1.165.0 网页「每行小节数」：与 CLI --bars 同口径，顺带补上打印不断行 ----
+// 网页过去只有「一行约 16 拍」的自动折算：打印成歌本时行宽参差，而且基础打印
+// 样式只护住 .measure、不护 .row —— 一行会被分页撕成两半，剩下的半行看着像
+// 漏印。这里把 CLI --bars 的语义搬到网页（0 = 自动，1~8 = 固定），取值域一致。
+{
+  const bp = readFixture('sample.mid');
+  const bpHtml = (perRow) => {
+    const p = mod._malloc(bp.length);
+    mod.HEAPU8.set(bp, p);
+    mod._midi2jianpu_set_bars(perRow);
+    const h = mod.UTF8ToString(mod._midi2jianpu_html(p, bp.length, -1, 1)) || '';
+    mod._free(p);
+    return h;
+  };
+  const rowsOf = (html) => html.split("<div class='row'").slice(1);
+  const countsOf = (html) => rowsOf(html).map((c) => (c.match(/class='measure/g) || []).length);
+  const measuresOf = (html) => (html.match(/class='measure/g) || []).length;
+
+  check(typeof mod._midi2jianpu_set_bars === 'function',
+    '网页每行小节数的导出在（否则下拉框点了没反应）');
+
+  const auto = bpHtml(0);
+  check(!auto.includes('@media print{.row{break-inside:avoid'),
+    '自动折算（默认）不多出 .row 打印保护，输出与旧版一致');
+
+  const four = bpHtml(4);
+  check(four.includes('@media print{.row{break-inside:avoid'),
+    '指定每行小节数后带上 .row 打印保护（一行不再被分页撕开）');
+
+  const c4 = countsOf(four);
+  check(c4.length > 0 && Math.max(...c4) <= 4 && c4.some((n) => n === 4),
+    `每行最多 4 小节且确实压满过 4（各行列数 ${c4.join('/')}）`);
+
+  // 换档位只改分行，不改内容：小节总数三种设置下必须一致
+  const c2 = countsOf(bpHtml(2));
+  check(measuresOf(auto) === measuresOf(four) && measuresOf(auto) === measuresOf(bpHtml(8)),
+    `换每行小节数不增删小节（${measuresOf(auto)} 小节）`);
+  check(c2.length > c4.length,
+    `每行 2 小节的行数多于每行 4 小节（${c2.length} > ${c4.length}）`);
+
+  // 变拍号：自动折算只认第一小节拍号，固定 N 则一段到底（CLI 注释里的原话）
+  const tk = readFixture('transpose_key.mid');
+  const tkCounts = (perRow) => {
+    const p = mod._malloc(tk.length);
+    mod.HEAPU8.set(tk, p);
+    mod._midi2jianpu_set_bars(perRow);
+    const h = mod.UTF8ToString(mod._midi2jianpu_html(p, tk.length, -1, 1)) || '';
+    mod._free(p);
+    return countsOf(h);
+  };
+  const tkAuto = tkCounts(0), tk3 = tkCounts(3);
+  check(tk3.length > 0 && Math.max(...tk3) <= 3 && tk3.length !== tkAuto.length,
+    `转调素材：自动 ${tkAuto.length} 行、固定 3 小节 ${tk3.length} 行（行宽被压平）`);
+
+  // 文本谱与 MusicXML 不分行，不能跟着变
+  const textOf = (perRow) => {
+    const p = mod._malloc(bp.length);
+    mod.HEAPU8.set(bp, p);
+    mod._midi2jianpu_set_bars(perRow);
+    const t = mod.UTF8ToString(mod._midi2jianpu_parse(p, bp.length, -1, 1)) || '';
+    mod._free(p);
+    return t;
+  };
+  const xmlOf = (perRow) => {
+    const p = mod._malloc(bp.length);
+    mod.HEAPU8.set(bp, p);
+    mod._midi2jianpu_set_bars(perRow);
+    const x = mod.UTF8ToString(mod._midi2jianpu_musicxml(p, bp.length, -1, 1)) || '';
+    mod._free(p);
+    return x;
+  };
+  check(textOf(0) === textOf(6) && xmlOf(0) === xmlOf(6),
+    '每行小节数只作用于 HTML：文本谱与 MusicXML 一字不改');
+
+  // 幂等：同一设置连渲染两次必须同字节（不在上一次结果上叠加）
+  check(bpHtml(5) === bpHtml(5), '每行小节数是「每次重设」而不是累积');
+
+  // 越界拒绝：CLI --bars 只认 1~8（0 是自动），网页同样不静默钳位
+  mod._midi2jianpu_set_bars(4);
+  const r9 = mod._midi2jianpu_set_bars(9);
+  const rn = mod._midi2jianpu_set_bars(-1);
+  check(r9 === 4 && rn === 4, `set_bars 越界被拒绝并保持原值（9→${r9}, -1→${rn}）`);
+
+  // 复位，别把状态漏给后面的用例
+  mod._midi2jianpu_set_bars(0);
+  check(bpHtml(0) === auto, '复位到自动后输出回到默认版式');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

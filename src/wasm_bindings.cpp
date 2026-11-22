@@ -18,6 +18,7 @@ static bool g_usePentatonic = true;  // 是否按五声调式校正宫音
 static bool g_useDynamics = true;    // 是否写出力度 / 演奏法 / 段落标记
 static int g_trackFilter = -1;       // 网页段落选择：-1 = 全部轨，与 CLI --track 共用
 static double g_softPedalScale = 0.7; // 网页软踏板强度下拉：与 CLI --soft-pedal-scale 共用
+static int g_barsPerRow = 0;          // 每行小节数，0 = 自动折算；与 CLI --bars 共用
 // 网页移调（v1.164.0）：与 CLI --transpose 共用 transposeData()。
 static int g_transpose = 0;        // 半音数，0 = 不移调
 static int g_transposeFolded = 0;  // 上一次移调按八度折回的音数（页面如实报告）
@@ -298,7 +299,7 @@ const char* midi2jianpu_html(const uint8_t* midiData, int size, int keyPitch, in
 
     g_result = m2j::renderHtml(data, key, g_title.empty() ? "简谱" : g_title,
                               lyricLines.empty() ? nullptr : &lyricLines,
-                              false, 0, keySourceNote);
+                              false, g_barsPerRow, keySourceNote);
     return g_result.c_str();
 }
 
@@ -316,6 +317,16 @@ int midi2jianpu_set_transpose(int semitones) {
 // 「移调越界: N 个音…」，网页也得说，否则高音区的谱子悄悄换了八度。
 int midi2jianpu_transpose_folded() {
     return g_transposeFolded;
+}
+
+// 网页「每行小节数」：0 = 自动折算（沿用「一行约 16 拍」），1~8 = 固定行内
+// 小节数，取值域与 CLI --bars 完全一致。只作用于 HTML —— 文本谱与
+// MusicXML 本来就不分行，CLI 同参数下也只会印一句「只作用于 --html」。
+// 越界不静默钳位，同 set_transpose：返回实际生效值，页面据此把下拉拉回。
+int midi2jianpu_set_bars(int perRow) {
+    if (perRow < 0 || perRow > 8) return g_barsPerRow;
+    g_barsPerRow = perRow;
+    return g_barsPerRow;
 }
 
 // 获取结果字符串长度
