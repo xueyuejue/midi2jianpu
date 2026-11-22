@@ -11331,6 +11331,81 @@ int main() {
               "1780 / 400 tick 拆不干净，算「记不出来」");
     }
 
+    std::cout << "\n测试 v1.160.0：三连音每组独立开合 + 倚音时值计入自检偏差\n";
+    {
+        auto countSub = [](const std::string& s, const std::string& needle) {
+            size_t n = 0, p = 0;
+            while ((p = s.find(needle, p)) != std::string::npos) {
+                ++n; p += needle.size();
+            }
+            return n;
+        };
+
+        // ① 连续 12 组八分三连音：旧版只开一个巨型 3(...)，中间行丢掉
+        //    左括号后被读成 12 拍；新版每组 3 音各自开合。
+        MidiData td;
+        td.division = 480;
+        td.timeSig = TimeSignature{4, 2, true};
+        for (int i = 0; i < 36; i++) {
+            NoteEvent n;
+            n.track = 0; n.channel = 0; n.velocity = 90;
+            n.pitch = 60 + i % 3;
+            n.startTicks = (long)i * 160;
+            n.durationTicks = 160;
+            td.notes.push_back(n);
+        }
+        const std::string tj = formatJianpu(td, estimateKey(td));
+        check(countSub(tj, "3(") == 12 && countSub(tj, ") ") == 12,
+              "12 组三连音各开各合（3( x" + std::to_string(countSub(tj, "3(")) +
+                  " / ) x" + std::to_string(countSub(tj, ") ")) + "）");
+        check(tj.find("3(1 #1 2 ) 3(") != std::string::npos,
+              "相邻两组之间先闭后开，不再合成跨行巨型括号");
+        const TextVerifyReport tv = verifyTextScore(tj, td, false);
+        check(tv.ok() && tv.issues.empty(),
+              "连续三连音的真实输出不再被自检误报拍数缺陷");
+        const std::string th = renderHtml(td, estimateKey(td), "t");
+        check(countSub(th, "class='trip'") == 12,
+              "HTML 同样 12 个「3」标记，与文本谱逐组对齐（实际 " +
+                  std::to_string(countSub(th, "class='trip'")) + "）");
+
+        // ② 倚音列占真实 tick 却不在谱面占格：自检必须把 c.dur 记进
+        //    期望偏差，否则 4 列主音被读成 3 拍，合法记谱极限被误报为缺陷。
+        MidiData gd;
+        gd.division = 480;
+        gd.timeSig = TimeSignature{4, 2, true};
+        for (int k = 0; k < 16; k++) {
+            NoteEvent n;
+            n.track = 0; n.channel = 0; n.velocity = 90;
+            if (k < 4) {
+                n.pitch = 60; n.startTicks = (long)k * 480;
+                n.durationTicks = 480;
+                gd.notes.push_back(n);
+            } else {
+                const long base = 1920 + (long)(k - 4) * 480;
+                n.pitch = 61; n.startTicks = base;
+                n.durationTicks = 30;                 // 倚音
+                gd.notes.push_back(n);
+                n.pitch = 62; n.startTicks = base + 60;
+                n.durationTicks = 420;                // 主音
+                gd.notes.push_back(n);
+            }
+        }
+        const std::string gj = formatJianpu(gd, estimateKey(gd));
+        check(countSub(gj, "(#1)2_.") == 12,
+              "倚音前缀 (#1) 带升降号时仍逐列写出（x" +
+                  std::to_string(countSub(gj, "(#1)2_.")) + "）");
+        const TextVerifyReport gr = verifyTextScore(gj, gd, false);
+        check(gr.ok() && gr.issues.empty(),
+              "倚音+空隙样本的 --verify 不再误报「印出 3 拍 / 应 4 拍」");
+        check(gr.approxGrid.size() == 2,
+              "第 2/3 小节归到记谱极限桶（实际 " +
+                  std::to_string(gr.approxGrid.size()) + " 小节）");
+        const std::string greport = formatTextVerifyReport(gr, "grace.mid");
+        check(greport.find("只能近似记谱") != std::string::npos &&
+                  greport.find("每小节拍数守恒") == std::string::npos,
+              "报告如实分开「精确核过」与「只能近似」");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

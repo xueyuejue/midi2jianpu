@@ -3201,6 +3201,20 @@ def main() -> None:
         f.write(rhdata)
     print(f"wrote {rhmid} ({len(rhdata)} bytes)")
 
+    # 连续三连音跨小节：每组 3 音各自 3(...) 开合（v1.160 回归闸门）
+    tcpath = os.path.join(here, "triplet_crossbar.mid")
+    with open(tcpath, "wb") as f:
+        tcdata = build_triplet_crossbar()
+        f.write(tcdata)
+    print(f"wrote {tcpath} ({len(tcdata)} bytes)")
+
+    # 倚音时值计入 --verify 期望偏差（v1.160 回归闸门）
+    ghpath = os.path.join(here, "grace_hole_dev.mid")
+    with open(ghpath, "wb") as f:
+        ghdata = build_grace_hole_dev()
+        f.write(ghdata)
+    print(f"wrote {ghpath} ({len(ghdata)} bytes)")
+
     # format 2（多个独立序列）素材
     f2mid = os.path.join(here, "format2.mid")
     with open(f2mid, "wb") as f:
@@ -4485,6 +4499,68 @@ def build_meter_offset() -> bytes:
         t1.note(0, p, 90, DIV * 8 + i * DIV * 5 // 4, DIV * 5 // 4)
 
     return b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) + t0.render() + t1.render()
+
+
+def build_triplet_crossbar() -> bytes:
+    """连续八分三连音跨小节：每组 3 个音必须各自 3(...) 开合。
+
+    36 个 1/3 拍音（160 tick @DIV=480）连成 12 组，跨 3 小节、写在同一行。
+    旧版只用一个 bool inTriplet，整行共用一个巨型 `3(...)`：第 2 行换行后
+    丢掉左括号，`--verify` 按行段解析把 12 个音当普通 1 拍音，报
+    「印出 12 拍 / 拍号应 4 拍」。修复后每组独立开合，行首总能看到 `3(`。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"C"))
+    t0.add(0, meta(0x51, bytes([0x0A, 0x37, 0xEF])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))       # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))              # C 大调
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Mel"))
+    t1.add(0, bytes([0xC0, 0x00]))
+    for i in range(36):
+        tick = i * 160
+        pitch = (0x3C, 0x3D, 0x3E)[i % 3]
+        # 直接写 note-off velocity 0x00，与最小化样本逐字节一致
+        t1.add(tick, bytes([0x90, pitch, 0x5A]))
+        t1.add(tick + 160, bytes([0x80, pitch, 0x00]))
+
+    return (b"MThd" + struct.pack(">IHHH", 6, 1, 2, 480)
+            + t0.render() + t1.render())
+
+
+def build_grace_hole_dev() -> bytes:
+    """倚音自身占用的 tick 必须计入 --verify 的期望偏差。
+
+    第 1 小节 4 个整拍 C4；第 2~4 小节每拍一组：30 tick 的 C#4 倚音 +
+    30 tick 空隙 + 420 tick 的 D4 主音。倚音满足 detectGraceNotes() 的
+    「前短后长、紧贴主音头部」判据，文本谱只印一列 `(#1)2_.`。
+    旧版 verifier 对 grace 列只 doRest、不记 c.dur，4 列主音累计被读成
+    3 拍，报「印出 3 拍 / 拍号应 4 拍」；修复后补 addDev(c.dur)，归入
+    「只能近似记谱」桶，不再误判为程序缺陷。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"C"))
+    t0.add(0, meta(0x51, bytes([0x0A, 0x37, 0xEF])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))       # 4/4
+    t0.add(0, meta(0x59, bytes([0, 0])))              # C 大调
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Mel"))
+    t1.add(0, bytes([0xC0, 0x00]))
+    for k in range(4):
+        tick = k * 480
+        t1.add(tick, bytes([0x90, 0x3C, 0x5A]))
+        t1.add(tick + 480, bytes([0x80, 0x3C, 0x00]))
+    for k in range(12):
+        base = 1920 + k * 480
+        t1.add(base,       bytes([0x90, 0x3D, 0x5A]))  # 30 tick 倚音
+        t1.add(base + 30,  bytes([0x80, 0x3D, 0x00]))
+        t1.add(base + 60,  bytes([0x90, 0x3E, 0x5A]))  # 420 tick 主音
+        t1.add(base + 480, bytes([0x80, 0x3E, 0x00]))
+
+    return (b"MThd" + struct.pack(">IHHH", 6, 1, 2, 480)
+            + t0.render() + t1.render())
 
 
 if __name__ == "__main__":

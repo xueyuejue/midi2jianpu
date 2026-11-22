@@ -981,6 +981,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         std::string lastChord;
         size_t lastTempoIdx = (size_t)-1;
         bool inTriplet = false;
+        int tripCount = 0;     // 当前「3」标记下已经画了几个三连音音头（每 3 音一组）
 
         // 和弦游标：按 tick 顺序推进。取「不晚于 tick 的最后一个还没标过的
         // 和弦」，于是小节内换和弦、以及和弦落在两个音之间（旋律正拖长音）
@@ -1261,6 +1262,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 openBar(bar, n.startTicks, partChannel);
             } else if (inTriplet && !grp[0]->trip) {
                 inTriplet = false;
+                tripCount = 0;
             }
 
             // 倚音到此为止：休止补完、把游标推到倚音尾部，音符列留给主音。
@@ -1278,6 +1280,15 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 curSlur = 0;
                 body << "<span class='trip'>3</span>";
                 inTriplet = true;
+                tripCount = 0;
+            }
+            // 三连音每 3 个音独立开合，与文本谱的 `3(...) 3(...)` 一一对应。
+            // 旧版一路连续画 12 个三连音只在开头写一个「3」，后 9 个音在
+            // 谱面上变成没有标记的普通八分，读者按 0.5 拍数就整体错位；
+            // 中间小节连守卫的「含三连音」判据都认不出来。
+            if (grp[0]->trip && ++tripCount >= 3) {
+                inTriplet = false;
+                tripCount = 0;
             }
 
             // 间隙补休止符。原来这里多了一个 `prevEnd > 0` 条件，

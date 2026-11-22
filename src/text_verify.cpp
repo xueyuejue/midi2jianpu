@@ -641,6 +641,7 @@ TextVerifyReport verifyTextScore(const std::string& text, const MidiData& data,
                 const long barEndC = grid.barEnd(cbar);
                 if (c.grace) {                           // 倚音：不印，只推 prevEnd
                     doRest(c.onset);
+                    addDev(cbar, c.dur);   // 倚音占真实时值却不在谱面占格
                     prevEnd = c.onset + c.dur;
                     started = true;
                     continue;

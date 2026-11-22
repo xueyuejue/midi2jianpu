@@ -62,7 +62,16 @@ import os
 # v1.159.0 新增 rest_hole_nextbar.mid（洞记本小节的锁定素材）：旧版把洞漏给下一
 # 小节吸收，末小节多一列 `-%%`。旧基线没有这份素材，登记为跳过；它进入
 # v1.159.0 基线后，下一轮起撤出本表。
-NEW_FIXTURES = {"rest_hole_nextbar.mid"}
+#
+# v1.160.0 新增两份素材，旧基线里都没有：
+# ① triplet_crossbar.mid（连续八分三连音跨 3 小节写在同一行）：旧版 writer 把
+#    12 组共用一个巨型 `3(...)`，中间行丢掉左括号后被读成 12 拍；新版每组
+#    3 音独立开合。② grace_hole_dev.mid（30 tick 倚音 + 30 tick 空隙 + 420 tick
+#    主音）：旧版 verifier 不给 grace 列记 c.dur，把 4 拍读成 3 拍；新版补
+#    addDev。两份的三端输出与 `--verify` 结论都变了，登记为跳过。
+# 上一轮的 rest_hole_nextbar.mid 已进入 v1.159.0 基线，本轮起撤出本表，
+# 照常参与零回归比对。
+NEW_FIXTURES = {"triplet_crossbar.mid", "grace_hole_dev.mid"}
 
 # v1.144.0 曾经有一张 HTML_CHANGED = {"parts.mid", "overfull.mid"}：那一版把
 # 倚音前面的空拍补成休止列，`--regress` 对这两份既有素材放行了「HTML 有意

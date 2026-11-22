@@ -85,7 +85,7 @@ def bar_beats(bar):
         while t.startswith("3("):
             trip = True
             t = t[2:]
-        t = re.sub(r"^\([0-7][',#b]*\)", "", t)      # 倚音前缀 (3)
+        t = re.sub(r"^\([#b]?[0-7][',#b]*\)", "", t)  # 倚音前缀 (3) / (#1)
         if not t:
             continue
         if "+" in t:
@@ -6509,6 +6509,52 @@ def main():
           out[:300])
     check("1 小节只能近似记谱" in out,
           "报告如实说 1 小节只能近似记谱", out[-260:])
+
+    group("[154] 连续三连音跨小节：每组 3 音独立开合（不再造跨行巨型 3(...)）")
+    tc = os.path.join(FIXTURES, "triplet_crossbar.mid")
+    rc, out, err = run(exe, tc, "--verify")
+    check(rc == 0, "连续 12 组八分三连音的 --verify 通过", err.strip()[:200])
+    check("每小节拍数守恒" in out and "[FAIL]" not in out,
+          "中间行不再被读成 12 拍（文本谱拍数守恒）", out[-260:])
+    rows = [l for l in out.splitlines() if "3(" in l and "|" in l]
+    check(len(rows) == 3 and all(r.count("3(") == 4 and r.count(")") == 4
+                                 for r in rows),
+          "三行谱每行 4 组 `3(...) 3(...)`，没有跨行大组", repr(rows)[:300])
+    with tempfile.TemporaryDirectory() as td:
+        hp = os.path.join(td, "tc.html")
+        xp = os.path.join(td, "tc.xml")
+        rc, out2, err2 = run(exe, tc, "--html", hp, "--musicxml", xp)
+        html = open(hp, encoding="utf-8").read()
+        xml = open(xp, encoding="utf-8").read()
+    measures = html.split("<span class='measure'")[1:]
+    check(len(measures) == 3 and all(m.count("class='trip'") == 4
+                                     for m in measures),
+          "HTML 每小节 4 个「3」标记，与文本谱逐组对齐")
+    check(xml.count("<time-modification>") == 36,
+          "MusicXML 36 个音全部标三连音时值比",
+          "实际 %d 个" % xml.count("<time-modification>"))
+
+    group("[155] 倚音自身占用的 tick 计入自检偏差（记谱极限不再误报缺陷）")
+    gh = os.path.join(FIXTURES, "grace_hole_dev.mid")
+    rc, out, err = run(exe, gh, "--verify")
+    check(rc == 0, "倚音 + 空隙样本的 --verify 通过", err.strip()[:200])
+    check("[FAIL]" not in out and "只能近似记谱" in out
+          and "每小节拍数守恒" not in out,
+          "不再报「印出 3 拍 / 应 4 拍」，如实归入近似记谱", out[-300:])
+    check("(#1)2_. (#1)2_. (#1)2_. (#1)2_." in out,
+          "带升降号的倚音前缀 (#1) 仍逐列印出")
+    check("1 小节拍数精确守恒" in out and "2 小节只能近似记谱" in out,
+          "精确核过与只能近似的小节分开说", out[-300:])
+    with tempfile.TemporaryDirectory() as td:
+        hp = os.path.join(td, "gh.html")
+        xp = os.path.join(td, "gh.xml")
+        rc, out2, err2 = run(exe, gh, "--html", hp, "--musicxml", xp)
+        html = open(hp, encoding="utf-8").read()
+        xml = open(xp, encoding="utf-8").read()
+    check(html.count("class='grace'") == 12,
+          "HTML 仍有 12 个倚音小字标记（修复只动自检记账，不动谱面）",
+          "实际 %d 个" % html.count("class='grace'"))
+    check(xml.count("<measure number=") == 4, "MusicXML 仍是 4 小节")
 
     print("\n" + "-" * 48)
     if failures:

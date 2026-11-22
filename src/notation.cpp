@@ -1617,6 +1617,7 @@ static std::string formatTrack(
     }
     auto triplets = detectTriplets(merged, data.division);
     bool inTriplet = false;
+    int tripCount = 0;   // 当前 3(...) 里已经写了几个三连音音头（每 3 音一组）
 
     // ---- 小节线推进 ----
     // 关键：小节线只能由「拍子位置」决定，不能只在音符音头处切换。
@@ -1701,7 +1702,7 @@ static std::string formatTrack(
             groupDur = std::min(groupDur, std::max<long>(merged[k].durationTicks, 1));
 
         // 右括号必须先于休止输出，否则 3(5 5 5 0 ) 会把休止吞进三连音组
-        if (!triplets[idx] && inTriplet) { os << ") "; inTriplet = false; }
+        if (!triplets[idx] && inTriplet) { os << ") "; inTriplet = false; tripCount = 0; }
 
         // 休止：按小节切开输出，长前奏才能写成每小节一个 "0 - - -"。
         // 抽成 lambda 是因为倚音也要用：倚音整颗不占格，但它前面的空白
@@ -1777,8 +1778,13 @@ static std::string formatTrack(
             lastDyn = m.dynamic;
         }
 
-        // 左括号放在小节线之后，否则 "3(" 会留在上一行末
-        if (triplets[idx] && !inTriplet) { os << "3("; inTriplet = true; }
+        // 左括号放在小节线之后，否则 "3(" 会留在上一行末。
+        // 三连音按每 3 音一组独立开合：连续两组写成 `3(1 2 3) 3(4 5 6)`，
+        // 而不是一个跨整段、跨小节的巨型 `3(1 2 3 4 5 6 ...)`——后者在换行后
+        // 中间行没有左括号，读者和 --verify 都把整行当普通 1 拍音符读。
+        if (triplets[idx] && !inTriplet) {
+            os << "3("; inTriplet = true; tripCount = 0;
+        }
 
         // 三连音组内的音符不标时值后缀（"3(...)" 已表达节奏）
         // 倚音（装饰音）写成 (装饰音数字) 直接贴在主音数字前，例如 (3)5
@@ -1848,6 +1854,11 @@ static std::string formatTrack(
         }
         started = true;
         prevEnd = noteEnd;
+        // 每写完一个三连音音头就计数，满 3 个闭括号；下一组会从 3( 重开。
+        // 这样括号不跨行、不吞休止，段解析按行也能算出正确的三连音拍数。
+        if (triplets[idx]) {
+            if (++tripCount >= 3) { os << ") "; inTriplet = false; tripCount = 0; }
+        }
         idx = grpEnd;
     }
     if (inTriplet) os << ")";

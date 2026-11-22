@@ -58,7 +58,9 @@ def bar_beats(bar, trip_unit=1.0 / 3):
         while t.startswith("3("):
             trip = True
             t = t[2:]
-        t = re.sub(r"^\([0-7][',#b]*\)", "", t)      # 倚音前缀 (3)
+        # 倚音前缀：本调内的 (3) 与带升降号的 (#1)/(b7) 都必须剥掉，
+        # 否则 bar_beats 返回 None，violations 里 `None - meter` 直接崩。
+        t = re.sub(r"^\([#b]?[0-7][',#b]*\)", "", t)
         if not t:
             continue
         if "+" in t:                                  # 和弦整格只算一次
@@ -141,7 +143,13 @@ def score_bars(lines):
 # 照样报缺陷），而这里只拿得到文本谱、看不到 MIDI，只能按素材登记 + 上界
 # 放行：只允许**短**、不允许长，且差值不得超过登记的上界。
 OFFGRID_FIXTURES = {"offgrid_rest.mid": 0.13,
-                    "rest_hole_nextbar.mid": 0.13}
+                    "rest_hole_nextbar.mid": 0.13,
+                    # 倚音整列不占字形：每拍 30 tick 倚音 + 30 tick 空隙 +
+                    # 420 tick 主音印成 `(#1)2_.`（0.75 拍），一小节 4 列
+                    # 只印 3 拍。这是简谱无法表达倚音所占时间的精度极限；
+                    # 产品侧 --verify 按 grace 的 c.dur 精确判为「只能近似
+                    # 记谱」，这里看不到 MIDI，只能登记上界。
+                    "grace_hole_dev.mid": 1.01}
 
 
 def violations(lines, lenient=0.0):
@@ -294,6 +302,7 @@ def self_test():
         ("0. ", 1.5), ("-_.", 0.75), ("0%%", 0.125), ("1=.", 0.375),
         ("1,+3,+5,", 1.0), ("3(1 2 3 )", 1.0), ("[C] 1 2 [Am] 3 4", 4.0),
         ("(3)5 1 2 3", 4.0),
+        ("(#1)2_. (#1)2_. (#1)2_. (#1)2_.", 3.0),  # 带升降号的倚音前缀
     ]
     for text, want in cases:
         got = bar_beats(text)
