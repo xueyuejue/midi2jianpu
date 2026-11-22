@@ -6393,8 +6393,10 @@ def main():
     check("MIDI调号" in oct_m and "已随移调平移" not in oct_m,
           "整八度移调不动调号，页眉也不谎称平移过: " + oct_m)
 
-    # --bar-numbers 是文本谱的行首标记，HTML 列里没有它的位置。旧版静默
-    # 忽略：用户写了开关、拿到的 HTML 里一个小节号都没有，程序一声不响。
+    # v1.162.0：--bar-numbers 只加文本谱的行首小节号。HTML 每个 .measure 本
+    # 来就印 <span class='barno'>、MusicXML 每个 <measure> 本来就带 number，
+    # 两者无条件显示小节号。旧文案说「--html 里不含小节号」与事实相反，
+    # 用户导出后明明看到小节号、却被告知没有，还以为看错了文件。
     with tempfile.TemporaryDirectory() as td:
         b1 = os.path.join(td, "b1.html")
         b2 = os.path.join(td, "b2.html")
@@ -6402,11 +6404,16 @@ def main():
         r2, _, e2 = run(exe, hm, "--output", os.path.join(td, "b.txt"),
                         "--bar-numbers", "--html", b2)
         same = (open(b1, "rb").read() == open(b2, "rb").read())
+        html1 = open(b1, encoding="utf-8").read()
     check(r1 == 0 and "只作用于文本谱" in e1,
           "只要 HTML 时明确提示 --bar-numbers 不生效: " + e1.strip()[:120])
+    check("不含小节号" not in e1 and "已自带小节号" in e1,
+          "警告如实说 HTML/XML 已自带小节号，不再谎称不含: " + e1.strip()[:140])
     check(r2 == 0 and "只作用于文本谱" not in e2,
           "同时给了 --output 文本谱时不误报")
-    check(same, "--bar-numbers 对 HTML 输出确实无效（这点如实说出来，不假装有效）")
+    check(same, "--bar-numbers 对 HTML 输出确实不产生差别")
+    check("<span class='barno'>" in html1,
+          "反向锁：HTML 确实自带小节号，文案「已自带」属实")
 
     group("[151] v1.157.0 四分三连音 / 变拍号吸附 / 增强 LRC / HTML 小节号自检")
     # ① 四分三连音每个 2/3 拍。旧版判据只认 1/3 体系，整组被当成附点八分，

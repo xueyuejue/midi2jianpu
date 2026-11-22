@@ -427,11 +427,14 @@ int main(int argc, char** argv) {
         std::cerr << "警告: --bars 只作用于 --html 输出，其它输出会忽略它\n";
     if (player && htmlOut.empty())
         std::cerr << "警告: --player 只作用于 --html 输出，其它输出会忽略它\n";
-    // --bar-numbers 同理：小节号是文本谱的行首标记，HTML 列里没有它的位置。
-    // 用户写了 --bar-numbers 又只看 --html 那份文件时，静默无效果等于骗人。
+    // --bar-numbers 只加文本谱的行首小节号。HTML 每个 .measure 本来就印
+    // <span class='barno'>、MusicXML 每个 <measure> 本来就带 number 属性，
+    // 两者都无条件显示小节号，这个开关对它们没有任何差别。旧文案说
+    // 「--html 里不含小节号」与事实相反——用户导出后看到小节号，还以为
+    // 自己看错了文件。改成明说「已自带」，既解释为何开关无效又不骗人。
     if (barNumbers && txtOut.empty() && !htmlOut.empty())
-        std::cerr << "警告: --bar-numbers 只作用于文本谱（终端输出 / --output），"
-                     "--html 里不含小节号\n";
+        std::cerr << "警告: --bar-numbers 只作用于文本谱（终端输出 / --output）；"
+                     "HTML / MusicXML 已自带小节号，此开关对它们不产生差别\n";
 
     m2j::MidiData data;
     // 软踏板系数必须在解析之前落到 MidiData 上：CC67 的力度衰减发生在解析阶段
