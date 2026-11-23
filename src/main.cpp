@@ -617,27 +617,13 @@ int main(int argc, char** argv) {
 
     // 弱起：--pickup N 给的是「拍」，换算成 tick 写回数据；
     // --no-pickup 则明确关掉自动判定。两者都不给时由 detectPickupTicks 判。
-    if (noPickup) {
-        data.pickupTicks = 0;
-    } else if (pickupBeats >= 0) {
-        // 越界的弱起（等于或超过整小节）不能悄悄接受：barGridOf 会把它钳成
-        // 0（谱面完全没有弱起），命令行却照样报「弱起 N 拍」，两处口径相反。
-        // 早先的表现是一行残缺的「（手动指定）」——前半句为空、只剩后缀。
-        const std::string pe = m2j::pickupArgError(pickupBeats, data.timeSig);
+    // 换算/校验集中在 notation.cpp 的 applyPickupOption()，网页弱起下拉走
+    // 同一个入口——两边对「越界要不要报错、几拍算顶满小节」必须一字不差。
+    {
+        const std::string pe = m2j::applyPickupOption(
+            data, pickupBeats, noPickup);
         if (!pe.empty()) {
             std::cerr << "错误: " << pe << "\n"; return 1;
-        }
-        double beatLen = data.division * 4.0 / (double)(1 << data.timeSig.denomPow);
-        if (!(beatLen > 0)) beatLen = data.division;
-        data.pickupTicks = (long)std::llround(pickupBeats * beatLen);
-        // tick 换算后再兜一次：拍数合法但四舍五入顶满小节时，同样会被
-        // barGridOf 钳成 0，这里提前报错，不让「提示有弱起、谱面无弱起」发生。
-        const long barLen = (long)std::llround(
-            data.timeSig.barLengthTicks(data.division));
-        if (barLen > 0 && data.pickupTicks >= barLen) {
-            std::cerr << "错误: 弱起拍数换算成 tick 后顶满整小节"
-                         "（弱起必须短于小节）\n";
-            return 1;
         }
     }
     {

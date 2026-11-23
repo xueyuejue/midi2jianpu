@@ -784,6 +784,24 @@ int main() {
         check(pickupArgError(2.0, s34).empty(), "3/4 的 2 拍弱起合法");
         check(pickupArgError(3.0, s34).find("不小于整小节") != std::string::npos,
               "3/4 的 3 拍等于整小节，必须报错");
+
+        // CLI 与网页共用 applyPickupOption：0 拍只有在 noPickup=true 时才是
+        // 「关闭弱起」，光给 beats=0 必须照旧报错引导 --no-pickup（v1.166
+        // 抽出共用函数时踩过把 0 当关闭、吞掉 --pickup 0 的坑）。
+        MidiData pd;
+        pd.division = 480;
+        pd.timeSig = s44;
+        check(applyPickupOption(pd, -1, false).empty() && pd.pickupTicks == -1,
+              "没指定拍数时不覆盖弱起（保留自动判定）");
+        check(applyPickupOption(pd, 0, false).find("--no-pickup") != std::string::npos,
+              "--pickup 0 仍报错（不与 noPickup 混为一谈）");
+        check(applyPickupOption(pd, 0, true).empty() && pd.pickupTicks == 0,
+              "noPickup=true 才把弱起明确关掉");
+        check(applyPickupOption(pd, 4, false).find("不小于整小节") != std::string::npos
+              && pd.pickupTicks == 0,
+              "越界被拒时不留半设置的 tick（保留上一次的值）");
+        check(applyPickupOption(pd, 2, false).empty() && pd.pickupTicks == 960,
+              "手动 2 拍换算成 960 tick（4/4、480 division）");
     }
 
     // ---- 歌词分配与一字多音 ----

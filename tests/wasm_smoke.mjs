@@ -3605,6 +3605,81 @@ if (existsSync(twoLyrics76)) {
   check(bpHtml(0) === auto, '复位到自动后输出回到默认版式');
 }
 
+// ---- 97. v1.166.0 网页「弱起」开关：与 CLI --pickup / --no-pickup 同源 ----
+// 网页过去只能自动判定弱起，且自动判错时无从纠正（CLI 有 --pickup 覆盖）。
+// 这里把三态语义搬到网页：-1 自动 / 0 关闭 / >0 手动拍数，换算与越界校验
+// 共用 notation.cpp 的 applyPickupOption，绝不出现「网页与 CLI 不同谱」。
+{
+  const pk = readFixture('pickup.mid');
+  const render = (beats) => {
+    const p = mod._malloc(pk.length);
+    mod.HEAPU8.set(pk, p);
+    mod._midi2jianpu_set_pickup(beats);
+    const h = mod.UTF8ToString(mod._midi2jianpu_html(p, pk.length, -1, 1)) || '';
+    mod._free(p);
+    return h;
+  };
+  const errOf = (beats) => {
+    mod._midi2jianpu_set_pickup(beats);
+    render(beats);
+    return mod.UTF8ToString(mod._midi2jianpu_pickup_error()) || '';
+  };
+
+  check(typeof mod._midi2jianpu_set_pickup === 'function' &&
+        typeof mod._midi2jianpu_pickup_error === 'function',
+    '网页弱起开关与错误提示的导出都在（否则下拉框点了没反应）');
+
+  const auto = render(-1);
+  check(auto === render(-1), '自动弱起（默认）连渲染两次同字节（无状态累积）');
+
+  // 无弱起：CLI --no-pickup 把 data.pickupTicks 设 0，谱面与自动不同。
+  const off = render(0);
+  check(off !== auto && auto.includes('弱起'),
+    '关闭弱起后谱面改变且自动版确有弱起标签');
+  check(errOf(0) === '', '关闭弱起不产生错误提示');
+
+  // 手动 1 拍：与 CLI --pickup 1 走同一换算；pickup.mid 自动判的也是 1 拍，
+  // 所以这时谱面与自动版应当逐字节一致（同值不同来源，结果不许分叉）。
+  const one = render(1);
+  check(one === auto, '手动 1 拍与自动判出的 1 拍谱面逐字节一致');
+  check(errOf(1) === '', '合法手动拍数不产生错误提示');
+
+  // 手动 2 拍：与自动不同，证明「手动值真的写进了谱面」。
+  const two = render(2);
+  check(two !== auto && two !== off, '手动 2 拍产生第三套谱面（值真生效）');
+
+  // 越界：4/4 里 4 拍 = 整小节，CLI 直接 rc=1；网页无 rc，退回自动判定
+  // 并给出原因，绝不把越界值静默写进谱面。
+  const bad = render(4);
+  check(bad === auto, '越界 4 拍退回自动判定，谱面不留下越界痕迹');
+  const be = errOf(4);
+  check(be.includes('整小节') || be.includes('不小于'),
+    `越界拍数给出可读原因（${be.slice(0, 40)}）`);
+  check(errOf(1) === '', '越界后回到合法值，错误提示被清掉');
+
+  // 非有限值与过大拍数拒绝，返回旧值，页面可据此把下拉拉回。
+  mod._midi2jianpu_set_pickup(2);
+  const nan = mod._midi2jianpu_set_pickup(NaN);
+  const inf = mod._midi2jianpu_set_pickup(Infinity);
+  const big = mod._midi2jianpu_set_pickup(99);
+  check(nan === 2 && inf === 2 && big === 2,
+    `NaN/Inf/99 被拒绝并保持原值（${nan}/${inf}/${big}）`);
+
+  // 只作用于谱面：试听音符时间不随弱起改动（弱起是记谱网格，不是播放偏移）。
+  const notesOf = (beats) => {
+    const p = mod._malloc(pk.length);
+    mod.HEAPU8.set(pk, p);
+    mod._midi2jianpu_set_pickup(beats);
+    const j = mod.UTF8ToString(mod._midi2jianpu_get_notes_json(p, pk.length)) || '';
+    mod._free(p);
+    return j;
+  };
+  check(notesOf(-1) === notesOf(0), '弱起开关不改变试听音符时间（与 CLI 同口径）');
+
+  mod._midi2jianpu_set_pickup(-1);
+  check(render(-1) === auto, '复位到自动后输出回到默认版式');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

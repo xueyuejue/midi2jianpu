@@ -762,6 +762,15 @@ std::string pickupLabel(const MidiData& data);
 // 判定抽到库里才能单测——它只依赖拍号的分子，与 division 无关。
 std::string pickupArgError(double beats, const TimeSignature& sig);
 
+// 把「弱起选项」落到 MidiData.pickupTicks 上的唯一入口，CLI 的
+// --pickup/--no-pickup 与网页端的弱起下拉共用，保证三端口径一致。
+// noPickup：明确关闭弱起（--no-pickup / 网页「无弱起」），此时忽略 beats。
+// beats < 0：不覆盖（保持自动判定）；beats >= 0：手动指定拍数（含 0——
+// CLI 的 --pickup 0 要报错引导改用 --no-pickup，不能与关闭语义混为一谈；
+// 越界返回给用户的中文原因，不修改数据）。
+// 返回值同 pickupArgError：空串表示成功，否则是直接显示的原因。
+std::string applyPickupOption(MidiData& data, double beats, bool noPickup);
+
 // 和声窗长度（tick）：4/4 半小节、6/8 附点四分、3/4 整小节
 long chordWindowTicks(const MidiData& data);
 

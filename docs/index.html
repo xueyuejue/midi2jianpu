@@ -113,6 +113,14 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     <option value="6">6 小节</option>
     <option value="8">8 小节</option>
   </select>
+  <label for="pickup">弱起：</label>
+  <select id="pickup" title="首小节不足一整拍时，与命令行 --pickup / --no-pickup 同一套判定。自动 = 按曲首/曲尾音头推算；无弱起 = 关掉自动判定；1/2/3 拍 = 手动指定（须短于小节，否则状态行会说明已退回自动）">
+    <option value="-1">自动</option>
+    <option value="0">无弱起</option>
+    <option value="1">1 拍</option>
+    <option value="2">2 拍</option>
+    <option value="3">3 拍</option>
+  </select>
 </div>
 
 <details class="lyrics">
@@ -600,6 +608,14 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
       wasmMod._midi2jianpu_set_bars(isNaN(bpr) ? 0 : bpr);
     }
 
+    // 弱起同样每次重设：-1 自动 / 0 关闭 / >0 手动拍数，与 CLI 的
+    // --pickup / --no-pickup 共用换算。越界时 wasm 退回自动判定并在
+    // 状态行说明，静默吞参数是最糟的结果。
+    if (wasmMod._midi2jianpu_set_pickup) {
+      var pk = parseFloat($('pickup').value);
+      wasmMod._midi2jianpu_set_pickup(isNaN(pk) ? -1 : pk);
+    }
+
     // 标题同理，每次重置，避免换了文件还顶着上一首的歌名
     if (wasmMod._midi2jianpu_set_title) {
       var ts = midiTitle || '';
@@ -659,6 +675,12 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
       var folded = wasmMod._midi2jianpu_transpose_folded
                  ? wasmMod._midi2jianpu_transpose_folded() : 0;
       if (folded > 0) bits.push(folded + ' 个音越界按八度折回');
+      // 弱起：手动指定越界（如 4/4 里选 3 拍以上）时 wasm 退回自动判定，
+      // 这里如实说明原因，不让用户以为自己的选择已经生效。
+      if (wasmMod._midi2jianpu_pickup_error) {
+        var perr = wasmMod.UTF8ToString(wasmMod._midi2jianpu_pickup_error());
+        if (perr) bits.push('弱起已退回自动（' + perr + '）');
+      }
       $('meta').textContent = (bits.length ? bits.join(' · ') + ' · ' : '') + 'WASM 核心';
     } catch (e) {
       showErr('转换失败：' + e.message);

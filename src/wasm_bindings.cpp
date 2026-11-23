@@ -5,6 +5,7 @@
 #include "midi2jianpu/musicxml_writer.hpp"
 
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -19,6 +20,11 @@ static bool g_useDynamics = true;    // 是否写出力度 / 演奏法 / 段落�
 static int g_trackFilter = -1;       // 网页段落选择：-1 = 全部轨，与 CLI --track 共用
 static double g_softPedalScale = 0.7; // 网页软踏板强度下拉：与 CLI --soft-pedal-scale 共用
 static int g_barsPerRow = 0;          // 每行小节数，0 = 自动折算；与 CLI --bars 共用
+// 网页弱起（v1.166.0）：与 CLI --pickup / --no-pickup 共用 applyPickupOption()。
+// -1 = 自动判定（CLI 默认），0 = 关闭弱起（--no-pickup），>0 = 手动拍数。
+static double g_pickupBeats = -1;
+// 最近一次渲染里手动弱起被拒的原因（越界等），网页如实提示，绝不静默吞参数。
+static std::string g_pickupError;
 // 网页移调（v1.164.0）：与 CLI --transpose 共用 transposeData()。
 static int g_transpose = 0;        // 半音数，0 = 不移调
 static int g_transposeFolded = 0;  // 上一次移调按八度折回的音数（页面如实报告）
@@ -31,6 +37,14 @@ static void applyRenderOptions(m2j::MidiData& data) {
     if (!g_useMidiLyrics) data.midiLyrics.clear();
     data.usePentatonic = g_usePentatonic;
     data.useDynamics = g_useDynamics;
+    // 弱起换算与 CLI 共用 applyPickupOption()。pickupTicks 只参与小节网格
+    // （barGridOf）和页眉标签，量化与歌词铺排都不读它，所以放在量化前与
+    // CLI 的「量化后设置」结果逐字节一致；四个渲染入口（文本/HTML/XML/
+    // 歌词体检）都经过这里，不会漏。越界时保留自动判定并记下原因，绝不
+    // 把半设置的越界值写进 data。
+    // 网页的 0 = 「无弱起」（等价于 CLI --no-pickup）；-1 = 自动；>0 = 手动。
+    g_pickupError = m2j::applyPickupOption(
+        data, g_pickupBeats, g_pickupBeats == 0);
 }
 
 // 解析前的统一入口：CC67 软踏板力度衰减发生在解析阶段（applyControllerSemantics
@@ -327,6 +341,22 @@ int midi2jianpu_set_bars(int perRow) {
     if (perRow < 0 || perRow > 8) return g_barsPerRow;
     g_barsPerRow = perRow;
     return g_barsPerRow;
+}
+
+// 网页「弱起」：-1 = 自动判定（CLI 默认），0 = 关闭（--no-pickup），
+// >0 = 手动拍数（--pickup N，须短于小节）。取值域与 CLI 的 parseBeats 一致：
+// 非有限值（NaN/Inf）与过大拍数直接拒绝，返回实际生效值让页面把下拉拉回。
+// 真正的「短于小节」校验要等解析出 timeSig，由 applyPickupOption 在渲染时做。
+double midi2jianpu_set_pickup(double beats) {
+    if (!std::isfinite(beats) || beats < -1 || beats > 64) return g_pickupBeats;
+    g_pickupBeats = beats;
+    return g_pickupBeats;
+}
+
+// 最近一次渲染里手动弱起被拒的原因（空串 = 没有）。网页把它显示出来：
+// 用户给了越界拍数（如 4/4 里的 4 拍）时，谱面退回自动判定但不能不吭声。
+const char* midi2jianpu_pickup_error() {
+    return g_pickupError.c_str();
 }
 
 // 获取结果字符串长度

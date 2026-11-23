@@ -1376,6 +1376,30 @@ std::string pickupArgError(double beats, const TimeSignature& sig) {
     return std::string();
 }
 
+std::string applyPickupOption(MidiData& data, double beats, bool noPickup) {
+    if (noPickup) {
+        data.pickupTicks = 0;             // --no-pickup / 网页「无弱起」
+        return std::string();
+    }
+    if (beats < 0) return std::string();  // 没指定：沿用自动判定
+    // beats == 0 走下面的 pickupArgError 报错：CLI 的 --pickup 0 要明确
+    // 引导用户改用 --no-pickup，绝不能在这里当成「关闭」静默放行。
+    // 与 CLI 原实现逐字同源：先按拍数校验，再换算成 tick，最后兜一次取整
+    // 顶满小节的情况（barGridOf 会把这种值钳成 0，不能让它静默发生）。
+    // 校验全部通过后才写 data.pickupTicks：网页端拿到错误要退回自动判定，
+    // 绝不能留下一个半设置的越界值（CLI 是直接 rc=1 退出，无须回滚）。
+    const std::string pe = pickupArgError(beats, data.timeSig);
+    if (!pe.empty()) return pe;
+    double beatLen = data.division * 4.0 / (double)(1 << data.timeSig.denomPow);
+    if (!(beatLen > 0)) beatLen = data.division;
+    const long ticks = (long)std::llround(beats * beatLen);
+    const long barLen = (long)std::llround(data.timeSig.barLengthTicks(data.division));
+    if (barLen > 0 && ticks >= barLen)
+        return "弱起拍数换算成 tick 后顶满整小节（弱起必须短于小节）";
+    data.pickupTicks = ticks;
+    return std::string();
+}
+
 // 输出一个音符记号：延长线拆成独立 token，读起来是 "1 - -" 而不是 "1--"
 static void emitNoteToken(std::ostringstream& os, const std::string& head,
                           const std::string& dur, const std::string& art = "") {
