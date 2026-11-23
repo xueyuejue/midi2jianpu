@@ -3818,6 +3818,48 @@ if (existsSync(twoLyrics76)) {
   check(html() === on, '复位后输出回到默认量化版式');
 }
 
+// ---- 100. v1.169.0 网页「文本谱小节号」：与 CLI --bar-numbers 同源 ----
+// CLI `--bar-numbers` 给复制出去的文本谱每行开头加 [N] 前缀；网页此前复制
+// 简谱拿到的是无编号文本，长谱按小节定位无从下手。formatJianpu 第 3 参
+// 本就支持，这里只把布尔透传到 parse 入口，HTML/XML 不受影响（本就印小节号）。
+{
+  const sp = readFixture('sample.mid');
+  const render = (fn) => {
+    const p = mod._malloc(sp.length);
+    mod.HEAPU8.set(sp, p);
+    const out = mod.UTF8ToString(fn(p, sp.length, -1, 1)) || '';
+    mod._free(p);
+    return out;
+  };
+
+  check(typeof mod._midi2jianpu_set_bar_numbers === 'function',
+    '文本小节号开关的导出存在');
+
+  mod._midi2jianpu_set_bar_numbers(0);
+  const plain = render(mod._midi2jianpu_parse);
+  check(plain.indexOf('[2]') < 0, '默认关：文本谱没有行首小节号');
+
+  check(mod._midi2jianpu_set_bar_numbers(1) === 1, 'set_bar_numbers(1) 返回生效值');
+  const numbered = render(mod._midi2jianpu_parse);
+  check(numbered !== plain && numbered.includes('[2]') && numbered.includes('[3]'),
+    '开：文本谱每行开头出现 [2] [3] 小节号');
+  check(render(mod._midi2jianpu_parse) === numbered, '同开关连出两次同字节');
+
+  // 只作用于文本谱：HTML/XML 不受这个开关影响，与 CLI 的警告口径一致。
+  const htmlOn = render(mod._midi2jianpu_html);
+  const xmlOn = render(mod._midi2jianpu_musicxml);
+  mod._midi2jianpu_set_bar_numbers(0);
+  check(render(mod._midi2jianpu_html) === htmlOn &&
+        render(mod._midi2jianpu_musicxml) === xmlOn,
+    'HTML 与 MusicXML 不随此开关改变（本就无条件印小节号）');
+
+  check(mod._midi2jianpu_set_bar_numbers(7) === 1 &&
+        render(mod._midi2jianpu_parse) === numbered,
+    '非 0 值按「开」处理');
+  mod._midi2jianpu_set_bar_numbers(0);
+  check(render(mod._midi2jianpu_parse) === plain, '复位后文本谱回到无编号版');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

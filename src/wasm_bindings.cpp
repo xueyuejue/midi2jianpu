@@ -34,6 +34,10 @@ static int g_gongHint = m2j::kFifthsAuto;
 // 关掉后保留 MIDI 原始时长，人演奏的提前 note-off 会记成附点十六等非常规档。
 static bool g_quantize = true;
 static int g_quantizeAdjusted = 0;  // 最近一次渲染修正掉的音符数（页面如实提示）
+// 网页文本谱行首小节号（v1.169.0）：与 CLI --bar-numbers 同一个布尔，
+// 只作用于复制出去的文本谱（formatJianpu 第 3 参）；HTML/XML 本就无条件
+// 显示小节号，这个开关对它们没有差别，与 CLI 的警告口径一致。
+static bool g_barNumbers = false;
 // 网页移调（v1.164.0）：与 CLI --transpose 共用 transposeData()。
 static int g_transpose = 0;        // 半音数，0 = 不移调
 static int g_transposeFolded = 0;  // 上一次移调按八度折回的音数（页面如实报告）
@@ -280,7 +284,9 @@ const char* midi2jianpu_parse(const uint8_t* midiData, int size, int keyPitch, i
     // 手动宫音 / 手动调号 / 自动判定三选一，与 CLI 同一入口。
     const m2j::KeyEstimate key = chooseKey(data, keyPitch, isMajor);
 
-    g_result = m2j::formatJianpu(data, key);
+    // 与 CLI 的 `formatJianpu(data, key, barNumbers)` 同一处传参：网页勾选
+    // 「文本谱小节号」后，「复制简谱」拿到的文本才有行首 [N] 前缀。
+    g_result = m2j::formatJianpu(data, key, g_barNumbers);
     return g_result.c_str();
 }
 
@@ -429,6 +435,14 @@ int midi2jianpu_set_quantize(int on) {
 // 关掉量化或本次没有修正时返回 0。
 int midi2jianpu_quantize_adjusted() {
     return g_quantizeAdjusted;
+}
+
+// 网页「文本谱小节号」开关：非 0 = 开，0 = 关（默认，与 CLI 一致）。
+// 只作用于 midi2jianpu_parse 的文本谱，HTML/XML 本来就无条件印小节号，
+// 此开关对它们没有差别——与 CLI 的 --bar-numbers 警告同一口径。
+int midi2jianpu_set_bar_numbers(int on) {
+    g_barNumbers = (on != 0);
+    return g_barNumbers ? 1 : 0;
 }
 
 // 获取结果字符串长度
