@@ -3680,6 +3680,84 @@ if (existsSync(twoLyrics76)) {
   check(render(-1) === auto, '复位到自动后输出回到默认版式');
 }
 
+// ---- 98. v1.167.0 网页「宫音」下拉：与 CLI --gong 同源 ----
+// 五声曲自动判定的宫音会错（pentatonic.mid 自动是 G 徵调式 1=C，--gong F
+// 却是 G 商调式 1=F），网页过去只有开关没有手动指定，判错无从纠正。
+// 换算统一走 notation.cpp::keyFromGongTransposed，CLI 与网页不会分叉。
+{
+  const pt = readFixture('pentatonic.mid');
+  const reset = () => {
+    mod._midi2jianpu_set_transpose(0);
+    mod._midi2jianpu_set_bars(0);
+    mod._midi2jianpu_set_pickup(-1);
+    mod._midi2jianpu_set_use_pentatonic(1);
+    mod._midi2jianpu_set_gong(-1, 99);
+  };
+  const render = (fn) => {
+    const p = mod._malloc(pt.length);
+    mod.HEAPU8.set(pt, p);
+    const out = mod.UTF8ToString(fn(p, pt.length, -1, 1)) || '';
+    mod._free(p);
+    return out;
+  };
+  const html = () => render(mod._midi2jianpu_html);
+
+  check(typeof mod._midi2jianpu_set_gong === 'function',
+    '宫音下拉的导出存在（否则选了没反应）');
+
+  reset();
+  const auto = html();
+  check(auto.includes('G 徵调式') && auto.includes('1=C'),
+    '默认自动宫音与 CLI 的 pentatonic.mid 判定一致');
+  check(mod._midi2jianpu_set_gong(-1, 99) === -1 && html() === auto,
+    '自动宫音连渲染两次同字节（无状态累积）');
+
+  check(mod._midi2jianpu_set_gong(5, 99) === 5, 'set_gong(5) 返回实际生效值');
+  const f = html();
+  check(f !== auto && f.includes('手动指定宫音 F') && f.includes('G 商调式'),
+    'F 宫：页眉措辞与调式名都与 CLI --gong F 同口径');
+  check(html() === f, '同一宫音连渲染两次同字节');
+
+  check(mod._midi2jianpu_set_gong(1, -5) === 1, 'Db 宫（降号侧 hint）被接受');
+  const db = html();
+  check(db !== f && db.includes('宫音 Db'),
+    '降号写法被记住，不查表写成 C#');
+
+  // 三个输出入口都要响应同一个宫音，不能只改 HTML。
+  reset();
+  const aText = render(mod._midi2jianpu_parse);
+  const aXml = render(mod._midi2jianpu_musicxml);
+  mod._midi2jianpu_set_gong(5, 99);
+  const fText = render(mod._midi2jianpu_parse);
+  const fXml = render(mod._midi2jianpu_musicxml);
+  // 文本谱页眉不写 keySourceNote（那是 HTML 专用），只写调号与调式名。
+  check(fText !== aText && fText.includes('1=F') && fText.includes('宫音 F'),
+    '文本谱也随宫音改变，页眉调号与调式名一起变');
+  check(fXml !== aXml && fXml.includes('<fifths>-1</fifths>'),
+    'MusicXML 也随宫音改变，调号写成 F 的 -1');
+
+  // 宫音是「原调」：移调时宫音与升降号侧一起走，页眉保留用户选的原名。
+  reset();
+  mod._midi2jianpu_set_gong(5, 99);
+  mod._midi2jianpu_set_transpose(2);
+  const shifted = html();
+  check(shifted.includes('手动指定宫音 F，已随移调平移') && shifted.includes('1=G'),
+    '手动宫音随移调平移，页眉仍写用户选的原宫音');
+  check(shifted !== f, '移调后的谱面与原调不同');
+
+  // 越界不静默钳位：返回旧值，谱面保持上一次合法选择。
+  reset();
+  mod._midi2jianpu_set_gong(5, 99);
+  check(mod._midi2jianpu_set_gong(12, 99) === 5 && html() === f,
+    'pc=12 越界被拒绝，仍用原宫音');
+  check(mod._midi2jianpu_set_gong(-2, 99) === 5 &&
+        mod._midi2jianpu_set_gong(5, 8) === 5,
+    'pc=-2 / hint=8 越界都被拒绝');
+
+  reset();
+  check(html() === auto, '复位后输出回到默认判定');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

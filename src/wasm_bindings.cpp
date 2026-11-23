@@ -25,6 +25,11 @@ static int g_barsPerRow = 0;          // 每行小节数，0 = 自动折算；�
 static double g_pickupBeats = -1;
 // 最近一次渲染里手动弱起被拒的原因（越界等），网页如实提示，绝不静默吞参数。
 static std::string g_pickupError;
+// 网页手动宫音（v1.167.0）：-1 = 不指定（沿用自动判定 / 网页调性下拉），
+// 0..11 = 宫音音级。kFifthsAuto 之外的值记住 Bb/Gb 这类降号写法，
+// 与 CLI --gong Bb 走同一条换算；越界时 set_gong 拒绝，不静默钳位。
+static int g_gongPc = -1;
+static int g_gongHint = m2j::kFifthsAuto;
 // 网页移调（v1.164.0）：与 CLI --transpose 共用 transposeData()。
 static int g_transpose = 0;        // 半音数，0 = 不移调
 static int g_transposeFolded = 0;  // 上一次移调按八度折回的音数（页面如实报告）
@@ -74,6 +79,35 @@ static void applyTranspose(m2j::MidiData& data) {
     g_transposeFolded = m2j::transposeData(data, g_transpose);
     // 移整个八度时调号不动，页眉也就不能声称「已随移调平移」。
     g_keySigMoved = data.keySig.valid && data.keySig.sharpsFlats != sfBefore;
+}
+
+// 三个渲染入口（文本 / HTML / MusicXML）共用的调性决策。手动宫音优先于
+// 手动调号，与 CLI 的 `--gong 优先于 --key` 同口径；越界的宫音在 set_gong
+// 那里就被拒了，这里拿到的必定是合法值。
+static m2j::KeyEstimate chooseKey(const m2j::MidiData& data, int keyPitch,
+                                  int isMajor) {
+    if (g_gongPc >= 0)
+        return m2j::keyFromGongTransposed(
+            data, g_gongPc, g_gongHint, (g_transpose % 12) ? g_transpose : 0);
+    if (keyPitch >= 0) {
+        m2j::KeyEstimate chosen;
+        chosen.tonicPitchClass = keyPitch;
+        chosen.isMajor = isMajor != 0;
+        return (g_transpose % 12) ? m2j::transposeKey(chosen, g_transpose)
+                                  : chosen;
+    }
+    return m2j::estimateKey(data);
+}
+
+// HTML 页眉的措辞与 CLI 的 keySource 逐字一致：报用户选的原宫音，移调后
+// 补一句「已随移调平移」，不把平移后的宫音记到用户头上。
+static std::string gongSourceNote() {
+    m2j::KeyEstimate g;
+    g.tonicPitchClass = g_gongPc;
+    g.isMajor = true;
+    g.fifthsHint = g_gongHint;
+    return "手动指定宫音 " + m2j::keyName(g)
+         + ((g_transpose % 12) ? "，已随移调平移" : "");
 }
 
 // 网页端的段落选择：与 CLI --track 走同一条解析层按轨隔离路径。
@@ -229,16 +263,8 @@ const char* midi2jianpu_parse(const uint8_t* midiData, int size, int keyPitch, i
     applyRenderOptions(data);
     m2j::quantizeTiming(data);
 
-    m2j::KeyEstimate key;
-    if (keyPitch >= 0) {
-        key.tonicPitchClass = keyPitch;
-        key.isMajor = isMajor != 0;
-        // 网页选的调是「原调」，和 CLI --key 一样要跟着移调走：只移音不移调
-        // 会让谱面出现「音符在 D 大调、1 还写着 C」。
-        if (g_transpose % 12 != 0) key = m2j::transposeKey(key, g_transpose);
-    } else {
-        key = m2j::estimateKey(data);
-    }
+    // 手动宫音 / 手动调号 / 自动判定三选一，与 CLI 同一入口。
+    const m2j::KeyEstimate key = chooseKey(data, keyPitch, isMajor);
 
     g_result = m2j::formatJianpu(data, key);
     return g_result.c_str();
@@ -282,8 +308,13 @@ const char* midi2jianpu_html(const uint8_t* midiData, int size, int keyPitch, in
     m2j::KeyEstimate key;
     // 网页版选调与 CLI 的 --key 是同一件事：这个调是人选的，不是文件里写的。
     // 页眉照旧印「MIDI调号」就等于把用户的选择记到 MIDI 文件头上。
+    // 宫音优先于调号，和 CLI 的 --gong / --key 冲突规则一致（网页在 UI 上
+    // 让两个下拉互斥，这里再兜一次底，避免漏调用时两处口径分叉）。
     std::string keySourceNote;
-    if (keyPitch >= 0) {
+    if (g_gongPc >= 0) {
+        key = chooseKey(data, keyPitch, isMajor);
+        keySourceNote = gongSourceNote();
+    } else if (keyPitch >= 0) {
         m2j::KeyEstimate chosen;
         chosen.tonicPitchClass = keyPitch;
         chosen.isMajor = isMajor != 0;
@@ -357,6 +388,18 @@ double midi2jianpu_set_pickup(double beats) {
 // 用户给了越界拍数（如 4/4 里的 4 拍）时，谱面退回自动判定但不能不吭声。
 const char* midi2jianpu_pickup_error() {
     return g_pickupError.c_str();
+}
+
+// 网页「宫音」：-1 = 不指定（沿用自动判定或网页调性下拉），0..11 = 宫音音级。
+// hint 与 CLI 的 --gong 同名写法同口径：kFifthsAuto(99) 让 keyName 查表，
+// Bb/Gb/Ab/Eb/Db 传负五度数保留用户的降号写法。越界一律拒绝并返回当前值，
+//  页面据此把下拉拉回，绝不静默钳成一个用户没选的宫音。
+int midi2jianpu_set_gong(int pc, int hint) {
+    if (pc < -1 || pc > 11) return g_gongPc;
+    if (hint != m2j::kFifthsAuto && (hint < -7 || hint > 7)) return g_gongPc;
+    g_gongPc = pc;
+    g_gongHint = (pc < 0) ? m2j::kFifthsAuto : hint;
+    return g_gongPc;
 }
 
 // 获取结果字符串长度
@@ -722,15 +765,8 @@ const char* midi2jianpu_musicxml(const uint8_t* midiData, int size, int keyPitch
     applyRenderOptions(data);
     m2j::quantizeTiming(data);
 
-    m2j::KeyEstimate key;
-    if (keyPitch >= 0) {
-        key.tonicPitchClass = keyPitch;
-        key.isMajor = isMajor != 0;
-        // 与 CLI --key / 网页 HTML 同一条规则：用户选的调随移调平移。
-        if (g_transpose % 12 != 0) key = m2j::transposeKey(key, g_transpose);
-    } else {
-        key = m2j::estimateKey(data);
-    }
+    // 与文本 / HTML 完全同一条决策链，宫音也一起走（CLI 三端同源）。
+    const m2j::KeyEstimate key = chooseKey(data, keyPitch, isMajor);
     // 网页版导出 MusicXML 也要带词：歌词文本由 midi2jianpu_set_lyrics 传进来，
     // 和 HTML 谱面走同一个解析入口（LRC / JSON 自动判定），连音线/音节划分
     // 才不会两边不一致。

@@ -67,6 +67,14 @@ std::string pentatonicModeName(PentatonicMode mode);
 KeyEstimate keyFromGong(const MidiData& data, int gongPitchClass,
                         int fifthsHint = kFifthsAuto);
 
+// 「手动宫音 + 移调」的换算，CLI --gong 与网页宫音下拉共用同一入口。
+// gongPc 是用户选的原调宫音音级（0..11），fifthsHint 记住 Bb/Gb 这类降号写法，
+// semis 是移调半音数；整八度平移（semis % 12 == 0）时宫音与调号都不动，
+// 与 CLI 的 transposeShiftsKey 同口径。两处各写一份迟早会出现「网页移调后
+// 宫音没跟着走」的分叉，所以换算只留这里一份。
+KeyEstimate keyFromGongTransposed(const MidiData& data, int gongPc,
+                                  int fifthsHint, int semis);
+
 // 根据 MIDI 数据估计调性（优先用内置调号，否则 Krumhansl-Schmuckler 相关度匹配，
 // 再由高置信的五声调式判定校正宫音）
 KeyEstimate estimateKey(const MidiData& data);

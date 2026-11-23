@@ -653,15 +653,11 @@ int main(int argc, char** argv) {
             // --gong 给的是「原调宫音」：宫音必须跟着移调走，否则 1=C 的
             // C 宫五声移两个半音后仍然标成 C 宫，与谱面音高脱节。直接挪
             // 宫音再重推一次，调式名（徵 / 羽…）才跟着新终止音算对。
-            int gpc = g.tonicPitchClass;
-            int gHint = g.fifthsHint;
-            if (transposeShiftsKey) {
-                gpc = ((gpc + transpose) % 12 + 12) % 12;
-                // 宫音的升降号侧也要跟着移：Gb 宫升两个半音是 Ab 宫（-4）。
-                if (gHint != m2j::kFifthsAuto)
-                    gHint = m2j::transposeFifths(gHint, transpose);
-            }
-            key = m2j::keyFromGong(data, gpc, gHint);
+            // 宫音与升降号侧的平移统一走 notation 的共用入口，网页宫音
+            // 下拉调用同一个函数，避免两处对「Gb 宫 +2」算出不同结果。
+            key = m2j::keyFromGongTransposed(data, g.tonicPitchClass,
+                                             g.fifthsHint,
+                                             transposeShiftsKey ? transpose : 0);
             keySource = "手动指定宫音 " + gongArg
                       + (transposeShiftsKey ? "，已随移调平移" : "");
             keySourceNote = keySource;

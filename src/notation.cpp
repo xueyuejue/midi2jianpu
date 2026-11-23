@@ -449,6 +449,18 @@ KeyEstimate keyFromGong(const MidiData& data, int gongPitchClass, int fifthsHint
     return k;
 }
 
+KeyEstimate keyFromGongTransposed(const MidiData& data, int gongPc,
+                                  int fifthsHint, int semis) {
+    // 整八度平移不动宫音，也不动升降号侧（C 宫升 12 半音还是 C 宫）。
+    if (semis == 0 || semis % 12 == 0)
+        return keyFromGong(data, gongPc, fifthsHint);
+    const int movedPc = ((gongPc % 12) + semis % 12 + 12) % 12;
+    const int movedHint = fifthsHint == kFifthsAuto
+                              ? kFifthsAuto
+                              : transposeFifths(fifthsHint, semis);
+    return keyFromGong(data, movedPc, movedHint);
+}
+
 // 大调主音音级 -> 调号升降数（取绝对值最小的等音写法）
 // C=0, C#/Db=-5, D=2, D#/Eb=-3, E=4, F=-1, F#/Gb=6, G=1, G#/Ab=-4, A=3, A#/Bb=-2, B=5
 static const int MAJOR_FIFTHS[12] = {0, -5, 2, -3, 4, -1, 6, 1, -4, 3, -2, 5};

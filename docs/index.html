@@ -75,6 +75,22 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
       <option value="5:0">f 小调（1=Ab）</option>
     </optgroup>
   </select>
+  <label for="gong">宫音：</label>
+  <select id="gong" title="五声曲自动判定的宫音不对时手动指定，与命令行 --gong 同一取值。宫音与调性都在指定原调，选一个另一个会自动回到「自动」">
+    <option value="-1:99">自动</option>
+    <option value="0:99">C</option>
+    <option value="1:-5">Db</option>
+    <option value="2:99">D</option>
+    <option value="3:-3">Eb</option>
+    <option value="4:99">E</option>
+    <option value="5:99">F</option>
+    <option value="6:99">F#</option>
+    <option value="7:99">G</option>
+    <option value="8:-4">Ab</option>
+    <option value="9:99">A</option>
+    <option value="10:-2">Bb</option>
+    <option value="11:99">B</option>
+  </select>
   <label for="track">段落/轨道：</label>
   <select id="track" title="多轨 MIDI 可只转换其中一条轨；轨名与音数取自文件里真实的 MTrk 块（与 --list-tracks 同口径），该轨以外的歌词、力度、踏板、弯音也会一并隔离">
     <option value="-1">自动（全部轨）</option>
@@ -132,7 +148,7 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     <label class="hint"><input type="checkbox" id="useMidiLyrics" checked> 使用 MIDI 自带歌词</label>
     <span class="hint" id="midiLyricHint"></span>
   </div>
-  <div class="hint">歌词会按时间戳对齐到音符，只显示在旋律轨上；一字多音会画连音线，下载 MusicXML 也带词。文件自带歌词时无需再找 LRC（提示栏会点明词在第几轨、有没有别的轨被忽略），粘贴的 LRC 优先级更高。中途变拍号、弱起、变速、转调会自动识别：前三者按段划分小节线，转调则按段重算唱名。中国民歌/古风曲若只用五声音阶，自动识别会按宫音定 1（如 G 徵调式记 1=C 而不是 1=G），关掉上方复选框可回到大小调判定。LRC 的 [mm:ss.xx] 会按曲中变速分段换算成谱面位置，也支持 [offset:±毫秒] 与一行多个时间戳；JSON 歌词（<code>[{"start_beat":N,"text":"…"}]</code>）同样认，格式按内容自动判定，和命令行一个口径；歌词文件也可以直接拖进页面，提示栏会回显「按 LRC / JSON 解析 N 字」，一个字都没认出来时同样直说。文件里的力度（CC11）、note-on 力度、弯音与段落标记会自动转成谱面上的 mf/渐强/断音/滑音/段落名，三个导出通道同步；不想要这些记号可关掉「力度与演奏法」。</div>
+  <div class="hint">歌词会按时间戳对齐到音符，只显示在旋律轨上；一字多音会画连音线，下载 MusicXML 也带词。文件自带歌词时无需再找 LRC（提示栏会点明词在第几轨、有没有别的轨被忽略），粘贴的 LRC 优先级更高。中途变拍号、弱起、变速、转调会自动识别：前三者按段划分小节线，转调则按段重算唱名。中国民歌/古风曲若只用五声音阶，自动识别会按宫音定 1（如 G 徵调式记 1=C 而不是 1=G），判错时可在「宫音」下拉里手动指定（与命令行 `--gong` 同源），关掉上方复选框可回到大小调判定。LRC 的 [mm:ss.xx] 会按曲中变速分段换算成谱面位置，也支持 [offset:±毫秒] 与一行多个时间戳；JSON 歌词（<code>[{"start_beat":N,"text":"…"}]</code>）同样认，格式按内容自动判定，和命令行一个口径；歌词文件也可以直接拖进页面，提示栏会回显「按 LRC / JSON 解析 N 字」，一个字都没认出来时同样直说。文件里的力度（CC11）、note-on 力度、弯音与段落标记会自动转成谱面上的 mf/渐强/断音/滑音/段落名，三个导出通道同步；不想要这些记号可关掉「力度与演奏法」。</div>
   <input type="file" id="lyricsFile" accept=".lrc,.LRC,.txt,.json,.JSON" style="display:none">
 </details>
 
@@ -236,7 +252,11 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
         hints.push(tmsg);
       }
     }
-    if (wasmMod._midi2jianpu_pentatonic_info && $('key').value.indexOf('-1') === 0) {
+    // 手动宫音或手动调号时不再提示「检测到 X 宫按宫音校正」——那说的是
+    // 自动判定的结果，和用户刚选的宫音对不上，等于同时给出两个互相矛盾的结论。
+    if (wasmMod._midi2jianpu_pentatonic_info
+        && $('key').value.indexOf('-1') === 0
+        && $('gong').value.indexOf('-1:') === 0) {
       var pi = wasmMod._midi2jianpu_pentatonic_info(p, midiBytes.length);
       if (pi > 0) {
         var names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
@@ -616,6 +636,14 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
       wasmMod._midi2jianpu_set_pickup(isNaN(pk) ? -1 : pk);
     }
 
+    // 宫音同样每次重设：-1 自动 / 0..11 手动。第二个值是升降号侧，
+    // Bb/Db/Eb/Ab 传负五度数，谱面才会照用户选的写法印「宫音 Bb」而不是
+    // 查表写成 A#。与命令行 --gong Bb 同源。
+    if (wasmMod._midi2jianpu_set_gong) {
+      var gv = $('gong').value.split(':');
+      wasmMod._midi2jianpu_set_gong(Number(gv[0]), Number(gv[1]));
+    }
+
     // 标题同理，每次重置，避免换了文件还顶着上一首的歌名
     if (wasmMod._midi2jianpu_set_title) {
       var ts = midiTitle || '';
@@ -681,13 +709,26 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
         var perr = wasmMod.UTF8ToString(wasmMod._midi2jianpu_pickup_error());
         if (perr) bits.push('弱起已退回自动（' + perr + '）');
       }
+      // 手动宫音要说清「这个调式是用户选的」，不能混在自动判定里。
+      var gongSel = $('gong');
+      if (gongSel && gongSel.value.indexOf('-1:') !== 0)
+        bits.push('手动宫音 ' + gongSel.options[gongSel.selectedIndex].text);
       $('meta').textContent = (bits.length ? bits.join(' · ') + ' · ' : '') + 'WASM 核心';
     } catch (e) {
       showErr('转换失败：' + e.message);
     }
   }
 
-  $('key').onchange = function () { if (midiBytes) { updateFileHints(); convert(); } };
+  $('key').onchange = function () {
+    // 宫音与调性都是「指定原调」：CLI 里同时给会直接报错，网页让后选的
+    // 那个把前一个拨回自动，免得用户拿到一份自己没选过的调性说明。
+    if ($('key').value.indexOf('-1:') !== 0) $('gong').value = '-1:99';
+    if (midiBytes) { updateFileHints(); convert(); }
+  };
+  $('gong').onchange = function () {
+    if ($('gong').value.indexOf('-1:') !== 0) $('key').value = '-1:1';
+    if (midiBytes) { updateFileHints(); convert(); }
+  };
 
   // ---- 复制简谱文本 ----
   // 直接用 wasm 的文本输出，不再从 DOM 里爬（旧的爬取逻辑依赖已删除的

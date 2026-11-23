@@ -804,6 +804,24 @@ int main() {
               "手动 2 拍换算成 960 tick（4/4、480 division）");
     }
 
+    {
+        // 网页宫音下拉与 CLI --gong 共用 keyFromGongTransposed：整八度不动
+        // 宫音，非整八度连升降号侧一起平移（Gb +2 要得 Ab，不是 G#）。
+        MidiData gd;
+        KeyEstimate k = keyFromGongTransposed(gd, 5, kFifthsAuto, 0);
+        check(k.tonicPitchClass == 5 && keyName(k) == "F",
+              "不平移时宫音 F 原样输出");
+        k = keyFromGongTransposed(gd, 5, kFifthsAuto, 12);
+        check(k.tonicPitchClass == 5 && keyName(k) == "F",
+              "整八度平移不动宫音");
+        k = keyFromGongTransposed(gd, 5, kFifthsAuto, 2);
+        check(k.tonicPitchClass == 7 && keyName(k) == "G",
+              "F 宫 +2 变 G 宫");
+        k = keyFromGongTransposed(gd, 6, -6, 2);
+        check(k.tonicPitchClass == 8 && keyName(k) == "Ab",
+              "Gb 宫 +2 变 Ab 宫，降号侧跟着走");
+    }
+
     // ---- 歌词分配与一字多音 ----
     // HTML 的连音线弧线和 MusicXML 的 syllabic/slur 都从这一份结果出发。
     // 这里锁住「哪个字唱哪几个音、区间到哪里结束」的全部边界。
