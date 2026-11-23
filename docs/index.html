@@ -96,6 +96,7 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     <option value="-1">自动（全部轨）</option>
   </select>
   <label class="hint"><input type="checkbox" id="usePentatonic" checked> 五声调式宫音校正</label>
+  <label class="hint"><input type="checkbox" id="quantize" checked title="默认把人演奏的提前 note-off 吸附到节拍网格（与命令行默认一致）。关掉则保留 MIDI 原始时长，可能出现的附点十六等非常规时值会照原样记谱——与命令行 --no-quantize 同源"> 时值量化</label>
   <label class="hint"><input type="checkbox" id="useDynamics" checked> 力度与演奏法</label>
   <label for="softPedal">软踏板：</label>
   <select id="softPedal" title="CC67 软踏板力度衰减系数；弱奏曲被强制压暗时可调小系数或关闭还原">
@@ -511,6 +512,7 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
   var useMidiBox = $('useMidiLyrics');
   var usePentBox = $('usePentatonic');
   var useDynBox = $('useDynamics');
+  var quantBox = $('quantize');
   var trackBox = $('track');
   trackBox.onchange = function () {
     if (midiBytes && wasmReady) { updateFileHints(); convert(); }
@@ -528,6 +530,11 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     if (wasmMod && wasmMod._midi2jianpu_set_use_dynamics)
       wasmMod._midi2jianpu_set_use_dynamics(useDynBox.checked ? 1 : 0);
     if (midiBytes && wasmReady) { updateFileHints(); convert(); }
+  };
+  quantBox.onchange = function () {
+    if (wasmMod && wasmMod._midi2jianpu_set_quantize)
+      wasmMod._midi2jianpu_set_quantize(quantBox.checked ? 1 : 0);
+    if (midiBytes && wasmReady) convert();
   };
   $('softPedal').onchange = function () {
     if (midiBytes && wasmReady) convert();
@@ -621,6 +628,12 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
       wasmMod._midi2jianpu_set_transpose(isNaN(semis) ? 0 : semis);
     }
 
+    // 时值量化开关同样每次重设：wasm 里是全局状态，换文件 / 改勾选不能沿用。
+    // 关掉保留 MIDI 原始时长，与命令行 --no-quantize 同源。
+    if (wasmMod._midi2jianpu_set_quantize) {
+      wasmMod._midi2jianpu_set_quantize(quantBox.checked ? 1 : 0);
+    }
+
     // 每行小节数同样每次重设。只影响 HTML；复制文本与 MusicXML 不分行，
     // CLI 给 --bars 时对这两者也只印一句「只作用于 --html」。
     if (wasmMod._midi2jianpu_set_bars) {
@@ -703,6 +716,15 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
       var folded = wasmMod._midi2jianpu_transpose_folded
                  ? wasmMod._midi2jianpu_transpose_folded() : 0;
       if (folded > 0) bits.push(folded + ' 个音越界按八度折回');
+      // 时值量化：CLI 会打「时值量化: 修正 N 个音符」，网页也得说——
+      // 人演奏的 note-off 提前被悄悄抹平时，用户有权知道谱面被改过。
+      // 关掉时同样要说，否则「怎么突然出现附点十六」无从解释。
+      if (!quantBox.checked) {
+        bits.push('保留原始时值');
+      } else if (wasmMod._midi2jianpu_quantize_adjusted) {
+        var qa = wasmMod._midi2jianpu_quantize_adjusted();
+        if (qa > 0) bits.push('量化修正 ' + qa + ' 个音符');
+      }
       // 弱起：手动指定越界（如 4/4 里选 3 拍以上）时 wasm 退回自动判定，
       // 这里如实说明原因，不让用户以为自己的选择已经生效。
       if (wasmMod._midi2jianpu_pickup_error) {

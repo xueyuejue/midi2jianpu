@@ -3758,6 +3758,66 @@ if (existsSync(twoLyrics76)) {
   check(html() === auto, '复位后输出回到默认判定');
 }
 
+// ---- 99. v1.168.0 网页「时值量化」开关：与 CLI --no-quantize 同源 ----
+// 人演奏的 note-off 普遍提前，自动量化把 humanized.mid 的附点八分吸附成
+// 普通八分；CLI 有 --no-quantize 出口，网页过去强制量化无从还原原始时值。
+// 两个入口调用的仍是同一个 m2j::quantizeTiming()，只差一个布尔。
+{
+  const hm = readFixture('humanized.mid');
+  const reset = () => {
+    mod._midi2jianpu_set_transpose(0);
+    mod._midi2jianpu_set_bars(0);
+    mod._midi2jianpu_set_pickup(-1);
+    mod._midi2jianpu_set_gong(-1, 99);
+    mod._midi2jianpu_set_quantize(1);
+  };
+  const render = (fn) => {
+    const p = mod._malloc(hm.length);
+    mod.HEAPU8.set(hm, p);
+    const out = mod.UTF8ToString(fn(p, hm.length, -1, 1)) || '';
+    mod._free(p);
+    return out;
+  };
+  const html = () => render(mod._midi2jianpu_html);
+
+  check(typeof mod._midi2jianpu_set_quantize === 'function' &&
+        typeof mod._midi2jianpu_quantize_adjusted === 'function',
+    '量化开关与修正数报告两个导出都在');
+
+  reset();
+  const on = html();
+  const adjusted = mod._midi2jianpu_quantize_adjusted();
+  check(adjusted > 0, '默认开量化时如实报告修正音符数');
+  check(html() === on && mod._midi2jianpu_quantize_adjusted() === adjusted,
+    '同开关连渲染两次同字节、修正数不累积');
+
+  check(mod._midi2jianpu_set_quantize(0) === 0, 'set_quantize(0) 返回实际生效值');
+  const off = html();
+  check(off !== on && off.includes('='),
+    '关量化后谱面改变，保留原始附点时值');
+  check(mod._midi2jianpu_quantize_adjusted() === 0,
+    '关量化后修正数归零，状态行不顶上一版的数字');
+  check(html() === off, '关量化连渲染两次同字节');
+
+  // 三个渲染入口都要响应同一个开关，不能只改 HTML。
+  // 注意先拨回开：上面几步把开关留在了「关」，直接取 on* 会拿到关量化版。
+  mod._midi2jianpu_set_quantize(1);
+  const onText = render(mod._midi2jianpu_parse);
+  const onXml = render(mod._midi2jianpu_musicxml);
+  mod._midi2jianpu_set_quantize(0);
+  const offText = render(mod._midi2jianpu_parse);
+  const offXml = render(mod._midi2jianpu_musicxml);
+  check(offText !== onText && offXml !== onXml,
+    '文本谱与 MusicXML 也随量化开关改变');
+
+  // 越界/任意整数按布尔口径接受；非 0 一律开，与 set_use_* 一致。
+  check(mod._midi2jianpu_set_quantize(7) === 1 && html() === on,
+    '非 0 值按「开」处理，谱面与默认量化一致');
+
+  reset();
+  check(html() === on, '复位后输出回到默认量化版式');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

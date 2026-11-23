@@ -30,6 +30,10 @@ static std::string g_pickupError;
 // 与 CLI --gong Bb 走同一条换算；越界时 set_gong 拒绝，不静默钳位。
 static int g_gongPc = -1;
 static int g_gongHint = m2j::kFifthsAuto;
+// 网页时值量化（v1.168.0）：与 CLI --no-quantize 同一开关，默认开。
+// 关掉后保留 MIDI 原始时长，人演奏的提前 note-off 会记成附点十六等非常规档。
+static bool g_quantize = true;
+static int g_quantizeAdjusted = 0;  // 最近一次渲染修正掉的音符数（页面如实提示）
 // 网页移调（v1.164.0）：与 CLI --transpose 共用 transposeData()。
 static int g_transpose = 0;        // 半音数，0 = 不移调
 static int g_transposeFolded = 0;  // 上一次移调按八度折回的音数（页面如实报告）
@@ -79,6 +83,16 @@ static void applyTranspose(m2j::MidiData& data) {
     g_transposeFolded = m2j::transposeData(data, g_transpose);
     // 移整个八度时调号不动，页眉也就不能声称「已随移调平移」。
     g_keySigMoved = data.keySig.valid && data.keySig.sharpsFlats != sfBefore;
+}
+
+// 三个渲染入口（文本 / HTML / MusicXML）共用的时值量化。CLI 是
+// `if (quantize) quantizeTiming(data);`，网页这层只是把布尔开关换成全局值，
+// 调用的仍是同一个 m2j::quantizeTiming()，没有第二套网格/门限口径。
+// 每次渲染前归零 adjusted，避免关掉量化后状态行还顶着上一次的「修正 N 个」。
+static void applyQuantize(m2j::MidiData& data) {
+    g_quantizeAdjusted = 0;
+    if (!g_quantize) return;
+    g_quantizeAdjusted = m2j::quantizeTiming(data).adjusted;
 }
 
 // 三个渲染入口（文本 / HTML / MusicXML）共用的调性决策。手动宫音优先于
@@ -261,7 +275,7 @@ const char* midi2jianpu_parse(const uint8_t* midiData, int size, int keyPitch, i
 
     applyTranspose(data);
     applyRenderOptions(data);
-    m2j::quantizeTiming(data);
+    applyQuantize(data);
 
     // 手动宫音 / 手动调号 / 自动判定三选一，与 CLI 同一入口。
     const m2j::KeyEstimate key = chooseKey(data, keyPitch, isMajor);
@@ -303,7 +317,7 @@ const char* midi2jianpu_html(const uint8_t* midiData, int size, int keyPitch, in
 
     applyTranspose(data);
     applyRenderOptions(data);
-    m2j::quantizeTiming(data);
+    applyQuantize(data);
 
     m2j::KeyEstimate key;
     // 网页版选调与 CLI 的 --key 是同一件事：这个调是人选的，不是文件里写的。
@@ -400,6 +414,21 @@ int midi2jianpu_set_gong(int pc, int hint) {
     g_gongPc = pc;
     g_gongHint = (pc < 0) ? m2j::kFifthsAuto : hint;
     return g_gongPc;
+}
+
+// 网页「时值量化」开关：非 0 = 开（默认，与 CLI 一致），0 = 关（--no-quantize，
+// 保留 MIDI 原始时长）。布尔开关没有越界概念，按 set_use_* 的口径接受任意整数。
+// 返回实际生效值，页面据此反映当前状态。
+int midi2jianpu_set_quantize(int on) {
+    g_quantize = (on != 0);
+    return g_quantize ? 1 : 0;
+}
+
+// 最近一次渲染里被量化修正掉的音符数。CLI 会打「时值量化: 修正 N 个音符」，
+// 网页也得说——否则人演奏的 note-off 提前被悄悄抹平，用户以为谱面就是原样。
+// 关掉量化或本次没有修正时返回 0。
+int midi2jianpu_quantize_adjusted() {
+    return g_quantizeAdjusted;
 }
 
 // 获取结果字符串长度
@@ -763,7 +792,7 @@ const char* midi2jianpu_musicxml(const uint8_t* midiData, int size, int keyPitch
     }
     applyTranspose(data);
     applyRenderOptions(data);
-    m2j::quantizeTiming(data);
+    applyQuantize(data);
 
     // 与文本 / HTML 完全同一条决策链，宫音也一起走（CLI 三端同源）。
     const m2j::KeyEstimate key = chooseKey(data, keyPitch, isMajor);
