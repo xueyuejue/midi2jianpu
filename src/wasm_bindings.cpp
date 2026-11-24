@@ -811,6 +811,24 @@ const char* midi2jianpu_get_notes_json(const uint8_t* midiData, int size) {
     // 和耳朵听到的不是一首曲子」。移调放在这里、与渲染路径同一个函数，
     // 两边不会各说各话。
     applyTranspose(data);
+    // 时值同理（v1.176.0）：网页「关掉时值量化」只改了谱面，试听数据此前
+    // 直接取原始 note-off，听到的是另一套节奏。CLI 的 --player 从 parts
+    // 取音符，本来就是量化后的；这里补上同一个 applyQuantize()，三个
+    // 渲染入口与试听共用 g_quantize / m2j::quantizeTiming()，不再分叉。
+    applyQuantize(data);
+    // quantizeTiming() 改的是 tick，而 JSON 用的是秒：不重算的话谱面时值
+    // 变了、试听还是解析时的旧秒数（humanized.mid 上 480 vs 408 tick）。
+    // 与解析层共用同一个 TempoTimeline 换算入口，不在绑定层另算一套。
+    m2j::recomputeSeconds(data);
+    // 弯音也要与谱面同源（v1.176.0）：三端 writer 早已把 RPN 范围内的
+    // pitch-bend 折算进音高，试听过去直接用原始 pitch，于是谱面写 72
+    // 而耳朵听到 60。共用 notation.cpp 的 pitchBendOffset()，不再第五次
+    // 抄同一段取平均逻辑。
+    for (auto& n : data.notes) {
+        const double off = m2j::pitchBendOffset(
+            data, n.startTicks, n.startTicks + n.durationTicks, n.channel);
+        if (std::abs(off) >= 0.5) n.pitch += (int)std::round(off);
+    }
 
     // 生成JSON: [{time, pitch, duration, velocity}]
     std::string json = "[";

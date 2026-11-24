@@ -196,23 +196,11 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
 
     const int division = (data.division > 0) ? data.division : 480;
 
-    // 弯音修正（只统计同通道，避免不同乐器互相干扰）
-    auto bendOffset = [&](long start, long end, int channel) -> double {
-        if (data.pitchBends.empty()) return 0.0;
-        double sum = 0; int count = 0;
-        for (const auto& pb : data.pitchBends) {
-            if (pb.channel == channel && pb.tick >= start && pb.tick <= end) {
-                sum += (pb.value - 8192) / 8192.0 * pb.range;
-                count++;
-            }
-        }
-        return count > 0 ? sum / count : 0.0;
-    };
-
-    // 按轨分组
+    // 按轨分组（弯音修正口径与文本谱 / HTML / 网页试听共用，v1.176.0）
     std::map<int, std::vector<NoteEvent>> byTrack;
     for (auto n : data.notes) {
-        double off = bendOffset(n.startTicks, n.startTicks + n.durationTicks, n.channel);
+        double off = pitchBendOffset(data, n.startTicks,
+                                     n.startTicks + n.durationTicks, n.channel);
         if (std::abs(off) >= 0.5) n.pitch += (int)std::round(off);
         byTrack[n.track].push_back(n);
     }
@@ -1156,8 +1144,8 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
                 const NoteExpression ae0 = expr.noteAt(seg.start, seg.channel);
                 if (ae0.hasGrace()) {
                     int gp = ae0.gracePitch;
-                    double goff = bendOffset(seg.start - division / 16,
-                                            seg.start, seg.channel);
+                    double goff = pitchBendOffset(data, seg.start - division / 16,
+                                                  seg.start, seg.channel);
                     if (std::abs(goff) >= 0.5) gp += (int)std::round(goff);
                     int gpc = gp % 12; if (gpc < 0) gpc += 12;
                     int goct = (gp - gpc) / 12 - 1;

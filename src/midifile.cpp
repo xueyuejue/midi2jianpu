@@ -858,7 +858,7 @@ static void boundTimeline(MidiData& out) {
         rebuildChannelProgram(out);
 }
 
-static void recomputeSeconds(MidiData& out) {
+void recomputeSeconds(MidiData& out) {
     std::sort(out.tempoChanges.begin(), out.tempoChanges.end(),
               [](const TempoPoint& a, const TempoPoint& b) { return a.tick < b.tick; });
 

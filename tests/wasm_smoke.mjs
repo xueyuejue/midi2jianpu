@@ -4055,6 +4055,57 @@ if (existsSync(twoLyrics76)) {
     '同一 JSON：format 导出与 lyric_info 说法一致');
 }
 
+// ---- 105. v1.176.0 试听数据与时值量化同源：关掉量化后耳朵听到的也变 ----
+{
+  const human = readFixture('humanized.mid');
+  const firstPlayNote = (on) => {
+    mod._midi2jianpu_set_track(-1);
+    mod._midi2jianpu_set_quantize(on);
+    const p = mod._malloc(human.length);
+    mod.HEAPU8.set(human, p);
+    mod._midi2jianpu_get_notes_json(p, human.length);
+    const len = mod._midi2jianpu_result_len();
+    const b = mod._malloc(len + 1);
+    mod._midi2jianpu_copy_result(b, len + 1);
+    const txt = mod.UTF8ToString(b);
+    mod._free(p);
+    mod._free(b);
+    return JSON.parse(txt)[0];
+  };
+  // humanized.mid：division=960、♩=72；量化开首音 480 tick=0.417s，
+  // 关掉后保留原 408 tick=0.354s（CLI --player 的同口径真值）。
+  const on = firstPlayNote(1);
+  const off = firstPlayNote(0);
+  firstPlayNote(1); // 复位，别影响后面的用例
+  check(Math.abs(on.duration - 0.417) < 0.002,
+    '量化开：试听首音 0.417s（CLI 播放器 480 tick）', JSON.stringify(on));
+  check(Math.abs(off.duration - 0.354) < 0.002,
+    '量化关：试听首音 0.354s（CLI 播放器 408 tick）', JSON.stringify(off));
+  check(on.duration !== off.duration, '量化开关确实改变试听时值',
+    `${on.duration} vs ${off.duration}`);
+  check(on.pitch === off.pitch && on.velocity === off.velocity,
+    '量化只改时值，不改音高与力度');
+}
+
+// ---- 106. v1.176.0 试听音高同样吃弯音修正，与三端谱面共用一个函数 ----
+{
+  const bendMidi = readFixture('bendrange_channels.mid');
+  const p = mod._malloc(bendMidi.length);
+  mod.HEAPU8.set(bendMidi, p);
+  mod._midi2jianpu_set_track(-1);
+  mod._midi2jianpu_get_notes_json(p, bendMidi.length);
+  const len = mod._midi2jianpu_result_len();
+  const b = mod._malloc(len + 1);
+  mod._midi2jianpu_copy_result(b, len + 1);
+  const notes = JSON.parse(mod.UTF8ToString(b));
+  mod._free(p);
+  mod._free(b);
+  check(notes.length === 2, '弯音素材试听数据仍有两个音', JSON.stringify(notes));
+  check(notes[0].pitch === 72 && notes[1].pitch === 62,
+    '试听音高 72 / 62（与 CLI --player 的谱面音高一致）',
+    JSON.stringify(notes.map((n) => n.pitch)));
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

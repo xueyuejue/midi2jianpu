@@ -702,22 +702,11 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
         return lit == lyrics.at.end() ? std::string() : lit->second.text;
     };
 
-    // 弯音修正（只统计同通道）
-    auto bendOffset = [&](long start, long end, int channel) -> double {
-        if (data.pitchBends.empty()) return 0.0;
-        double sum = 0; int count = 0;
-        for (const auto& pb : data.pitchBends) {
-            if (pb.channel == channel && pb.tick >= start && pb.tick <= end) {
-                sum += (pb.value - 8192) / 8192.0 * pb.range;
-                count++;
-            }
-        }
-        return count > 0 ? sum / count : 0.0;
-    };
-
     std::map<int, std::vector<NoteEvent>> byTrack;
     for (auto n : data.notes) {
-        double off = bendOffset(n.startTicks, n.startTicks + n.durationTicks, n.channel);
+        // 弯音修正口径与文本谱 / MusicXML / 网页试听共用（v1.176.0）
+        double off = pitchBendOffset(data, n.startTicks,
+                                     n.startTicks + n.durationTicks, n.channel);
         if (std::abs(off) >= 0.5) n.pitch += (int)std::round(off);
         byTrack[n.track].push_back(n);
     }

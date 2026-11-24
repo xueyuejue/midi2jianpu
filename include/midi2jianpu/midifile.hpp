@@ -392,6 +392,10 @@ struct TempoSegment {
     double usPerQuarter = 500000.0;
 };
 
+// 按当前 tempoChanges / division 重算每个音符的 startSeconds / durationSeconds。
+// 解析层与「试听数据」共用：量化改过 tick 后必须重算，否则耳朵听到的还是旧时值。
+void recomputeSeconds(MidiData& data);
+
 // 把 set_tempo 序列编译成一张可双向查询的时间轴。
 //
 // LRC 歌词的时间戳是「真实秒」，而谱面里一切都是 tick。原先 LRC 解析用

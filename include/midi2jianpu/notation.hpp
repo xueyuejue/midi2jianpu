@@ -252,6 +252,11 @@ std::string normalizeLyricFileBytes(const std::string& raw);
 // .Lrc 或存成 lyrics.txt 的 LRC 会被当成 JSON 解析，一行都取不到，页面
 // 静默退回 MIDI 内置的「LY」音节，控制台还建议用户去查 [mm:ss.xx] 时间戳
 // ——而时间戳其实完全正确。
+// 弯音事件换算成某个音符的半音偏移：只统计同通道、落在 [start,end] 内
+// 的 pitch-bend，按 RPN 已解析好的 range 折算后取平均。文本谱 / HTML /
+// MusicXML / 网页试听共用这一份，避免四地各写一份漂移（v1.176.0）。
+double pitchBendOffset(const MidiData& data, long start, long end, int channel);
+
 enum class LyricFormat { Lrc, Json };
 LyricFormat detectLyricFormat(const std::string& path, const std::string& content);
 

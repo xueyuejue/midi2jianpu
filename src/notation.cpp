@@ -2233,6 +2233,19 @@ std::string drumInstrumentList(const TrackSummary& s, size_t maxItems,
     return out;
 }
 
+double pitchBendOffset(const MidiData& data, long start, long end, int channel) {
+    if (data.pitchBends.empty()) return 0.0;
+    double sum = 0.0;
+    int count = 0;
+    for (const auto& pb : data.pitchBends) {
+        if (pb.channel == channel && pb.tick >= start && pb.tick <= end) {
+            sum += (pb.value - 8192) / 8192.0 * pb.range;
+            count++;
+        }
+    }
+    return count > 0 ? sum / count : 0.0;
+}
+
 std::string formatJianpu(const MidiData& data, const KeyEstimate& key,
                            bool barNumbers) {
     const KeyMap keys(data, key);
@@ -2256,23 +2269,11 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key,
     }
     os << "\n----------------------------------------\n";
 
-    // 弯音修正：只统计与音符同通道的弯音事件
-    auto bendOffset = [&](long start, long end, int channel) -> double {
-        if (data.pitchBends.empty()) return 0.0;
-        double sum = 0; int count = 0;
-        for (const auto& pb : data.pitchBends) {
-            if (pb.channel == channel && pb.tick >= start && pb.tick <= end) {
-                sum += (pb.value - 8192) / 8192.0 * pb.range;  // 该通道该时刻的范围
-                count++;
-            }
-        }
-        return count > 0 ? sum / count : 0.0;
-    };
-
-    // 按 track 分组（应用弯音修正）
+    // 按 track 分组（应用弯音修正，偏移口径与 HTML / MusicXML / 试听共用）
     std::map<int, std::vector<NoteEvent>> byTrack;
     for (auto n : data.notes) {
-        double off = bendOffset(n.startTicks, n.startTicks + n.durationTicks, n.channel);
+        double off = pitchBendOffset(data, n.startTicks,
+                                     n.startTicks + n.durationTicks, n.channel);
         if (std::abs(off) >= 0.5) {
             n.pitch += (int)std::round(off);
         }
