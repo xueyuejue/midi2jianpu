@@ -106,6 +106,17 @@ def check_lyric_entries(src):
     return errs
 
 
+def check_tempo_hint_format(src):
+    """变速提示里的 LRC 说法必须经 WASM 判格式，不能只看歌词框非空。"""
+    body = function_body(src, "function updateFileHints")
+    if body is None:
+        return ["缺少 updateFileHints() 函数"]
+    if "LRC 已按 tempo map" in body and "_midi2jianpu_lyric_format" not in body:
+        return ["网页变速提示只看歌词框非空就说 LRC tempo map，"
+                "未经 WASM 判格式（贴 JSON 会说谎）"]
+    return []
+
+
 def check(src):
     """返回错误信息列表；空列表表示全部通过。"""
     errs = []
@@ -125,7 +136,7 @@ def check(src):
         elif i_set > i_hint:
             errs.append("%s 的 onchange 在 updateFileHints() 之后才推 %s（顺序颠倒，%s 用旧状态）"
                         % (anchor, setter, label))
-    return errs + check_lyric_entries(src)
+    return errs + check_lyric_entries(src) + check_tempo_hint_format(src)
 
 
 def self_test():
@@ -150,6 +161,11 @@ def self_test():
     # 完整 5 控件 + 3 歌词入口的正确样本。
     parts = [block(a, s) for a, s, _ in RULES]
     parts += [lyric_block(a) for a, _ in LYRIC_RULES]
+    parts.append(
+        "function updateFileHints() {\n"
+        "  var f = wasmMod._midi2jianpu_lyric_format(lp);\n"
+        "  if (f === 1) tmsg += '，LRC 已按 tempo map 分段对齐';\n"
+        "}\n")
     good = "\n".join(parts)
     assert check(good) == [], "正确顺序样本应通过：%s" % check(good)
 
@@ -180,7 +196,13 @@ def self_test():
     got = check(no_clear)
     assert len(got) == 1 and "残留" in got[0], "清空漏刷应报：%s" % got
 
-    print("check_html_hints 自测通过（正确/缺 set/颠倒/漏刷 四类样本）")
+    # 变速提示删掉格式判定：应单独报一条，且点出「贴 JSON 会说谎」。
+    no_format = good.replace(
+        "  var f = wasmMod._midi2jianpu_lyric_format(lp);\n", "")
+    got = check(no_format)
+    assert len(got) == 1 and "说谎" in got[0], "格式漏判应报：%s" % got
+
+    print("check_html_hints 自测通过（正确/缺 set/颠倒/漏刷/格式漏判 五类样本）")
     return 0
 
 
@@ -194,7 +216,7 @@ def main():
             print("X", e)
         print("check_html_hints：%d 项失败" % len(errs))
         return 1
-    print("check_html_hints：%d 组顺序守护 + %d 组歌词入口守护全过"
+    print("check_html_hints：%d 组顺序守护 + %d 组歌词入口守护 + 1 组格式守护全过"
           % (len(RULES), len(LYRIC_RULES)))
     return 0
 

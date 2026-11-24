@@ -255,7 +255,23 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
                ? wasmMod._midi2jianpu_tempo_ramp_count(p, midiBytes.length) : 0;
         var tmsg = '检测到 ' + tc + ' 处变速';
         if (tr > 0) tmsg += '（其中 ' + tr + ' 处渐快渐慢，谱面按 rit./accel. 收成一个记号）';
-        if ($('lyricsText').value.trim()) tmsg += '，LRC 已按 tempo map 分段对齐';
+        var tempoLyrics = $('lyricsText').value || '';
+        if (tempoLyrics.trim()) {
+          // 只有 LRC 用秒时间戳、需要按 tempo map 反解 tick；JSON 的 start_beat
+          // 直接给拍位，CLI 也只在 LRC 时印「歌词秒数已按 tempo map 换算」。
+          // 格式判定交 WASM 的 detectLyricFormat("")，网页不另写一套嗅探。
+          if (wasmMod._midi2jianpu_lyric_format) {
+            var tln = wasmMod.lengthBytesUTF8(tempoLyrics) + 1;
+            var tlp = wasmMod._malloc(tln);
+            wasmMod.stringToUTF8(tempoLyrics, tlp, tln);
+            var lfmt = wasmMod._midi2jianpu_lyric_format(tlp);
+            wasmMod._free(tlp);
+            if (lfmt === 1) tmsg += '，LRC 已按 tempo map 分段对齐';
+          } else {
+            // 旧 wasm 无该导出时保持原行为，不因一个新提示把页面卡住。
+            tmsg += '，LRC 已按 tempo map 分段对齐';
+          }
+        }
         hints.push(tmsg);
       }
     }

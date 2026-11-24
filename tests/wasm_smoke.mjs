@@ -4014,6 +4014,47 @@ if (existsSync(twoLyrics76)) {
     'C宫(0)徵调式解出宫音0/终止7/徵5', `${cGong} -> ${JSON.stringify(c)}`);
 }
 
+// ---- 104. v1.175.0 歌词格式导出：网页不再对 JSON 谎称 LRC tempo map ----
+// CLI 只在 LRC 时说「歌词秒数已按 tempo map 分段换算」；这个判定与
+// lyric_info 里的「按 LRC / 按 JSON 解析」同走 detectLyricFormat("")。
+{
+  check(typeof mod._midi2jianpu_lyric_format === 'function',
+    'WASM 产物带 _midi2jianpu_lyric_format 导出（v1.175.0）');
+  const lyricFormat = (text) => {
+    const n = mod.lengthBytesUTF8(text) + 1;
+    const p = mod._malloc(n);
+    mod.stringToUTF8(text, p, n);
+    const v = mod._midi2jianpu_lyric_format(p);
+    mod._free(p);
+    return v;
+  };
+  const lrcText = '[00:00.00]春\n[00:01.00]江';
+  const jsonText = '[{"start_beat":0,"text":"春"}]';
+  check(lyricFormat(lrcText) === 1, 'LRC 秒时间戳判为 1');
+  check(lyricFormat(jsonText) === 2, 'JSON start_beat 判为 2');
+  check(lyricFormat('  ' + lrcText) === 1, '前导空白的 LRC 仍判 1（不靠首字符猜）');
+  check(lyricFormat('[{"text":"春","start_beat":0}]') === 2,
+    '字段顺序颠倒的 JSON 仍判 2');
+
+  const sample = readFixture('sample.mid');
+  const lyricInfoOf = (text) => {
+    const p = mod._malloc(sample.length);
+    mod.HEAPU8.set(sample, p);
+    const n = mod.lengthBytesUTF8(text) + 1;
+    const lp = mod._malloc(n);
+    mod.stringToUTF8(text, lp, n);
+    const s = mod._midi2jianpu_lyric_info(p, sample.length, lp);
+    const out = s ? mod.UTF8ToString(s) : '';
+    mod._free(lp);
+    mod._free(p);
+    return out;
+  };
+  check(lyricFormat(lrcText) === 1 && lyricInfoOf(lrcText).includes('按 LRC 解析'),
+    '同一 LRC：format 导出与 lyric_info 说法一致');
+  check(lyricFormat(jsonText) === 2 && lyricInfoOf(jsonText).includes('按 JSON 解析'),
+    '同一 JSON：format 导出与 lyric_info 说法一致');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

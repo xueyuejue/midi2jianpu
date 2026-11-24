@@ -588,6 +588,17 @@ const char* midi2jianpu_lyric_info(const uint8_t* midiData, int size,
     return g_result.c_str();
 }
 
+// 网页提示栏要分清歌词格式（v1.175.0）：只有 LRC 的秒时间戳需要按 tempo map
+// 反解成 tick，JSON 的 start_beat 直接给拍位、与变速无关。CLI 只在 LRC 时
+// 印「歌词秒数已按 tempo map 分段换算」，网页此前只要歌词框非空就加同一句，
+// 贴 JSON 时等于说谎。这里复用 detectLyricFormat("") 这一唯一分流入口，
+// 不让网页自己按「文本是不是方括号开头」再猜一套。1 = LRC，2 = JSON。
+int midi2jianpu_lyric_format(const char* lyrics) {
+    const m2j::LyricFormat f =
+        m2j::detectLyricFormat("", std::string(lyrics ? lyrics : ""));
+    return f == m2j::LyricFormat::Lrc ? 1 : 2;
+}
+
 // 设置谱面标题（网页传 MIDI 文件名进来，让谱子顶上是歌名而不是程序名）
 void midi2jianpu_set_title(const char* title) {
     g_title = title ? title : "";
