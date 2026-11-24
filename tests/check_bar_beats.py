@@ -267,7 +267,14 @@ def structural_regress(old_exe, new_exe):
                 continue        # 本轮新增素材：旧版没有它，不算回归
             new_lines = render_lines(new_exe, p, td, "new")
             old_lines = render_lines(old_exe, p, td, "old")
-            nv = violations(new_lines)
+            # 与全量审计同一口径：登记过的「记谱极限近似」素材按各自上界
+            # 放行。v1.158 给 violations() 加了 lenient 参数后，全量审计
+            # （line ~251）就带着 OFFGRID_FIXTURES 的上界调用，唯独这里的
+            # 结构性回归漏传，导致基线跟自己比也报红（两个素材从 v1.160
+            # 起撤出 NEW_FIXTURES 后暴露）。补上同一个 tol，不掩盖真实
+            # 回归：任何素材的偏差超过登记上界仍会报出来。
+            tol = OFFGRID_FIXTURES.get(name, 0.0)
+            nv = violations(new_lines, tol)
             if nv:
                 errors.append("%s: 新版仍有 %d 处非末小节拍数不守恒" % (name, len(nv)))
             if new_lines == old_lines:

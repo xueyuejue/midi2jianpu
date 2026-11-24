@@ -38,6 +38,11 @@ static int g_quantizeAdjusted = 0;  // 最近一次渲染修正掉的音符数�
 // 只作用于复制出去的文本谱（formatJianpu 第 3 参）；HTML/XML 本就无条件
 // 显示小节号，这个开关对它们没有差别，与 CLI 的警告口径一致。
 static bool g_barNumbers = false;
+// 网页中途转调（v1.170.0）：与 CLI --no-key-changes 同一个布尔，默认开。
+// 关掉后全曲按曲首一个调记谱：页眉不写转调链、HTML 不标「转 1=D」、
+// MusicXML 只写一次 <key>。落在 MidiData.applyKeyChanges 上，由
+// keyChangesOf()/KeyMap 在三端共用，与 CLI main.cpp 的赋值同一字段。
+static bool g_applyKeyChanges = true;
 // 网页移调（v1.164.0）：与 CLI --transpose 共用 transposeData()。
 static int g_transpose = 0;        // 半音数，0 = 不移调
 static int g_transposeFolded = 0;  // 上一次移调按八度折回的音数（页面如实报告）
@@ -50,6 +55,10 @@ static void applyRenderOptions(m2j::MidiData& data) {
     if (!g_useMidiLyrics) data.midiLyrics.clear();
     data.usePentatonic = g_usePentatonic;
     data.useDynamics = g_useDynamics;
+    // 中途转调与 CLI --no-key-changes 同一个字段。解析时 0x59 事件表仍在
+    // （曲首调号要用），只是不再应用：三端渲染与诊断都经 keyChangesOf 读出
+    // 这个布尔，一处赋值即全谱统一，不会出现页眉说转调、XML 却没转的分叉。
+    data.applyKeyChanges = g_applyKeyChanges;
     // 弱起换算与 CLI 共用 applyPickupOption()。pickupTicks 只参与小节网格
     // （barGridOf）和页眉标签，量化与歌词铺排都不读它，所以放在量化前与
     // CLI 的「量化后设置」结果逐字节一致；四个渲染入口（文本/HTML/XML/
@@ -443,6 +452,14 @@ int midi2jianpu_quantize_adjusted() {
 int midi2jianpu_set_bar_numbers(int on) {
     g_barNumbers = (on != 0);
     return g_barNumbers ? 1 : 0;
+}
+
+// 网页「中途转调」开关：非 0 = 开（默认，与 CLI 一致），0 = 关
+// （--no-key-changes，全曲按曲首一个调记谱）。布尔开关没有越界概念，
+// 按 set_use_* 的口径接受任意整数。返回实际生效值供页面反映当前状态。
+int midi2jianpu_set_key_changes(int on) {
+    g_applyKeyChanges = (on != 0);
+    return g_applyKeyChanges ? 1 : 0;
 }
 
 // 获取结果字符串长度

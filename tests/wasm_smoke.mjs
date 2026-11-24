@@ -3860,6 +3860,64 @@ if (existsSync(twoLyrics76)) {
   check(render(mod._midi2jianpu_parse) === plain, '复位后文本谱回到无编号版');
 }
 
+// ---- 101. v1.170.0 网页「中途转调」：与 CLI --no-key-changes 同源 ----
+// CLI 关掉转调后全曲按曲首一个调记谱：文本页眉不写转调链、HTML 不标
+// 「转 1=D」、MusicXML 只写一次 <key>。此前网页只读 key_change_count
+// 做提示，没有任何开关能真正关掉转调。这里守三端一致，并守无转调文件
+// 逐字节不变（这正是默认开启的零回归要求）。
+{
+  const mod_ = readFixture('modulation.mid');
+  const sample = readFixture('sample.mid');
+  const render = (bytes, fn) => {
+    const p = mod._malloc(bytes.length);
+    mod.HEAPU8.set(bytes, p);
+    const out = mod.UTF8ToString(fn(p, bytes.length, -1, 1)) || '';
+    mod._free(p);
+    return out;
+  };
+
+  check(typeof mod._midi2jianpu_set_key_changes === 'function',
+    '中途转调开关的导出存在');
+  check(mod._midi2jianpu_set_key_changes(1) === 1,
+    'set_key_changes(1) 返回生效值');
+
+  const onHtml = render(mod_, mod._midi2jianpu_html);
+  const onText = render(mod_, mod._midi2jianpu_parse);
+  const onXml = render(mod_, mod._midi2jianpu_musicxml);
+  check(onHtml.includes('1=C') && onHtml.includes('转 1=D'),
+    '开：HTML 页眉有转调链、变化小节标「转 1=D」');
+
+  mod._midi2jianpu_set_key_changes(0);
+  const offHtml = render(mod_, mod._midi2jianpu_html);
+  const offText = render(mod_, mod._midi2jianpu_parse);
+  const offXml = render(mod_, mod._midi2jianpu_musicxml);
+  check(!offHtml.includes('转 1=D') && offHtml.indexOf('1=C 大调 →') < 0,
+    '关：HTML 没有转调链与转调标签，全曲一个调');
+  check(offHtml !== onHtml && offText !== onText && offXml !== onXml,
+    '文本 / HTML / MusicXML 三端都随开关改变，不会只改一端');
+  const keysOn = (onXml.match(/<key>/g) || []).length;
+  const keysOff = (offXml.match(/<key>/g) || []).length;
+  check(keysOff < keysOn && keysOff === 2,
+    '关：MusicXML 每个 part 只写一次 <key>（开时 ' + keysOn + ' 个，关时 ' + keysOff + ' 个）');
+
+  // 无转调文件关掉开关必须逐字节不变：默认开启时一个字节都没动。
+  const sOn = [render(sample, mod._midi2jianpu_parse),
+               render(sample, mod._midi2jianpu_html),
+               render(sample, mod._midi2jianpu_musicxml)];
+  const sOff = [render(sample, mod._midi2jianpu_parse),
+                render(sample, mod._midi2jianpu_html),
+                render(sample, mod._midi2jianpu_musicxml)];
+  check(sOn.every((v, i) => v === sOff[i]),
+    '无转调文件（sample.mid）开关前后三端逐字节一致');
+
+  check(mod._midi2jianpu_set_key_changes(7) === 1 &&
+        render(mod_, mod._midi2jianpu_html) === onHtml,
+    '非 0 值按「开」处理，谱面与默认一致');
+  mod._midi2jianpu_set_key_changes(1);
+  check(render(mod_, mod._midi2jianpu_html) === onHtml,
+    '复位后输出回到默认开启版');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

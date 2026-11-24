@@ -98,6 +98,7 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
   <label class="hint"><input type="checkbox" id="usePentatonic" checked> 五声调式宫音校正</label>
   <label class="hint"><input type="checkbox" id="quantize" checked title="默认把人演奏的提前 note-off 吸附到节拍网格（与命令行默认一致）。关掉则保留 MIDI 原始时长，可能出现的附点十六等非常规时值会照原样记谱——与命令行 --no-quantize 同源"> 时值量化</label>
   <label class="hint"><input type="checkbox" id="barNumbers" title="只在「复制简谱文本」里给每行开头加 [小节号]，方便按小节定位；主谱面 HTML 与 MusicXML 本来就无条件印小节号，勾不勾都一样。与命令行 --bar-numbers 同源"> 文本谱小节号</label>
+  <label class="hint"><input type="checkbox" id="keyChanges" checked title="按文件里的中途转调分段重算唱名（页眉写 1=C → 1=D、变化小节标「转 1=D」、MusicXML 重写 <key>）。关掉则全曲按曲首一个调记谱，与命令行 --no-key-changes 同源"> 中途转调</label>
   <label class="hint"><input type="checkbox" id="useDynamics" checked> 力度与演奏法</label>
   <label for="softPedal">软踏板：</label>
   <select id="softPedal" title="CC67 软踏板力度衰减系数；弱奏曲被强制压暗时可调小系数或关闭还原">
@@ -239,7 +240,11 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     }
     if (wasmMod._midi2jianpu_key_change_count) {
       var k = wasmMod._midi2jianpu_key_change_count(p, midiBytes.length);
-      if (k > 0) hints.push('检测到 ' + k + ' 处转调，唱名已按段换算');
+      // 关掉转调后文件里仍有转调点，但唱名不再按段换算——提示必须
+      // 跟着开关改口，不能一边全曲一个调、一边说「已按段换算」。
+      if (k > 0) hints.push(keyChgBox.checked
+        ? '检测到 ' + k + ' 处转调，唱名已按段换算'
+        : '检测到 ' + k + ' 处转调，已忽略（全曲按曲首一个调记谱）');
     }
     if (wasmMod._midi2jianpu_tempo_change_count) {
       var tc = wasmMod._midi2jianpu_tempo_change_count(p, midiBytes.length);
@@ -515,6 +520,7 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
   var useDynBox = $('useDynamics');
   var quantBox = $('quantize');
   var barNoBox = $('barNumbers');
+  var keyChgBox = $('keyChanges');
   var trackBox = $('track');
   trackBox.onchange = function () {
     if (midiBytes && wasmReady) { updateFileHints(); convert(); }
@@ -543,6 +549,13 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
   barNoBox.onchange = function () {
     if (wasmMod && wasmMod._midi2jianpu_set_bar_numbers)
       wasmMod._midi2jianpu_set_bar_numbers(barNoBox.checked ? 1 : 0);
+  };
+  // 中途转调改变整份谱的唱名与页眉，必须重渲染，还要刷新文件提示栏
+  // （关掉后不能再写「唱名已按段换算」）。callWasm 每次也会重设一次。
+  keyChgBox.onchange = function () {
+    if (wasmMod && wasmMod._midi2jianpu_set_key_changes)
+      wasmMod._midi2jianpu_set_key_changes(keyChgBox.checked ? 1 : 0);
+    if (midiBytes && wasmReady) { updateFileHints(); convert(); }
   };
   $('softPedal').onchange = function () {
     if (midiBytes && wasmReady) convert();
@@ -646,6 +659,12 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     // 所以勾上后主谱面不变、只有「复制简谱文本」多出行首 [N] 前缀。
     if (wasmMod._midi2jianpu_set_bar_numbers) {
       wasmMod._midi2jianpu_set_bar_numbers(barNoBox.checked ? 1 : 0);
+    }
+
+    // 中途转调开关每次都重设：与 CLI --no-key-changes 同一字段，关掉后
+    // 文本 / HTML / XML 三端一起退回曲首一个调，不能让上一次的选择串进来。
+    if (wasmMod._midi2jianpu_set_key_changes) {
+      wasmMod._midi2jianpu_set_key_changes(keyChgBox.checked ? 1 : 0);
     }
 
     // 每行小节数同样每次重设。只影响 HTML；复制文本与 MusicXML 不分行，
