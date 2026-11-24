@@ -434,8 +434,8 @@ if (existsSync(pentPath)) {
   mod.HEAPU8.set(pentBytes, pq);
   const info = mod._midi2jianpu_pentatonic_info(pq, pentBytes.length);
   mod._free(pq);
-  // final=G(7) * 100 + gong=C(0) * 10 + 徵(5) = 705
-  check(info === 705, '调式查询接口打包出 G 徵调式 / 宫音 C', String(info));
+  // final=G(7) * 10000 + gong=C(0) * 100 + 徵(5) = 70005（v1.172 两位宽编码）
+  check(info === 70005, '调式查询接口打包出 G 徵调式 / 宫音 C', String(info));
 
   const sq2 = mod._malloc(sampleMidi.length);
   mod.HEAPU8.set(sampleMidi, sq2);
@@ -3947,6 +3947,71 @@ if (existsSync(twoLyrics76)) {
     '关+无词轨：仍提示已忽略，不诱导换轨', offOther);
 
   check(/自带/.test(hint(true, -1)), '复位开态');
+}
+
+// ---- 103. v1.172.0 宫音提示编码两位宽：gong=10/11 不再串位 ----
+// detectPentatonic 枚举 12 个宫音，gongPc 能到 10(A#)/11(B)。旧编码
+// final*100+gong*10+mode 在 gong>=10 时向百位进位，网页解码出的宫音与
+// 终止音全错（B宫徵调式被说成「1=C# / G徵」，与谱面页眉「1=B」矛盾）。
+// 这里现场拼两份五声单轨 SMF，验证新编码 final*10000+gong*100+mode
+// 解出的值与 CLI 页眉真值一致；不动谱面输出。
+{
+  // gong 宫五声（宫商角徵羽 = 0/2/4/7/9），末音落 finalRel 指定的正音
+  const pentMidi = (gong, finalRel) => {
+    const pcs = [0, 2, 4, 7, 9].map((d) => (gong + d) % 12);
+    const seq = pcs.concat(pcs.slice().reverse(), pcs, [(gong + finalRel) % 12]);
+    let body = [0x00, 0xff, 0x03, 0x06, 0x43, 0x6f, 0x6e, 0x64, 0x75, 0x63, 0x74,
+                0x00, 0xff, 0x51, 0x03, 0x07, 0xa1, 0x20,
+                0x00, 0xff, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08];
+    let tick = 0;
+    const vlq = (n) => { const b = [n & 0x7f]; n >>= 7; while (n) { b.unshift((n & 0x7f) | 0x80); n >>= 7; } return b; };
+    for (const pc of seq) {
+      const pitch = 60 + pc;
+      body = body.concat(vlq(tick === 0 ? 0 : 0), [0x90, pitch, 0x5a]);
+      body = body.concat(vlq(480), [0x80, pitch, 0x00]);
+      tick += 480;
+    }
+    body = body.concat(vlq(0), [0xff, 0x2f, 0x00]);
+    const chunk = new Uint8Array(8 + body.length);
+    chunk.set([0x4d, 0x54, 0x72, 0x6b], 0);
+    new DataView(chunk.buffer).setUint32(4, body.length);
+    chunk.set(body, 8);
+    const all = new Uint8Array(14 + chunk.length);
+    all.set([0x4d, 0x54, 0x68, 0x64], 0);
+    const hv = new DataView(all.buffer, 4, 10);
+    hv.setUint32(0, 6); hv.setUint16(4, 1); hv.setUint16(6, 1); hv.setUint16(8, 480);
+    all.set(chunk, 14);
+    return all;
+  };
+
+  const query = (bytes) => {
+    mod._midi2jianpu_set_use_pentatonic(1);
+    mod._midi2jianpu_set_gong(-1, 99);
+    mod._midi2jianpu_set_transpose(0);
+    const p = mod._malloc(bytes.length); mod.HEAPU8.set(bytes, p);
+    const info = mod._midi2jianpu_pentatonic_info(p, bytes.length);
+    mod._free(p);
+    return info;
+  };
+  // 网页解码口径（与 index.html 逐字一致）
+  const decode = (pi) => ({ fin: Math.floor(pi / 10000),
+                            gong: Math.floor(pi / 100) % 100, md: pi % 100 });
+
+  const bGong = query(pentMidi(11, 7));   // B宫徵(7)、终止 pc=6
+  const b = decode(bGong);
+  check(b.gong === 11 && b.fin === 6 && b.md === 5,
+    'B宫(11)徵调式解出宫音11/终止6/徵5', `${bGong} -> ${JSON.stringify(b)}`);
+
+  const aGong = query(pentMidi(10, 9));   // A#宫羽(9)、终止 pc=7
+  const a = decode(aGong);
+  check(a.gong === 10 && a.fin === 7 && a.md === 6,
+    'A#宫(10)羽调式解出宫音10/终止7/羽6', `${aGong} -> ${JSON.stringify(a)}`);
+
+  // 低宫音仍按原有语义，只是整体放大到两位宽
+  const cGong = query(pentMidi(0, 7));    // C宫徵、终止 pc=7
+  const c = decode(cGong);
+  check(c.gong === 0 && c.fin === 7 && c.md === 5,
+    'C宫(0)徵调式解出宫音0/终止7/徵5', `${cGong} -> ${JSON.stringify(c)}`);
 }
 
 console.log('');

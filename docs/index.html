@@ -268,7 +268,9 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
       if (pi > 0) {
         var names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
         var modes = {1:'宫', 2:'商', 3:'角', 5:'徵', 6:'羽'};
-        var fin = Math.floor(pi / 100), gong = Math.floor(pi / 10) % 10, md = pi % 10;
+        // final/gong/mode 各占两位：gong 能到 10(A#)/11(B)，旧的一位解码
+        // 会把进位误读成别的宫音（B宫徵调式被说成「1=C#」，与谱面页眉矛盾）。
+        var fin = Math.floor(pi / 10000), gong = Math.floor(pi / 100) % 100, md = pi % 100;
         hints.push('检测到 ' + names[fin] + ' ' + (modes[md] || '') + '调式，1=' + names[gong] + ' 按宫音校正');
       }
     }

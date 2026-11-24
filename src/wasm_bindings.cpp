@@ -631,7 +631,12 @@ void midi2jianpu_set_use_pentatonic(int on) {
 }
 
 // 五声调式信息打包成一个整数，供网页提示「检测到 G 徵调式，1=C 按宫音校正」：
-//   finalPc * 100 + gongPc * 10 + mode（mode: 宫1 商2 角3 徵5 羽6）
+//   finalPc * 10000 + gongPc * 100 + mode（mode: 宫1 商2 角3 徵5 羽6）
+// 三个字段各占**两位**十进制。旧版用 final*100+gong*10+mode，gongPc 是
+// 0..11（detectPentatonic 枚举 12 个宫音），gong>=10 时会向百位进位：
+// B宫(11)徵调式、终止 F#(6) 被打包成 715，网页按「final=floor(715/100)=7、
+// gong=floor(715/10)%10=1」解出「G 徵调式、1=C#」，与谱面页眉的「1=B」
+// 直接矛盾。两位宽让 gong=10/11 不串位，解码唯一。
 // 0 = 没检出 / 关了开关 / 文件自带 0x59 调号（此时以调号为准，不校正）。
 int midi2jianpu_pentatonic_info(const uint8_t* midiData, int size) {
     if (!g_usePentatonic) return 0;
@@ -642,7 +647,7 @@ int midi2jianpu_pentatonic_info(const uint8_t* midiData, int size) {
     if (data.keySig.valid) return 0;
     const m2j::PentatonicEstimate p = m2j::detectPentatonic(data);
     if (!p.detected) return 0;
-    return p.finalPitchClass * 100 + p.gongPitchClass * 10 + (int)p.mode;
+    return p.finalPitchClass * 10000 + p.gongPitchClass * 100 + (int)p.mode;
 }
 
 // 查询文件里的实质转调点数，供网页提示「检测到 N 处转调，唱名已按段换算」。
