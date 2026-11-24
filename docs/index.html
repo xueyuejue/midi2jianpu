@@ -568,6 +568,15 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     if (midiBytes && wasmReady) convert();
   };
   $('transpose').onchange = function () {
+    // 移调同时影响「提示」和「渲染」两侧：先把新半音数推到 wasm，再刷提示。
+    // 否则 updateFileHints 里 pentatonic_info 读的是上一次的旧 g_transpose，
+    // 提示栏还说旧调的「检测到 C 徵调式、1=C」，而 convert() 随后把谱面页眉
+    // 渲染成新调「1=D」——同一页面两个结论互相矛盾。callWasm 每次也会重设，
+    // 但那发生在 convert() 里、晚于这里的提示刷新，故必须先手动推一次。
+    if (wasmMod && wasmMod._midi2jianpu_set_transpose) {
+      var semis = parseInt($('transpose').value, 10);
+      wasmMod._midi2jianpu_set_transpose(isNaN(semis) ? 0 : semis);
+    }
     if (midiBytes && wasmReady) { updateFileHints(); convert(); }
   };
   $('bars').onchange = function () {

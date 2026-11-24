@@ -104,6 +104,14 @@ jobs:
           python3 tests/check_html_bars.py --self-test
           python3 tests/check_html_bars.py
 
+      - name: 网页提示状态顺序（5 组自测 + 5 个控件）
+        # 改变 wasm 全局开关的 onchange 必须先 set_* 推状态、再 updateFileHints()
+        # 刷提示，否则提示读旧值、与随后渲染的谱面自相矛盾。v1.173.0 的移调
+        # 下拉（谱面 1=D、提示仍 1=C）与 v1.171.0 的歌词开关都栽在这里。
+        run: |
+          python3 tests/check_html_hints.py --self-test
+          python3 tests/check_html_hints.py
+
       - name: 三端结构一致性（14 项自测 + 121 份素材）
         # 文本谱↔HTML 轨数与逐轨小节数、三端名义拍号、文本谱↔MusicXML
         # 按对齐下标逐轨小节数与逐小节拍号（首/末小节豁免）。比逐音符时值
