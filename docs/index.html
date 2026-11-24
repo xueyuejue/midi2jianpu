@@ -565,7 +565,15 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     if (midiBytes && wasmReady) { updateFileHints(); convert(); }
   };
   $('softPedal').onchange = function () {
-    if (midiBytes && wasmReady) convert();
+    // 软踏板强度改变的是解析层 data.softPedalScale，文件提示里的
+    //「软踏板：衰减 N 个音」也由它算出来（controller_info → controllerLabel）。
+    // 与歌词/移调等开关同理：先把新系数推到 wasm，再刷提示，否则关掉后
+    // 提示仍说衰减了 N 个音，而同页谱面已经不衰减——两个结论打架。
+    if (wasmMod && wasmMod._midi2jianpu_set_soft_pedal_scale) {
+      var sp = parseFloat($('softPedal').value);
+      wasmMod._midi2jianpu_set_soft_pedal_scale(isNaN(sp) ? 0.7 : sp);
+    }
+    if (midiBytes && wasmReady) { updateFileHints(); convert(); }
   };
   $('transpose').onchange = function () {
     // 移调同时影响「提示」和「渲染」两侧：先把新半音数推到 wasm，再刷提示。
@@ -607,7 +615,17 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
   };
   $('lyricsClear').onclick = function () {
     lyricsArea.value = '';
-    if (midiBytes) convert();
+    // 清空也是「歌词文本变了」：提示栏里的「歌词已加载 N 行」与「LRC 已按
+    // tempo map 对齐」都由歌词框内容决定（见 updateFileHints 的两处 trim），
+    // 只 convert() 不刷提示会让它继续宣称刚被清掉的歌词还在——与 CLI 不带
+    // --lyrics 时两句话都不打印的口径相反。
+    if (midiBytes && wasmReady) { updateFileHints(); convert(); }
+    else {
+      // 只拖了歌词、还没拖 MIDI 时，提示栏说的是「已载入歌词 … 请再拖 MIDI」，
+      // 歌词被清空后同样不能留着。
+      var box = $('midiLyricHint');
+      if (box) box.textContent = '';
+    }
   };
 
   // 歌词输入防抖，避免每敲一个字就跑一次转换
