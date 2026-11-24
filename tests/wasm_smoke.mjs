@@ -3918,6 +3918,37 @@ if (existsSync(twoLyrics76)) {
     '复位后输出回到默认开启版');
 }
 
+// ---- 102. v1.171.0 关掉内置歌词后提示改口，与 CLI --no-midi-lyrics 同源 ----
+// 此前 midiLyricHint() 完全不看 g_useMidiLyrics：关掉后谱面已经没词了，
+// 提示栏却还说「此文件自带 N 个歌词音节（轨 1）」，选到无词轨甚至诱导
+// 「把轨道选回自动才会用上」。CLI 这时早已改口「已忽略 … N 个事件」。
+{
+  const kb = readFixture('karaoke.mid');
+  const hint = (on, track) => {
+    mod._midi2jianpu_set_use_midi_lyrics(on ? 1 : 0);
+    mod._midi2jianpu_set_track(track);
+    const p = mod._malloc(kb.length);
+    mod.HEAPU8.set(kb, p);
+    const s = mod.UTF8ToString(mod._midi2jianpu_midi_lyric_info(p, kb.length)) || '';
+    mod._free(p);
+    return s;
+  };
+
+  const on = hint(true, -1), off = hint(false, -1);
+  check(/自带 \d+ 个歌词音节/.test(on), '开：仍提示自带音节（原行为不变）', on);
+  check(/已忽略 MIDI 内置歌词: \d+ 个事件/.test(off), '关：与 CLI 同口径提示已忽略', off);
+  check(!off.includes('自带') && !off.includes('才会用上'),
+    '关：不再说自带、不再诱导换轨', off);
+  check(on !== off, '开关确实改变提示文案');
+
+  // 关态切到无词轨：必须是同一句「已忽略」，不能因轨道不同又说回旧话
+  const offOther = hint(false, 2);
+  check(/已忽略/.test(offOther) && !offOther.includes('才会用上'),
+    '关+无词轨：仍提示已忽略，不诱导换轨', offOther);
+
+  check(/自带/.test(hint(true, -1)), '复位开态');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

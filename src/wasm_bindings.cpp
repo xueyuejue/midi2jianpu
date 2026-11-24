@@ -615,7 +615,8 @@ const char* midi2jianpu_midi_lyric_info(const uint8_t* midiData, int size) {
         g_result.clear();
         return g_result.c_str();
     }
-    g_result = m2j::midiLyricHint(data, g_trackFilter);
+    // 带上内置歌词开关：关掉时提示改口「已忽略 … N 个事件」，与 CLI 同源。
+    g_result = m2j::midiLyricHint(data, g_trackFilter, g_useMidiLyrics);
     return g_result.c_str();
 }
 

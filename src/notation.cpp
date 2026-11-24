@@ -3738,7 +3738,16 @@ LyricTrackPick pickMidiLyricTrack(const MidiData& data) {
     return pick;
 }
 
-std::string midiLyricHint(const MidiData& data, int selectedTrack) {
+std::string midiLyricHint(const MidiData& data, int selectedTrack, bool useMidiLyrics) {
+    // 关掉内置歌词后必须改口：这开关在解析层把 midiLyrics 清空了，谱面已经
+    // 没词。若提示里还说「自带 N 个音节」「把轨道选回自动才会用上」，用户
+    // 会按提示去翻轨道，却发现怎么选都没有词——CLI --no-midi-lyrics 早就
+    // 改口「已忽略 … N 个事件」，网页提示栏必须同一口径。
+    // 事件数取原始 0x05 事件总数，与 CLI 的 builtinLyricEvents 同源。
+    if (!useMidiLyrics) {
+        if (data.midiLyrics.empty()) return "此文件没有内置歌词";
+        return "已忽略 MIDI 内置歌词: " + std::to_string(data.midiLyrics.size()) + " 个事件";
+    }
     const std::vector<std::pair<int, int>> counts = lyricSyllablesByTrack(data);
     if (counts.empty()) return "此文件没有内置歌词";
 

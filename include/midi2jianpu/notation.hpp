@@ -428,9 +428,12 @@ std::string droppedLyricNote(const MidiData& data);
 //   selectedTrack < 0 -> 「此文件自带 10 个歌词音节（轨 1）…」+ 忽略说明
 //   所选轨有词        -> 「轨 1 自带 10 个歌词音节…」，别的轨注明不参与
 //   所选轨无词        -> 点明词在哪条轨、怎么才能用上
+// useMidiLyrics=false  -> 「已忽略 MIDI 内置歌词: N 个事件」，与 CLI --no-midi-lyrics
+//                        同口径；关掉了就绝不能再叫用户「把轨道选回自动才会用上」。
 // 传进来的 data 必须是「全曲解析」（没按轨过滤），否则所选轨以外的信息已经
 // 在解析层丢掉了，最后一种情形就只剩「没有内置歌词」这一句错话可说。
-std::string midiLyricHint(const MidiData& data, int selectedTrack);
+// 默认 true 让旧调用点（只读体检、不改开关）行为不变。
+std::string midiLyricHint(const MidiData& data, int selectedTrack, bool useMidiLyrics = true);
 
 // 按精确 tick 对齐：一批音节吸附到 [tick, spanEnd) 内真实存在的旋律音头，
 // 单音节批次就覆盖整段（这正是一字多音），多字批次在段内均分。

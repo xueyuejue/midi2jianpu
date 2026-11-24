@@ -526,7 +526,12 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
     if (midiBytes && wasmReady) { updateFileHints(); convert(); }
   };
   useMidiBox.onchange = function () {
-    if (midiBytes && wasmReady) convert();
+    // 开关同时影响「提示」和「渲染」两侧：先把状态推到 wasm，再刷提示。
+    // 否则 updateFileHints 走的是 wasm 里的旧开关，关掉歌词后提示栏还会说
+    // 「自带 N 个音节」「把轨道选回自动才会用上」——与 CLI 改口不一致。
+    if (wasmMod && wasmMod._midi2jianpu_set_use_midi_lyrics)
+      wasmMod._midi2jianpu_set_use_midi_lyrics(useMidiBox.checked ? 1 : 0);
+    if (midiBytes && wasmReady) { updateFileHints(); convert(); }
   };
   usePentBox.onchange = function () {
     // 五声开关同时影响「提示」和「渲染」两侧，先推到 wasm 再刷新
