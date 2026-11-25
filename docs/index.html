@@ -769,16 +769,30 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
   // ---- 主转换 ----
   function convert() {
     if (!wasmReady || !midiBytes) return;
+    // 失败必须收掉上一轮的成果：旧谱还挂在 DOM 里、按钮还亮着的话，
+    // 「复制简谱」会把错误串当谱复制走、「下载 XML」得到 <error>…，
+    // 「下载 PNG」更是静默截上一首歌的图——错误框容易被忽略，产物却已经
+    // 污染了用户的文档。CLI 失败时不写任何输出文件，网页也照这个口径。
+    var fail = function (msg) {
+      showErr(msg);
+      if (playing) stopPlayback();
+      $('score').innerHTML = '';
+      $('score').style.display = 'none';
+      $('meta').textContent = '';
+      ['playBtn', 'copyText', 'downloadXml', 'downloadPng'].forEach(function (id) {
+        $(id).disabled = true;
+      });
+    };
     clearErr();
     try {
       var kp = keyPair();
       var html = callWasm('midi2jianpu_html', kp[0], kp[1]);
       if (html === null) {
-        showErr('当前 wasm 不含 HTML 渲染函数，请重新编译（见 BUILD.md）。');
+        fail('当前 wasm 不含 HTML 渲染函数，请重新编译（见 BUILD.md）。');
         return;
       }
       if (html.indexOf('错误') >= 0 && html.indexOf('<h1') < 0) {
-        showErr(html.replace(/<[^>]+>/g, ''));
+        fail(html.replace(/<[^>]+>/g, ''));
         return;
       }
 
@@ -820,7 +834,7 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
         bits.push('手动宫音 ' + gongSel.options[gongSel.selectedIndex].text);
       $('meta').textContent = (bits.length ? bits.join(' · ') + ' · ' : '') + 'WASM 核心';
     } catch (e) {
-      showErr('转换失败：' + e.message);
+      fail('转换失败：' + e.message);
     }
   }
 

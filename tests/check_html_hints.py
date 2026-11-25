@@ -117,6 +117,16 @@ def check_tempo_hint_format(src):
     return []
 
 
+def check_convert_failure(src):
+    """转换失败必须清掉旧谱并禁用复制/下载/播放按钮。"""
+    body = function_body(src, "function convert")
+    if body is None:
+        return ["缺少 convert() 函数"]
+    if "disabled = true" not in body or "$('score').innerHTML = ''" not in body:
+        return ["convert() 失败分支没清旧谱 / 没禁用按钮（会复制或下载错误内容）"]
+    return []
+
+
 def check(src):
     """返回错误信息列表；空列表表示全部通过。"""
     errs = []
@@ -136,7 +146,8 @@ def check(src):
         elif i_set > i_hint:
             errs.append("%s 的 onchange 在 updateFileHints() 之后才推 %s（顺序颠倒，%s 用旧状态）"
                         % (anchor, setter, label))
-    return errs + check_lyric_entries(src) + check_tempo_hint_format(src)
+    return (errs + check_lyric_entries(src) + check_tempo_hint_format(src)
+            + check_convert_failure(src))
 
 
 def self_test():
@@ -165,6 +176,14 @@ def self_test():
         "function updateFileHints() {\n"
         "  var f = wasmMod._midi2jianpu_lyric_format(lp);\n"
         "  if (f === 1) tmsg += '，LRC 已按 tempo map 分段对齐';\n"
+        "}\n")
+    parts.append(
+        "function convert() {\n"
+        "  var fail = function (msg) {\n"
+        "    $('score').innerHTML = '';\n"
+        "    ['copyText'].forEach(function (id) { $(id).disabled = true; });\n"
+        "  };\n"
+        "  fail('错误');\n"
         "}\n")
     good = "\n".join(parts)
     assert check(good) == [], "正确顺序样本应通过：%s" % check(good)
@@ -202,7 +221,12 @@ def self_test():
     got = check(no_format)
     assert len(got) == 1 and "说谎" in got[0], "格式漏判应报：%s" % got
 
-    print("check_html_hints 自测通过（正确/缺 set/颠倒/漏刷/格式漏判 五类样本）")
+    # 失败分支不收尾：应单独报一条，且点出「错误内容」。
+    no_fail = good.replace("    $('score').innerHTML = '';\n", "")
+    got = check(no_fail)
+    assert len(got) == 1 and "错误内容" in got[0], "失败态漏收尾应报：%s" % got
+
+    print("check_html_hints 自测通过（正确/缺 set/颠倒/漏刷/格式漏判/失败态 六类样本）")
     return 0
 
 
@@ -216,7 +240,7 @@ def main():
             print("X", e)
         print("check_html_hints：%d 项失败" % len(errs))
         return 1
-    print("check_html_hints：%d 组顺序守护 + %d 组歌词入口守护 + 1 组格式守护全过"
+    print("check_html_hints：%d 组顺序守护 + %d 组歌词入口守护 + 1 组格式守护 + 1 组失败态守护全过"
           % (len(RULES), len(LYRIC_RULES)))
     return 0
 
