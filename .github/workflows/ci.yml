@@ -104,12 +104,15 @@ jobs:
           python3 tests/check_html_bars.py --self-test
           python3 tests/check_html_bars.py
 
-      - name: 网页提示与失败态守护（6 类自测 + 11 组规则）
+      - name: 网页提示与渲染同源守护（8 类自测 + 24 组规则）
         # 改变 wasm 全局开关的 onchange 必须先 set_* 推状态、再 updateFileHints()
         # 刷提示，否则提示读旧值、与随后渲染的谱面自相矛盾。v1.173.0 的移调
         # 下拉（谱面 1=D、提示仍 1=C）与 v1.171.0 的歌词开关都栽在这里。
         # v1.177.0 起还钉住 convert() 的失败收尾：清旧谱、隐藏谱面、禁用
         # 复制/下载/播放按钮，免得错误态里拿到上一首的谱或 <error> XML。
+        # v1.178.0 补两类：所有改谱面的控件必须 onchange→convert（否则
+        # 屏幕上的谱与复制/下载产物分叉），状态行的 1=X 只能从 .meta 区
+        # 取（否则文件名含「1=」时把 <h1> 标题当调号）。
         run: |
           python3 tests/check_html_hints.py --self-test
           python3 tests/check_html_hints.py

@@ -47,6 +47,25 @@ LYRIC_RULES = [
     ("function applyLyricBytes", "拖入歌词文件"),
 ]
 
+# 改变谱面的控件必须有 onchange 并触发 convert()。callWasm 每次渲染都会
+# 重读控件值，所以只改了下拉、不重渲染的话，屏幕上的谱还是旧的，而随即
+# 「复制简谱」「下载 MusicXML」却用新值——同一页面看到与拿到的是两份谱。
+# v1.178.0 的弱起下拉正是漏了绑定（bars / transpose 等都有）。
+RENDER_RULES = [
+    ("trackBox.onchange", "轨道选择"),
+    ("useMidiBox.onchange", "内置歌词开关"),
+    ("usePentBox.onchange", "五声开关"),
+    ("useDynBox.onchange", "力度表情开关"),
+    ("quantBox.onchange", "时值量化开关"),
+    ("keyChgBox.onchange", "中途转调开关"),
+    ("$('softPedal').onchange", "软踏板强度"),
+    ("$('transpose').onchange", "移调下拉"),
+    ("$('bars').onchange", "每行小节数"),
+    ("$('pickup').onchange", "弱起下拉"),
+    ("$('key').onchange", "调性下拉"),
+    ("$('gong').onchange", "宫音下拉"),
+]
+
 
 def onchange_body(src, anchor):
     """取某个 onchange 的函数体（从锚点到配对的 };），找不到返回 None。"""
@@ -127,6 +146,32 @@ def check_convert_failure(src):
     return []
 
 
+def check_render_controls(src):
+    """改谱面的控件必须重渲染，否则屏幕上的谱与复制/导出的谱分叉。"""
+    errs = []
+    for anchor, label in RENDER_RULES:
+        body = function_body(src, anchor)
+        if body is None:
+            errs.append("改变谱面的 %s 没有 onchange（页面谱面与复制/下载产物会分叉）"
+                        % label)
+        elif "convert()" not in body:
+            errs.append("%s 改了却不重渲染（页面谱面与复制/下载产物会分叉）"
+                        % label)
+    return errs
+
+
+def check_meta_source(src):
+    """状态行的「1=X」只能从 .meta 区取，不能从整段 HTML 抓。"""
+    body = function_body(src, "function convert")
+    if body is None:
+        return ["缺少 convert() 函数"]
+    if "html.match(/1=[^｜<]*/)" in body:
+        return ["状态行从整段 HTML 抓调号，文件名含 1= 时会把 <h1> 标题当调号"]
+    if '<div class="meta">' not in body:
+        return ["状态行调号没有限定在 .meta 区取"]
+    return []
+
+
 def check(src):
     """返回错误信息列表；空列表表示全部通过。"""
     errs = []
@@ -147,7 +192,8 @@ def check(src):
             errs.append("%s 的 onchange 在 updateFileHints() 之后才推 %s（顺序颠倒，%s 用旧状态）"
                         % (anchor, setter, label))
     return (errs + check_lyric_entries(src) + check_tempo_hint_format(src)
-            + check_convert_failure(src))
+            + check_convert_failure(src) + check_render_controls(src)
+            + check_meta_source(src))
 
 
 def self_test():
@@ -183,8 +229,17 @@ def self_test():
         "    $('score').innerHTML = '';\n"
         "    ['copyText'].forEach(function (id) { $(id).disabled = true; });\n"
         "  };\n"
+        "  var metaDiv = html.match(/<div class=\"meta\">([\\s\\S]*?)<\\/div>/);\n"
+        "  var m = metaDiv && metaDiv[1].match(/1=[^｜<]*/);\n"
         "  fail('错误');\n"
         "}\n")
+    # RULES 六个块已带 convert()；其余渲染控件单独补绑定。
+    for anchor, _ in RENDER_RULES:
+        if any(anchor in b for b in parts):
+            continue
+        parts.append("  %s = function () {\n"
+                     "    if (midiBytes) convert();\n"
+                     "  };\n" % anchor)
     good = "\n".join(parts)
     assert check(good) == [], "正确顺序样本应通过：%s" % check(good)
 
@@ -226,7 +281,22 @@ def self_test():
     got = check(no_fail)
     assert len(got) == 1 and "错误内容" in got[0], "失败态漏收尾应报：%s" % got
 
-    print("check_html_hints 自测通过（正确/缺 set/颠倒/漏刷/格式漏判/失败态 六类样本）")
+    # 弱起下拉漏绑：应单独报一条，且点出「分叉」。
+    pickup_block = ("  $('pickup').onchange = function () {\n"
+                    "    if (midiBytes) convert();\n"
+                    "  };\n")
+    assert pickup_block in good
+    got = check(good.replace(pickup_block, ""))
+    assert len(got) == 1 and "分叉" in got[0], "弱起漏绑应报：%s" % got
+
+    # 状态行回到整段 HTML 抓调号：应单独报一条，且点出「标题」。
+    good_meta = ("  var metaDiv = html.match(/<div class=\"meta\">([\\s\\S]*?)<\\/div>/);\n"
+                 "  var m = metaDiv && metaDiv[1].match(/1=[^｜<]*/);\n")
+    assert good_meta in good
+    got = check(good.replace(good_meta, "  var m = html.match(/1=[^｜<]*/);\n"))
+    assert len(got) == 1 and "标题" in got[0], "调号来源错应报：%s" % got
+
+    print("check_html_hints 自测通过（正确/缺 set/颠倒/漏刷/格式漏判/失败态/漏绑渲染/调号来源 八类样本）")
     return 0
 
 
@@ -240,8 +310,9 @@ def main():
             print("X", e)
         print("check_html_hints：%d 项失败" % len(errs))
         return 1
-    print("check_html_hints：%d 组顺序守护 + %d 组歌词入口守护 + 1 组格式守护 + 1 组失败态守护全过"
-          % (len(RULES), len(LYRIC_RULES)))
+    print("check_html_hints：%d 组顺序守护 + %d 组歌词入口守护 + 1 组格式守护"
+          " + 1 组失败态守护 + %d 组渲染控件守护 + 1 组调号来源守护全过"
+          % (len(RULES), len(LYRIC_RULES), len(RENDER_RULES)))
     return 0
 
 

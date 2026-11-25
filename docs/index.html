@@ -606,6 +606,13 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
   $('bars').onchange = function () {
     if (midiBytes && wasmReady) convert();
   };
+  // 弱起同样改变整份谱的小节网格：不重渲染的话，屏幕上还是旧弱起的谱，
+  // 而「复制简谱」「下载 MusicXML」走 callWasm 时会重读下拉框拿到新值——
+  // 同一页面看到与拿到的是两份谱。越界退回自动的说明也只在 convert() 里
+  // 写进状态行，不重渲染就永远看不到。
+  $('pickup').onchange = function () {
+    if (midiBytes && wasmReady) convert();
+  };
   $('lyricsBtn').onclick = function () { $('lyricsFile').click(); };
 
   // 把上传歌词文件的原始字节交给 WASM 解码（与 CLI 读盘入口同款
@@ -805,7 +812,11 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
       // 状态行要说清「这个 1=X 是移过调的」：否则用户对照原始 MIDI 会觉得
       // 谱面调号写错了。越界折回也照实说——高音区的谱子悄悄换了八度，
       // 只靠听是听不出来的。
-      var m = html.match(/1=[^｜<]*/);
+      // 只从 .meta 区取调号：HTML 里 <h1> 排在 .meta 之前，文件名若含
+      // 「1=」（如「1=G 练习曲.mid」），从整段 html 抓会先命中标题，状态行
+      // 于是写「1=G 练习曲」而谱面页眉写「1=C 大调」，同一页两个调。
+      var metaDiv = html.match(/<div class="meta">([\s\S]*?)<\/div>/);
+      var m = metaDiv && metaDiv[1].match(/1=[^｜<]*/);
       var bits = [];
       if (m) bits.push(m[0].trim());
       var semis = parseInt($('transpose').value, 10) || 0;
