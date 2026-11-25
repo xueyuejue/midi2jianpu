@@ -160,6 +160,16 @@ def check_render_controls(src):
     return errs
 
 
+def check_lyric_dropped_wording(src):
+    """旧 wasm 兜底只有 dropped 计数、没有格式，不能把 JSON 说成「行」。"""
+    if "' 行（时间戳超出谱面可解释范围）'" in src:
+        return ["歌词 dropped 兜底不分格式说「N 行越界时间戳」，"
+                "贴 JSON 用户被指去改不存在的时间戳（格式错误也会被当成越界）"]
+    if "' 条（数值超出谱面时间轴范围，或歌词条目格式错误）'" not in src:
+        return ["歌词 dropped 兜底没有用中性「条」并列出两种成因"]
+    return []
+
+
 def check_meta_source(src):
     """状态行的「1=X」只能从 .meta 区取，不能从整段 HTML 抓。"""
     body = function_body(src, "function convert")
@@ -192,8 +202,8 @@ def check(src):
             errs.append("%s 的 onchange 在 updateFileHints() 之后才推 %s（顺序颠倒，%s 用旧状态）"
                         % (anchor, setter, label))
     return (errs + check_lyric_entries(src) + check_tempo_hint_format(src)
-            + check_convert_failure(src) + check_render_controls(src)
-            + check_meta_source(src))
+            + check_lyric_dropped_wording(src) + check_convert_failure(src)
+            + check_render_controls(src) + check_meta_source(src))
 
 
 def self_test():
@@ -222,6 +232,8 @@ def self_test():
         "function updateFileHints() {\n"
         "  var f = wasmMod._midi2jianpu_lyric_format(lp);\n"
         "  if (f === 1) tmsg += '，LRC 已按 tempo map 分段对齐';\n"
+        "  hints.push('歌词：已忽略 ' + drp +\n"
+        "    ' 条（数值超出谱面时间轴范围，或歌词条目格式错误）');\n"
         "}\n")
     parts.append(
         "function convert() {\n"
@@ -296,7 +308,17 @@ def self_test():
     got = check(good.replace(good_meta, "  var m = html.match(/1=[^｜<]*/);\n"))
     assert len(got) == 1 and "标题" in got[0], "调号来源错应报：%s" % got
 
-    print("check_html_hints 自测通过（正确/缺 set/颠倒/漏刷/格式漏判/失败态/漏绑渲染/调号来源 八类样本）")
+    # 歌词 dropped 兜底回到「行 + 越界时间戳」：应单独报一条，且点出「不存在」。
+    good_drop = ("  hints.push('歌词：已忽略 ' + drp +\n"
+                 "    ' 条（数值超出谱面时间轴范围，或歌词条目格式错误）');\n")
+    assert good_drop in good
+    got = check(good.replace(good_drop,
+                             "  hints.push('歌词：已忽略 ' + drp +\n"
+                             "    ' 行（时间戳超出谱面可解释范围）');\n"))
+    assert len(got) == 1 and "不存在" in got[0], "dropped 文案错应报：%s" % got
+
+    print("check_html_hints 自测通过（正确/缺 set/颠倒/漏刷/格式漏判/"
+          "dropped 文案/失败态/漏绑渲染/调号来源 九类样本）")
     return 0
 
 
@@ -311,7 +333,8 @@ def main():
         print("check_html_hints：%d 项失败" % len(errs))
         return 1
     print("check_html_hints：%d 组顺序守护 + %d 组歌词入口守护 + 1 组格式守护"
-          " + 1 组失败态守护 + %d 组渲染控件守护 + 1 组调号来源守护全过"
+          " + 1 组 dropped 文案守护 + 1 组失败态守护 + %d 组渲染控件守护"
+          " + 1 组调号来源守护全过"
           % (len(RULES), len(LYRIC_RULES), len(RENDER_RULES)))
     return 0
 

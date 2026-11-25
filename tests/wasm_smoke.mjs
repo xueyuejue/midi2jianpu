@@ -2476,8 +2476,9 @@ if (existsSync(v90InjectPath)) {
 // ---- 73. v1.112.0 歌词体检：网页要知道「认了几个字 / 一行都没认出来」----
 // 上一版只暴露 dropped 计数，于是「贴进去的歌词一个字都没认出来」这件事在
 // 网页上完全看不见：谱面静默回退成 MIDI 内置的「LY」音节，提示栏一声不吭。
-// 新导出 lyric_info 一次回「按哪种格式解析出几个字、忽略几行」，格式判定与
-// 解析仍在 C++（与 CLI 同一条路），网页不重写嗅探规则。
+// 新导出 lyric_info 一次回「按哪种格式解析出几个字、忽略几行歌词 / 几个字」，
+// 格式判定与解析仍在 C++（与 CLI 同一条路），网页不重写嗅探规则。v1.179.0
+// 补：dropped 的计数单位也按格式分流，成因不得只写「越界时间戳」。
 if (existsSync(v90InjectPath)) {
   const inj73 = new Uint8Array(readFileSync(v90InjectPath));
   check(typeof mod._midi2jianpu_lyric_info === 'function',
@@ -2511,15 +2512,34 @@ if (existsSync(v90InjectPath)) {
   check(noLyric.includes('未识别出歌词行') && noLyric.includes('mm:ss'),
     'lyric_info 对无时间戳的纯文本明说「未识别出歌词行」并指出格式要求', noLyric);
 
-  // 全都越界：点名「越界」而不是让用户去改本来正确的 LRC
+  // 全都越界：LRC 按「行歌词」报，成因同时列出数值越界与条目格式错误
   const allOut = lyricInfo('[offset:999999999999]\n[00:00.00]你\n[999999:00.00]鬼\n');
-  check(allOut.includes('全部越界被忽略') && allOut.includes('2 行'),
-    'lyric_info 对全部越界的时间戳点名「越界」而非「格式不对」', allOut);
+  check(allOut.includes('2 行歌词全部被忽略') &&
+        allOut.includes('数值超出谱面时间轴范围，或歌词条目格式错误'),
+    'lyric_info 对 LRC 全部越界按「行歌词」报并列出两种成因', allOut);
 
-  // 部分越界：既报字数也报忽略行数
+  // v1.179.0：JSON 的每个元素就是一个字，dropped 不能说成「行」。
+  const jsonAll = lyricInfo('[{"start_beat":999999,"text":"你"},'
+                          + '{"start_beat":9999999,"text":"鬼"}]');
+  check(jsonAll.includes('2 个字全部被忽略') && !jsonAll.includes('行'),
+    'lyric_info 对 JSON 全部越界按「个字」报，不再说「行」', jsonAll);
+
+  // start_beat=0 完全合法，但 text 不是字符串——dropped 的成因是格式错误，
+  // 旧版却说「越界时间戳」，把用户指去改一个正确的时间戳。
+  const jsonFmt = lyricInfo('[{"start_beat":0,"text":123}]');
+  check(jsonFmt.includes('1 个字全部被忽略') && jsonFmt.includes('歌词条目格式错误'),
+    'lyric_info 对 JSON 条目格式错误不再谎称「越界时间戳」', jsonFmt);
+
+  // 部分越界：既报字数也按格式报忽略数
   const partOut = lyricInfo('[00:00.00]你\n[999999:00.00]鬼\n');
-  check(partOut.includes('按 LRC 解析 1 字') && partOut.includes('忽略 1 行'),
-    'lyric_info 部分越界时同时报字数与忽略行数', partOut);
+  check(partOut.includes('按 LRC 解析 1 字') && partOut.includes('忽略 1 行歌词'),
+    'lyric_info LRC 部分越界时同时报字数与忽略行数', partOut);
+  const jsonPart = lyricInfo('[{"start_beat":0,"text":"你"},'
+                           + '{"start_beat":999999,"text":"鬼"}]');
+  check(jsonPart.includes('按 JSON 解析 1 字') &&
+        jsonPart.includes('忽略 1 个字') &&
+        !jsonPart.includes('行越界时间戳'),
+    'lyric_info JSON 部分越界按「忽略 1 个字」报', jsonPart);
 
   // 与 dropped 计数同口径：同一段文本两处报出来的丢弃数必须一致
   if (mod._midi2jianpu_lyric_dropped) {
@@ -2535,7 +2555,7 @@ if (existsSync(v90InjectPath)) {
       return d;
     };
     const txt = '[00:00.00]你\n[999999:00.00]鬼\n[9999999:00.00]神\n';
-    check(droppedCount(txt) === 2 && lyricInfo(txt).includes('忽略 2 行'),
+    check(droppedCount(txt) === 2 && lyricInfo(txt).includes('忽略 2 行歌词'),
       'lyric_info 的忽略行数与 lyric_dropped 一致', droppedCount(txt));
   }
 
@@ -2551,6 +2571,10 @@ if (existsSync(v90InjectPath)) {
         page.includes('function handlePickedFile') &&
         page.includes('LYRIC_EXT') && page.includes('applyLyricBytes'),
     '网页接入 lyric_info，且拖拽按扩展名 + MThd 魔数分流歌词 / MIDI');
+  // 旧 wasm 的兜底分支拿不到格式，只能用中性「条」，不能再把 JSON 说成「行」。
+  check(!page.includes("' 行（时间戳超出谱面可解释范围）'") &&
+        page.includes("' 条（数值超出谱面时间轴范围，或歌词条目格式错误）'"),
+    '网页旧 wasm 兜底不再说「N 行（时间戳超出…）」');
 }
 
 // ---- 74. v1.113.0 挂不上的歌词字：网页也要说清「解析 N 字、挂上 M 字」----

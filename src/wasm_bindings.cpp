@@ -508,7 +508,8 @@ int midi2jianpu_lyric_dropped(const uint8_t* midiData, int size, const char* lyr
     return (int)dropped;
 }
 
-// 网页端的歌词体检（v1.112.0）：一次回「按哪种格式解析出几个字、忽略几行」。
+// 网页端的歌词体检（v1.112.0）：一次回「按哪种格式解析出几个字、忽略几行歌词
+// 或几个字」（v1.179.0 起按格式分流，与 CLI 的「行 / 字」口径一致）。
 // 上一版只暴露了 dropped 计数，于是「贴进去的歌词一个字都没认出来」这件事
 // 网页上完全看不见——谱面静默回退成 MIDI 内置的「LY」音节，提示栏一个字都
 // 不说，用户只会以为程序把歌词吃掉了（纯文本、忘了写时间戳、把 JSON 写成
@@ -547,21 +548,27 @@ const char* midi2jianpu_lyric_info(const uint8_t* midiData, int size,
         for (char c : line.text)
             if (((unsigned char)c & 0xC0) != 0x80) ++chars;
 
+    // 与 CLI 同一套口径（src/main.cpp 的 unit）：LRC 一行可含多个字，说「行歌词」；
+    // JSON 每个元素就是一个字，说「个字」。v1.179.0 之前这里不分格式一律说
+    // 「N 行越界时间戳」，贴 JSON 的用户被指去改一个根本没有的时间戳——而
+    // dropped 还可能是 text 不是字符串之类的条目格式错误（start_beat=0 也会被丢）。
+    const std::string unit = isLrc ? "行歌词" : "个字";
     g_result = "歌词：";
     if (chars == 0) {
-        // 一个字都没认出来分两种：歌词格式/字段不对，或者时间戳全都越界被丢。
-        // 后者若按「LRC 要 [mm:ss.xx]」提示，用户会去改本来完全正确的 LRC——
-        // 与 CLI 的「警告: 已忽略 N 行歌词」对齐，这里点名「越界」。
+        // 一个字都没认出来分两种：歌词格式/字段不对，或者条目全都因数值越界被丢。
+        // 原因必须两种都列（同 CLI「数值超出谱面时间轴范围，或歌词条目格式错误」），
+        // 单说「越界」会把格式写错的用户也赶到时间戳上去改。
         g_result += dropped > 0
-            ? std::to_string(dropped) +
-              " 行全部越界被忽略（时间戳超出谱面可解释范围）"
+            ? std::to_string(dropped) + " " + unit +
+              "全部被忽略（数值超出谱面时间轴范围，或歌词条目格式错误）"
             : std::string("未识别出歌词行（LRC 要 [mm:ss.xx]，JSON 要 start_beat + text）");
         return g_result.c_str();
     }
     g_result += std::string("按 ") + (isLrc ? "LRC" : "JSON") + " 解析 " +
                 std::to_string(chars) + " 字";
     if (dropped > 0)
-        g_result += "（忽略 " + std::to_string(dropped) + " 行越界时间戳）";
+        g_result += "（忽略 " + std::to_string(dropped) + " " + unit +
+                    "：数值超出谱面时间轴范围或条目格式错误）";
     // 解析出来 ≠ 挂得上去（v1.113.0）：一行字多于该段旋律的音头数时，
     // placeLyricLine 会把多出来的字 break 掉；同戳多行均分后一行一个音头
     // 都分不到时整行 continue。只报「解析 N 字」会让用户以为谱面上一定有

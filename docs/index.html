@@ -365,9 +365,10 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
       // 「警告: 已忽略 N 行歌词」，网页此前只有后者（v1.106.0），「一个字都
       // 没认出来」这种更要紧的情况反而一声不吭：谱面静默回退成 MIDI 内置
       // 的「LY」音节，用户只会以为歌词被吃掉了。
-      // v1.112.0 的 lyric_info 一次回「按哪种格式解析出几个字、忽略几行」，
-      // 格式判定与解析仍在 C++ 侧（与 CLI 同一条路），网页不重写嗅探规则。
-      // 旧 wasm 没有该导出时退回 dropped 计数，行为与上一版一致。
+      // v1.112.0 的 lyric_info 一次回「按哪种格式解析出几个字、忽略几行歌词
+      // 或几个字」，格式判定与解析仍在 C++ 侧（与 CLI 同一条路），网页不重写
+      // 嗅探规则。旧 wasm 没有该导出时只有 dropped 计数、没有格式信息，
+      // 用中性的「条」并同时列出两种成因，不能说成「行 + 越界时间戳」。
       var lyr = $('lyricsText').value || '';
       if (lyr.trim()) {
         var ln = wasmMod.lengthBytesUTF8(lyr) + 1;
@@ -380,7 +381,8 @@ h1{font-size:26px;border-bottom:3px solid #b03030;padding-bottom:10px;margin-bot
         } else {
           var drp = wasmMod._midi2jianpu_lyric_dropped(p, midiBytes.length, lp);
           if (drp > 0)
-            hints.push('歌词：已忽略 ' + drp + ' 行（时间戳超出谱面可解释范围）');
+            hints.push('歌词：已忽略 ' + drp +
+              ' 条（数值超出谱面时间轴范围，或歌词条目格式错误）');
         }
         wasmMod._free(lp);
       }
