@@ -4173,6 +4173,51 @@ if (existsSync(twoLyrics76)) {
     `cc121=${JSON.stringify(byCc121.slice(-30))} null=${JSON.stringify(explicitNull.slice(-30))}`);
 }
 
+// ---- 108. v1.181.0 NRPN 选择器的 CC6 不改弯音范围 ----
+// RPN 由 CC101/100 选、NRPN 由 CC99/98 选，二者共用 CC6/38 数据入口。
+// 旧版只跟踪 RPN，选过 NRPN 后 CC6=12 被当成 RPN 0 的弯音灵敏度，
+// 满弯音的 C4 从 D（简谱 2）记成高八度的 C（简谱 1'）。CLI 冒烟 [158] 同输入。
+{
+  const be32 = (n) => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+  const vlq = (n) => { const o = []; let b = n & 0x7f; n >>= 7; while (n) { o.unshift((b | 0x80) & 0xff); b = n & 0x7f; n >>= 7; } o.push(b); return o; };
+  const nrpnMidi = (explicitNull, sel) => {
+    const body = [
+      ...vlq(0), 0xb0, 101, 0, ...vlq(0), 0xb0, 100, 0,   // 选中 RPN 0
+      ...vlq(0), 0xb0, 6, 2,                               // ±2
+    ];
+    if (explicitNull)
+      body.push(...vlq(0), 0xb0, 101, 127, ...vlq(0), 0xb0, 100, 127);
+    body.push(
+      ...vlq(0), 0xb0, sel, 0,                             // 选 NRPN MSB/LSB
+      ...vlq(0), 0xb0, 6, 12,                              // NRPN 的 CC6
+      ...vlq(0), 0xe0, 0x7f, 0x7f,                         // 满弯音
+      ...vlq(0), 0x90, 60, 100, ...vlq(480), 0x80, 60, 0,
+      ...vlq(0), 0xff, 0x2f, 0x00);
+    const head = [0x4d, 0x54, 0x68, 0x64, ...be32(6), 0, 1, 0, 1, 0x01, 0xe0];
+    return new Uint8Array([...head, 0x4d, 0x54, 0x72, 0x6b, ...be32(body.length), ...body]);
+  };
+  const parse108 = (bytes) => {
+    const p = mod._malloc(bytes.length);
+    mod.HEAPU8.set(bytes, p);
+    const s = mod._midi2jianpu_parse(p, bytes.length, 0, 1);
+    const out = s ? mod.UTF8ToString(s) : '';
+    mod._free(p);
+    return out;
+  };
+  for (const sel of [99, 98]) {
+    const buggy = parse108(nrpnMidi(false, sel));
+    const ctrl = parse108(nrpnMidi(true, sel));
+    check(!buggy.includes('弯音范围'),
+      `WASM CC${sel} 选中 NRPN 后 CC6 不产生弯音范围设定`, buggy.slice(0, 120));
+    // 前面几组改过量化等全局态，延长线格式可能不同；只钉音高。
+    check(/\b2[\s\-]/.test(buggy) && !buggy.includes("1'"),
+      `WASM CC${sel} 后满弯音音符记为 2（±2），不再错成 1'（±12）`, buggy.slice(-80));
+    check(buggy === ctrl,
+      `WASM CC${sel} NRPN 与显式退出 RPN 文本谱逐字节相同`,
+      `buggy=${JSON.stringify(buggy.slice(-30))} ctrl=${JSON.stringify(ctrl.slice(-30))}`);
+  }
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

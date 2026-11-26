@@ -3508,6 +3508,73 @@ int main() {
                   std::abs(rangeOf(md2, 1, 0) - 9.0) < 1e-9,
                   "CC121 只清本通道 RPN 选择器，别通道不受影响");
         }
+
+        // 7) v1.181.0: CC99/98（NRPN 选择器）与 RPN 共用 CC6/38 数据入口。
+        // 选中 NRPN 后 CC6 写的是 NRPN 参数，不能再当成 RPN 0 的弯音范围。
+        {
+            auto afterNrpn = [&](bool explicitNull, int nrpnCtrl) {
+                SmfTrack t;
+                t.at(0, ev({0xB0, 101, 0}));   // 选中 RPN 0
+                t.at(0, ev({0xB0, 100, 0}));
+                t.at(0, ev({0xB0, 6, 2}));     // 弯音范围 ±2
+                if (explicitNull) {
+                    t.at(0, ev({0xB0, 101, 127}));
+                    t.at(0, ev({0xB0, 100, 127}));
+                }
+                t.at(0, ev({0xB0, (uint8_t)nrpnCtrl, 0}));  // 选 NRPN MSB/LSB
+                t.at(0, ev({0xB0, 6, 12}));    // NRPN 的 CC6：不应改弯音范围
+                bend(t, 0, 0, 16383);
+                note(t, 0, 0);
+                MidiData md;
+                parse(buildSmf(1, 480, {t}), md);
+                return md;
+            };
+            for (int sel : {99, 98}) {
+                const MidiData byNrpn = afterNrpn(false, sel);
+                const MidiData explicitMd = afterNrpn(true, sel);
+                check(byNrpn.bendRanges.size() == 1 &&
+                      std::abs(rangeOf(byNrpn, 0, 0) - 2.0) < 1e-9,
+                      "CC" + std::to_string(sel) +
+                          " 选中 NRPN 后孤立 CC6 不改变弯音范围，实际 " +
+                          std::to_string(byNrpn.bendRanges.size()) + " 处设定");
+                check(explicitMd.bendRanges.size() == 1 &&
+                      std::abs(rangeOf(explicitMd, 0, 0) - 2.0) < 1e-9,
+                      "NRPN 与显式 127/127 退出 RPN 同口径（CC" +
+                          std::to_string(sel) + "）");
+            }
+            // CC38 同理：NRPN 选中后不能精修之前 RPN 0 的范围。
+            SmfTrack fine;
+            fine.at(0, ev({0xB0, 101, 0}));
+            fine.at(0, ev({0xB0, 100, 0}));
+            fine.at(0, ev({0xB0, 6, 2}));
+            fine.at(0, ev({0xB0, 99, 0}));
+            fine.at(0, ev({0xB0, 38, 50}));
+            bend(fine, 0, 0, 16383);
+            note(fine, 0, 0);
+            MidiData md3;
+            parse(buildSmf(1, 480, {fine}), md3);
+            check(md3.bendRanges.size() == 1 &&
+                  std::abs(rangeOf(md3, 0, 0) - 2.0) < 1e-9,
+                  "NRPN 选中后 CC38 不精修弯音范围，实际 " +
+                      std::to_string(rangeOf(md3, 0, 0)));
+            // 通道隔离：ch0 选 NRPN 不影响 ch1 的 RPN 0。
+            SmfTrack two;
+            two.at(0, ev({0xB0, 101, 0}));
+            two.at(0, ev({0xB0, 100, 0}));
+            two.at(0, ev({0xB1, 101, 0}));
+            two.at(0, ev({0xB1, 100, 0}));
+            two.at(0, ev({0xB0, 99, 0}));      // 只让 ch0 进 NRPN
+            two.at(0, ev({0xB0, 6, 12}));      // ch0 应忽略
+            two.at(0, ev({0xB1, 6, 9}));       // ch1 仍选中，应生效
+            bend(two, 0, 0, 16383);
+            bend(two, 1, 0, 16383);
+            MidiData md4;
+            parse(buildSmf(1, 480, {two}), md4);
+            check(md4.bendRanges.size() == 1 && md4.bendRanges[0].channel == 1 &&
+                  std::abs(rangeOf(md4, 0, 0) - 2.0) < 1e-9 &&
+                  std::abs(rangeOf(md4, 1, 0) - 9.0) < 1e-9,
+                  "NRPN 只影响本通道 RPN 选择器，别通道不受影响");
+        }
     }
 
     // ---- running status：系统事件取消、实时消息不改变、省略字节宽容补回 ----

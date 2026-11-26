@@ -6637,6 +6637,54 @@ def main():
     check(out_r == out_c and html_r == html_c,
           "CC121 与显式 127/127 退出 RPN 三端逐字节同源")
 
+    group("[158] v1.181.0 NRPN 选择器的 CC6 不改弯音范围")
+    # CC6/38 是「当前选中参数」的数据入口：RPN 由 CC101/100 选，
+    # NRPN 由 CC99/98 选。旧实现只跟踪 RPN，选过 NRPN 后 CC6=12 被
+    # 当成 RPN 0 的弯音灵敏度，满弯音 C4 从 D 记成高八度的 C。
+    def _nrpn_mid(explicit_null, nrpn_ctrl):
+        evs = [
+            b"\x00\xb0\x65\x00", b"\x00\xb0\x64\x00",   # 选中 RPN 0
+            b"\x00\xb0\x06\x02",                         # 弯音范围 ±2
+        ]
+        if explicit_null:
+            evs += [b"\x00\xb0\x65\x7f", b"\x00\xb0\x64\x7f"]
+        evs += [
+            bytes([0x00, 0xB0, nrpn_ctrl, 0x00]),        # 选 NRPN MSB/LSB
+            b"\x00\xb0\x06\x0c",                         # NRPN 的 CC6=12
+            b"\x00\xe0\x7f\x7f",                         # 满弯音
+            b"\x00\x90\x3c\x64", _vlq127(480) + b"\x80\x3c\x40",
+            b"\x00\xff\x2f\x00",
+        ]
+        return b"MThd" + struct.pack(">IHHH", 6, 0, 1, 480) + _trk(evs)
+
+    with tempfile.TemporaryDirectory() as td:
+        dr = os.path.join(td, "r"); dc = os.path.join(td, "c")
+        os.mkdir(dr); os.mkdir(dc)
+        for sel in (99, 98):
+            mr = os.path.join(dr, "nrpn%d.mid" % sel)
+            mc = os.path.join(dc, "nrpn%d.mid" % sel)
+            with open(mr, "wb") as f:
+                f.write(_nrpn_mid(False, sel))
+            with open(mc, "wb") as f:
+                f.write(_nrpn_mid(True, sel))
+            rc_r, out_r, err_r = run(exe, mr, "--key", "C")
+            rc_c, out_c, err_c = run(exe, mc, "--key", "C")
+            hr = os.path.join(dr, "out%d.html" % sel)
+            hc = os.path.join(dc, "out%d.html" % sel)
+            run(exe, mr, "--key", "C", "--html", hr)
+            run(exe, mc, "--key", "C", "--html", hc)
+            html_r = open(hr, encoding="utf-8").read()
+            html_c = open(hc, encoding="utf-8").read()
+            check(rc_r == 0 and rc_c == 0,
+                  "CC%d 两份 NRPN 样本都正常出谱" % sel,
+                  "rc=%d/%d %s" % (rc_r, rc_c, err_r[:120]))
+            check("±12" not in out_r,
+                  "CC%d 选中 NRPN 后孤立 CC6 不产生 ±12" % sel, out_r[:200])
+            check("2  |" in out_r and "1'" not in out_r,
+                  "CC%d 后满弯音音符记为 2，不再错成 1'" % sel, out_r[-160:])
+            check(out_r == out_c and html_r == html_c,
+                  "CC%d NRPN 与显式退出 RPN 三端逐字节同源" % sel)
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

@@ -1411,6 +1411,17 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                 // 标准序列 CC101(0x65)=0、CC100(0x64)=0、CC6(0x06)=半音数，
                 // 可选 CC38(0x26)=音分微调；很多导出器随后用 127/127 退出 RPN，
                 // 这里照收即可（MSB/LSB 变成 127 后 CC6 自然不再匹配）。
+                //
+                // v1.181：CC6/CC38 是「当前选中参数」的 Data Entry，RPN 由
+                // CC101/100 选、NRPN 由 CC99(0x63)/98(0x62) 选，二者共用这一
+                // 组数据入口。本程序只解释 RPN 0（弯音灵敏度），所以收到任一
+                // NRPN 选择器就把本通道 RPN 置 null——否则 NRPN 的 CC6 会被
+                // 误读成弯音范围（±2 变 ±12），满弯音的音符记成一个八度以上。
+                // 与 v1.180 的 CC121 共用同一选择器状态，不引入新的全局量。
+                if (ctrl == 0x63u || ctrl == 0x62u) {
+                    rpnMSB[channel] = 127;
+                    rpnLSB[channel] = 127;
+                }
                 if (ctrl == 0x65u) rpnMSB[channel] = (int)val;
                 else if (ctrl == 0x64u) rpnLSB[channel] = (int)val;
                 else if (ctrl == 0x06u && rpnMSB[channel] == 0 && rpnLSB[channel] == 0) {
