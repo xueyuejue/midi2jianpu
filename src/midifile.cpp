@@ -1376,7 +1376,15 @@ static bool parseBuffer(const uint8_t* d, size_t size, MidiData& out,
                         // CC121 释放比标准 CC64=0 释放长 4 倍（探针实测）。
                         // 往三条踏板流各注入一个 value=0 点，复用 buildPedalRanges
                         // 的迟滞判定与区间配对；同一 tick 的先后由共享 ctrlSeq 定序。
-                        // 表情 / 音量 / 弯音复位不改变简谱的时值判定，本轮不引入。
+                        // RP-015：CC121 还要把 RPN / NRPN 选择器置空（127/127），
+                        // 但**不改**已存的参数值（弯音范围 / 微调保持原样）。
+                        // 旧实现只复位三个踏板，RPN 选择器还停在 CC101/100=0/0：
+                        // 其后一条孤立的 CC6=12 会被当成「设置弯音灵敏度」，
+                        // 把 ±2 改成 ±12，满弯音的音符从 D 记成高八度的 C。
+                        // 只清选择器（下面的 CC6/CC38 匹配条件自然不成立），
+                        // 不动 rpnDataMSB，符合「参数值不变」的规范。
+                        rpnMSB[channel] = 127;
+                        rpnLSB[channel] = 127;
                         pedalEvents.push_back({absTick, (int)channel, 0, ctrlSeq++});
                         sostenutoEvents.push_back({absTick, (int)channel, 0, ctrlSeq++});
                         softPedalEvents.push_back({absTick, (int)channel, 0, ctrlSeq++});

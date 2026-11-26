@@ -6591,6 +6591,52 @@ def main():
           "MusicXML 39 个音标三连音时值比（实际 %d）"
           % xml.count("<time-modification>"))
 
+    group("[157] v1.180.0 CC121 清空 RPN 选择器（孤立 CC6 不再改弯音范围）")
+    # RP-015：CC121 把 RPN/NRPN 选择器置 127/127，但已存参数值不变。
+    # 旧实现只清三个踏板，RPN 还停在 0/0：其后孤立 CC6=12 被当成弯音灵敏度，
+    # 满弯音的 C4 从 D（简谱 2）记成高八度的 C（简谱 1'）。
+    def _rpn_mid(explicit_null):
+        evs = [
+            b"\x00\xb0\x65\x00", b"\x00\xb0\x64\x00",   # 选中 RPN 0
+            b"\x00\xb0\x79\x00",                         # CC121
+        ]
+        if explicit_null:
+            evs += [b"\x00\xb0\x65\x7f", b"\x00\xb0\x64\x7f"]
+        evs += [
+            b"\x00\xb0\x06\x0c",                         # 孤立 CC6=12
+            b"\x00\xe0\x7f\x7f",                         # 满弯音
+            b"\x00\x90\x3c\x64", _vlq127(480) + b"\x80\x3c\x40",
+            b"\x00\xff\x2f\x00",
+        ]
+        return b"MThd" + struct.pack(">IHHH", 6, 0, 1, 480) + _trk(evs)
+
+    with tempfile.TemporaryDirectory() as td:
+        # 两份文件用同名（不同子目录），HTML 的 <title> 才不会被文件名搅乱。
+        dr = os.path.join(td, "r"); dc = os.path.join(td, "c")
+        os.mkdir(dr); os.mkdir(dc)
+        mr = os.path.join(dr, "cc121_rpn.mid")
+        mc = os.path.join(dc, "cc121_rpn.mid")
+        with open(mr, "wb") as f:
+            f.write(_rpn_mid(False))
+        with open(mc, "wb") as f:
+            f.write(_rpn_mid(True))
+        rc_r, out_r, err_r = run(exe, mr, "--key", "C")
+        rc_c, out_c, err_c = run(exe, mc, "--key", "C")
+        hr = os.path.join(dr, "out.html")
+        hc = os.path.join(dc, "out.html")
+        run(exe, mr, "--key", "C", "--html", hr)
+        run(exe, mc, "--key", "C", "--html", hc)
+        html_r = open(hr, encoding="utf-8").read()
+        html_c = open(hc, encoding="utf-8").read()
+    check(rc_r == 0 and rc_c == 0, "两份 RPN 样本都正常出谱",
+          "rc=%d/%d %s" % (rc_r, rc_c, err_r[:120]))
+    check("弯音范围" not in out_r,
+          "CC121 后孤立 CC6 不再产生弯音范围设定", out_r[:200])
+    check("2  |" in out_r and "1'" not in out_r,
+          "满弯音音符记为 2（默认 ±2），不再错成 1'（±12）", out_r[-160:])
+    check(out_r == out_c and html_r == html_c,
+          "CC121 与显式 127/127 退出 RPN 三端逐字节同源")
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

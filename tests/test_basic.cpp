@@ -3457,6 +3457,57 @@ int main() {
             check(std::abs(rangeOf(m3, 0, 0) - 2.0) < 1e-9,
                   "范围 0 这种坏数据落回默认 ±2");
         }
+
+        // 6) v1.180.0: RP-015 要求 CC121 把 RPN 选择器置空（127/127），
+        // 已存参数值不变。旧实现只清踏板，选择器还停在 0/0，其后孤立 CC6
+        // 被当成弯音灵敏度（±2 变 ±12），满弯音的音符被移高一个八度。
+        {
+            auto cc6After = [&](bool explicitNull) {
+                SmfTrack t;
+                t.at(0, ev({0xB0, 101, 0}));   // 选中 RPN 0
+                t.at(0, ev({0xB0, 100, 0}));
+                t.at(0, ev({0xB0, 121, 0}));   // CC121 复位（清选择器）
+                if (explicitNull) {
+                    t.at(0, ev({0xB0, 101, 127}));
+                    t.at(0, ev({0xB0, 100, 127}));
+                }
+                t.at(0, ev({0xB0, 6, 12}));    // 孤立 CC6：选择器已空，应忽略
+                bend(t, 0, 0, 16383);
+                note(t, 0, 0);
+                MidiData md;
+                parse(buildSmf(1, 480, {t}), md);
+                return md;
+            };
+            const MidiData byCc121 = cc6After(false);
+            const MidiData explicitMd = cc6After(true);
+            check(byCc121.bendRanges.empty(),
+                  "CC121 后孤立 CC6 不再产生弯音范围设定，实际 " +
+                      std::to_string(byCc121.bendRanges.size()) + " 处");
+            check(std::abs(rangeOf(byCc121, 0, 0) - 2.0) < 1e-9,
+                  "CC121 后弯音仍用默认 ±2，实际 " +
+                      std::to_string(rangeOf(byCc121, 0, 0)));
+            check(explicitMd.bendRanges.empty() &&
+                  std::abs(rangeOf(explicitMd, 0, 0) - 2.0) < 1e-9,
+                  "CC121 与显式 127/127 退出 RPN 同口径");
+
+            // 通道隔离：ch0 的 CC121 不能清掉 ch1 的选择器。
+            SmfTrack two;
+            two.at(0, ev({0xB0, 101, 0}));
+            two.at(0, ev({0xB0, 100, 0}));
+            two.at(0, ev({0xB1, 101, 0}));
+            two.at(0, ev({0xB1, 100, 0}));
+            two.at(0, ev({0xB0, 121, 0}));    // 只复位 ch0
+            two.at(0, ev({0xB0, 6, 12}));     // ch0 应忽略
+            two.at(0, ev({0xB1, 6, 9}));      // ch1 仍选中，应生效
+            bend(two, 0, 0, 16383);
+            bend(two, 1, 0, 16383);
+            MidiData md2;
+            parse(buildSmf(1, 480, {two}), md2);
+            check(md2.bendRanges.size() == 1 && md2.bendRanges[0].channel == 1 &&
+                  std::abs(rangeOf(md2, 0, 0) - 2.0) < 1e-9 &&
+                  std::abs(rangeOf(md2, 1, 0) - 9.0) < 1e-9,
+                  "CC121 只清本通道 RPN 选择器，别通道不受影响");
+        }
     }
 
     // ---- running status：系统事件取消、实时消息不改变、省略字节宽容补回 ----

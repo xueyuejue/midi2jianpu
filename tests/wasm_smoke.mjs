@@ -4130,6 +4130,49 @@ if (existsSync(twoLyrics76)) {
     JSON.stringify(notes.map((n) => n.pitch)));
 }
 
+// ---- 107. v1.180.0 CC121 清空 RPN 选择器（孤立 CC6 不再改弯音范围）----
+// RP-015：CC121 把 RPN/NRPN 选择器置 127/127，已存参数值不变。旧版只清踏板，
+// RPN 还停在 0/0，其后孤立 CC6=12 被当成弯音灵敏度（±2 变 ±12），满弯音的
+// C4 从 D（简谱 2）记成高八度的 C（简谱 1'）。CLI 冒烟 [157] 是同一份输入。
+{
+  const be32 = (n) => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+  const vlq = (n) => { const o = []; let b = n & 0x7f; n >>= 7; while (n) { o.unshift((b | 0x80) & 0xff); b = n & 0x7f; n >>= 7; } o.push(b); return o; };
+  const rpnMidi = (explicitNull) => {
+    const body = [
+      ...vlq(0), 0xb0, 101, 0, ...vlq(0), 0xb0, 100, 0,   // 选中 RPN 0
+      ...vlq(0), 0xb0, 121, 0,                             // CC121
+    ];
+    if (explicitNull)
+      body.push(...vlq(0), 0xb0, 101, 127, ...vlq(0), 0xb0, 100, 127);
+    body.push(
+      ...vlq(0), 0xb0, 6, 12,                              // 孤立 CC6
+      ...vlq(0), 0xe0, 0x7f, 0x7f,                         // 满弯音
+      ...vlq(0), 0x90, 60, 100, ...vlq(480), 0x80, 60, 0,
+      ...vlq(0), 0xff, 0x2f, 0x00);
+    const head = [0x4d, 0x54, 0x68, 0x64, ...be32(6), 0, 1, 0, 1, 0x01, 0xe0];
+    return new Uint8Array([...head, 0x4d, 0x54, 0x72, 0x6b, ...be32(body.length), ...body]);
+  };
+  const parse107 = (bytes) => {
+    const p = mod._malloc(bytes.length);
+    mod.HEAPU8.set(bytes, p);
+    const s = mod._midi2jianpu_parse(p, bytes.length, 0, 1);
+    const out = s ? mod.UTF8ToString(s) : '';
+    mod._free(p);
+    return out;
+  };
+  const byCc121 = parse107(rpnMidi(false));
+  const explicitNull = parse107(rpnMidi(true));
+  check(!byCc121.includes('弯音范围'),
+    'WASM CC121 后孤立 CC6 不再产生弯音范围设定', byCc121.slice(0, 120));
+  // 同页前面几组改过量化等全局态，音符的延长线格式可能不同；只钉音高：
+  // 第一个音必须是 2（默认 ±2），绝不能是 1'（±12 的高八度 C）。
+  check(/\b2[\s\-]/.test(byCc121) && !byCc121.includes("1'"),
+    'WASM 满弯音音符记为 2（±2），不再错成 1\'（±12）', byCc121.slice(-80));
+  check(byCc121 === explicitNull,
+    'WASM CC121 与显式 127/127 退出 RPN 文本谱逐字节相同',
+    `cc121=${JSON.stringify(byCc121.slice(-30))} null=${JSON.stringify(explicitNull.slice(-30))}`);
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);
