@@ -71,9 +71,10 @@ import os
 #    addDev。两份的三端输出与 `--verify` 结论都变了，登记为跳过。
 # 上一轮的 rest_hole_nextbar.mid 已进入 v1.159.0 基线，本轮起撤出本表，
 # 照常参与零回归比对。
-# v1.184.0：这三份都已进入 v1.183.0 基线；全量 124 份（122 素材 + 2 edge）
-# 三端逐字节比对确认无差异，本轮起撤出本表，恢复全量零回归。
-NEW_FIXTURES = set()
+# v1.185.0 新增两份素材：旧版文本谱把带各自歌词的同音相邻音并成一颗、
+# 倚音带弯音时文本/HTML 印裸音高；旧基线三端输出必然不同，登记跳过。
+# 它们进入 v1.185.0 基线后，下一轮起撤出本表。
+NEW_FIXTURES = {"same_pitch_lyric.mid", "grace_bend.mid"}
 
 # v1.144.0 曾经有一张 HTML_CHANGED = {"parts.mid", "overfull.mid"}：那一版把
 # 倚音前面的空拍补成休止列，`--regress` 对这两份既有素材放行了「HTML 有意

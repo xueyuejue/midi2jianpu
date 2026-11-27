@@ -3226,6 +3226,20 @@ def main() -> None:
         f.write(LYRIC_TRACK_LRC)
     print(f"wrote {ltlrc}")
 
+    # 同音不同字：文本谱的合并闸门必须读歌词归属（v1.185 回归闸门）
+    spmid = os.path.join(here, "same_pitch_lyric.mid")
+    with open(spmid, "wb") as f:
+        spdata = build_same_pitch_lyric()
+        f.write(spdata)
+    print(f"wrote {spmid} ({len(spdata)} bytes)")
+
+    # 倚音带弯音：文本 / HTML 与 XML / 试听同音高（v1.185 回归闸门）
+    gbmid = os.path.join(here, "grace_bend.mid")
+    with open(gbmid, "wb") as f:
+        gbdata = build_grace_bend()
+        f.write(gbdata)
+    print(f"wrote {gbmid} ({len(gbdata)} bytes)")
+
     # format 2（多个独立序列）素材
     f2mid = os.path.join(here, "format2.mid")
     with open(f2mid, "wb") as f:
@@ -4617,6 +4631,61 @@ def build_lyric_track() -> bytes:
 
     return (b"MThd" + struct.pack(">IHHH", 6, 1, 4, DIV)
             + t0.render() + acc.render() + vox.render() + piano.render())
+
+
+def build_same_pitch_lyric() -> bytes:
+    """同音相邻但各带一个字的两次起音（v1.185.0 回归闸门）。
+
+    第 1 小节头两颗都是 C4，各自带 0x05 内置歌词「甲」「乙」；后六颗把
+    两小节填满，避免自动弱起把音头挪位。HTML 早在 v1.138 就不合并带词的
+    同音，XML 本就逐音写；文本谱过去没有歌词归属信息，并成一颗长音，
+    第二个字在文本侧无处可放。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    vox = Track()
+    vox.add(0, meta(0x03, b"Vox"))
+    vox.add(0, bytes([0xC0, 0x00]))
+    notes = ((60, "甲"), (60, "乙"), (62, "丙"), (64, "丁"),
+             (65, "戊"), (67, "己"), (69, "庚"), (71, "辛"))
+    for i, (pitch, word) in enumerate(notes):
+        tick = i * DIV
+        vox.add(tick, meta(0x05, word.encode("utf-8")))
+        vox.note(0, pitch, 0x5A, tick, DIV)
+
+    return (b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+            + t0.render() + vox.render())
+
+
+def build_grace_bend() -> bytes:
+    """倚音带满弯音时谱面音高必须和 XML / 试听一致（v1.185.0）。
+
+    RPN 0 设 ±2 半音，tick 20 把弯音推满；tick 20 的 40 tick D4 被判为
+    tick 41 主音 C4 的倚音。弯后倚音是 E4：XML 与试听早写 E4，文本/HTML
+    过去印裸 MIDI 音号 D，差一个全音。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    t1 = Track()
+    t1.add(0, meta(0x03, b"Mel"))
+    t1.add(0, bytes([0xC0, 0x00]))
+    t1.bend_range(0, 2, 0)
+    t1.bend(0, 16383, 20)
+    t1.note(0, 62, 0x5A, 20, 40)    # D4 倚音
+    t1.note(0, 60, 0x5A, 41, 480)   # C4 主音，弯后 D4
+    for i, pitch in enumerate((64, 65, 67, 69, 71, 72), start=2):
+        t1.note(0, pitch, 0x5A, i * DIV, DIV)
+
+    return (b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+            + t0.render() + t1.render())
 
 
 if __name__ == "__main__":

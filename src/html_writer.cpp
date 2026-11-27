@@ -1340,7 +1340,9 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 std::string graceHtml;
                 if (ne.hasGrace())
                     graceHtml = "<span class='grace'>" +
-                                htmlEscape(pitchToJianpu(ne.gracePitch, keys.at(n.startTicks))) +
+                                htmlEscape(pitchToJianpu(
+                                    correctedGracePitch(ne, data, n.startTicks, n.channel),
+                                    keys.at(n.startTicks))) +
                                 "</span>";
                 // 不要再排除第一个音：休止符是单独插入的列，本来就不参与歌词分配，
                 // 多一个 !firstNote 只会把一句词的第一个字吞掉（"风霜染尽客行袍"
@@ -1436,7 +1438,9 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
                 std::string graceHtml;
                 if (ne.hasGrace())
                     graceHtml = "<span class='grace'>" +
-                                htmlEscape(pitchToJianpu(ne.gracePitch, keys.at(n.startTicks))) +
+                                htmlEscape(pitchToJianpu(
+                                    correctedGracePitch(ne, data, n.startTicks, n.channel),
+                                    keys.at(n.startTicks))) +
                                 "</span>";
 
                 std::vector<std::pair<std::string, std::pair<int, int>>> tones;

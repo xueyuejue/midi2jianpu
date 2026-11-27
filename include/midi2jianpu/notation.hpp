@@ -843,6 +843,12 @@ struct NoteExpression {
     std::string symbol() const;  // 文本谱用的紧凑标记，如 "▼>"、"↗"
 };
 
+// 倚音音高也走与主音相同的弯音窗口。XML / 试听早已修正，文本与 HTML 过去
+// 直接印裸 MIDI 音号，弯音范围内会差一整个全音（v1.185.0）。
+// 无倚音返回原值；无弯音或偏移不足半音时同样原值返回。
+int correctedGracePitch(const NoteExpression& ne, const MidiData& data,
+                        long mainTick, int channel);
+
 class ExpressionMap {
 public:
     ExpressionMap() = default;

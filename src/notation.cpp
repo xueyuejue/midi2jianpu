@@ -1605,7 +1605,8 @@ static std::string formatTrack(
     const std::vector<NoteEvent>& notes,
     const KeyMap& keys, const MidiData& data, const ExpressionMap& expr,
     const std::map<long, std::string>* chords = nullptr,
-    bool barNumbers = false) {
+    bool barNumbers = false,
+    const std::set<long>* syllableTicks = nullptr) {
 
     std::ostringstream os;
     int currentBar = -1;
@@ -1645,6 +1646,11 @@ static std::string formatTrack(
             notes[i].pitch == merged.back().pitch &&
             notes[i].startTicks == merged.back().startTicks + merged.back().durationTicks &&
             isSingle(notes[i].startTicks) && isSingle(merged.back().startTicks) &&
+            // 同音不同字不合并（v1.185.0）：HTML 早有这道闸门，文本谱过去
+            // 把两颗带各自歌词的同音并成一颗长音，第二个字在文本侧无处可放，
+            // 而 HTML/XML 都保留两次起音。一字多音没有自己的 at 条目，照常合并。
+            !(syllableTicks && (syllableTicks->count(notes[i].startTicks) ||
+                                syllableTicks->count(merged.back().startTicks))) &&
             // 不跨小节线合并：真实演奏里同音相邻几乎都是两次发音而不是延音，
             // 合并后会把小节线上的音吞掉（第 15 小节开头的 6 变成 `-`）。
             // 跨小节的长音本来就该显式切分。
@@ -1844,7 +1850,9 @@ static std::string formatTrack(
         // 所以 `1,+3,+5,` 里三个逗号分别管自己那个音。
         std::string head;
         if (ne.hasGrace())
-            head = "(" + pitchToJianpu(ne.gracePitch, keys.at(n.startTicks)) + ")";
+            head = "(" + pitchToJianpu(
+                             correctedGracePitch(ne, data, n.startTicks, n.channel),
+                             keys.at(n.startTicks)) + ")";
         bool toneWritten = false;
         for (size_t k = idx; k < grpEnd; k++) {
             const auto& cn = merged[k];
@@ -2246,6 +2254,16 @@ double pitchBendOffset(const MidiData& data, long start, long end, int channel) 
     return count > 0 ? sum / count : 0.0;
 }
 
+int correctedGracePitch(const NoteExpression& ne, const MidiData& data,
+                        long mainTick, int channel) {
+    if (!ne.hasGrace()) return ne.gracePitch;
+    int gp = ne.gracePitch;
+    const double off = pitchBendOffset(data, mainTick - data.division / 16,
+                                       mainTick, channel);
+    if (std::abs(off) >= 0.5) gp += (int)std::round(off);
+    return gp;
+}
+
 std::string formatJianpu(const MidiData& data, const KeyEstimate& key,
                            bool barNumbers, const std::vector<LyricLine>* lyrics) {
     const KeyMap keys(data, key);
@@ -2284,6 +2302,11 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key,
     // 证据；不传时 profileTracks 仍会读 data.midiLyrics，内置歌词口径不变。
     int mainTrack = pickMelodyTrack(data, lyrics);
 
+    // 歌词归属（v1.185.0）：文本谱不印词，但「同音不同字」是否合并必须和
+    // HTML/XML 读同一份分配结果。无歌词时为空，原有合并逻辑逐字不变。
+    LyricAssignment lyricAssign;
+    if (mainTrack >= 0) lyricAssign = resolveLyrics(data, lyrics, mainTrack);
+
     // 检测和弦(按小节)
     auto chords = detectChords(data, key);
     std::map<long, std::string> chordByBar;
@@ -2321,6 +2344,19 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key,
         }
     }
 
+    // 一个音头上的字归最靠上的声部，和 HTML 的 wordVoice 同口径。
+    // 文本谱虽不印词，合并闸门要知道哪两颗音各有自己的字。
+    std::map<long, int> wordVoice;
+    if (mainTrack >= 0)
+        for (const auto& pv : partViews) {
+            if (pv.track != mainTrack) continue;
+            for (const auto& n : pv.notes) {
+                auto wit = wordVoice.find(n.startTicks);
+                if (wit == wordVoice.end() || pv.voice < wit->second)
+                    wordVoice[n.startTicks] = pv.voice;
+            }
+        }
+
     for (const auto& pv : partViews) {
         const int t = pv.track;
         const auto& ns = pv.notes;
@@ -2344,8 +2380,16 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key,
             os << " · 和弦: " << distinctChordCount(chordByBar) << " 个";
         }
         os << "\n";
+        std::set<long> ownedSyllables;
+        if (t == mainTrack)
+            for (const auto& n : ns) {
+                auto wit = wordVoice.find(n.startTicks);
+                if (wit != wordVoice.end() && wit->second == pv.voice &&
+                    lyricAssign.at.find(n.startTicks) != lyricAssign.at.end())
+                    ownedSyllables.insert(n.startTicks);
+            }
         os << formatTrack(ns, keys, data, expr, isMain ? &chordByBar : nullptr,
-                          barNumbers);
+                          barNumbers, &ownedSyllables);
     }
     return os.str();
 }

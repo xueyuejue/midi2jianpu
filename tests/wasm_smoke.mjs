@@ -4280,6 +4280,45 @@ if (existsSync(twoLyrics76)) {
     'WASM 清空歌词后文本谱回到 Acc 轨且逐字节复原', reset.slice(0, 160));
 }
 
+// ---- 111. v1.185.0 同音不同字：网页复制简谱也要保留两次起音 ----
+{
+  const midi = new Uint8Array(readFileSync(path.join(FIXTURES, 'same_pitch_lyric.mid')));
+  const w = makeCaller(mod);
+  w.setMidi(midi);
+  w.setLyrics('');
+  w.setUseMidiLyrics(true);
+  const text = w.call('midi2jianpu_parse', 0, 1) || '';
+  const html = w.call('midi2jianpu_html', 0, 1) || '';
+  const xml = w.call('midi2jianpu_musicxml', 0, 1) || '';
+  check(text.includes('1 1 2 3') && !text.includes('1 - 2 3'),
+    'WASM 同音不同字时文本谱保留两次起音', text.slice(0, 200));
+  check(html.includes("<span class='lyric'>甲</span>") &&
+          html.includes("<span class='lyric'>乙</span>"),
+    'WASM HTML 两个字各挂各的音头', html.slice(0, 200));
+  check(xml.includes('<text>甲</text>') && xml.includes('<text>乙</text>'),
+    'WASM MusicXML 两个字各挂各的音头', xml.slice(0, 200));
+}
+
+// ---- 112. v1.185.0 倚音带弯音：文本/HTML 与 XML/试听同音高 ----
+{
+  const midi = new Uint8Array(readFileSync(path.join(FIXTURES, 'grace_bend.mid')));
+  const w = makeCaller(mod);
+  w.setMidi(midi);
+  w.setLyrics('');
+  const text = w.call('midi2jianpu_parse', 0, 1) || '';
+  const html = w.call('midi2jianpu_html', 0, 1) || '';
+  const xml = w.call('midi2jianpu_musicxml', 0, 1) || '';
+  const notes = JSON.parse(w.call('midi2jianpu_get_notes_json', 0, 1) || '[]');
+  check(text.includes('(3)') && !text.includes('(2)'),
+    'WASM 文本谱倚音写弯后 E（3）', text.slice(0, 200));
+  check(html.includes("<span class='grace'>3</span>"),
+    'WASM HTML 倚音列写弯后音高', html.slice(0, 200));
+  check(xml.includes('<grace/><pitch><step>E</step>'),
+    'WASM MusicXML 倚音仍是弯后 E', xml.slice(0, 200));
+  check(notes.length > 0 && notes[0].pitch === 64,
+    'WASM 试听数据里的倚音也是 E4', JSON.stringify(notes[0] || null));
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

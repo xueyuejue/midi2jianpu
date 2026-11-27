@@ -5603,10 +5603,9 @@ def main():
         check(kw == "甲乙", "--track 到和弦轨时歌词照样落位", kw)
 
     group("[134] v1.138.0 带词的同音不再合并")
-    # retrigger.mid 的头两个音是同一个 C4、首尾相接，文本谱里并成 `1 -`。
-    # 合并本身是谱面可读性上的取舍（不带词时照旧），但简谱一列只有一个
-    # 词位——第二个音自带音节时并进去，那个字就无处可放：命令行照报
-    # 「挂上 8 字」、MusicXML 也写满 8 个 <text>，只有 HTML 少一个字。
+    # retrigger.mid 的头两个音是同一个 C4、首尾相接，不带词时文本谱并成 `1 -`。
+    # 简谱一列只有一个词位，第二个音自带音节时并进去，那个字就无处可放：
+    # v1.138 先让 HTML 不合并，v1.185 让文本谱也读同一份歌词归属，三端一致。
     eight = os.path.join(tmp, "eight.lrc")
     with open(eight, "w", encoding="utf-8") as f:
         f.write("[00:00.00]一二三四五六七八\n")
@@ -5620,7 +5619,8 @@ def main():
                            "--html", rt_html, "--musicxml", rt_xml)
         check(rc == 0, "同音重复素材 + 8 字歌词正常出谱",
               "rc=%d %s" % (rc, err[:200]))
-        check("1 - 3 4" in out, "文本谱照旧合并成 `1 -`（--lyrics 不影响文本谱）",
+        check("1 1 3 4" in out and "1 - 3 4" not in out,
+              "文本谱也保留两次同音起音（v1.185 起与 HTML/XML 同口径）",
               out[:200])
         if os.path.exists(rt_html) and os.path.exists(rt_xml):
             body = open(rt_html, encoding="utf-8").read()
@@ -6785,6 +6785,48 @@ def main():
     check(only == both,
           "只出文本与同时出 HTML 的文本谱逐字节同源",
           "only=%s both=%s" % (only[:100], both[:100]))
+
+    group("[162] v1.185.0 同音不同字不被文本谱合并")
+    sp = os.path.join(FIXTURES, "same_pitch_lyric.mid")
+    with tempfile.TemporaryDirectory() as td:
+        sp_txt = os.path.join(td, "sp.txt")
+        sp_html = os.path.join(td, "sp.html")
+        sp_xml = os.path.join(td, "sp.xml")
+        rc, out, err = run(exe, sp, "--key", "C", "--output", sp_txt,
+                           "--html", sp_html, "--musicxml", sp_xml)
+        txt = open(sp_txt, encoding="utf-8").read()
+        html = open(sp_html, encoding="utf-8").read()
+        xml = open(sp_xml, encoding="utf-8").read()
+    check(rc == 0, "same_pitch_lyric 三端正常导出", "%d %s" % (rc, err[-200:]))
+    check("1 1 2 3" in txt and "1 - 2 3" not in txt,
+          "文本谱保留两次同音起音，不再并成一颗长音", txt[:200])
+    check("<span class='lyric'>甲</span>" in html and
+          "<span class='lyric'>乙</span>" in html,
+          "HTML 两个字各挂各的音头", html[:200])
+    check("<text>甲</text>" in xml and "<text>乙</text>" in xml,
+          "MusicXML 两个字各挂各的音头", xml[:200])
+
+    group("[163] v1.185.0 倚音弯音与 XML/试听同音高")
+    gb = os.path.join(FIXTURES, "grace_bend.mid")
+    with tempfile.TemporaryDirectory() as td:
+        gb_txt = os.path.join(td, "gb.txt")
+        gb_html = os.path.join(td, "gb.html")
+        gb_xml = os.path.join(td, "gb.xml")
+        rc, out, err = run(exe, gb, "--key", "C", "--player",
+                           "--output", gb_txt, "--html", gb_html,
+                           "--musicxml", gb_xml)
+        txt = open(gb_txt, encoding="utf-8").read()
+        html = open(gb_html, encoding="utf-8").read()
+        xml = open(gb_xml, encoding="utf-8").read()
+    check(rc == 0, "grace_bend 三端正常导出", "%d %s" % (rc, err[-200:]))
+    check("(3)" in txt and "(2)" not in txt,
+          "文本谱倚音写弯后 E（3）而不是裸 D（2）", txt[:200])
+    check("<span class='grace'>3</span>" in html,
+          "HTML 倚音列写弯后音高", html[:200])
+    check("<grace/><pitch><step>E</step>" in xml,
+          "MusicXML 倚音仍是弯后 E", xml[:200])
+    check('"notes":[[20,40,64,1,90]' in html,
+          "试听数据里的倚音也是 E4", html[:300])
 
     print("\n" + "-" * 48)
     if failures:

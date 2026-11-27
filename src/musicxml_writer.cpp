@@ -1143,10 +1143,8 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
             if (!isChordMember && !seg.tieEnd && seg.voice == 0) {
                 const NoteExpression ae0 = expr.noteAt(seg.start, seg.channel);
                 if (ae0.hasGrace()) {
-                    int gp = ae0.gracePitch;
-                    double goff = pitchBendOffset(data, seg.start - division / 16,
-                                                  seg.start, seg.channel);
-                    if (std::abs(goff) >= 0.5) gp += (int)std::round(goff);
+                    // 与文本谱 / HTML / 试听共用同一份修正（v1.185.0）。
+                    int gp = correctedGracePitch(ae0, data, seg.start, seg.channel);
                     int gpc = gp % 12; if (gpc < 0) gpc += 12;
                     int goct = (gp - gpc) / 12 - 1;
                     const bool gflat = prefersFlats(keys.at(seg.start));

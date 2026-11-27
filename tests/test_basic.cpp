@@ -11731,6 +11731,96 @@ int main() {
               "MusicXML 的 <harmony> 同样落在 Vox 轨");
     }
 
+    std::cout << "\n测试 v1.185.0：同音不同字与倚音弯音的三端同源\n";
+    {
+        MidiData d;
+        d.division = 480;
+        d.timeSig = TimeSignature{4, 2, true};
+        d.trackNames[1] = "Vox";
+        auto countSub = [](const std::string& s, const std::string& needle) {
+            size_t n = 0, p = 0;
+            while ((p = s.find(needle, p)) != std::string::npos) {
+                ++n; p += needle.size();
+            }
+            return n;
+        };
+        auto addNote = [&](long tick, int pitch) {
+            NoteEvent n;
+            n.track = 1; n.channel = 0; n.velocity = 90;
+            n.pitch = pitch; n.startTicks = tick; n.durationTicks = 480;
+            d.notes.push_back(n);
+        };
+        const int pitches[8] = {60, 60, 62, 64, 65, 67, 69, 71};
+        const char* words[8] = {"甲", "乙", "丙", "丁", "戊", "己", "庚", "辛"};
+        for (int i = 0; i < 8; i++) {
+            addNote((long)i * 480, pitches[i]);
+            d.midiLyrics.push_back({(long)i * 480, words[i], 1});
+        }
+        KeyEstimate k;
+        k.tonicPitchClass = 0; k.isMajor = true; k.fifthsHint = 0;
+        const std::string txt = formatJianpu(d, k, false, nullptr);
+        check(txt.find("1 1 2 3") != std::string::npos,
+              "同音不同字时文本谱保留两次起音");
+        check(txt.find("1 - 2 3") == std::string::npos,
+              "同音不同字不再被文本谱并成一颗长音");
+        const std::string html = renderHtml(d, k, "t");
+        check(countSub(html, "<span class='lyric'>甲</span>") == 1 &&
+                  countSub(html, "<span class='lyric'>乙</span>") == 1,
+              "HTML 的两个字仍各挂各的音头");
+        const std::string xml = renderMusicXml(d, k);
+        check(countSub(xml, "<text>甲</text>") == 1 &&
+                  countSub(xml, "<text>乙</text>") == 1,
+              "MusicXML 的两个字仍各挂各的音头");
+        MidiData plain = d;
+        plain.midiLyrics.clear();
+        const std::string merged = formatJianpu(plain, k, false, nullptr);
+        check(merged.find("1 - 2 3") != std::string::npos,
+              "没有歌词的同音相邻仍照旧合并（零回归）");
+    }
+    {
+        MidiData d;
+        d.division = 480;
+        d.timeSig = TimeSignature{4, 2, true};
+        d.trackNames[1] = "Mel";
+        auto countSub = [](const std::string& s, const std::string& needle) {
+            size_t n = 0, p = 0;
+            while ((p = s.find(needle, p)) != std::string::npos) {
+                ++n; p += needle.size();
+            }
+            return n;
+        };
+        auto addNote = [&](long tick, int pitch, long dur) {
+            NoteEvent n;
+            n.track = 1; n.channel = 0; n.velocity = 90;
+            n.pitch = pitch; n.startTicks = tick; n.durationTicks = dur;
+            d.notes.push_back(n);
+        };
+        addNote(20, 62, 40);    // D4 倚音
+        addNote(41, 60, 480);   // C4 主音
+        const int tail[6] = {64, 65, 67, 69, 71, 72};
+        for (int i = 0; i < 6; i++)
+            addNote((long)(i + 2) * 480, tail[i], 480);
+        PitchBendPoint pb;
+        pb.tick = 20; pb.value = 16383; pb.channel = 0; pb.range = 2.0;
+        d.pitchBends.push_back(pb);
+        const KeyEstimate k = estimateKey(d);
+        const std::string txt = formatJianpu(d, k, false, nullptr);
+        check(txt.find("(3)") != std::string::npos &&
+                  txt.find("(2)") == std::string::npos,
+              "满弯音下文本谱倚音写弯后音高 E（3），不是裸 D（2）");
+        const std::string html = renderHtml(d, k, "t");
+        check(countSub(html, "<span class='grace'>3</span>") == 1,
+              "HTML 倚音列同样写弯后音高");
+        const std::string xml = renderMusicXml(d, k);
+        check(xml.find("<grace/><pitch><step>E</step>") != std::string::npos,
+              "MusicXML 倚音仍是弯后 E，与文本/HTML 同高");
+        MidiData noBend = d;
+        noBend.pitchBends.clear();
+        const std::string plain = formatJianpu(noBend, estimateKey(noBend), false, nullptr);
+        check(plain.find("(2)") != std::string::npos,
+              "无弯音时倚音仍写裸 D，零回归");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";
