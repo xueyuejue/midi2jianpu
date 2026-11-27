@@ -11660,6 +11660,77 @@ int main() {
                   std::to_string(countSub(ph, "class='trip'")) + "）");
     }
 
+    std::cout << "\n测试 v1.183.0：外部歌词时文本谱和弦与 HTML/XML 同一旋律轨\n";
+    {
+        MidiData d;
+        d.division = 480;
+        d.timeSig = TimeSignature{4, 2, true};
+        d.trackNames[1] = "Acc";
+        d.trackNames[2] = "Vox";
+        d.trackNames[3] = "Piano";
+        // Acc 音多但出现得晚，不可能被歌词行首对齐；无歌词时它赢。
+        const int accPitches[6] = {60, 62, 64, 65, 67, 69};
+        for (int i = 0; i < 24; i++) {
+            NoteEvent n;
+            n.track = 1; n.channel = 0; n.velocity = 90;
+            n.pitch = accPitches[i % 6];
+            n.startTicks = 4800L + (long)i * 240;
+            n.durationTicks = 220;
+            d.notes.push_back(n);
+        }
+        // Vox 音少，但六个音头与 LRC 行首逐一对齐；有歌词时它赢。
+        const int voxPitches[6] = {72, 74, 76, 74, 72, 71};
+        for (int i = 0; i < 6; i++) {
+            NoteEvent n;
+            n.track = 2; n.channel = 0; n.velocity = 90;
+            n.pitch = voxPitches[i];
+            n.startTicks = (long)i * 480;
+            n.durationTicks = 440;
+            d.notes.push_back(n);
+        }
+        // Piano 柱式和弦给 detectChords 提供证据。
+        const long bases[3] = {0, 960, 1920};
+        const int chords[3][3] = {{60, 64, 67}, {55, 59, 62}, {57, 60, 64}};
+        for (int b = 0; b < 3; b++) {
+            for (int k = 0; k < 3; k++) {
+                NoteEvent n;
+                n.track = 3; n.channel = 0; n.velocity = 80;
+                n.pitch = chords[b][k];
+                n.startTicks = bases[b];
+                n.durationTicks = 480;
+                d.notes.push_back(n);
+            }
+        }
+        std::vector<LyricLine> lines;
+        const char* words[6] = {"春", "夏", "秋", "冬", "风", "雨"};
+        for (int i = 0; i < 6; i++)
+            lines.push_back({(long)i * 480, words[i]});
+
+        const KeyEstimate k = estimateKey(d);
+        const std::string plain = formatJianpu(d, k, false, nullptr);
+        check(plain.find("[Acc] (24 音符) · 和弦: 3 个") != std::string::npos,
+              "无歌词时文本谱和弦标在音符最多的 Acc 轨");
+        const std::string withLyrics = formatJianpu(d, k, false, &lines);
+        check(withLyrics.find("[Vox] (6 音符) · 和弦: 3 个") != std::string::npos,
+              "外部歌词时文本谱和弦改标在歌词对齐的 Vox 轨");
+        check(withLyrics.find("[Acc] (24 音符) · 和弦") == std::string::npos,
+              "外部歌词时文本谱不再把和弦留在 Acc 轨");
+
+        const std::string html = renderHtml(d, k, "t", &lines, false);
+        const size_t vh = html.find("<h3>Vox");
+        const size_t vhend = html.find("<h3>", vh + 1);
+        check(vh != std::string::npos && vhend != std::string::npos &&
+                  html.substr(vh, vhend - vh).find("class='chordx'") != std::string::npos,
+              "HTML 的和弦标记同样落在 Vox 轨");
+
+        const std::string xml = renderMusicXml(d, k, &lines);
+        const size_t p2 = xml.find("<part id=\"P2\">");
+        const size_t p3 = xml.find("<part id=\"P3\">");
+        check(p2 != std::string::npos && p3 != std::string::npos &&
+                  xml.substr(p2, p3 - p2).find("<harmony>") != std::string::npos,
+              "MusicXML 的 <harmony> 同样落在 Vox 轨");
+    }
+
     std::cout << "\n------------------------------------------------\n";
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";

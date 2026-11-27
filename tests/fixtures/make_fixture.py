@@ -3215,6 +3215,17 @@ def main() -> None:
         f.write(ghdata)
     print(f"wrote {ghpath} ({len(ghdata)} bytes)")
 
+    # 外部歌词改选时律时徣轨（v1.183 回归闸杆）
+    ltmid = os.path.join(here, "lyric_track.mid")
+    with open(ltmid, "wb") as f:
+        ltdata = build_lyric_track()
+        f.write(ltdata)
+    print(f"wrote {ltmid} ({len(ltdata)} bytes)")
+    ltlrc = os.path.join(here, "lyric_track.lrc")
+    with open(ltlrc, "w", encoding="utf-8") as f:
+        f.write(LYRIC_TRACK_LRC)
+    print(f"wrote {ltlrc}")
+
     # format 2（多个独立序列）素材
     f2mid = os.path.join(here, "format2.mid")
     with open(f2mid, "wb") as f:
@@ -4561,6 +4572,51 @@ def build_grace_hole_dev() -> bytes:
 
     return (b"MThd" + struct.pack(">IHHH", 6, 1, 2, 480)
             + t0.render() + t1.render())
+
+
+LYRIC_TRACK_LRC = (
+    "[00:00.00]春\n[00:00.50]夏\n[00:01.00]秋\n"
+    "[00:01.50]冬\n[00:02.00]风\n[00:02.50]雨\n"
+)
+
+
+def build_lyric_track() -> bytes:
+    """外部 LRC 把和弦词选成人声轨\u3002
+
+    Acc 音符多且出在后面（无歌词对齐），Vox 只六个音
+    但音头与 LRC 行首精确对齐\u3002不给歌词时三端都把和弦
+    标在 Acc；给 LRC 后 HTML/XML 改标在 Vox，文本谱也必须跟上002
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    acc = Track()
+    acc.add(0, meta(0x03, b"Acc"))
+    acc.add(0, bytes([0xC0, 0x00]))
+    for i in range(24):
+        tick = 4800 + i * 240
+        acc.note(0, (60, 62, 64, 65, 67, 69)[i % 6], 0x5A, tick, 220)
+
+    vox = Track()
+    vox.add(0, meta(0x03, b"Vox"))
+    vox.add(0, bytes([0xC0, 0x01]))
+    for i, pitch in enumerate((72, 74, 76, 74, 72, 71)):
+        vox.note(0, pitch, 0x5A, i * DIV, 440)
+
+    piano = Track()
+    piano.add(0, meta(0x03, b"Piano"))
+    piano.add(0, bytes([0xC0, 0x00]))
+    for base, chord in ((0, (60, 64, 67)),
+                        (960, (55, 59, 62)),
+                        (1920, (57, 60, 64))):
+        for p in chord:
+            piano.note(0, p, 0x50, base, 480)
+
+    return (b"MThd" + struct.pack(">IHHH", 6, 1, 4, DIV)
+            + t0.render() + acc.render() + vox.render() + piano.render())
 
 
 if __name__ == "__main__":

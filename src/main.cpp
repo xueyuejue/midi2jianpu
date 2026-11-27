@@ -859,7 +859,9 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::string jianpu = m2j::formatJianpu(data, key, barNumbers);
+    // 文本谱不印歌词，但和弦标记与「旋律轨」标签要和 HTML/XML 同轨：
+    // 外部歌词改选了人声轨时，终端与「复制简谱」也必须跟着换（v1.183）。
+    std::string jianpu = m2j::formatJianpu(data, key, barNumbers, lyricPtr);
     const std::string meter = m2j::meterSummary(data);
     std::string header = "\n共提取 " + std::to_string(data.notes.size())
               + " 个音符 (division=" + std::to_string(data.division)

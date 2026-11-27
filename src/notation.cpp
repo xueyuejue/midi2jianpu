@@ -2247,7 +2247,7 @@ double pitchBendOffset(const MidiData& data, long start, long end, int channel) 
 }
 
 std::string formatJianpu(const MidiData& data, const KeyEstimate& key,
-                           bool barNumbers) {
+                           bool barNumbers, const std::vector<LyricLine>* lyrics) {
     const KeyMap keys(data, key);
     const BarGrid grid = barGridOf(data);
     const ExpressionMap expr(data);
@@ -2280,8 +2280,9 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key,
         byTrack[n.track].push_back(n);
     }
 
-    // 选出旋律轨：和弦标记与歌词只给它
-    int mainTrack = pickMelodyTrack(data, nullptr);
+    // 选出旋律轨：和弦标记只给它。外部歌词（LRC/JSON）与 HTML/XML 走同一份
+    // 证据；不传时 profileTracks 仍会读 data.midiLyrics，内置歌词口径不变。
+    int mainTrack = pickMelodyTrack(data, lyrics);
 
     // 检测和弦(按小节)
     auto chords = detectChords(data, key);

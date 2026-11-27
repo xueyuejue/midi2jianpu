@@ -38,6 +38,11 @@ static int g_quantizeAdjusted = 0;  // 最近一次渲染修正掉的音符数�
 // 只作用于复制出去的文本谱（formatJianpu 第 3 参）；HTML/XML 本就无条件
 // 显示小节号，这个开关对它们没有差别，与 CLI 的警告口径一致。
 static bool g_barNumbers = false;
+// 文本谱也要看外部歌词证据，才能和 HTML/XML 选同一条旋律轨（v1.183）。
+// 实际定义在下面的歌词解析入口；这里先声明，默认参只在声明处写一次。
+static std::vector<m2j::LyricLine> parseLyricsAuto(
+    const std::string& text, const m2j::MidiData& data,
+    size_t* dropped = nullptr);
 // 网页中途转调（v1.170.0）：与 CLI --no-key-changes 同一个布尔，默认开。
 // 关掉后全曲按曲首一个调记谱：页眉不写转调链、HTML 不标「转 1=D」、
 // MusicXML 只写一次 <key>。落在 MidiData.applyKeyChanges 上，由
@@ -293,9 +298,16 @@ const char* midi2jianpu_parse(const uint8_t* midiData, int size, int keyPitch, i
     // 手动宫音 / 手动调号 / 自动判定三选一，与 CLI 同一入口。
     const m2j::KeyEstimate key = chooseKey(data, keyPitch, isMajor);
 
-    // 与 CLI 的 `formatJianpu(data, key, barNumbers)` 同一处传参：网页勾选
-    // 「文本谱小节号」后，「复制简谱」拿到的文本才有行首 [N] 前缀。
-    g_result = m2j::formatJianpu(data, key, g_barNumbers);
+    // 与 CLI 同一处传参：网页勾选「文本谱小节号」后，「复制简谱」拿到的
+    // 文本才有行首 [N] 前缀；外部歌词同样传进去，保证和弦标记与 HTML/XML
+    // 挂在同一条旋律轨（v1.183）。
+    std::vector<m2j::LyricLine> lyricLines;
+    const std::vector<m2j::LyricLine>* lyricPtr = nullptr;
+    if (!g_lyrics.empty()) {
+        lyricLines = parseLyricsAuto(g_lyrics, data);
+        if (!lyricLines.empty()) lyricPtr = &lyricLines;
+    }
+    g_result = m2j::formatJianpu(data, key, g_barNumbers, lyricPtr);
     return g_result.c_str();
 }
 
@@ -306,7 +318,7 @@ const char* midi2jianpu_parse(const uint8_t* midiData, int size, int keyPitch, i
 // 与 CLI 对「扩展名不认识」的文件用的是同一条规则，三端不会各说各话。
 static std::vector<m2j::LyricLine> parseLyricsAuto(const std::string& text,
                                                    const m2j::MidiData& data,
-                                                   size_t* dropped = nullptr) {
+                                                   size_t* dropped) {
     if (dropped) *dropped = 0;
     if (text.empty()) return {};
     if (m2j::detectLyricFormat("", text) == m2j::LyricFormat::Lrc)

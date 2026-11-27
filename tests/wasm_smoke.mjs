@@ -4243,6 +4243,43 @@ if (existsSync(twoLyrics76)) {
     'WASM 跨小节 0.5 拍续段是 eighth 列，不是整拍 quarter', bar2.slice(0, 160));
 }
 
+// ---- 110. v1.183.0 外部歌词时文本谱与 HTML/XML 选同一旋律轨 ----
+// 同一份 lyric_track.mid：没有歌词时 Acc 音多、赢；贴入 LRC 后 Vox 的
+// 六个音头与行首对齐、赢。网页「复制简谱」走 midi2jianpu_parse，必须和
+// 页面上看到的 HTML、下载的 MusicXML 一样把和弦挂在 Vox 轨。
+{
+  const midi = new Uint8Array(readFileSync(path.join(FIXTURES, 'lyric_track.mid')));
+  const lrc = readFileSync(path.join(FIXTURES, 'lyric_track.lrc'), 'utf8');
+  const w = makeCaller(mod);
+  w.setMidi(midi);
+  w.setLyrics('');
+  const plain = w.call('midi2jianpu_parse', -1, 1) || '';
+  w.setLyrics(lrc);
+  const text = w.call('midi2jianpu_parse', -1, 1) || '';
+  const html = w.call('midi2jianpu_html', -1, 1) || '';
+  const xml = w.call('midi2jianpu_musicxml', -1, 1) || '';
+  check(plain.includes('[Acc] (24 音符) · 和弦: 3 个'),
+    'WASM 无歌词时文本谱和弦标在 Acc 轨', plain.slice(0, 160));
+  check(text.includes('[Vox] (6 音符) · 和弦: 3 个'),
+    'WASM 外部歌词时文本谱和弦改标在 Vox 轨', text.slice(0, 200));
+  check(!text.includes('[Acc] (24 音符) · 和弦'),
+    'WASM 外部歌词时文本谱不再把和弦留在 Acc 轨', text.slice(0, 200));
+  const vh = html.indexOf('<h3>Vox');
+  const vhend = html.indexOf('<h3>', vh + 1);
+  const voxHtml = vh >= 0 && vhend > vh ? html.slice(vh, vhend) : '';
+  check((voxHtml.match(/class='chordx'/g) || []).length === 3,
+    'WASM HTML 三条和弦全部落在 Vox 轨', voxHtml.slice(0, 80));
+  const p2 = xml.indexOf('<part id="P2">');
+  const p3 = xml.indexOf('<part id="P3">');
+  const voxXml = p2 >= 0 && p3 > p2 ? xml.slice(p2, p3) : '';
+  check((voxXml.match(/<harmony>/g) || []).length === 3,
+    'WASM MusicXML 三条 <harmony> 全部落在 Vox 轨', voxXml.slice(0, 80));
+  w.setLyrics('');
+  const reset = w.call('midi2jianpu_parse', -1, 1) || '';
+  check(reset.includes('[Acc] (24 音符) · 和弦: 3 个') && reset === plain,
+    'WASM 清空歌词后文本谱回到 Acc 轨且逐字节复原', reset.slice(0, 160));
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

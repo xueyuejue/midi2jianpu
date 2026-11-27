@@ -11,6 +11,8 @@
 
 namespace m2j {
 
+struct LyricLine;  // 定义在下方歌词入口处；formatJianpu 只需指针
+
 // fifthsHint 的哨兵值：表示「没有文件或用户声明的调号侧，按主音音级查表」。
 // 取 99 而不是 0，因为 0 是 C 大调这个合法值。
 constexpr int kFifthsAuto = 99;
@@ -182,8 +184,12 @@ QuantizeReport quantizeTiming(MidiData& data);
 // 把音符列表格式化成文本简谱（含拍号、小节线、时值）
 // barNumbers：每行开头标出小节号（默认关，纯文本复制出去时不占宽度）。
 // 口径与 HTML 的 .barno 一致：弱起小节不编号，第一个完整小节才是 1。
+// lyrics：与 HTML / MusicXML 同一个外部歌词入口；传 nullptr 时仍按 MIDI
+// 内置歌词证据判旋律轨。文本谱不印歌词，但和弦标记与「旋律轨」标签必须与
+// 另外两端同轨，否则「复制简谱」会把和弦挂到伴奏轨上（v1.183）。
 std::string formatJianpu(const MidiData& data, const KeyEstimate& key,
-                         bool barNumbers = false);
+                         bool barNumbers = false,
+                         const std::vector<LyricLine>* lyrics = nullptr);
 
 // MIDI 音号 -> 音名字符串 (60 -> "C4")
 std::string midiNoteName(int pitch);

@@ -71,7 +71,7 @@ import os
 #    addDev。两份的三端输出与 `--verify` 结论都变了，登记为跳过。
 # 上一轮的 rest_hole_nextbar.mid 已进入 v1.159.0 基线，本轮起撤出本表，
 # 照常参与零回归比对。
-NEW_FIXTURES = {"triplet_crossbar.mid", "grace_hole_dev.mid"}
+NEW_FIXTURES = {"triplet_crossbar.mid", "grace_hole_dev.mid", "lyric_track.mid"}
 
 # v1.144.0 曾经有一张 HTML_CHANGED = {"parts.mid", "overfull.mid"}：那一版把
 # 倚音前面的空拍补成休止列，`--regress` 对这两份既有素材放行了「HTML 有意
@@ -116,17 +116,13 @@ NEW_FIXTURES = {"triplet_crossbar.mid", "grace_hole_dev.mid"}
 # 参数的三端默认输出，`keySourceNote` 为空、沿用旧判定，页眉一个字节不动。
 # 故本表仍为空。
 #
-# v1.182.0：HTML 跨小节非整拍延续段由「llround 成整拍」改为按可记时值档位
-# 画（0.5 拍续段从 quarter 变 eighth）。这两份素材的续段恰好命中，文本谱与
-# MusicXML 均不变；登记为 HTML 有意变化。下一轮基线已含修复后的输出，须把
-# 本表清空，恢复全量逐字节零回归。
+# v1.182.0 曾把两份 sysex 素材的 HTML 记为「跨小节非整拍续段档位有意变化」；
+# v1.183.0 的基线已含修复后的输出，本表清空，恢复全量逐字节零回归。
 HTML_CHANGED = set()
 
-# v1.182.0：HTML 跨小节非整拍延续段的时值档位由整拍（quarter）改为精确档
-# （eighth），不是八度点高度那种「摘掉一个属性即相同」的变化，整份 HTML
-# 无法归一化对齐。这两份素材的续段恰好命中，文本谱与 MusicXML 均不变；
-# 整份放行 HTML，下轮基线含修复后的输出，必须清空本表恢复逐字节零回归。
-HTML_SKIP = {"sysex_gs_normal.mid", "sysex_unknown.mid"}
+# v1.182.0 的 HTML_SKIP 已随基线清零；再次需要整份放行时按本轮有意变化登记，
+# 并在下一轮基线包含修复输出后立即清空，不能长期挂着。
+HTML_SKIP = set()
 
 
 def html_skip(path):

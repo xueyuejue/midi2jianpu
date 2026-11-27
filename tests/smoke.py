@@ -6717,6 +6717,45 @@ def main():
     check(xml.count("<duration>240</duration>") >= 2 and "<tie" in xml,
           "MusicXML 两段各 240 tick 且带 tie", xml[-300:])
 
+    group("[160] v1.183.0 外部歌词时文本谱和弦与 HTML/XML 同一旋律轨")
+    lt = os.path.join(FIXTURES, "lyric_track.mid")
+    ll = os.path.join(FIXTURES, "lyric_track.lrc")
+    with tempfile.TemporaryDirectory() as td:
+        plain_txt = os.path.join(td, "plain.txt")
+        lyr_txt = os.path.join(td, "lyric.txt")
+        lyr_html = os.path.join(td, "lyric.html")
+        lyr_xml = os.path.join(td, "lyric.xml")
+        rc0, out0, err0 = run(exe, lt, "--key", "C", "--output", plain_txt)
+        rc1, out1, err1 = run(exe, lt, "--key", "C", "--lyrics", ll,
+                              "--output", lyr_txt, "--html", lyr_html,
+                              "--musicxml", lyr_xml)
+        plain = open(plain_txt, encoding="utf-8").read()
+        with_words = open(lyr_txt, encoding="utf-8").read()
+        html = open(lyr_html, encoding="utf-8").read()
+        xml = open(lyr_xml, encoding="utf-8").read()
+    check(rc0 == 0 and rc1 == 0, "lyric_track 有无歌词都正常出谱",
+          "%d/%d %s %s" % (rc0, rc1, err0[:120], err1[:120]))
+    check("[Acc] (24 音符) · 和弦: 3 个" in plain,
+          "无歌词时文本谱和弦标在 Acc 轨", plain[:160])
+    check("[Vox] (6 音符) · 和弦: 3 个" in with_words,
+          "外部歌词时文本谱和弦改标在 Vox 轨", with_words[:200])
+    check("[Acc] (24 音符) · 和弦" not in with_words,
+          "外部歌词时文本谱不再把和弦留在 Acc 轨", with_words[:200])
+    check("春" not in with_words,
+          "文本谱仍不印歌词，只借歌词选旋律轨", with_words[:200])
+    vox_h = html.find("<h3>Vox")
+    vox_end = html.find("<h3>", vox_h + 1)
+    vox_html = html[vox_h:vox_end] if vox_h >= 0 and vox_end > vox_h else ""
+    check(vox_html.count("class='chordx'") == 3,
+          "HTML 三条和弦全部落在 Vox 轨",
+          "count=%d" % vox_html.count("class='chordx'"))
+    p2 = xml.find('<part id="P2">')
+    p3 = xml.find('<part id="P3">')
+    vox_xml = xml[p2:p3] if p2 >= 0 and p3 > p2 else ""
+    check(vox_xml.count("<harmony>") == 3,
+          "MusicXML 三条 <harmony> 全部落在 Vox 轨",
+          "count=%d" % vox_xml.count("<harmony>"))
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")
