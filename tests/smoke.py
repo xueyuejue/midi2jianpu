@@ -3083,9 +3083,11 @@ def main():
     check(rc != 0 and "无法打开歌词文件" in err,
           "--lyrics 指向不存在的文件时明确报错", (rc, err[-160:]))
 
-    rc, _, err = run(exe, smp, "--lyrics", os.path.join(FIXTURES, "sample.lrc"))
-    check(rc == 0 and "只作用于" in err,
-          "纯文本谱给 --lyrics 时提示它会被忽略", (rc, err[-160:]))
+    rc, out, err = run(exe, smp, "--lyrics", os.path.join(FIXTURES, "sample.lrc"))
+    check(rc == 0 and "不会把歌词印进文本谱" in err and "只作用于" in err,
+          "纯文本谱给 --lyrics 时如实说明词不印但会选轨", (rc, err[-200:]))
+    check("歌词已加载" in out,
+          "纯文本谱也解析歌词（用于选旋律轨）", out[:160])
 
     empty_lrc = os.path.join(tmp, "empty_lyrics.lrc")
     with open(empty_lrc, "w", encoding="utf-8") as f:
@@ -6755,6 +6757,34 @@ def main():
     check(vox_xml.count("<harmony>") == 3,
           "MusicXML 三条 <harmony> 全部落在 Vox 轨",
           "count=%d" % vox_xml.count("<harmony>"))
+
+    group("[161] v1.184.0 纯文本谱也按 --lyrics 选旋律轨")
+    lt = os.path.join(FIXTURES, "lyric_track.mid")
+    ll = os.path.join(FIXTURES, "lyric_track.lrc")
+    with tempfile.TemporaryDirectory() as td:
+        only_txt = os.path.join(td, "only.txt")
+        both_txt = os.path.join(td, "both.txt")
+        rc_a, out_a, err_a = run(exe, lt, "--key", "C",
+                                 "--lyrics", ll, "--output", only_txt)
+        rc_b, out_b, err_b = run(exe, lt, "--key", "C",
+                                 "--lyrics", ll, "--output", both_txt,
+                                 "--html", os.path.join(td, "both.html"))
+        only = open(only_txt, encoding="utf-8").read()
+        both = open(both_txt, encoding="utf-8").read()
+    check(rc_a == 0 and rc_b == 0,
+          "lyric_track 纯文本/带 HTML 都正常出谱",
+          "%d/%d %s %s" % (rc_a, rc_b, err_a[:120], err_b[:120]))
+    check("不会把歌词印进文本谱" in err_a and "只作用于旋律轨" in err_a,
+          "警告如实说明歌词不印但影响选轨", err_a[:240])
+    check("文本谱会忽略它" not in err_a,
+          "警告不再谎称文本谱忽略歌词", err_a[:240])
+    check("歌词已加载: 6 行" in out_a,
+          "纯文本模式也解析并报告歌词", out_a[:200])
+    check("[Vox] (6 音符) · 和弦: 3 个" in only,
+          "纯文本模式和弦挂到歌词对齐的 Vox 轨", only[:200])
+    check(only == both,
+          "只出文本与同时出 HTML 的文本谱逐字节同源",
+          "only=%s both=%s" % (only[:100], both[:100]))
 
     print("\n" + "-" * 48)
     if failures:

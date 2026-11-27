@@ -706,8 +706,9 @@ int main(int argc, char** argv) {
     if (!psum.empty())
         std::cout << psum << "\n";
 
-    // 歌词只解析一次，HTML 谱面和 MusicXML 共用同一份 LRC 行。
-    // 早先解析写在 --html 分支里，导 MusicXML 时整份歌词都丢了。
+    // 歌词只解析一次，HTML 谱面、MusicXML 与文本谱的旋律轨判定共用同一份
+    // LRC 行。早先解析写在 --html 分支里，导 MusicXML 时整份歌词都丢了；
+    // v1.184 起纯文本谱也解析——歌词虽不印出来，却要参与选旋律轨。
     std::vector<m2j::LyricLine> lyricLines;
     const std::vector<m2j::LyricLine>* lyricPtr = nullptr;
     std::string lyricRaw;
@@ -726,12 +727,15 @@ int main(int argc, char** argv) {
                         std::istreambuf_iterator<char>());
         probe.close();
         if (htmlOut.empty() && xmlOut.empty()) {
-            // 纯文本谱没有挂歌词的位置，说了比不说好，否则用户会以为歌词丢了。
-            std::cerr << "警告: --lyrics 只作用于 --html / --musicxml 输出，"
-                         "文本谱会忽略它\n";
+            // 文本谱没有挂词的位置，但 v1.183 起歌词会参与旋律轨判定，不能
+            // 再说「文本谱会忽略它」——同一首歌只出文本和同时出 HTML 时
+            // 和弦会挂在不同轨上。说清楚「词不印、轨会选」两件事。
+            std::cerr << "警告: --lyrics 不会把歌词印进文本谱；它只作用于"
+                         "旋律轨与和弦标记的归属判定，歌词本身只出现在 "
+                         "--html / --musicxml 输出\n";
         }
     }
-    if (!lyricsPath.empty() && (!htmlOut.empty() || !xmlOut.empty())) {
+    if (!lyricsPath.empty()) {
         // 字节归一与两个读盘入口同口径，之后只看纯文本（v1.110.0）。
         const std::string lyricText = m2j::normalizeLyricFileBytes(lyricRaw);
         const m2j::LyricFormat lyricFmt =
