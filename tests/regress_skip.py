@@ -115,7 +115,23 @@ NEW_FIXTURES = {"triplet_crossbar.mid", "grace_hole_dev.mid"}
 # 来源时才改（`--key` / `--gong` / `--transpose`）；`--regress` 跑的是不带
 # 参数的三端默认输出，`keySourceNote` 为空、沿用旧判定，页眉一个字节不动。
 # 故本表仍为空。
+#
+# v1.182.0：HTML 跨小节非整拍延续段由「llround 成整拍」改为按可记时值档位
+# 画（0.5 拍续段从 quarter 变 eighth）。这两份素材的续段恰好命中，文本谱与
+# MusicXML 均不变；登记为 HTML 有意变化。下一轮基线已含修复后的输出，须把
+# 本表清空，恢复全量逐字节零回归。
 HTML_CHANGED = set()
+
+# v1.182.0：HTML 跨小节非整拍延续段的时值档位由整拍（quarter）改为精确档
+# （eighth），不是八度点高度那种「摘掉一个属性即相同」的变化，整份 HTML
+# 无法归一化对齐。这两份素材的续段恰好命中，文本谱与 MusicXML 均不变；
+# 整份放行 HTML，下轮基线含修复后的输出，必须清空本表恢复逐字节零回归。
+HTML_SKIP = {"sysex_gs_normal.mid", "sysex_unknown.mid"}
+
+
+def html_skip(path):
+    """该素材的 HTML 本轮整份有意变化（文本谱 / MusicXML 仍逐字节比）。"""
+    return os.path.basename(str(path)) in HTML_SKIP
 
 
 def html_changed(path):
@@ -125,10 +141,11 @@ def html_changed(path):
 
 def html_note():
     """有放行项时给一行提示，免得「HTML 变了」被误当成零回归通过。"""
-    if not HTML_CHANGED:
+    names = sorted(HTML_CHANGED | HTML_SKIP)
+    if not names:
         return None
     return ("[NOTE] 本轮 HTML 有意变化 %d 份：%s"
-            % (len(HTML_CHANGED), " / ".join(sorted(HTML_CHANGED))))
+            % (len(names), " / ".join(names)))
 
 
 def skip(path):

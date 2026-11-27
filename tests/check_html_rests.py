@@ -338,6 +338,11 @@ def structural_regress(old_exe, new_exe):
                             strip_direction_staff(strip_beams(b[ext]))):
                         continue          # 只多了 <beam>，属 v1.64.0 的预期变化
                     errors.append("%s: %s 发生变化（本轮只应改 HTML）" % (stem, ext))
+            if regress_skip.html_skip(mid):
+                # 本轮 HTML 时值档位有意变化（跨小节续段 quarter→eighth），
+                # 这份守卫只在乎纯 0 列的增减，整份 HTML 放行；文本/XML 上面
+                # 已经逐字节比过，本素材照样参与。
+                continue
             raw_old = norm_html(a["html"].decode("utf-8", "replace"))
             raw_new = norm_html(b["html"].decode("utf-8", "replace"))
             if regress_skip.html_changed(mid):

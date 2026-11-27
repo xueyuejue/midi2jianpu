@@ -6869,6 +6869,44 @@ int main() {
               "3 拍长音仍是二分列加两条延音线");
     }
 
+    // ---- v1.182.0：跨小节的非整拍延续段不能被记成整拍 ----
+    // 4/4 里 tick 1680（3.5 拍）起一个 1 拍的音，被小节线 1920 切成
+    // 0.5 + 0.5 拍。文本谱写 `-_`、MusicXML 写 240 tick + tie；旧 HTML
+    // 把续段 llround 成 1 拍、画一个 quarter 的 `-`，该小节多出 0.5 拍。
+    {
+        auto addCross = [](MidiData& d, long start, long dur, int pitch) {
+            NoteEvent n;
+            n.startTicks = start;
+            n.durationTicks = dur;
+            n.rawDurationTicks = dur;
+            n.pitch = pitch;
+            n.channel = 0;
+            n.track = 0;
+            d.notes.push_back(n);
+        };
+        const KeyEstimate kc{0, true};
+        MidiData d;
+        d.division = 480;
+        d.timeSig.valid = true;
+        d.timeSig.numerator = 4;
+        d.timeSig.denomPow = 2;
+        d.trackNames[0] = "Vocal";
+        addCross(d, 1680, 480, 60);
+        const std::string h = renderHtml(d, kc, "t");
+        const std::string txt = formatJianpu(d, kc);
+        // 按小节拆出 HTML：第 2 小节只有 1 列，必须是 eighth（0.5 拍）。
+        const size_t bar2 = h.find("<span class='measure'", h.find("<span class='measure'") + 1);
+        const size_t bar2end = h.find("<span class='measure'", bar2 + 1);
+        const std::string second = h.substr(bar2, bar2end == std::string::npos
+                                                    ? std::string::npos : bar2end - bar2);
+        check(second.find("class='note eighth'") != std::string::npos &&
+                  second.find("class='note quarter'") == std::string::npos,
+              "跨小节 0.5 拍续段是 eighth 列，不是整拍 quarter：" +
+                  second.substr(0, 160));
+        check(txt.find("1_") != std::string::npos,
+              "文本谱同口径：音头带 0.5 拍后缀：" + txt);
+    }
+
 
     // ---- v1.61.0：HTML 休止符按精确档位之和拆列 ----
     {

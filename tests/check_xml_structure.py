@@ -319,6 +319,8 @@ def structural_regress(old_exe, new_exe):
             n = render(new_exe, mid, td, "new")
             for i, ext in enumerate(("txt", "html", "xml")):
                 a, b = o[i], n[i]
+                if ext == "html" and regress_skip.html_skip(mid):
+                    continue        # 本轮 HTML 有意变化（时值档位），整份放行
                 if ext != "xml":
                     # 打印块只决定纸面观感，跨版本比对时摘掉（v1.78.0
                     # 压深了 .barno/.footer 的打印色，由 smoke [91] 守）。

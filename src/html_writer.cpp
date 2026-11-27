@@ -1290,15 +1290,44 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
             double beats = (double)durTicks / data.division;
 
             if (cont) {
-                // 延续段：一拍一个 `-`
+                // 跨小节延续段：`-` 不能跨小节线，这里整段都落在同一个新小节里。
+                // 整拍一直是一拍一个 1.0 拍的 `-`，保持原样（零回归）。
+                // v1.182：非整拍续段不能再 llround——0.5 拍的续段被画成 1 拍，
+                // 文本谱写 `-_`、MusicXML 写 240 tick + tie，只有 HTML 多算半拍。
+                // 按可记时值档位拆段，与同小节续列（1376 行）同口径：短拍用
+                // 带减时线 / 附点的 `-`，整拍仍是一列一个 quarter。
                 flushBeam();          // 长音打断减时线
-                int cnt = (int)std::llround(beats);
-                if (cnt < 1) cnt = 1;
-                for (int k = 0; k < cnt; k++) {
-                    long tk = n.startTicks + (long)k * data.division;
-                    emit(withDyn(withChord(noteColumn("-", 0, 0, 1.0, "", "", nullptr, octSpace),
-                                           chordMarkFor(tk)),
-                                 dynMarkFor(tk)), tk);
+                if (durTicks % data.division == 0) {
+                    const int cnt = (int)(durTicks / data.division);
+                    for (int k = 0; k < cnt; k++) {
+                        long tk = n.startTicks + (long)k * data.division;
+                        emit(withDyn(withChord(noteColumn("-", 0, 0, 1.0, "", "", nullptr,
+                                                          octSpace),
+                                               chordMarkFor(tk)),
+                                     dynMarkFor(tk)), tk);
+                    }
+                } else {
+                    const std::vector<long> cparts =
+                        splitNotatableTicks(durTicks, data.division);
+                    if (cparts.empty()) {
+                        // 拆不干净（如 400 tick 这类门限还原值）：吸附到最近档，
+                        // 至少不再一律记成 1 拍。
+                        emit(withDyn(withChord(noteColumn("-", 0, 0, beats, "", "", nullptr,
+                                                          octSpace),
+                                               chordMarkFor(n.startTicks)),
+                                     dynMarkFor(n.startTicks)), n.startTicks);
+                    } else {
+                        long off = 0;
+                        for (long part : cparts) {
+                            long tk = n.startTicks + off;
+                            emit(withDyn(withChord(noteColumn("-", 0, 0,
+                                                              (double)part / data.division,
+                                                              "", "", nullptr, octSpace),
+                                                   chordMarkFor(tk)),
+                                         dynMarkFor(tk)), tk, off > 0);
+                            off += part;
+                        }
+                    }
                 }
             } else if (grp.size() == 1) {
                 std::string num;

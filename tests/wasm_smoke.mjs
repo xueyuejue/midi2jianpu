@@ -4218,6 +4218,31 @@ if (existsSync(twoLyrics76)) {
   }
 }
 
+// ---- 109. v1.182.0 跨小节非整拍延续段的 HTML 拍数 ----
+// 4/4 里 tick1680 起一个 1 拍音，被小节线 1920 切成 0.5+0.5 拍。
+// 旧 HTML 把续段 llround 成 1 拍（quarter -），文本/MusicXML 都是 0.5 拍。
+{
+  const be32 = (n) => [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+  const vlq = (n) => { const o = []; let b = n & 0x7f; n >>= 7; while (n) { o.unshift((b | 0x80) & 0xff); b = n & 0x7f; n >>= 7; } o.push(b); return o; };
+  const body = [
+    0x00, 0xff, 0x58, 0x04, 4, 2, 0x18, 8,            // 4/4
+    0x8d, 0x10, 0x90, 60, 64,                         // delta 1680 = 3.5 拍，NoteOn
+    0x83, 0x60, 0x80, 60, 0,                          // delta 480，NoteOff
+    0x00, 0xff, 0x2f, 0x00,
+  ];
+  const head = [0x4d, 0x54, 0x68, 0x64, ...be32(6), 0, 1, 0, 1, 0x01, 0xe0];
+  const midi = new Uint8Array([...head, 0x4d, 0x54, 0x72, 0x6b, ...be32(body.length), ...body]);
+  const p = mod._malloc(midi.length);
+  mod.HEAPU8.set(midi, p);
+  const s = mod._midi2jianpu_html(p, midi.length, 0, 1);
+  const html = s ? mod.UTF8ToString(s) : '';
+  mod._free(p);
+  const bars = html.split("<span class='measure'").slice(1);
+  const bar2 = bars[bars.length - 1] || '';
+  check(bar2.includes("class='note eighth'") && !bar2.includes("class='note quarter'"),
+    'WASM 跨小节 0.5 拍续段是 eighth 列，不是整拍 quarter', bar2.slice(0, 160));
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

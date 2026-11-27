@@ -6685,6 +6685,38 @@ def main():
             check(out_r == out_c and html_r == html_c,
                   "CC%d NRPN 与显式退出 RPN 三端逐字节同源" % sel)
 
+    group("[159] v1.182.0 跨小节非整拍延续段的 HTML 拍数")
+    # 4/4 里 tick1680（3.5 拍）起一个 1 拍音，被小节线 1920 切成 0.5 + 0.5。
+    # 旧 HTML 把续段 llround 成 1 拍（quarter `-`），文本写 `-_`、XML 写
+    # 240 tick + tie，HTML 该小节多出 0.5 拍。
+    cross = (b"\x00\xff\x58\x04\x04\x02\x18\x08"           # 4/4
+             b"\x8d\x10\x90\x3c\x40"                       # tick1680 NoteOn
+             b"\x83\x60\x80\x3c\x00"                       # +480 NoteOff
+             b"\x00\xff\x2f\x00")
+    cross_mid = (b"MThd" + struct.pack(">IHHH", 6, 0, 1, 480)
+                 + _trk([cross]))
+    with tempfile.TemporaryDirectory() as td:
+        mid = os.path.join(td, "cross.mid")
+        with open(mid, "wb") as f:
+            f.write(cross_mid)
+        rc, out, err = run(exe, mid, "--key", "C")
+        hp = os.path.join(td, "cross.html")
+        xp = os.path.join(td, "cross.xml")
+        run(exe, mid, "--key", "C", "--html", hp)
+        run(exe, mid, "--key", "C", "--musicxml", xp)
+        html = open(hp, encoding="utf-8").read()
+        xml = open(xp, encoding="utf-8").read()
+    check(rc == 0, "跨小节续段样本正常出谱", err[:120])
+    # 第 2 小节：HTML 里只有一个 0.5 拍的 eighth 续列，不能有整拍 quarter。
+    bars = html.split("<span class='measure'")[1:]
+    bar2 = bars[-1] if bars else ""
+    check("class='note eighth'" in bar2 and "class='note quarter'" not in bar2,
+          "跨小节 0.5 拍续段是 eighth 列，不是整拍 quarter", bar2[:200])
+    check("1_" in out and "-_" in out,
+          "文本谱同口径：音头与续段各带 0.5 拍后缀", out[-120:])
+    check(xml.count("<duration>240</duration>") >= 2 and "<tie" in xml,
+          "MusicXML 两段各 240 tick 且带 tie", xml[-300:])
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")
