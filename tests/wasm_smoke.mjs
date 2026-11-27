@@ -4260,7 +4260,7 @@ if (existsSync(twoLyrics76)) {
   const xml = w.call('midi2jianpu_musicxml', -1, 1) || '';
   check(plain.includes('[Acc] (24 音符) · 和弦: 3 个'),
     'WASM 无歌词时文本谱和弦标在 Acc 轨', plain.slice(0, 160));
-  check(text.includes('[Vox] (6 音符) · 和弦: 3 个'),
+  check(text.includes('[Vox] (6 音符) · 和弦: 4 个'),
     'WASM 外部歌词时文本谱和弦改标在 Vox 轨', text.slice(0, 200));
   check(!text.includes('[Acc] (24 音符) · 和弦'),
     'WASM 外部歌词时文本谱不再把和弦留在 Acc 轨', text.slice(0, 200));
@@ -4317,6 +4317,31 @@ if (existsSync(twoLyrics76)) {
     'WASM MusicXML 倚音仍是弯后 E', xml.slice(0, 200));
   check(notes.length > 0 && notes[0].pitch === 64,
     'WASM 试听数据里的倚音也是 E4', JSON.stringify(notes[0] || null));
+}
+
+// ---- 113. v1.186.0 歌词改选旋律轨后和弦检测排除人声 ----
+{
+  const midi = new Uint8Array(readFileSync(path.join(FIXTURES, 'lyric_chord.mid')));
+  const lrc = readFileSync(path.join(FIXTURES, 'lyric_chord.lrc'), 'utf8');
+  const w = makeCaller(mod);
+  w.setMidi(midi);
+  w.setLyrics(lrc);
+  const text = w.call('midi2jianpu_parse', 0, 1) || '';
+  const html = w.call('midi2jianpu_html', 0, 1) || '';
+  const xml = w.call('midi2jianpu_musicxml', 0, 1) || '';
+  check(!text.includes('F#dim') && !html.includes('F#dim') && !xml.includes('F#dim'),
+    'WASM 贴 LRC 后三端都不再把 Vox 的 F# 算进和弦',
+    text.slice(0, 160) + html.slice(0, 120) + xml.slice(0, 120));
+  check(text.includes('[C]') && text.includes('[F]'),
+    'WASM 文本谱在 Vox 轨标出 C / F', text.slice(0, 240));
+  check(html.includes("chordx'>C") && html.includes("chordx'>F"),
+    'WASM HTML 和弦标记同步为 C / F', html.slice(0, 200));
+  check(xml.includes('<root-step>F</root-step>'),
+    'WASM MusicXML 和弦根音同步为 F', xml.slice(0, 200));
+  w.setLyrics('');
+  const plain = w.call('midi2jianpu_parse', 0, 1) || '';
+  check(plain.includes('F#dim'),
+    'WASM 不给歌词的对照组仍保留旧旋律轨下的 F#dim', plain.slice(0, 200));
 }
 
 console.log('');

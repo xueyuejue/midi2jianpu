@@ -6739,7 +6739,7 @@ def main():
           "%d/%d %s %s" % (rc0, rc1, err0[:120], err1[:120]))
     check("[Acc] (24 音符) · 和弦: 3 个" in plain,
           "无歌词时文本谱和弦标在 Acc 轨", plain[:160])
-    check("[Vox] (6 音符) · 和弦: 3 个" in with_words,
+    check("[Vox] (6 音符) · 和弦: 4 个" in with_words,
           "外部歌词时文本谱和弦改标在 Vox 轨", with_words[:200])
     check("[Acc] (24 音符) · 和弦" not in with_words,
           "外部歌词时文本谱不再把和弦留在 Acc 轨", with_words[:200])
@@ -6780,7 +6780,7 @@ def main():
           "警告不再谎称文本谱忽略歌词", err_a[:240])
     check("歌词已加载: 6 行" in out_a,
           "纯文本模式也解析并报告歌词", out_a[:200])
-    check("[Vox] (6 音符) · 和弦: 3 个" in only,
+    check("[Vox] (6 音符) · 和弦: 4 个" in only,
           "纯文本模式和弦挂到歌词对齐的 Vox 轨", only[:200])
     check(only == both,
           "只出文本与同时出 HTML 的文本谱逐字节同源",
@@ -6827,6 +6827,38 @@ def main():
           "MusicXML 倚音仍是弯后 E", xml[:200])
     check('"notes":[[20,40,64,1,90]' in html,
           "试听数据里的倚音也是 E4", html[:300])
+
+    group("[164] v1.186.0 歌词改选旋律轨后和弦检测排除人声")
+    lc = os.path.join(FIXTURES, "lyric_chord.mid")
+    lclrc = os.path.join(FIXTURES, "lyric_chord.lrc")
+    with tempfile.TemporaryDirectory() as td:
+        lc_txt = os.path.join(td, "lc.txt")
+        lc_html = os.path.join(td, "lc.html")
+        lc_xml = os.path.join(td, "lc.xml")
+        lc_plain = os.path.join(td, "lc_plain.txt")
+        rc, out, err = run(exe, lc, "--key", "C", "--lyrics", lclrc,
+                           "--output", lc_txt, "--html", lc_html,
+                           "--musicxml", lc_xml)
+        lc_text = open(lc_txt, encoding="utf-8").read()
+        lc_html_text = open(lc_html, encoding="utf-8").read()
+        lc_xml_text = open(lc_xml, encoding="utf-8").read()
+        rc_plain, _, _ = run(exe, lc, "--key", "C", "--output", lc_plain)
+        lc_plain_text = open(lc_plain, encoding="utf-8").read()
+    check(rc == 0, "lyric_chord 三端正常导出", "%d %s" % (rc, err[-200:]))
+    check("F#dim" not in lc_text and "F#dim" not in lc_html_text and
+          "F#dim" not in lc_xml_text,
+          "贴 LRC 后三端都不再把 Vox 的 F# 算进和弦",
+          "txt=%s html=%s xml=%s" % (lc_text[:120], lc_html_text[:120],
+                                     lc_xml_text[:120]))
+    check("[Vox]" in lc_text and "[C]" in lc_text and "[F]" in lc_text,
+          "文本谱在 Vox 轨标出 C / F", lc_text[:240])
+    check("chordx'>C" in lc_html_text and "chordx'>F" in lc_html_text,
+          "HTML 和弦标记同步为 C / F", lc_html_text[:200])
+    check("<root-step>F</root-step>" in lc_xml_text,
+          "MusicXML 和弦根音同步为 F", lc_xml_text[:200])
+    check(rc_plain == 0 and "F#dim" in lc_plain_text,
+          "不给歌词的对照组仍保留旧旋律轨下的 F#dim",
+          lc_plain_text[:200])
 
     print("\n" + "-" * 48)
     if failures:

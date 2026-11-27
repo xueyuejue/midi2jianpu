@@ -2308,7 +2308,7 @@ std::string formatJianpu(const MidiData& data, const KeyEstimate& key,
     if (mainTrack >= 0) lyricAssign = resolveLyrics(data, lyrics, mainTrack);
 
     // 检测和弦(按小节)
-    auto chords = detectChords(data, key);
+    auto chords = detectChords(data, key, lyrics);
     std::map<long, std::string> chordByBar;
     for (const auto& c : chords) {
         chordByBar[c.startTick] = c.name;
@@ -3382,15 +3382,18 @@ long chordWindowTicks(const MidiData& data) {
     return chordWindowFor(data.timeSig, data.division);
 }
 
-std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key) {
+std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key,
+                                    const std::vector<LyricLine>* lyrics) {
     // 和弦根名用绝对音名，但等音写法要跟「当前小节的调」走：转进降号调后
     // 该写 Bb 而不是 A#。无转调时 KeyMap 只有一个点，与旧行为完全一致。
     const KeyMap keys(data, key);
     std::vector<ChordMark> chords;
     if (data.division <= 0 || data.notes.empty()) return chords;
 
-    // 旋律轨不参与和声判定：它自带经过音与装饰音，会把和弦算歪
-    int mainTrack = pickMelodyTrack(data, nullptr);
+    // 旋律轨不参与和声判定：它自带经过音与装饰音，会把和弦算歪。
+    // 外部歌词可能把旋律轨改到人声轨，这里必须和三个输出层读同一份证据
+    // （v1.186.0）；没有歌词时 pickMelodyTrack(data,nullptr) 行为不变。
+    int mainTrack = pickMelodyTrack(data, lyrics);
     const long win = chordWindowTicks(data);
     const BarGrid grid = barGridOf(data);
 

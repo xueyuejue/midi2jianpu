@@ -11711,7 +11711,7 @@ int main() {
         check(plain.find("[Acc] (24 音符) · 和弦: 3 个") != std::string::npos,
               "无歌词时文本谱和弦标在音符最多的 Acc 轨");
         const std::string withLyrics = formatJianpu(d, k, false, &lines);
-        check(withLyrics.find("[Vox] (6 音符) · 和弦: 3 个") != std::string::npos,
+        check(withLyrics.find("[Vox] (6 音符) · 和弦: 4 个") != std::string::npos,
               "外部歌词时文本谱和弦改标在歌词对齐的 Vox 轨");
         check(withLyrics.find("[Acc] (24 音符) · 和弦") == std::string::npos,
               "外部歌词时文本谱不再把和弦留在 Acc 轨");
@@ -11819,6 +11819,53 @@ int main() {
         const std::string plain = formatJianpu(noBend, estimateKey(noBend), false, nullptr);
         check(plain.find("(2)") != std::string::npos,
               "无弯音时倚音仍写裸 D，零回归");
+    }
+
+    std::cout << "\n测试 v1.186.0：外部歌词改选旋律轨后和弦检测同步排除人声\n";
+    {
+        MidiData d;
+        d.division = 480;
+        d.timeSig = TimeSignature{4, 2, true};
+        auto addNote = [&](int track, long tick, int pitch, long dur) {
+            NoteEvent n;
+            n.track = track; n.channel = 0; n.velocity = 80;
+            n.pitch = pitch; n.startTicks = tick; n.durationTicks = dur;
+            d.notes.push_back(n);
+        };
+        // Acc：24 个 C/E/G，从第 3 小节才进；无歌词时它音符最多，是旧旋律轨。
+        const int accPitches[3] = {60, 64, 67};
+        for (int i = 0; i < 24; i++)
+            addNote(1, 4800L + (long)i * 240, accPitches[i % 3], 200);
+        // Vox：六个 F#，与 LRC 行首对齐；贴歌词后它成为旋律轨。
+        for (int i = 0; i < 6; i++) addNote(2, (long)i * 480, 66, 400);
+        // Piano：C / F / G / C 四个柱式和弦。
+        const long bases[4] = {0, 960, 1920, 2880};
+        const int chords[4][3] = {{60, 64, 67}, {65, 69, 72},
+                                  {55, 59, 62}, {60, 64, 67}};
+        for (int b = 0; b < 4; b++)
+            for (int k = 0; k < 3; k++)
+                addNote(3, bases[b], chords[b][k], 480);
+
+        std::vector<LyricLine> lines;
+        for (int i = 0; i < 6; i++) lines.push_back({(long)i * 480, "词"});
+        KeyEstimate k;
+        k.tonicPitchClass = 0; k.isMajor = true; k.fifthsHint = 0;
+
+        auto namesOf = [](const std::vector<ChordMark>& cs) {
+            std::string s;
+            for (const auto& c : cs) s += c.name + ";";
+            return s;
+        };
+        const std::string plain = namesOf(detectChords(d, k));
+        const std::string withLyrics = namesOf(detectChords(d, k, &lines));
+        check(plain.find("F#dim") != std::string::npos,
+              "无歌词时旧旋律轨 Acc 被排除，人声 F# 仍参与和声（F#dim）");
+        check(withLyrics.find("F#dim") == std::string::npos,
+              "外部歌词改选 Vox 后和弦检测排除人声，F#dim 消失");
+        check(withLyrics.find("C;") != std::string::npos &&
+                  withLyrics.find("F;") != std::string::npos &&
+                  withLyrics.find("G;") != std::string::npos,
+              "排除人声后和弦恢复为 C / F / G");
     }
 
     std::cout << "\n------------------------------------------------\n";

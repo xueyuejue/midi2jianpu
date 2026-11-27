@@ -304,7 +304,7 @@ std::string renderMusicXml(const MidiData& data, const KeyEstimate& key,
     // 和弦符号：和文本谱 / HTML 共用同一份 detectChords 结果。
     // 挂到旋律声部上方（标准 lead sheet 排法）；没有明确旋律声部时退化到
     // 第一个声部。按小节分桶，便于随音符位置插入 <harmony>。
-    const std::vector<ChordMark> chordMarks = detectChords(data, key);
+    const std::vector<ChordMark> chordMarks = detectChords(data, key, lyricLines);
     const int chordTrack = pickMelodyTrack(data, lyricLines);
     std::map<int, std::vector<const ChordMark*>> chordsByBar;
     for (const auto& cm : chordMarks)

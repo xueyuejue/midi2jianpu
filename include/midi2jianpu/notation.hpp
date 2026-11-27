@@ -796,8 +796,11 @@ std::string applyPickupOption(MidiData& data, double beats, bool noPickup);
 // 和声窗长度（tick）：4/4 半小节、6/8 附点四分、3/4 整小节
 long chordWindowTicks(const MidiData& data);
 
-// 从MIDI数据中检测和弦（按和声窗，相邻同名合并）
-std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key);
+// 从MIDI数据中检测和弦（按和声窗，相邻同名合并）。
+// lyrics 与三个输出层选旋律轨用同一份证据：歌词改选人声轨后，和声统计
+// 也必须排除人声轨，否则人声经过音会把和弦名算歪（v1.186.0）。
+std::vector<ChordMark> detectChords(const MidiData& data, const KeyEstimate& key,
+                                    const std::vector<LyricLine>* lyrics = nullptr);
 
 // ---- 演奏表情（力度 / 渐强渐弱 / 断音 / 重音 / 滑音 / 颤音 / 段落）----
 //

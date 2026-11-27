@@ -679,7 +679,7 @@ std::string renderHtml(const MidiData& data, const KeyEstimate& key,
 
     // 和弦检测。按「和声窗」而不是整小节（4/4 半小节、6/8 附点四分），
     // 所以索引键是准确的 tick，同一小节里可以有多个和弦。
-    auto chords = detectChords(data, key);
+    auto chords = detectChords(data, key, lyricLines);
     std::map<long, std::string> chordAt;
     for (const auto& c : chords) chordAt[c.startTick] = c.name;
 

@@ -3240,6 +3240,17 @@ def main() -> None:
         f.write(gbdata)
     print(f"wrote {gbmid} ({len(gbdata)} bytes)")
 
+    # 外部歌词改选旋律轨后，和弦检测同步排除人声（v1.186 回归闸门）
+    lcmid = os.path.join(here, "lyric_chord.mid")
+    with open(lcmid, "wb") as f:
+        lcdata = build_lyric_chord()
+        f.write(lcdata)
+    print(f"wrote {lcmid} ({len(lcdata)} bytes)")
+    lclrc = os.path.join(here, "lyric_chord.lrc")
+    with open(lclrc, "w", encoding="utf-8") as f:
+        f.write(LYRIC_CHORD_LRC)
+    print(f"wrote {lclrc}")
+
     # format 2（多个独立序列）素材
     f2mid = os.path.join(here, "format2.mid")
     with open(f2mid, "wb") as f:
@@ -4592,6 +4603,50 @@ LYRIC_TRACK_LRC = (
     "[00:00.00]春\n[00:00.50]夏\n[00:01.00]秋\n"
     "[00:01.50]冬\n[00:02.00]风\n[00:02.50]雨\n"
 )
+
+
+LYRIC_CHORD_LRC = (
+    "[00:00.00]词\n[00:00.50]词\n[00:01.00]词\n"
+    "[00:01.50]词\n[00:02.00]词\n[00:02.50]词\n"
+)
+
+
+def build_lyric_chord() -> bytes:
+    """外部歌词改选旋律轨后，和弦检测也要排除人声轨（v1.186.0）。
+
+    Acc 24 个 C/E/G 音从第 3 小节才进；Vox 六个 F# 与 LRC 行首对齐；
+    Piano 是 C / F / G / C 四个柱式和弦。无歌词时 old 旋律轨是 Acc，
+    和弦只受 Vox F# 污染出现 F#dim；贴 LRC 后旋律轨改 Vox，和弦检测
+    必须同步排除 Vox，结果变回 C / F。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    acc = Track()
+    acc.add(0, meta(0x03, b"Acc"))
+    acc.add(0, bytes([0xC0, 0x00]))
+    for i in range(24):
+        acc.note(0, (60, 64, 67)[i % 3], 80, 4800 + i * 240, 200)
+
+    vox = Track()
+    vox.add(0, meta(0x03, b"Vox"))
+    vox.add(0, bytes([0xC0, 0x01]))
+    for i in range(6):
+        vox.note(0, 66, 90, i * DIV, 400)
+
+    piano = Track()
+    piano.add(0, meta(0x03, b"Piano"))
+    piano.add(0, bytes([0xC0, 0x00]))
+    for base, chord in ((0, (60, 64, 67)), (960, (65, 69, 72)),
+                        (1920, (55, 59, 62)), (2880, (60, 64, 67))):
+        for p in chord:
+            piano.note(0, p, 0x50, base, 480)
+
+    return (b"MThd" + struct.pack(">IHHH", 6, 1, 4, DIV)
+            + t0.render() + acc.render() + vox.render() + piano.render())
 
 
 def build_lyric_track() -> bytes:
