@@ -11868,7 +11868,52 @@ int main() {
               "排除人声后和弦恢复为 C / F / G");
     }
 
-    std::cout << "\n------------------------------------------------\n";
+    std::cout << "\n测试 v1.187.0：量化合并音头后歌词落位数必须跟着变\n";
+    {
+        // 网页的歌词体检过去只落渲染开关、不落 quantizeTiming，于是它按
+        // 「未量化」的 6 个音头报「挂上 6 字」，而同页谱面按量化后的 5 个
+        // 音头只印得出 5 个字。这里把两条口径都摊开：量化确实会合并音头，
+        // 落字数也必须跟着降。
+        auto build = []() {
+            MidiData d;
+            d.division = 480;
+            d.timeSig = TimeSignature{4, 2, true};
+            const long ticks[6] = {0, 240, 246, 480, 720, 960};
+            const int pitches[6] = {60, 64, 67, 62, 65, 69};
+            const long durs[6] = {240, 240, 234, 240, 240, 960};
+            for (int i = 0; i < 6; i++) {
+                NoteEvent n;
+                n.track = 1; n.channel = 0; n.velocity = 0x5A;
+                n.pitch = pitches[i];
+                n.startTicks = ticks[i];
+                n.durationTicks = durs[i];
+                d.notes.push_back(n);
+            }
+            return d;
+        };
+        auto uniqueOnsets = [](const MidiData& d) {
+            std::set<long> s;
+            for (const auto& n : d.notes) s.insert(n.startTicks);
+            return s.size();
+        };
+        std::vector<LyricLine> lines;
+        lines.push_back({0, "一二三四五六"});   // 一行六字，正好用满未量化的音头
+
+        MidiData raw = build();
+        const LyricAssignment a0 = assignLyrics(raw, lines, 1);
+        MidiData q = build();
+        const QuantizeReport rep = quantizeTiming(q);
+        const LyricAssignment a1 = assignLyrics(q, lines, 1);
+
+        check(uniqueOnsets(raw) == 6, "素材未量化时有 6 个唯一音头");
+        check(uniqueOnsets(q) == 5, "量化后 246 与 240 并入同一格，唯一音头降到 5");
+        check(rep.adjusted >= 2, "量化报告如实记下被挪动的音符数");
+        check(a0.charsPlaced == 6, "未量化：六个字全部挂上");
+        check(a1.charsPlaced == 5, "量化后只挂得上 5 字");
+        check(a1.charsTotal == 6, "挂不上的第 6 个字必须记进 charsTotal，不许静默吞掉");
+        check(a1.charsSkipped() == 1, "charsSkipped() 报出那 1 个字");
+    }
+
     std::cout << "共 " << total << " 项，失败 " << failures << " 项 -> "
               << (failures == 0 ? "全部通过" : "有失败") << "\n";
     return failures == 0 ? 0 : 1;

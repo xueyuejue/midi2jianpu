@@ -3251,6 +3251,17 @@ def main() -> None:
         f.write(LYRIC_CHORD_LRC)
     print(f"wrote {lclrc}")
 
+    # 量化合并音头后的歌词体检（v1.187.0）
+    qlmid = os.path.join(here, "quant_lyric.mid")
+    with open(qlmid, "wb") as f:
+        qldata = build_quant_lyric()
+        f.write(qldata)
+    print(f"wrote {qlmid} ({len(qldata)} bytes)")
+    qllrc = os.path.join(here, "quant_lyric.lrc")
+    with open(qllrc, "w", encoding="utf-8") as f:
+        f.write(QUANT_LYRIC_LRC)
+    print(f"wrote {qllrc}")
+
     # format 2（多个独立序列）素材
     f2mid = os.path.join(here, "format2.mid")
     with open(f2mid, "wb") as f:
@@ -4647,6 +4658,37 @@ def build_lyric_chord() -> bytes:
 
     return (b"MThd" + struct.pack(">IHHH", 6, 1, 4, DIV)
             + t0.render() + acc.render() + vox.render() + piano.render())
+
+
+QUANT_LYRIC_LRC = "[00:00.00]一二三四五六\n"
+
+
+def build_quant_lyric() -> bytes:
+    """量化会把两个几乎同起的音头并成一个，歌词体检必须跟着变（v1.187.0）。
+
+    Vox 轨六个音头：0 / 240 / 246 / 480 / 720 / 960。246 与 240 只差 6 tick
+    （12.5ms，真实录音里两只手同时下键的常见错位），量化网格是 div/24 = 20
+    tick，两者一起落到 240 —— 量化后唯一音头从 6 个变 5 个。
+
+    LRC 一行六个字，正好用满未量化的六个音头；量化后第五个字起就没有音头
+    可挂了。网页的歌词体检过去只调 applyRenderOptions()、不调 applyQuantize()，
+    于是默认开着量化时它按「6 个音头」报「挂上 6 字」，而同页 HTML 只有 5 个。
+    """
+    t0 = Track()
+    t0.add(0, meta(0x03, b"Conductor"))
+    t0.add(0, meta(0x51, bytes([0x07, 0xA1, 0x20])))
+    t0.add(0, meta(0x58, bytes([4, 2, 24, 8])))
+    t0.add(0, meta(0x59, bytes([0, 0])))
+
+    vox = Track()
+    vox.add(0, meta(0x03, b"Vox"))
+    vox.add(0, bytes([0xC0, 0x00]))
+    for tick, pitch, dur in ((0, 60, 240), (240, 64, 240), (246, 67, 234),
+                             (480, 62, 240), (720, 65, 240), (960, 69, 960)):
+        vox.note(0, pitch, 0x5A, tick, dur)
+
+    return (b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV)
+            + t0.render() + vox.render())
 
 
 def build_lyric_track() -> bytes:

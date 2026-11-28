@@ -4344,6 +4344,65 @@ if (existsSync(twoLyrics76)) {
     'WASM 不给歌词的对照组仍保留旧旋律轨下的 F#dim', plain.slice(0, 200));
 }
 
+// ---- 114. v1.187.0 歌词体检与谱面吃同一份开关（量化合并音头后落字数要跟着降）----
+// 量化网格是 div/24，两个差 6 tick 的音头会并成一格：素材 quant_lyric.mid 的
+// Vox 轨未量化 6 个唯一音头、量化后 5 个。lyric_info 过去只落渲染开关、不落
+// quantizeTiming，于是默认开着量化时它按 6 个音头报「挂上 6 字」，而同页
+// HTML 只印得出 5 个字，连「1 字没有音头可挂」都不说。
+{
+  const midi = new Uint8Array(readFileSync(path.join(FIXTURES, 'quant_lyric.mid')));
+  const lrc = readFileSync(path.join(FIXTURES, 'quant_lyric.lrc'), 'utf8');
+  const infoOf = (text, quantize) => {
+    mod._midi2jianpu_set_quantize(quantize ? 1 : 0);
+    const p = mod._malloc(midi.length);
+    mod.HEAPU8.set(midi, p);
+    const n = mod.lengthBytesUTF8(text) + 1;
+    const lp = mod._malloc(n);
+    mod.stringToUTF8(text, lp, n);
+    const s = mod._midi2jianpu_lyric_info(p, midi.length, lp);
+    const out = s ? mod.UTF8ToString(s) : '';
+    mod._free(lp);
+    mod._free(p);
+    return out;
+  };
+  const spanCount = (html) =>
+    [...html.matchAll(/<span class='lyric'>([^<]*)<\/span>/g)]
+      .map((m) => m[1]).filter((t) => t !== '').length;
+  const w = makeCaller(mod);
+  w.setMidi(midi);
+  w.setLyrics(lrc);
+
+  mod._midi2jianpu_set_quantize(1);
+  const htmlOn = w.call('midi2jianpu_html', -1, 1) || '';
+  const infoOn = infoOf(lrc, true);
+  check(spanCount(htmlOn) === 5,
+    '量化开：246 与 240 并成一格，谱面只印 5 个字', String(spanCount(htmlOn)));
+  check(infoOn.includes('挂上 5 字'),
+    '量化开：体检与谱面同口径，报「挂上 5 字」', infoOn);
+  check(infoOn.includes('1 字没有音头可挂'),
+    '量化开：挂不上的那 1 个字必须如实报出来', infoOn);
+
+  mod._midi2jianpu_set_quantize(0);
+  const htmlOff = w.call('midi2jianpu_html', -1, 1) || '';
+  const infoOff = infoOf(lrc, false);
+  check(spanCount(htmlOff) === 6,
+    '量化关：6 个音头各承一个字，谱面印 6 个字', String(spanCount(htmlOff)));
+  check(infoOff.includes('挂上 6 字') && !infoOff.includes('没有音头可挂'),
+    '量化关：体检同样报「挂上 6 字」且不提丢字', infoOff);
+
+  // 移调不改音头表，落字数与量化口径都必须稳住（顺手守住「别把移调漏掉」）。
+  mod._midi2jianpu_set_quantize(1);
+  mod._midi2jianpu_set_transpose(5);
+  const infoTr = infoOf(lrc, true);
+  const htmlTr = w.call('midi2jianpu_html', -1, 1) || '';
+  check(infoTr.includes('挂上 5 字') && spanCount(htmlTr) === 5,
+    '移调 +5 并开量化：体检与谱面仍同为 5 字',
+    infoTr + ' / ' + String(spanCount(htmlTr)));
+  mod._midi2jianpu_set_transpose(0);
+  mod._midi2jianpu_set_quantize(1);
+  w.setLyrics('');
+}
+
 console.log('');
 if (failures.length) {
   console.log(`X ${failures.length} 项失败`);

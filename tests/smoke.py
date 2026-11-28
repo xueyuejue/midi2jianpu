@@ -6860,6 +6860,31 @@ def main():
           "不给歌词的对照组仍保留旧旋律轨下的 F#dim",
           lc_plain_text[:200])
 
+    group("[165] v1.187.0 量化合并音头后歌词落位数跟着降")
+    ql = os.path.join(FIXTURES, "quant_lyric.mid")
+    qllrc = os.path.join(FIXTURES, "quant_lyric.lrc")
+
+    def lyric_span_count(html_path):
+        html = open(html_path, encoding="utf-8").read()
+        return len([m for m in re.findall(
+            r"<span class='lyric'>([^<]*)</span>", html) if m])
+
+    with tempfile.TemporaryDirectory() as td:
+        q_on = os.path.join(td, "q_on.html")
+        q_off = os.path.join(td, "q_off.html")
+        rc_on, out_on, err_on = run(exe, ql, "--key", "C", "--lyrics", qllrc,
+                                    "--html", q_on)
+        rc_off, _, err_off = run(exe, ql, "--key", "C", "--lyrics", qllrc,
+                                 "--no-quantize", "--html", q_off)
+        n_on = lyric_span_count(q_on)
+        n_off = lyric_span_count(q_off)
+    check(rc_on == 0 and rc_off == 0, "quant_lyric 两次导出都成功",
+          "%d/%d %s" % (rc_on, rc_off, (err_on + err_off)[-200:]))
+    check(n_on == 5, "量化开：246 与 240 并成一格，谱面只印 5 个字", str(n_on))
+    check(n_off == 6, "量化关：6 个音头各承一个字，谱面印 6 个字", str(n_off))
+    check("时值量化" in out_on,
+          "量化开时 CLI 如实报告修正了多少个音符", out_on[:200])
+
     print("\n" + "-" * 48)
     if failures:
         print(f"失败 {len(failures)} 项")

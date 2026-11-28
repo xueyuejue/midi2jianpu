@@ -71,10 +71,10 @@ import os
 #    addDev。两份的三端输出与 `--verify` 结论都变了，登记为跳过。
 # 上一轮的 rest_hole_nextbar.mid 已进入 v1.159.0 基线，本轮起撤出本表，
 # 照常参与零回归比对。
-# v1.185.0 的两份素材已进入 v1.185.0 基线，本轮起撤出本表，照常参与零回归。
-# v1.186.0 新增 lyric_chord.mid（外部歌词改选人声轨后，和弦检测也必须排除
-# 人声，否则 F# 经过音把 F 和弦算成 F#dim）；旧基线没有修复后的输出，登记跳过。
-NEW_FIXTURES = {"lyric_chord.mid"}
+# v1.186.0 的 lyric_chord.mid 已进入 v1.186.0 基线，本轮起撤出本表。
+# v1.187.0 新增 quant_lyric.mid（量化把两个差 6 tick 的音头并成一格，歌词
+# 体检必须跟着降）；旧基线没有修复后的提示栏口径，登记跳过。
+NEW_FIXTURES = {"quant_lyric.mid"}
 
 # v1.144.0 曾经有一张 HTML_CHANGED = {"parts.mid", "overfull.mid"}：那一版把
 # 倚音前面的空拍补成休止列，`--regress` 对这两份既有素材放行了「HTML 有意

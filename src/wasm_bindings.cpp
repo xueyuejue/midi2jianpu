@@ -113,6 +113,20 @@ static void applyQuantize(m2j::MidiData& data) {
     g_quantizeAdjusted = m2j::quantizeTiming(data).adjusted;
 }
 
+// 文本 / HTML / MusicXML / 歌词体检四条路径共用的开关流水线，顺序与 CLI
+// 完全一致（loadMidi → transposeData → 渲染开关 → quantizeTiming）。
+//
+// 抽出来的理由就是曾经分叉过两次：v1.176.0 试听漏了量化（听到的是另一套
+// 节奏），v1.187.0 歌词体检漏了量化——量化网格是 div/24，两个差 6 tick 的
+// 音头会并成一个，于是提示栏按「6 个音头」报「挂上 6 字」，同页谱面只印得
+// 出 5 个字，还一句「没有音头可挂」都不说。任何一处再漏一步，同一份文件在
+// 网页上就会自己跟自己矛盾，所以统一从这里走。
+static void applyRenderPipeline(m2j::MidiData& data) {
+    applyTranspose(data);
+    applyRenderOptions(data);
+    applyQuantize(data);
+}
+
 // 三个渲染入口（文本 / HTML / MusicXML）共用的调性决策。手动宫音优先于
 // 手动调号，与 CLI 的 `--gong 优先于 --key` 同口径；越界的宫音在 set_gong
 // 那里就被拒了，这里拿到的必定是合法值。
@@ -291,9 +305,7 @@ const char* midi2jianpu_parse(const uint8_t* midiData, int size, int keyPitch, i
         return g_result.c_str();
     }
 
-    applyTranspose(data);
-    applyRenderOptions(data);
-    applyQuantize(data);
+    applyRenderPipeline(data);
 
     // 手动宫音 / 手动调号 / 自动判定三选一，与 CLI 同一入口。
     const m2j::KeyEstimate key = chooseKey(data, keyPitch, isMajor);
@@ -342,9 +354,7 @@ const char* midi2jianpu_html(const uint8_t* midiData, int size, int keyPitch, in
         return g_result.c_str();
     }
 
-    applyTranspose(data);
-    applyRenderOptions(data);
-    applyQuantize(data);
+    applyRenderPipeline(data);
 
     m2j::KeyEstimate key;
     // 网页版选调与 CLI 的 --key 是同一件事：这个调是人选的，不是文件里写的。
@@ -547,7 +557,12 @@ const char* midi2jianpu_lyric_info(const uint8_t* midiData, int size,
     // 不再把倚音判成装饰音，歌词铺排也跟着把那个音当成普通音头：CLI 在
     // 落 useDynamics 之后才数「挂上几字」，这里过去漏了这一步，于是关闭
     // 力度时提示「挂上 7 字」而 HTML / MusicXML 实际印 8 字。
-    applyRenderOptions(data);
+    //
+    // 同一条理由也管移调与量化（v1.187.0）：量化网格是 div/24，两个几乎同起
+    // 的音头会并成一个，音头表从 6 个变 5 个；过去这里只落了渲染开关，于是
+    // 默认开着量化时提示栏按 6 个音头报「挂上 6 字」，同页谱面只有 5 个字，
+    // 连「1 字没有音头可挂」都不说。现在走与渲染同一条流水线。
+    applyRenderPipeline(data);
 
     const bool isLrc = m2j::detectLyricFormat("", text) == m2j::LyricFormat::Lrc;
     size_t dropped = 0;
@@ -875,9 +890,7 @@ const char* midi2jianpu_musicxml(const uint8_t* midiData, int size, int keyPitch
         g_result = "<error>无法解析MIDI</error>";
         return g_result.c_str();
     }
-    applyTranspose(data);
-    applyRenderOptions(data);
-    applyQuantize(data);
+    applyRenderPipeline(data);
 
     // 与文本 / HTML 完全同一条决策链，宫音也一起走（CLI 三端同源）。
     const m2j::KeyEstimate key = chooseKey(data, keyPitch, isMajor);
